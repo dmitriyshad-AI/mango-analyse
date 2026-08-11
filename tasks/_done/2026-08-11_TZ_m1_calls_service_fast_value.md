@@ -709,5 +709,6 @@ SLA подтвердить замером на 10 реальных звонка�
 Audit pack:
 `audits/_inbox/m1_calls_fast_service_phase_a_20260811/`.
 
-`formal_pass=true`, `semantic_pass=true`, `business_pass=true`,
-`data_pass=synthetic_only`, `runtime_pass=false`.
+`formal_pass=true`, `semantic_pass=true`, `business_pass=false`,
+`data_pass=synthetic_only`, `runtime_pass=false`. Синтетика доказывает
+работоспособность кода, но не пользу результата реального звонка сотруднику.

@@ -21,6 +21,7 @@ from mango_mvp.services.analyze import (
     build_analysis_migration_call_snapshot,
     migrate_analysis_payload,
 )
+from mango_mvp.services.controlled_call_scope import enforce_controlled_cli_command
 from mango_mvp.services.export_excel import build_call_rows, build_contact_rows, write_workbook
 from mango_mvp.services.export_ai_office import push_call_insights
 from mango_mvp.services.ingest import ingest_from_directory
@@ -770,6 +771,7 @@ def cmd_export_sales_workbook(args) -> int:
 
 def cmd_reset_analysis(args) -> int:
     settings = get_settings()
+    enforce_controlled_cli_command(settings, "reset-analysis")
     session_factory = build_session_factory(settings)
     requested_statuses = _parse_status_list(args.statuses)
     if not requested_statuses:
@@ -1002,6 +1004,7 @@ def cmd_worker(args) -> int:
 
 def cmd_requeue(args) -> int:
     settings = get_settings()
+    enforce_controlled_cli_command(settings, "requeue")
     session_factory = build_session_factory(settings)
     stage = args.stage
     with session_factory() as session:
@@ -1051,6 +1054,7 @@ def cmd_requeue(args) -> int:
 
 def cmd_reset_transcribe(args) -> int:
     settings = get_settings()
+    enforce_controlled_cli_command(settings, "reset-transcribe")
     session_factory = build_session_factory(settings)
     with session_factory() as session:
         query = select(CallRecord)
@@ -1404,6 +1408,7 @@ def main(argv=None) -> int:
         parser = build_parser()
         args = parser.parse_args(argv)
         try:
+            enforce_controlled_cli_command(get_settings(), str(args.command))
             return args.func(args)
         except KeyboardInterrupt:
             return 130

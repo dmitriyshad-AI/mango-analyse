@@ -197,6 +197,116 @@ def read_stable_regular_bytes_with_path(
     return b"".join(chunks), resolved
 
 
+def inspect_stable_regular_file(
+    path: Path,
+    *,
+    label: str,
+    require_owner: bool = False,
+    require_single_link: bool = False,
+    owner_only_mode: Optional[int] = None,
+) -> Mapping[str, object]:
+    """Bind a regular file to one inode and return content-free integrity data."""
+    evidence: dict[str, object]
+    with _stable_regular_descriptor(
+        path,
+        label=label,
+        owner_only_mode=owner_only_mode,
+    ) as descriptor:
+        opened = os.fstat(descriptor)
+        if require_owner and opened.st_uid != os.getuid():
+            raise RuntimeError(f"{label}_must_be_owned_by_runtime_user")
+        if require_single_link and opened.st_nlink != 1:
+            raise RuntimeError(f"{label}_must_have_one_hardlink")
+        if opened.st_size <= 0:
+            raise RuntimeError(f"{label}_must_not_be_empty")
+        resolved = _descriptor_resolved_path(descriptor, label=label)
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        evidence = {
+            "resolved_path": resolved,
+            "size_bytes": opened.st_size,
+            "sha256": digest.hexdigest(),
+        }
+    return evidence
+
+
+def copy_stable_regular_file_owner_only(
+    source: Path,
+    target: Path,
+    *,
+    label: str,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> Mapping[str, object]:
+    """Stream one verified input inode into a new private regular file."""
+    validate_owner_only_directory(
+        target.parent,
+        label=f"{label}_directory",
+        owner_only_mode=0o700,
+    )
+    if os.path.lexists(target):
+        raise RuntimeError(f"{label}_target_already_exists")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    temporary = Path(temporary_name)
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        os.fchmod(descriptor, 0o600)
+        if _descriptor_has_extended_acl(descriptor, label=label):
+            raise RuntimeError(f"{label}_temporary_has_extended_acl")
+        with _stable_regular_descriptor(source, label=f"{label}_source") as source_fd:
+            with os.fdopen(descriptor, "wb") as target_handle:
+                descriptor = -1
+                while chunk := os.read(source_fd, 1024 * 1024):
+                    digest.update(chunk)
+                    size_bytes += len(chunk)
+                    target_handle.write(chunk)
+                target_handle.flush()
+                os.fsync(target_handle.fileno())
+        if (
+            size_bytes != expected_size_bytes
+            or digest.hexdigest() != expected_sha256
+        ):
+            raise RuntimeError(f"{label}_source_binding_mismatch")
+        if os.path.lexists(target):
+            raise RuntimeError(f"{label}_target_already_exists")
+        os.replace(temporary, target)
+        directory_fd = os.open(
+            target.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        evidence = inspect_stable_regular_file(
+            target,
+            label=label,
+            require_owner=True,
+            require_single_link=True,
+            owner_only_mode=0o600,
+        )
+        if (
+            evidence.get("sha256") != expected_sha256
+            or evidence.get("size_bytes") != expected_size_bytes
+        ):
+            raise RuntimeError(f"{label}_verification_failed")
+        return evidence
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        temporary.unlink(missing_ok=True)
+
+
 def validate_owner_only_directory(
     path: Path,
     *,

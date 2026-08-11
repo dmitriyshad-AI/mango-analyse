@@ -20,6 +20,15 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.productization.mango_calls_service_contract import (
+    has_dual_asr_or_exception,
+)
+from mango_mvp.services.controlled_call_scope import (
+    call_artifact_directory,
+    controlled_audio_input_path,
+    require_unique_controlled_call,
+    write_call_artifact_bytes,
+)
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
@@ -84,14 +93,19 @@ def release_mlx_free_cache() -> bool:
 
 
 def run_with_mlx_cache_release(
-    action: Callable[[], Any], *, mlx_executed: bool
+    action: Callable[[], Any],
+    *,
+    mlx_executed: bool,
+    cache_release_callback: Callable[[bool], None] | None = None,
 ) -> Any:
     """Run one source-file Whisper unit and clear free cache exactly once."""
     try:
         return action()
     finally:
         if mlx_executed:
-            release_mlx_free_cache()
+            released = release_mlx_free_cache()
+            if cache_release_callback is not None:
+                cache_release_callback(released)
 CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
 sandbox_mode = "read-only"
 service_tier = "flex"
@@ -192,10 +206,30 @@ class TranscribeService:
         self._client: Optional[OpenAI] = None
         self._ollama_client_instance: Optional[OllamaClient] = None
         self._gigaam_model: Any = None
+        self._provider_invocations: Counter[str] = Counter()
+        self._mlx_cache_release_attempts = 0
+        self._mlx_cache_release_successes = 0
         self._llm_cache = LLMResponseCache(
             enabled=settings.llm_cache_enabled,
             root_dir=settings.llm_cache_dir,
         )
+
+    def _record_mlx_cache_release(self, released: bool) -> None:
+        self._mlx_cache_release_attempts += 1
+        if released:
+            self._mlx_cache_release_successes += 1
+
+    def _reset_asr_runtime_receipt(self) -> None:
+        self._provider_invocations.clear()
+        self._mlx_cache_release_attempts = 0
+        self._mlx_cache_release_successes = 0
+
+    def _asr_runtime_receipt(self) -> Dict[str, Any]:
+        return {
+            "provider_invocations": dict(sorted(self._provider_invocations.items())),
+            "mlx_cache_release_attempts": self._mlx_cache_release_attempts,
+            "mlx_cache_release_successes": self._mlx_cache_release_successes,
+        }
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -216,9 +250,21 @@ class TranscribeService:
         now = self._utc_now()
         max_attempts = max(1, self._settings.transcribe_max_attempts)
         release_stale_pipeline_claims(session, self._settings, now)
+        scope = require_unique_controlled_call(session, self._settings)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {
+            "worker_id": worker_id,
+            "now": now,
+            "max_attempts": max_attempts,
+            "limit": int(limit),
+        }
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET transcription_status = 'in_progress',
                        pipeline_stage = 'transcribe',
@@ -233,32 +279,29 @@ class TranscribeService:
                        AND transcribe_attempts < :max_attempts
                        AND (next_retry_at IS NULL OR next_retry_at <= :now)
                        AND pipeline_stage IS NULL
+                       {scope_sql}
                      ORDER BY id ASC
                      LIMIT :limit
                  )
                 """
             ),
-            {
-                "worker_id": worker_id,
-                "now": now,
-                "max_attempts": max_attempts,
-                "limit": int(limit),
-            },
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE transcription_status = 'in_progress'
                        AND pipeline_stage = 'transcribe'
                        AND pipeline_worker_id = :worker_id
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
@@ -276,13 +319,19 @@ class TranscribeService:
             return []
         now = self._utc_now()
         release_stale_pipeline_claims(session, self._settings, now)
-        done_calls = session.scalars(
+        scope = require_unique_controlled_call(session, self._settings)
+        done_query = (
             select(CallRecord)
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.pipeline_stage.is_(None))
             .order_by(CallRecord.id.asc())
-        ).all()
+        )
+        if scope:
+            done_query = done_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        done_calls = session.scalars(done_query).all()
 
         fresh_ids: list[int] = []
         retry_ids: list[int] = []
@@ -305,6 +354,12 @@ class TranscribeService:
             return []
 
         ids_sql = ",".join(str(int(item)) for item in candidate_ids)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {"worker_id": worker_id, "now": now}
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
                 f"""
@@ -315,23 +370,25 @@ class TranscribeService:
                        updated_at = :now
                  WHERE id IN ({ids_sql})
                    AND pipeline_stage IS NULL
+                   {scope_sql}
                 """
             ),
-            {"worker_id": worker_id, "now": now},
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE pipeline_stage = 'backfill-second-asr'
                        AND pipeline_worker_id = :worker_id
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
@@ -384,6 +441,10 @@ class TranscribeService:
         secondary_provider: str,
     ) -> str:
         if not payload:
+            return "not_needed"
+        if has_dual_asr_or_exception(
+            {"transcript_variants_json": json.dumps(payload, ensure_ascii=False)}
+        ):
             return "not_needed"
 
         meta = cls._secondary_backfill_meta(payload)
@@ -2797,17 +2858,30 @@ class TranscribeService:
                 f"{full_text}\n"
             )
 
-        target_dir = Path(export_dir) / source_path.parent.name
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = call_artifact_directory(
+            self._settings,
+            export_dir=Path(export_dir),
+            source_file=source_path,
+            source_call_id=call.source_call_id,
+        )
         target_path = target_dir / f"{source_path.stem}_text.txt"
-        target_path.write_text(body, encoding="utf-8")
+        write_call_artifact_bytes(
+            self._settings,
+            target_path,
+            body.encode("utf-8"),
+        )
 
         variants_json = result.get("transcript_variants_json")
         if isinstance(variants_json, str) and variants_json.strip():
             variants_path = target_dir / f"{source_path.stem}_variants.json"
-            variants_path.write_text(variants_json, encoding="utf-8")
+            write_call_artifact_bytes(
+                self._settings,
+                variants_path,
+                variants_json.encode("utf-8"),
+            )
 
     def _transcribe_file_with_meta(self, path: Path, provider: str) -> Dict[str, Any]:
+        self._provider_invocations[provider] += 1
         if provider == "mock":
             return {"text": f"[mock transcript for {path.name}]", "segments": None}
         if provider == "gigaam":
@@ -2861,7 +2935,12 @@ class TranscribeService:
         return {"text": text, "segments": None}
 
     def _transcribe_call(self, call: CallRecord) -> Dict[str, Any]:
-        path = Path(call.source_file)
+        path = controlled_audio_input_path(
+            self._settings,
+            record_id=int(call.id or 0),
+            source_call_id=call.source_call_id,
+            source_file=Path(call.source_file),
+        )
         primary_provider = self._settings.transcribe_provider
         secondary_provider = self._settings.secondary_transcribe_provider
         warnings: list[str] = []
@@ -2919,6 +2998,7 @@ class TranscribeService:
                     manager_primary, client_primary = run_with_mlx_cache_release(
                         primary_stereo_pair,
                         mlx_executed=primary_mlx_executed,
+                        cache_release_callback=self._record_mlx_cache_release,
                     )
                     manager_secondary: Optional[Dict[str, Any]] = None
                     client_secondary: Optional[Dict[str, Any]] = None
@@ -3214,6 +3294,7 @@ class TranscribeService:
             lambda: full_primary_cached
             or self._try_transcribe_file_with_meta(path, provider=primary_provider),
             mlx_executed=bool(primary_provider == "mlx" and not full_primary_cached),
+            cache_release_callback=self._record_mlx_cache_release,
         )
         full_primary_text = str(full_primary["text"]).strip()
         full_secondary_text = ""
@@ -3345,7 +3426,12 @@ class TranscribeService:
         }
 
     def _backfill_secondary_only(self, call: CallRecord, *, secondary_provider: str) -> Dict[str, Any]:
-        path = Path(call.source_file)
+        path = controlled_audio_input_path(
+            self._settings,
+            record_id=int(call.id or 0),
+            source_call_id=call.source_call_id,
+            source_file=Path(call.source_file),
+        )
         payload = self._safe_json_dict(call.transcript_variants_json)
         if not payload:
             raise RuntimeError("secondary backfill requires transcript_variants_json payload")
@@ -3483,7 +3569,8 @@ class TranscribeService:
         session: Session,
         limit: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
+        self._reset_asr_runtime_receipt()
         primary_provider = (self._settings.transcribe_provider or "").strip().lower()
         secondary_provider = (self._settings.secondary_transcribe_provider or "").strip().lower()
         if not secondary_provider:
@@ -3493,6 +3580,7 @@ class TranscribeService:
                 "failed": 0,
                 "scanned_done": 0,
                 "skipped_config": 1,
+                "runtime_receipt": self._asr_runtime_receipt(),
             }
         if secondary_provider == primary_provider:
             return {
@@ -3501,6 +3589,7 @@ class TranscribeService:
                 "failed": 0,
                 "scanned_done": 0,
                 "skipped_config": 1,
+                "runtime_receipt": self._asr_runtime_receipt(),
             }
 
         claim_worker_id = self._pipeline_worker_id("bf")
@@ -3516,13 +3605,18 @@ class TranscribeService:
             .order_by(CallRecord.id.asc())
         ).all() if candidate_ids else []
 
-        scanned_done = 0
-        scanned_done = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.dead_letter_stage.is_(None))
-                .where(CallRecord.transcription_status == "done")
+        scope = require_unique_controlled_call(session, self._settings)
+        scanned_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status == "done")
+        )
+        if scope:
+            scanned_query = scanned_query.where(
+                CallRecord.source_call_id == scope.source_call_id
             )
+        scanned_done = int(
+            session.scalar(scanned_query)
             or 0
         )
 
@@ -3570,6 +3664,9 @@ class TranscribeService:
         )
 
         for idx, call in enumerate(candidates, start=1):
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
             current_payload = self._safe_json_dict(call.transcript_variants_json)
             attempts = self._secondary_backfill_attempts(
                 current_payload,
@@ -3667,6 +3764,7 @@ class TranscribeService:
             "partial": partial,
             "exhausted": exhausted,
             "scanned_done": scanned_done,
+            "runtime_receipt": self._asr_runtime_receipt(),
         }
 
     def count_secondary_backfill_pending(self, session: Session) -> Dict[str, Any]:
@@ -3683,13 +3781,19 @@ class TranscribeService:
                 "exhausted": 0,
             }
 
-        done_calls = session.scalars(
+        scope = require_unique_controlled_call(session, self._settings)
+        done_query = (
             select(CallRecord)
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.transcript_variants_json.is_not(None))
             .order_by(CallRecord.id.asc())
-        ).all()
+        )
+        if scope:
+            done_query = done_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        done_calls = session.scalars(done_query).all()
 
         pending = 0
         in_progress = 0
@@ -3722,23 +3826,33 @@ class TranscribeService:
     def count_primary_queue_state(self, session: Session) -> Dict[str, int]:
         now = self._utc_now()
         max_attempts = max(1, self._settings.transcribe_max_attempts)
-        ready_pending = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.dead_letter_stage.is_(None))
-                .where(CallRecord.transcription_status.in_(["pending", "failed"]))
-                .where(CallRecord.transcribe_attempts < max_attempts)
-                .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
-                .where(CallRecord.pipeline_stage.is_(None))
+        scope = require_unique_controlled_call(session, self._settings)
+        ready_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status.in_(["pending", "failed"]))
+            .where(CallRecord.transcribe_attempts < max_attempts)
+            .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
+            .where(CallRecord.pipeline_stage.is_(None))
+        )
+        progress_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.transcription_status == "in_progress")
+            .where(CallRecord.pipeline_stage == "transcribe")
+        )
+        if scope:
+            ready_query = ready_query.where(
+                CallRecord.source_call_id == scope.source_call_id
             )
+            progress_query = progress_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        ready_pending = int(
+            session.scalar(ready_query)
             or 0
         )
         in_progress = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.transcription_status == "in_progress")
-                .where(CallRecord.pipeline_stage == "transcribe")
-            )
+            session.scalar(progress_query)
             or 0
         )
         return {
@@ -3751,7 +3865,8 @@ class TranscribeService:
         session: Session,
         limit: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
+        self._reset_asr_runtime_receipt()
         worker_id = self._pipeline_worker_id("tr")
         claimed_ids = self._claim_transcribe_batch(session, limit=limit, worker_id=worker_id)
         max_attempts = max(1, self._settings.transcribe_max_attempts)
@@ -3791,6 +3906,9 @@ class TranscribeService:
         for idx, call in enumerate(calls, start=1):
             if call.transcription_status != "in_progress" or call.pipeline_stage != "transcribe":
                 continue
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
             call.transcribe_attempts = int(call.transcribe_attempts or 0) + 1
             attempt = call.transcribe_attempts
             outcome = "success"
@@ -3849,4 +3967,9 @@ class TranscribeService:
                 }
             )
             session.commit()
-        return {"processed": len(calls), "success": success, "failed": failed}
+        return {
+            "processed": len(calls),
+            "success": success,
+            "failed": failed,
+            "runtime_receipt": self._asr_runtime_receipt(),
+        }

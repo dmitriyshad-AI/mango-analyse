@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 from mango_mvp.config import Settings
 from mango_mvp.db import build_session_factory
 from mango_mvp.services.analyze import AnalyzeService
+from mango_mvp.services.controlled_call_scope import enforce_controlled_worker_stages
 from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.sync_amocrm import AmoCRMSyncService
 from mango_mvp.services.transcribe import TranscribeService
@@ -65,6 +66,11 @@ def run_worker(
 ) -> Dict[str, Any]:
     session_factory = build_session_factory(settings)
     selected_stages = normalize_pipeline_stages(stages)
+    enforce_controlled_worker_stages(
+        settings,
+        selected_stages,
+        stage_limit=stage_limit,
+    )
     poll_interval = max(1, poll_sec if poll_sec is not None else settings.worker_poll_sec)
     max_idle = (
         max_idle_cycles
@@ -81,6 +87,14 @@ def run_worker(
     idle_cycles = 0
     totals = {
         stage: {"processed": 0, "success": 0, "failed": 0} for stage in selected_stages
+    }
+    runtime_receipts: Dict[str, Dict[str, Any]] = {
+        stage: {
+            "provider_invocations": {},
+            "mlx_cache_release_attempts": 0,
+            "mlx_cache_release_successes": 0,
+        }
+        for stage in selected_stages
     }
     while True:
         cycles += 1
@@ -117,6 +131,19 @@ def run_worker(
             totals[stage]["processed"] += int(stage_result.get("processed", 0))
             totals[stage]["success"] += int(stage_result.get("success", 0))
             totals[stage]["failed"] += int(stage_result.get("failed", 0))
+            receipt = stage_result.get("runtime_receipt")
+            if isinstance(receipt, dict):
+                providers = receipt.get("provider_invocations")
+                if isinstance(providers, dict):
+                    aggregate = runtime_receipts[stage]["provider_invocations"]
+                    for provider, count in providers.items():
+                        key = str(provider)
+                        aggregate[key] = int(aggregate.get(key, 0)) + int(count or 0)
+                for key in (
+                    "mlx_cache_release_attempts",
+                    "mlx_cache_release_successes",
+                ):
+                    runtime_receipts[stage][key] += int(receipt.get(key) or 0)
 
         cycle_work = sum(
             int((cycle_payload.get(stage) or {}).get("processed", 0))
@@ -129,6 +156,7 @@ def run_worker(
                 "cycles": cycles,
                 "idle_cycles": idle_cycles,
                 "totals": totals,
+                "runtime_receipts": runtime_receipts,
                 "last_cycle": cycle_payload,
                 "stop_reason": "once",
             }
@@ -142,6 +170,7 @@ def run_worker(
                     "cycles": cycles,
                     "idle_cycles": idle_cycles,
                     "totals": totals,
+                    "runtime_receipts": runtime_receipts,
                     "last_cycle": cycle_payload,
                     "stop_reason": "max_idle_cycles_reached",
                 }

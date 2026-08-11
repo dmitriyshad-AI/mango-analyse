@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "scripts/bootstrap_m1_mango_calls.sh"
 HANDOFF = ROOT / "docs/m1_calls_handoff_20260801"
 ENV_PARSER = ROOT / "scripts/mango_calls_env.py"
+CONTROLLED_ALLOWLIST = ROOT / "scripts/create_m1_calls_controlled_allowlist.py"
 
 
 def _load_env_parser():
@@ -26,6 +27,70 @@ def _load_env_parser():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_controlled_allowlist_script():
+    spec = importlib.util.spec_from_file_location(
+        "create_m1_calls_controlled_allowlist",
+        CONTROLLED_ALLOWLIST,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_controlled_allowlist_verifies_lineage_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_controlled_allowlist_script()
+    calls: list[bool] = []
+
+    def failed_authority(_config):
+        calls.append(True)
+        return {"ok": False, "controlled_cursor_binding_ok": False}
+
+    monkeypatch.setattr(
+        module,
+        "controlled_read_only_cutover_authority_report",
+        failed_authority,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="controlled_allowlist_cutover_lineage_unproven",
+    ):
+        module.verify_controlled_cutover_lineage(object())
+    assert calls == [True]
+
+
+def test_controlled_allowlist_accepts_only_proven_read_only_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_controlled_allowlist_script()
+
+    monkeypatch.setattr(
+        module,
+        "controlled_read_only_cutover_authority_report",
+        lambda _config: {
+            "ok": True,
+            "controlled_cursor_binding_ok": True,
+        },
+    )
+
+    assert module.verify_controlled_cutover_lineage(object()) is None
+    source = CONTROLLED_ALLOWLIST.read_text(encoding="utf-8")
+    lease_call = source.index("with process_a_leases(")
+    snapshot_call = source.index("db_snapshot = controlled_call_database_snapshot(")
+    lineage_call = source.index("verify_controlled_cutover_lineage(config)")
+    allowlist_write = source.index("atomic_replace_owner_only_bytes(\n                out,")
+    allowlist_readback = source.index("loaded = load_controlled_call_allowlist(")
+    assert (
+        lease_call
+        < snapshot_call
+        < lineage_call
+        < allowlist_write
+        < allowlist_readback
+    )
 
 
 def test_bootstrap_plan_is_safe_and_complete() -> None:
@@ -483,6 +548,10 @@ def test_readiness_probe_requires_europe_moscow_timezone(
         strict_ready_provenance=True,
         expected_active_host_id="m1-host",
         expected_previous_host_id="source-mac",
+        processing_scope="controlled_1",
+        stage_limit=1,
+        working_db=tmp_path / "working.sqlite",
+        working_audio_dir=tmp_path / "working" / "audio",
     )
     config = {
         "pipeline_root": str(tmp_path / "pipeline"),
@@ -504,6 +573,40 @@ def test_readiness_probe_requires_europe_moscow_timezone(
         lambda *_args, **_kwargs: {
             "ok": True,
             "active_host_id": "m1-host",
+        },
+    )
+    monkeypatch.setattr(
+        probe,
+        "controlled_read_only_cutover_authority_report",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "active_host_id": "m1-host",
+            "controlled_cursor_binding_ok": True,
+        },
+    )
+    monkeypatch.setattr(
+        probe,
+        "controlled_call_scope_for_config",
+        lambda _config: SimpleNamespace(
+            source_call_id="TARGET",
+            target_record_id=2,
+            source_audio_sha256="c" * 64,
+            source_audio_size_bytes=100,
+            allowlist_sha256="b" * 64,
+            code_sha="a" * 40,
+            tenant_id="foton",
+            host_id="m1-host",
+        ),
+    )
+    monkeypatch.setattr(
+        probe,
+        "controlled_call_bound_snapshot",
+        lambda *_args, **_kwargs: {
+            "target": {
+                "record_id": 2,
+                "ready_for_human_review": False,
+                "source_audio": {"sha256": "c" * 64, "size_bytes": 100},
+            }
         },
     )
     monkeypatch.setattr(probe, "command_output", lambda _command: "")
@@ -581,12 +684,13 @@ def test_readiness_probe_requires_europe_moscow_timezone(
         run_codex_model_probes=True,
     )
     assert ready["checks"]["timezone_is_europe_moscow"] is True
-    assert ready["host_readiness"] == "OK"
+    assert ready["host_readiness"] == "STOP"
     assert ready["controlled_1_readiness"]["status"] == "OK"
     assert ready["controlled_1_readiness"]["requires_controlled_10"] is False
     assert ready["service_capacity_readiness"]["status"] == "OK"
     assert ready["service_capacity_readiness"]["requires_controlled_10"] is True
-    assert ready["production_service_readiness"]["status"] == "OK"
+    assert ready["service_machine_preflight"]["status"] == "STOP"
+    assert ready["production_service_readiness"]["status"] == "STOP"
     assert (
         ready["mode"]
         == "read_only_access_plus_synthetic_offline_and_codex_models"
@@ -594,11 +698,75 @@ def test_readiness_probe_requires_europe_moscow_timezone(
     assert ready["machine"]["timezone"] == "Europe/Moscow"
     assert ready["checks"]["active_m1_host_identity_bound"] is True
     assert ready["checks"]["runtime_user_is_dmitriy"] is True
+    assert ready["checks"]["controlled_one_allowlist_bound"] is True
+    assert ready["checks"]["controlled_one_target_unique_in_working_db"] is True
+    assert ready["checks"]["processing_scope_is_controlled_one"] is True
+    assert ready["checks"]["processing_scope_is_service"] is False
     assert ready["runs_content_free_network_model_inference"] is True
     assert ready["runs_codex_model_access_probes"] is True
     assert ready["runs_asr"] is True
     assert ready["runs_resolve_analyze_pipeline"] is False
     assert ready["uses_customer_content"] is False
+
+    parsed_config.processing_scope = "service"
+    monkeypatch.setattr(
+        probe,
+        "controlled_call_scope_for_config",
+        lambda _config: None,
+    )
+    service_ready = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert service_ready["controlled_1_readiness"]["status"] == "STOP"
+    assert service_ready["service_capacity_readiness"]["status"] == "OK"
+    assert service_ready["service_machine_preflight"]["status"] == "OK"
+    assert service_ready["production_service_readiness"]["status"] == "STOP"
+    assert service_ready["production_service_readiness"]["requires_controlled_1"] is True
+    assert service_ready["production_service_readiness"]["does_not_authorize_launch"] is True
+    assert (
+        service_ready["production_service_readiness"]["checks"]
+        ["controlled_1_human_pass_verified"]
+        is False
+    )
+    assert service_ready["host_readiness"] == "STOP"
+    assert service_ready["checks"]["processing_scope_is_controlled_one"] is False
+    assert service_ready["checks"]["processing_scope_is_service"] is True
+
+    parsed_config.processing_scope = "controlled_1"
+
+    monkeypatch.setattr(
+        probe,
+        "controlled_call_scope_for_config",
+        lambda _config: None,
+    )
+    missing_allowlist = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert missing_allowlist["controlled_1_readiness"]["status"] == "STOP"
+    assert missing_allowlist["checks"]["controlled_one_allowlist_bound"] is False
+
+    monkeypatch.setattr(
+        probe,
+        "controlled_call_scope_for_config",
+        lambda _config: SimpleNamespace(
+            source_call_id="TARGET",
+            target_record_id=2,
+            source_audio_sha256="c" * 64,
+            source_audio_size_bytes=100,
+            allowlist_sha256="b" * 64,
+            code_sha="a" * 40,
+            tenant_id="foton",
+            host_id="m1-host",
+        ),
+    )
 
     offline_only = probe.probe(
         config,

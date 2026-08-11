@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from mango_mvp.config import Settings
+from mango_mvp.services.controlled_call_scope import require_unique_controlled_call
 
 
 def utc_now() -> datetime:
@@ -21,11 +22,18 @@ def lease_cutoff(settings: Settings, now: datetime | None = None) -> datetime:
 def release_stale_pipeline_claims(session: Session, settings: Settings, now: datetime | None = None) -> int:
     current = now or utc_now()
     cutoff = lease_cutoff(settings, current)
+    scope = require_unique_controlled_call(session, settings)
+    scope_sql = (
+        " AND source_call_id = :controlled_source_call_id" if scope else ""
+    )
+    params = {"now": current, "cutoff": cutoff}
+    if scope:
+        params["controlled_source_call_id"] = scope.source_call_id
     total = 0
     total += int(
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET transcription_status = 'pending',
                        pipeline_stage = NULL,
@@ -38,16 +46,17 @@ def release_stale_pipeline_claims(session: Session, settings: Settings, now: dat
                         pipeline_claimed_at IS NULL
                         OR pipeline_claimed_at <= :cutoff
                    )
+                   {scope_sql}
                 """
             ),
-            {"now": current, "cutoff": cutoff},
+            params,
         ).rowcount
         or 0
     )
     total += int(
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET resolve_status = 'pending',
                        pipeline_stage = NULL,
@@ -60,16 +69,17 @@ def release_stale_pipeline_claims(session: Session, settings: Settings, now: dat
                         pipeline_claimed_at IS NULL
                         OR pipeline_claimed_at <= :cutoff
                    )
+                   {scope_sql}
                 """
             ),
-            {"now": current, "cutoff": cutoff},
+            params,
         ).rowcount
         or 0
     )
     total += int(
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET pipeline_stage = NULL,
                        pipeline_worker_id = NULL,
@@ -80,9 +90,10 @@ def release_stale_pipeline_claims(session: Session, settings: Settings, now: dat
                         pipeline_claimed_at IS NULL
                         OR pipeline_claimed_at <= :cutoff
                    )
+                   {scope_sql}
                 """
             ),
-            {"now": current, "cutoff": cutoff},
+            params,
         ).rowcount
         or 0
     )
@@ -93,7 +104,7 @@ def release_stale_pipeline_claims(session: Session, settings: Settings, now: dat
     total += int(
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET pipeline_stage = NULL,
                        pipeline_worker_id = NULL,
@@ -115,9 +126,10 @@ def release_stale_pipeline_claims(session: Session, settings: Settings, now: dat
                             AND resolve_status = 'in_progress')
                         OR pipeline_stage = 'backfill-second-asr'
                    ), 1)
+                   {scope_sql}
                 """
             ),
-            {"now": current, "cutoff": cutoff},
+            params,
         ).rowcount
         or 0
     )

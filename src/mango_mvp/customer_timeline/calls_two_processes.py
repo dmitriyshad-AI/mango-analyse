@@ -75,7 +75,9 @@ from mango_mvp.productization.mango_calls_config import (
 )
 from mango_mvp.productization.owner_only_io import (
     atomic_replace_owner_only_bytes,
+    copy_stable_regular_file_owner_only,
     path_has_cloud_marker,
+    inspect_stable_regular_file,
     read_stable_regular_bytes,
     read_stable_regular_bytes_with_path,
     validate_owner_only_directory,
@@ -96,6 +98,11 @@ from mango_mvp.productization.ready_publication import (
 )
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
 from mango_mvp.services.transcribe import TranscribeService
+from mango_mvp.services.controlled_call_scope import (
+    CONTROLLED_CALL_RUN_AUTHORITY_SCHEMA,
+    ControlledCallScope,
+    load_controlled_call_allowlist,
+)
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
@@ -191,6 +198,9 @@ class CallsTwoProcessesConfig:
     codex_analyze_model: str = "gpt-5.4-mini"
     codex_reasoning_effort: str = "medium"
     codex_service_tier: str = "flex"
+    processing_scope: str = "service"
+    controlled_call_allowlist_path: Optional[Path] = None
+    controlled_call_allowlist_sha256: Optional[str] = None
     mlx_whisper_snapshot_path: Optional[Path] = None
     heavy_stage_timeout_seconds: int = 4 * 60 * 60
     expected_code_sha: Optional[str] = None
@@ -253,6 +263,17 @@ class CallsTwoProcessesConfig:
             codex_service_tier=str(
                 payload.get("codex_service_tier") or "flex"
             ).strip(),
+            processing_scope=str(
+                payload.get("processing_scope") or "service"
+            ).strip().lower(),
+            controlled_call_allowlist_path=(
+                Path(str(payload["controlled_call_allowlist_path"])).expanduser()
+                if payload.get("controlled_call_allowlist_path")
+                else None
+            ),
+            controlled_call_allowlist_sha256=optional_text(
+                payload.get("controlled_call_allowlist_sha256")
+            ),
             mlx_whisper_snapshot_path=(
                 Path(str(payload["mlx_whisper_snapshot_path"])).expanduser()
                 if payload.get("mlx_whisper_snapshot_path")
@@ -324,6 +345,40 @@ class CallsTwoProcessesConfig:
             raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
         if self.codex_service_tier != "flex":
             raise ValueError("codex_service_tier must be flex in strict M1 Calls runtime")
+        if self.processing_scope not in {"service", "controlled_1"}:
+            raise ValueError("processing_scope must be service or controlled_1")
+        controlled_fields_present = bool(
+            self.controlled_call_allowlist_path
+            or self.controlled_call_allowlist_sha256
+        )
+        if self.processing_scope == "service" and controlled_fields_present:
+            raise ValueError("service scope must not configure a controlled call allowlist")
+        if self.processing_scope == "controlled_1":
+            if not self.strict_ready_provenance or not self.require_cutover_authority:
+                raise ValueError("controlled_1 requires strict cutover authority")
+            if self.stage_limit != 1:
+                raise ValueError("controlled_1 requires stage_limit=1")
+            if self.controlled_call_allowlist_path is None:
+                raise ValueError("controlled_1 allowlist path is required")
+            if not re.fullmatch(
+                r"[0-9a-f]{64}", self.controlled_call_allowlist_sha256 or ""
+            ):
+                raise ValueError("controlled_1 allowlist sha256 is required")
+            allowlist = self.controlled_call_allowlist_path
+            if not allowlist.is_absolute():
+                raise ValueError("controlled_1 allowlist path must be absolute")
+            owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+            resolved_pipeline = self.pipeline_root.resolve(strict=False)
+            if owner_local not in resolved_pipeline.parents:
+                raise ValueError(
+                    "controlled_1 pipeline_root must stay under $HOME/.mango_local"
+                )
+            resolved_allowlist = allowlist.resolve(strict=False)
+            if (
+                path_has_cloud_marker(resolved_allowlist)
+                or owner_local not in resolved_allowlist.parents
+            ):
+                raise ValueError("controlled_1 allowlist must stay under $HOME/.mango_local")
         if self.min_free_gib < 1:
             raise ValueError("min_free_gib must be at least 1")
         if self.heavy_stage_timeout_seconds < 60:
@@ -502,6 +557,120 @@ def configured_host_id(config: CallsTwoProcessesConfig, *, required: bool) -> st
         return fallback or "legacy-local-host"
 
 
+def controlled_call_scope_for_config(
+    config: CallsTwoProcessesConfig,
+) -> ControlledCallScope | None:
+    if config.processing_scope != "controlled_1":
+        return None
+    if (
+        config.controlled_call_allowlist_path is None
+        or config.controlled_call_allowlist_sha256 is None
+        or config.expected_code_sha is None
+        or config.expected_active_host_id is None
+    ):
+        raise RuntimeError("controlled_1_configuration_incomplete")
+    return load_controlled_call_allowlist(
+        path=config.controlled_call_allowlist_path,
+        expected_sha256=config.controlled_call_allowlist_sha256,
+        expected_tenant_id=config.tenant_id,
+        expected_code_sha=config.expected_code_sha,
+        expected_host_id=config.expected_active_host_id,
+        host_id_path=config.host_id_file,
+        project_root=Path(__file__).resolve().parents[3],
+    )
+
+
+@contextmanager
+def controlled_worker_authority_environment(
+    config: CallsTwoProcessesConfig,
+    *,
+    stage: str,
+    run_id: str,
+) -> Iterator[Mapping[str, str]]:
+    if config.processing_scope != "controlled_1":
+        yield {
+            "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_PATH": "",
+            "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_SHA256": "",
+        }
+        return
+    scope = controlled_call_scope_for_config(config)
+    assert scope is not None
+    authority = controlled_read_only_cutover_authority_report(config)
+    if authority.get("ok") is not True:
+        raise RuntimeError("controlled_worker_cutover_authority_failed")
+    verified_cutover_sha256 = str(
+        authority.get("verified_cutover_manifest_sha256") or ""
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", verified_cutover_sha256):
+        raise RuntimeError("controlled_worker_cutover_digest_missing")
+    controlled_call_bound_snapshot(config, scope)
+    lock_metadata = read_json(config.pipeline_lock)
+    if positive_int(lock_metadata.get("pid")) != os.getpid():
+        raise RuntimeError("controlled_worker_requires_parent_pipeline_lock")
+    authority_dir = config.pipeline_root / "state" / "controlled_worker_authority"
+    authority_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    authority_dir.chmod(0o700)
+    validate_owner_only_directory(
+        authority_dir,
+        label="controlled_worker_authority_directory",
+        owner_only_mode=0o700,
+    )
+    now = datetime.now(timezone.utc)
+    lifetime_seconds = min(
+        max(60, config.heavy_stage_timeout_seconds + 300),
+        6 * 60 * 60,
+    )
+    payload = {
+        "schema_version": CONTROLLED_CALL_RUN_AUTHORITY_SCHEMA,
+        "run_id": run_id,
+        "stage": stage,
+        "issued_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=lifetime_seconds)).isoformat(),
+        "allowlist_sha256": scope.allowlist_sha256,
+        "code_sha": scope.code_sha,
+        "host_id": scope.host_id,
+        "target_record_id": scope.target_record_id,
+        "source_audio_sha256": scope.source_audio_sha256,
+        "source_audio_size_bytes": scope.source_audio_size_bytes,
+        "cutover_manifest_path": str(config.cutover_manifest_file),
+        "cutover_manifest_sha256": verified_cutover_sha256,
+        "pipeline_lock_path": str(config.pipeline_lock),
+        "orchestrator_pid": os.getpid(),
+    }
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    safe_run_id = re.sub(r"[^A-Za-z0-9_.-]", "_", run_id)
+    safe_stage = re.sub(r"[^A-Za-z0-9_.-]", "_", stage)
+    path = authority_dir / f"{safe_run_id}_{safe_stage}_{uuid.uuid4().hex}.json"
+    atomic_replace_owner_only_bytes(
+        path,
+        raw,
+        label="controlled_call_run_authority",
+    )
+    try:
+        yield {
+            "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_PATH": str(path),
+            "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_SHA256": hashlib.sha256(
+                raw
+            ).hexdigest(),
+        }
+    finally:
+        path.unlink(missing_ok=True)
+        _fsync_directory(authority_dir)
+
+
+def reject_controlled_call_broad_operation(
+    config: CallsTwoProcessesConfig,
+    operation: str,
+) -> None:
+    if config.processing_scope == "controlled_1":
+        raise RuntimeError(f"controlled_1_forbids_broad_operation:{operation}")
+
+
 def cutover_authority_report(
     config: CallsTwoProcessesConfig, *, initialize_lineage: bool = False
 ) -> Mapping[str, Any]:
@@ -588,6 +757,92 @@ def cutover_authority_report(
         report["errors"] = [*list(report.get("errors") or ()), "source_cursor_lineage_unproven"]
     report["source_cursor_lineage_ok"] = marker_ok
     return report
+
+
+def controlled_read_only_cutover_authority_report(
+    config: CallsTwoProcessesConfig,
+) -> Mapping[str, Any]:
+    """Prove transferred cursor lineage without enabling service cutover."""
+    if not config.require_cutover_authority or config.expected_code_sha is None:
+        return {
+            "ok": False,
+            "errors": ["controlled_cutover_authority_required"],
+            "source_cursor_lineage_ok": False,
+            "controlled_cursor_binding_ok": False,
+            "lineage_mode": "controlled_read_only",
+            "shared_service_lineage_written": False,
+        }
+    try:
+        cutover_before = read_stable_regular_bytes(
+            config.cutover_manifest_file,
+            label="controlled_cutover_manifest",
+            owner_only_mode=0o600,
+        )
+    except RuntimeError:
+        return {
+            "ok": False,
+            "errors": ["controlled_cutover_manifest_unreadable"],
+            "source_cursor_lineage_ok": False,
+            "controlled_cursor_binding_ok": False,
+            "lineage_mode": "controlled_read_only",
+            "shared_service_lineage_written": False,
+        }
+    report = dict(
+        verify_cutover_authority(
+            cutover_manifest_path=config.cutover_manifest_file,
+            host_id_path=config.host_id_file,
+            previous_host_snapshot_path=config.previous_host_snapshot_file,
+            expected_previous_host_id=config.expected_previous_host_id,
+            expected_code_sha=config.expected_code_sha,
+            project_root=Path(__file__).resolve().parents[3],
+            proof_max_age_minutes=config.cutover_proof_max_age_minutes,
+            require_fresh_previous_host_proof=True,
+        )
+    )
+    errors = list(report.get("errors") or ())
+    if report.get("active_host_id") != config.expected_active_host_id:
+        errors.append("expected_active_host_id_mismatch")
+    expected_cursor_sha = str(report.get("source_cursor_sha256") or "")
+    try:
+        cursor = inspect_stable_regular_file(
+            config.cursor_path,
+            label="controlled_transferred_cursor",
+            require_owner=True,
+            require_single_link=True,
+            owner_only_mode=0o600,
+        )
+    except RuntimeError:
+        cursor = {}
+        errors.append("controlled_transferred_cursor_unreadable")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_cursor_sha)
+        or cursor.get("sha256") != expected_cursor_sha
+    ):
+        errors.append("controlled_source_cursor_mismatch")
+    try:
+        cutover_after = read_stable_regular_bytes(
+            config.cutover_manifest_file,
+            label="controlled_cutover_manifest",
+            owner_only_mode=0o600,
+        )
+    except RuntimeError:
+        cutover_after = b""
+        errors.append("controlled_cutover_manifest_unreadable")
+    if cutover_after != cutover_before:
+        errors.append("controlled_cutover_manifest_changed_during_check")
+    lineage_ok = bool(report.get("ok") is True and not errors)
+    return {
+        **report,
+        "ok": lineage_ok,
+        "errors": errors,
+        "source_cursor_lineage_ok": lineage_ok,
+        "controlled_cursor_binding_ok": lineage_ok,
+        "verified_cutover_manifest_sha256": (
+            hashlib.sha256(cutover_before).hexdigest() if lineage_ok else ""
+        ),
+        "lineage_mode": "controlled_read_only",
+        "shared_service_lineage_written": False,
+    }
 
 
 def working_db_is_authoritative(path: Path) -> bool:
@@ -696,6 +951,7 @@ def run_capture(
     capture_runner: CaptureRunner = None,
 ) -> Mapping[str, Any]:
     config.validate()
+    reject_controlled_call_broad_operation(config, "capture")
     capture_runner = capture_runner or capture_mango_window
     started = datetime.now(timezone.utc)
     run_id = new_calls_run_id(started)
@@ -872,6 +1128,7 @@ def run_pipeline(
     process_b_runner: Callable[[CallsTwoProcessesConfig], Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     config.validate()
+    reject_controlled_call_broad_operation(config, "pipeline")
     try:
         with process_lease(
             config.pipeline_lock, stale_seconds=config.stale_lock_seconds
@@ -894,6 +1151,647 @@ def run_pipeline(
             "process_b": None,
             "lock": exc.metadata,
         }
+
+
+def _sqlite_digest_value(value: Any) -> Mapping[str, Any]:
+    if value is None:
+        return {"type": "null", "value": None}
+    if isinstance(value, bytes):
+        return {
+            "type": "blob",
+            "size_bytes": len(value),
+            "sha256": hashlib.sha256(value).hexdigest(),
+        }
+    if isinstance(value, bool):
+        return {"type": "integer", "value": int(value)}
+    if isinstance(value, int):
+        return {"type": "integer", "value": value}
+    if isinstance(value, float):
+        return {"type": "real", "value": value}
+    return {"type": "text", "value": str(value)}
+
+
+def controlled_call_database_snapshot(
+    path: Path,
+    source_call_id: str,
+    *,
+    working_audio_dir: Path | None = None,
+    require_source_audio: bool = False,
+) -> Mapping[str, Any]:
+    if not working_db_is_authoritative(path):
+        raise RuntimeError("controlled_call_working_db_not_authoritative")
+    with closing(
+        sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    ) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        columns = [
+            str(row[1])
+            for row in con.execute("PRAGMA table_info(call_records)")
+        ]
+        if "id" not in columns or "source_call_id" not in columns:
+            raise RuntimeError("controlled_call_working_db_schema_invalid")
+        non_target_digest = hashlib.sha256()
+        non_target_count = 0
+        target_rows: list[dict[str, Any]] = []
+        for raw_row in con.execute("SELECT * FROM call_records ORDER BY id ASC"):
+            row = dict(raw_row)
+            serialized = json.dumps(
+                {
+                    name: _sqlite_digest_value(row.get(name))
+                    for name in columns
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if str(row.get("source_call_id") or "") == source_call_id:
+                target_rows.append(row)
+            else:
+                non_target_digest.update(len(serialized).to_bytes(8, "big"))
+                non_target_digest.update(serialized)
+                non_target_count += 1
+        if len(target_rows) != 1:
+            raise RuntimeError("controlled_call_database_match_must_be_exactly_one")
+        target = target_rows[0]
+        audio_evidence: Mapping[str, Any] = {
+            "required": False,
+            "ready": True,
+        }
+        if require_source_audio:
+            if working_audio_dir is None:
+                raise RuntimeError("controlled_call_working_audio_dir_required")
+            raw_source_file = str(target.get("source_file") or "")
+            source_file = Path(raw_source_file)
+            if not source_file.is_absolute():
+                raise RuntimeError("controlled_call_source_audio_must_be_absolute")
+            root = working_audio_dir.resolve(strict=True)
+            inspected = inspect_stable_regular_file(
+                source_file,
+                label="controlled_call_source_audio",
+                require_owner=True,
+            )
+            resolved_source = inspected["resolved_path"]
+            assert isinstance(resolved_source, Path)
+            try:
+                resolved_source.relative_to(root)
+            except ValueError:
+                raise RuntimeError(
+                    "controlled_call_source_audio_outside_working_root"
+                ) from None
+            audio_evidence = {
+                "required": True,
+                "ready": True,
+                "size_bytes": inspected["size_bytes"],
+                "sha256": inspected["sha256"],
+            }
+        target_serialized = json.dumps(
+            {
+                name: _sqlite_digest_value(target.get(name))
+                for name in columns
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        transcript = str(target.get("transcript_text") or "").encode("utf-8")
+        analysis = str(target.get("analysis_json") or "").encode("utf-8")
+        variants = str(target.get("transcript_variants_json") or "").encode(
+            "utf-8"
+        )
+        return {
+            "source_call_id": source_call_id,
+            "target_row_sha256": hashlib.sha256(target_serialized).hexdigest(),
+            "target": {
+                "record_id": positive_int(target.get("id")),
+                "transcription_status": target.get("transcription_status"),
+                "resolve_status": target.get("resolve_status"),
+                "analysis_status": target.get("analysis_status"),
+                "dead_letter_present": bool(
+                    str(target.get("dead_letter_stage") or "").strip()
+                ),
+                "lease_present": any(
+                    target.get(name)
+                    for name in (
+                        "pipeline_stage",
+                        "pipeline_worker_id",
+                        "pipeline_claimed_at",
+                        "analysis_worker_id",
+                        "analysis_claimed_at",
+                    )
+                ),
+                "last_error_present": bool(
+                    str(target.get("last_error") or "").strip()
+                ),
+                "transcribe_attempts": positive_int(
+                    target.get("transcribe_attempts")
+                ),
+                "resolve_attempts": positive_int(target.get("resolve_attempts")),
+                "analyze_attempts": positive_int(target.get("analyze_attempts")),
+                "transcript_sha256": hashlib.sha256(transcript).hexdigest(),
+                "transcript_variants_sha256": hashlib.sha256(variants).hexdigest(),
+                "analysis_sha256": hashlib.sha256(analysis).hexdigest(),
+                "ready_for_human_review": ready_row_is_complete(target),
+                "source_audio": audio_evidence,
+            },
+            "non_target_row_count": non_target_count,
+            "non_target_rows_sha256": non_target_digest.hexdigest(),
+            "quick_check": str(con.execute("PRAGMA quick_check").fetchone()[0]),
+        }
+
+
+def controlled_call_bound_snapshot(
+    config: CallsTwoProcessesConfig,
+    scope: ControlledCallScope,
+) -> Mapping[str, Any]:
+    snapshot = controlled_call_database_snapshot(
+        config.working_db,
+        scope.source_call_id,
+        working_audio_dir=config.working_audio_dir,
+        require_source_audio=True,
+    )
+    target = snapshot.get("target")
+    audio = target.get("source_audio") if isinstance(target, Mapping) else None
+    if not (
+        isinstance(target, Mapping)
+        and isinstance(audio, Mapping)
+        and target.get("record_id") == scope.target_record_id
+        and audio.get("sha256") == scope.source_audio_sha256
+        and audio.get("size_bytes") == scope.source_audio_size_bytes
+    ):
+        raise RuntimeError("controlled_one_allowlist_target_binding_mismatch")
+    return snapshot
+
+
+@contextmanager
+def controlled_audio_snapshot_environment(
+    config: CallsTwoProcessesConfig,
+    scope: ControlledCallScope,
+    *,
+    run_id: str,
+) -> Iterator[
+    tuple[Mapping[str, str], Mapping[str, Any], dict[str, Any]]
+]:
+    """Create one private, verified audio input shared by both ASR stages."""
+    with closing(
+        sqlite3.connect(
+            f"file:{config.working_db}?mode=ro",
+            uri=True,
+            timeout=30,
+        )
+    ) as con:
+        rows = con.execute(
+            "SELECT id, source_file FROM call_records "
+            "WHERE source_call_id=? ORDER BY id ASC",
+            (scope.source_call_id,),
+        ).fetchall()
+    if (
+        len(rows) != 1
+        or positive_int(rows[0][0]) != scope.target_record_id
+    ):
+        raise RuntimeError("controlled_call_database_match_must_be_exactly_one")
+    source = Path(str(rows[0][1] or ""))
+    if not source.is_absolute():
+        raise RuntimeError("controlled_call_source_audio_must_be_absolute")
+
+    snapshots_root = config.pipeline_root / "state" / "controlled_runs"
+    snapshots_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    snapshots_root.chmod(0o700)
+    validate_owner_only_directory(
+        snapshots_root,
+        label="controlled_audio_snapshots_root",
+        owner_only_mode=0o700,
+    )
+    if any(snapshots_root.iterdir()):
+        raise RuntimeError(
+            "controlled_call_audio_snapshot_stale_artifacts_present"
+        )
+    safe_run_id = re.sub(r"[^A-Za-z0-9_.-]", "_", run_id)
+    run_root = snapshots_root / f"{safe_run_id}_{uuid.uuid4().hex}"
+    run_root.mkdir(mode=0o700)
+    validate_owner_only_directory(
+        run_root,
+        label="controlled_audio_snapshot_run_directory",
+        owner_only_mode=0o700,
+    )
+    suffix = source.suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,12}", source.suffix) else ".audio"
+    snapshot_path = run_root / f"input{suffix}"
+    cleanup: dict[str, Any] = {
+        "ok": False,
+        "snapshot_integrity_ok": False,
+        "snapshot_removed": False,
+        "run_directory_removed": False,
+        "errors": [],
+    }
+    try:
+        required_free = (
+            int(config.min_free_gib * 1024**3)
+            + scope.source_audio_size_bytes
+        )
+        if shutil.disk_usage(run_root).free < required_free:
+            raise RuntimeError(
+                "controlled_call_audio_snapshot_insufficient_disk_space"
+            )
+        evidence = copy_stable_regular_file_owner_only(
+            source,
+            snapshot_path,
+            label="controlled_call_audio_snapshot",
+            expected_sha256=scope.source_audio_sha256,
+            expected_size_bytes=scope.source_audio_size_bytes,
+        )
+        yield (
+            {
+                "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_PATH": str(snapshot_path),
+                "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SHA256": scope.source_audio_sha256,
+                "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SIZE_BYTES": str(
+                    scope.source_audio_size_bytes
+                ),
+            },
+            {
+                "sha256": evidence.get("sha256"),
+                "size_bytes": evidence.get("size_bytes"),
+                "private_copy": True,
+                "shared_by_asr_stages": True,
+            },
+            cleanup,
+        )
+    finally:
+        errors: list[str] = []
+        integrity_ok = False
+        try:
+            if os.path.lexists(snapshot_path):
+                try:
+                    final_evidence = inspect_stable_regular_file(
+                        snapshot_path,
+                        label="controlled_call_audio_snapshot",
+                        require_owner=True,
+                        require_single_link=True,
+                        owner_only_mode=0o600,
+                    )
+                    integrity_ok = bool(
+                        final_evidence.get("sha256")
+                        == scope.source_audio_sha256
+                        and final_evidence.get("size_bytes")
+                        == scope.source_audio_size_bytes
+                    )
+                    if not integrity_ok:
+                        errors.append(
+                            "controlled_call_audio_snapshot_changed_during_run"
+                        )
+                except (RuntimeError, OSError):
+                    errors.append(
+                        "controlled_call_audio_snapshot_integrity_unproven"
+                    )
+            else:
+                errors.append("controlled_call_audio_snapshot_missing_after_run")
+        finally:
+            try:
+                snapshot_path.unlink(missing_ok=True)
+            except OSError:
+                errors.append("controlled_call_audio_snapshot_unlink_failed")
+            snapshot_removed = not os.path.lexists(snapshot_path)
+            if not snapshot_removed and (
+                "controlled_call_audio_snapshot_unlink_failed" not in errors
+            ):
+                errors.append("controlled_call_audio_snapshot_unlink_failed")
+            try:
+                run_root.rmdir()
+            except OSError:
+                errors.append(
+                    "controlled_call_audio_snapshot_cleanup_failed"
+                )
+            run_directory_removed = not os.path.lexists(run_root)
+            cleanup.update(
+                {
+                    "ok": bool(
+                        integrity_ok
+                        and snapshot_removed
+                        and run_directory_removed
+                        and not errors
+                    ),
+                    "snapshot_integrity_ok": integrity_ok,
+                    "snapshot_removed": snapshot_removed,
+                    "run_directory_removed": run_directory_removed,
+                    "errors": errors,
+                }
+            )
+
+
+def _write_controlled_one_report(
+    config: CallsTwoProcessesConfig,
+    run_id: str,
+    report: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    config.reports_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config.reports_dir.chmod(0o700)
+    path = config.reports_dir / f"{run_id}_controlled_one.json"
+    write_json(path, report)
+    return {**dict(report), "report_path": str(path)}
+
+
+def run_controlled_one(
+    config: CallsTwoProcessesConfig,
+    *,
+    command_runner: CommandRunner = None,
+) -> Mapping[str, Any]:
+    started = datetime.now(timezone.utc)
+    run_id = new_calls_run_id(started)
+    runner = command_runner or run_command
+    config_valid = False
+    try:
+        config.validate()
+        config_valid = True
+        if config.processing_scope != "controlled_1":
+            raise RuntimeError("controlled_one_requires_controlled_1_scope")
+        with process_lease(
+            config.pipeline_lock,
+            stale_seconds=config.stale_lock_seconds,
+        ) as lock_info:
+            scope_before = controlled_call_scope_for_config(config)
+            assert scope_before is not None
+            authority = controlled_read_only_cutover_authority_report(config)
+            if authority.get("ok") is not True:
+                raise RuntimeError("controlled_one_cutover_authority_failed")
+            before = controlled_call_bound_snapshot(config, scope_before)
+            if before.get("quick_check") != "ok":
+                raise RuntimeError("controlled_one_database_quick_check_failed")
+            before_target = before.get("target")
+            disk = disk_preflight(config)
+            environment = environment_preflight(
+                config,
+                run_commands=runner is run_command,
+                require_mango_credentials=False,
+            )
+            if disk.get("ok") is not True:
+                raise RuntimeError("controlled_one_insufficient_disk_space")
+            if environment.get("ok") is not True:
+                raise RuntimeError("controlled_one_environment_preflight_failed")
+            with controlled_audio_snapshot_environment(
+                config,
+                scope_before,
+                run_id=run_id,
+            ) as (
+                audio_snapshot_env,
+                audio_snapshot,
+                audio_snapshot_cleanup,
+            ):
+                base_env = {
+                    **worker_environment(config),
+                    **audio_snapshot_env,
+                }
+                stage_reports = run_sequential_pipeline_workers(
+                    config,
+                    base_env,
+                    runner,
+                    include_llm=True,
+                    run_id=run_id,
+                    cycle_deadline=(
+                        time.monotonic() + config.heavy_stage_timeout_seconds
+                    ),
+                )
+            scope_after = controlled_call_scope_for_config(config)
+            if scope_after != scope_before:
+                raise RuntimeError("controlled_call_scope_changed_during_run")
+            after = controlled_call_bound_snapshot(config, scope_before)
+            if after.get("quick_check") != "ok":
+                raise RuntimeError("controlled_one_database_quick_check_failed")
+            non_target_unchanged = bool(
+                before.get("non_target_row_count")
+                == after.get("non_target_row_count")
+                and before.get("non_target_rows_sha256")
+                == after.get("non_target_rows_sha256")
+            )
+            if not non_target_unchanged:
+                raise RuntimeError("controlled_one_non_target_rows_changed")
+            after_target = after.get("target")
+            source_audio_unchanged = bool(
+                isinstance(before_target, Mapping)
+                and isinstance(after_target, Mapping)
+                and before_target.get("source_audio")
+                == after_target.get("source_audio")
+            )
+            if not source_audio_unchanged:
+                raise RuntimeError("controlled_one_source_audio_changed")
+            compacted = compact_command_reports(stage_reports)
+            failed = [
+                item for item in compacted if int(item.get("rc") or 0) != 0
+            ]
+            target = after_target
+            machine_ready = bool(
+                isinstance(target, Mapping)
+                and target.get("ready_for_human_review") is True
+            )
+            before_ready = bool(
+                isinstance(before_target, Mapping)
+                and before_target.get("ready_for_human_review") is True
+            )
+            processed_by_stage = {
+                str(item.get("command") or ""): int(
+                    (item.get("metrics") or {}).get("processed") or 0
+                )
+                for item in compacted
+                if isinstance(item.get("metrics"), Mapping)
+            }
+            runtime_by_stage = {
+                str(item.get("command") or ""): (
+                    (item.get("metrics") or {}).get("runtime_receipt") or {}
+                )
+                for item in compacted
+                if isinstance(item.get("metrics"), Mapping)
+                and isinstance(
+                    (item.get("metrics") or {}).get("runtime_receipt"),
+                    Mapping,
+                )
+            }
+            processed_total = sum(processed_by_stage.values())
+            target_row_unchanged = bool(
+                before.get("target_row_sha256")
+                == after.get("target_row_sha256")
+            )
+            if processed_total == 0 and not target_row_unchanged:
+                raise RuntimeError(
+                    "controlled_one_zero_work_target_row_changed"
+                )
+            expected_stage_commands = {
+                f"worker:{stage}" for stage in SEQUENTIAL_PIPELINE_STAGES
+            }
+            transcribe_receipt = runtime_by_stage.get("worker:transcribe") or {}
+            backfill_receipt = runtime_by_stage.get(
+                "worker:backfill-second-asr"
+            ) or {}
+            transcribe_providers = transcribe_receipt.get("provider_invocations")
+            backfill_providers = backfill_receipt.get("provider_invocations")
+            fresh_asr_sequence_proven = bool(
+                isinstance(transcribe_providers, Mapping)
+                and isinstance(backfill_providers, Mapping)
+                and positive_int(transcribe_providers.get("mlx")) > 0
+                and positive_int(backfill_providers.get("gigaam")) > 0
+                and positive_int(
+                    transcribe_receipt.get("mlx_cache_release_attempts")
+                )
+                > 0
+                and positive_int(
+                    transcribe_receipt.get("mlx_cache_release_successes")
+                )
+                == positive_int(
+                    transcribe_receipt.get("mlx_cache_release_attempts")
+                )
+            )
+            pilot_transition_proven = bool(
+                not before_ready
+                and machine_ready
+                and not failed
+                and source_audio_unchanged
+                and fresh_asr_sequence_proven
+                and set(processed_by_stage) == expected_stage_commands
+                and processed_by_stage["worker:transcribe"] == 1
+                and processed_by_stage["worker:backfill-second-asr"] == 1
+                and processed_by_stage["worker:resolve"] == 1
+                and processed_by_stage["worker:analyze"] == 1
+                and all(
+                    int((item.get("metrics") or {}).get("failed") or 0) == 0
+                    and int((item.get("metrics") or {}).get("success") or 0)
+                    == int((item.get("metrics") or {}).get("processed") or 0)
+                    for item in compacted
+                    if isinstance(item.get("metrics"), Mapping)
+                )
+            )
+            execution_class = (
+                "transitioned_to_ready"
+                if (
+                    not before_ready
+                    and machine_ready
+                    and processed_total > 0
+                    and not failed
+                )
+                else "idempotent_noop"
+                if (
+                    before_ready
+                    and machine_ready
+                    and processed_total == 0
+                    and target_row_unchanged
+                )
+                else "partial"
+            )
+            cleanup_ok = audio_snapshot_cleanup.get("ok") is True
+            pilot_transition_proven = bool(
+                pilot_transition_proven and cleanup_ok
+            )
+            status = (
+                "failed"
+                if failed or not cleanup_ok
+                else "ok"
+                if machine_ready
+                else "partial"
+            )
+            stop_reason = (
+                "worker_command_failed"
+                if failed
+                else "controlled_call_audio_snapshot_cleanup_failed"
+                if not cleanup_ok
+                else ""
+                if machine_ready
+                else "target_not_ready_for_human_review"
+            )
+            report = {
+                "schema_version": "mango_calls_controlled_one_report_v1",
+                "run_id": run_id,
+                "process": "controlled_one",
+                "status": status,
+                "stop_reason": stop_reason,
+                "processing_scope": config.processing_scope,
+                "source_call_id": scope_before.source_call_id,
+                "allowlist_sha256": scope_before.allowlist_sha256,
+                "code_sha": scope_before.code_sha,
+                "tenant_id": scope_before.tenant_id,
+                "host_id": scope_before.host_id,
+                "stage_order": list(SEQUENTIAL_PIPELINE_STAGES),
+                "stages": compacted,
+                "before": before,
+                "after": after,
+                "non_target_rows_unchanged": non_target_unchanged,
+                "source_audio_unchanged": source_audio_unchanged,
+                "asr_input_snapshot": audio_snapshot,
+                "asr_input_snapshot_cleanup": audio_snapshot_cleanup,
+                "target_row_unchanged": target_row_unchanged,
+                "machine_result_ready_for_human_review": machine_ready,
+                "execution_class": execution_class,
+                "fresh_asr_sequence_proven": fresh_asr_sequence_proven,
+                "pilot_transition_proven": pilot_transition_proven,
+                "controlled_1_human_pass": False,
+                "business_pass": False,
+                "runtime_pass": False,
+                "lock": lock_info,
+                "safety": {
+                    "captures_from_mango": False,
+                    "runs_asr": any(
+                        positive_int(count) > 0
+                        for receipt in runtime_by_stage.values()
+                        for providers in [receipt.get("provider_invocations")]
+                        if isinstance(providers, Mapping)
+                        for count in providers.values()
+                    ),
+                    "runs_resolve_analyze": any(
+                        str(item.get("command") or "")
+                        in {"worker:resolve", "worker:analyze"}
+                        and int((item.get("metrics") or {}).get("processed") or 0)
+                        > 0
+                        for item in compacted
+                        if isinstance(item.get("metrics"), Mapping)
+                    ),
+                    "writes_timeline_staging": False,
+                    "writes_external_systems": False,
+                    "writes_amo": False,
+                    "publishes_google": False,
+                    "publishes_yandex_disk": False,
+                },
+            }
+            return _write_controlled_one_report(config, run_id, report)
+    except LockBusy as exc:
+        report = {
+            "schema_version": "mango_calls_controlled_one_report_v1",
+            "run_id": run_id,
+            "process": "controlled_one",
+            "status": "locked",
+            "stop_reason": "pipeline_locked",
+            "execution_class": "failed",
+            "machine_result_ready_for_human_review": False,
+            "fresh_asr_sequence_proven": False,
+            "pilot_transition_proven": False,
+            "controlled_1_human_pass": False,
+            "business_pass": False,
+            "runtime_pass": False,
+            "lock": exc.metadata,
+        }
+    except Exception as exc:  # noqa: BLE001 - fail closed before the next stage.
+        report = {
+            "schema_version": "mango_calls_controlled_one_report_v1",
+            "run_id": run_id,
+            "process": "controlled_one",
+            "status": "failed",
+            "stop_reason": f"controlled_one_exception:{type(exc).__name__}",
+            "execution_class": "failed",
+            "machine_result_ready_for_human_review": False,
+            "fresh_asr_sequence_proven": False,
+            "pilot_transition_proven": False,
+            "diagnostic": safe_exception_diagnostic(exc),
+            "controlled_1_human_pass": False,
+            "business_pass": False,
+            "runtime_pass": False,
+            "safety": {
+                "writes_timeline_staging": False,
+                "writes_external_systems": False,
+                "writes_amo": False,
+                "publishes_google": False,
+                "publishes_yandex_disk": False,
+            },
+        }
+    if not config_valid:
+        return report
+    try:
+        return _write_controlled_one_report(config, run_id, report)
+    except Exception:
+        return report
 
 
 def _run_pipeline_locked(
@@ -1041,6 +1939,7 @@ def run_process_a(
     pipeline_lock_info: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     config.validate()
+    reject_controlled_call_broad_operation(config, "process_a")
     command_runner = command_runner or run_command
     capture_runner = capture_runner or capture_mango_window
     started = datetime.now(timezone.utc)
@@ -1694,6 +2593,7 @@ def run_process_b(
     run_id = new_calls_run_id(started)
     try:
         config.validate()
+        reject_controlled_call_broad_operation(config, "process_b")
     except Exception as exc:  # noqa: BLE001 - normalized fail-loud boundary
         return process_b_failure_report(
             run_id,
@@ -1776,6 +2676,7 @@ def process_b_failure_report(
 
 def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mapping[str, Any]:
     config.validate()
+    reject_controlled_call_broad_operation(config, "cycle")
     try:
         with process_lease(
             config.pipeline_lock, stale_seconds=config.stale_lock_seconds
@@ -2995,6 +3896,7 @@ def prepare_ingest_inputs(
     manifest_end_offset: Optional[int] = None,
     expected_manifest_sha256: Optional[str] = None,
 ) -> Mapping[str, Any]:
+    reject_controlled_call_broad_operation(config, "prepare_ingest_inputs")
     config.working_audio_dir.mkdir(parents=True, exist_ok=True)
     legacy_topology = normalize_recoverable_legacy_call_states(
         config.working_db
@@ -3858,6 +4760,7 @@ def temporary_codex_runtime(
             "CODEX_HOME": str(codex_home),
             "MANGO_CODEX_PROCESS_HOME": str(process_home),
             "MANGO_CODEX_PROCESS_TMPDIR": str(process_tmp),
+            "TMPDIR": str(process_tmp),
         }
 
 
@@ -4296,6 +5199,52 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         "RESOLVE_RESCUE_DUAL_ENABLED": "0",
         "ANALYZE_PROVIDER": "codex_cli",
         "MANGO_STRICT_ASR_RUNTIME": "1" if config.strict_ready_provenance else "0",
+        # Always overwrite these values so a parent shell cannot accidentally
+        # leak a stale pilot scope into the ordinary service or vice versa.
+        "MANGO_CALLS_PROCESSING_SCOPE": config.processing_scope,
+        "MANGO_CALLS_CONTROLLED_ALLOWLIST_PATH": (
+            str(config.controlled_call_allowlist_path)
+            if config.controlled_call_allowlist_path
+            else ""
+        ),
+        "MANGO_CALLS_CONTROLLED_ALLOWLIST_SHA256": (
+            config.controlled_call_allowlist_sha256 or ""
+        ),
+        "MANGO_CALLS_CONTROLLED_TENANT_ID": (
+            config.tenant_id if config.processing_scope == "controlled_1" else ""
+        ),
+        "MANGO_CALLS_CONTROLLED_CODE_SHA": (
+            config.expected_code_sha or ""
+            if config.processing_scope == "controlled_1"
+            else ""
+        ),
+        "MANGO_CALLS_CONTROLLED_HOST_ID": (
+            config.expected_active_host_id or ""
+            if config.processing_scope == "controlled_1"
+            else ""
+        ),
+        "MANGO_CALLS_CONTROLLED_HOST_ID_PATH": (
+            str(config.host_id_file)
+            if config.processing_scope == "controlled_1"
+            else ""
+        ),
+        "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_PATH": "",
+        "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_SHA256": "",
+        "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_PATH": "",
+        "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SHA256": "",
+        "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SIZE_BYTES": "",
+        **(
+            {
+                "LLM_CACHE_ENABLED": "0",
+                "LLM_CACHE_DIR": str(
+                    config.pipeline_root
+                    / "state"
+                    / "controlled_llm_cache_disabled"
+                ),
+            }
+            if config.processing_scope == "controlled_1"
+            else {}
+        ),
     }
 
 
@@ -4472,6 +5421,42 @@ def pipeline_stages(
     return tuple(stage for stage in stages if stage not in {"resolve", "analyze"})
 
 
+def controlled_stage_report(
+    config: CallsTwoProcessesConfig,
+    report: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Turn a zero-exit worker with failed/incomplete metrics into a STOP."""
+    if config.processing_scope != "controlled_1":
+        return report
+    metrics = report.get("metrics")
+    worker_rc = report.get("rc")
+    valid = bool(
+        isinstance(worker_rc, int)
+        and not isinstance(worker_rc, bool)
+        and worker_rc == 0
+        and isinstance(metrics, Mapping)
+        and all(
+            isinstance(metrics.get(name), int)
+            and not isinstance(metrics.get(name), bool)
+            and int(metrics[name]) >= 0
+            for name in ("processed", "success", "failed")
+        )
+        and int(metrics["failed"]) == 0
+        and int(metrics["success"]) == int(metrics["processed"])
+        and int(metrics["processed"]) <= 1
+        and int(metrics["success"]) <= 1
+    )
+    if valid:
+        return {**dict(report), "controlled_stage_contract_ok": True}
+    return {
+        **dict(report),
+        "worker_rc": report.get("rc"),
+        "rc": 65,
+        "controlled_stage_contract_ok": False,
+        "orchestrator_stop_reason": "controlled_stage_metrics_failed",
+    }
+
+
 def run_sequential_pipeline_workers(
     config: CallsTwoProcessesConfig,
     base_env: Mapping[str, str],
@@ -4485,24 +5470,35 @@ def run_sequential_pipeline_workers(
     if runner is not run_command:
         reports: list[Mapping[str, Any]] = []
         for stage in stages:
-            with temporary_codex_runtime(
+            controlled_call_scope_for_config(config)
+            with controlled_worker_authority_environment(
                 config,
-                label=stage.replace("-", "_"),
-            ) as codex_runtime:
-                reports.append(
-                    runner(
-                        worker_command(config, stage),
-                        {
-                            **stage_worker_environment_for(
-                                config,
-                                base_env,
-                                stage,
-                            ),
-                            **codex_runtime,
-                        },
-                        config.working_dir,
+                stage=stage,
+                run_id=run_id or new_calls_run_id(datetime.now(timezone.utc)),
+            ) as authority_env:
+                with temporary_codex_runtime(
+                    config,
+                    label=stage.replace("-", "_"),
+                ) as codex_runtime:
+                    stage_report = controlled_stage_report(
+                        config,
+                        runner(
+                            worker_command(config, stage),
+                            {
+                                **stage_worker_environment_for(
+                                    config,
+                                    base_env,
+                                    stage,
+                                ),
+                                **authority_env,
+                                **codex_runtime,
+                            },
+                            config.working_dir,
+                        ),
                     )
-                )
+                    reports.append(stage_report)
+                    if int(stage_report.get("rc") or 0) != 0:
+                        break
         return reports
     logs_dir = config.working_dir / "logs"
     logs_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -4515,6 +5511,7 @@ def run_sequential_pipeline_workers(
         time.monotonic() + config.heavy_stage_timeout_seconds
     )
     for stage in stages:
+        controlled_call_scope_for_config(config)
         label = stage.replace("-", "_")
         log_path = logs_dir / f"stage_{label}_{log_run_id}.log"
         started_at = time.monotonic()
@@ -4545,24 +5542,30 @@ def run_sequential_pipeline_workers(
         heartbeat_path = config.process_a_heartbeat_path
         proc: subprocess.Popen[str] | None = None
         timed_out = False
+        authority_scope = controlled_worker_authority_environment(
+            config,
+            stage=stage,
+            run_id=log_run_id,
+        )
+        authority_env = authority_scope.__enter__()
         codex_runtime_scope = temporary_codex_runtime(
             config,
             label=label,
         )
-        codex_runtime = codex_runtime_scope.__enter__()
+        codex_runtime: Mapping[str, str] = {}
+        codex_runtime_entered = False
         try:
+            codex_runtime = codex_runtime_scope.__enter__()
+            codex_runtime_entered = True
             worker_env = {
                 **stage_worker_environment_for(config, base_env, stage),
+                **authority_env,
                 **codex_runtime,
             }
             with log_path.open("x", encoding="utf-8") as log_handle:
                 log_path.chmod(0o600)
                 command = worker_command(config, stage)
-                timed_command = (
-                    ["/usr/bin/time", "-l", *command]
-                    if Path("/usr/bin/time").is_file()
-                    else command
-                )
+                timed_command = stage_subprocess_command(config, command)
                 proc = subprocess.Popen(
                     timed_command,
                     cwd=config.working_dir,
@@ -4602,10 +5605,16 @@ def run_sequential_pipeline_workers(
                 try:
                     heartbeat_path.unlink(missing_ok=True)
                 finally:
-                    codex_runtime_scope.__exit__(None, None, None)
+                    try:
+                        if codex_runtime_entered:
+                            codex_runtime_scope.__exit__(None, None, None)
+                    finally:
+                        authority_scope.__exit__(None, None, None)
         after_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         stage_metrics = parse_macos_time_metrics(log_path)
-        reports.append(
+        worker_metrics = parse_worker_stage_metrics(log_path, stage)
+        stage_report = controlled_stage_report(
+            config,
             {
                 "rc": rc,
                 "command": f"worker:{stage}",
@@ -4619,9 +5628,11 @@ def run_sequential_pipeline_workers(
                     max(0, int(after_usage.ru_nswap - before_usage.ru_nswap)),
                 ),
                 "timed_out": rc == 124,
-            }
+                "metrics": worker_metrics,
+            },
         )
-        if rc != 0:
+        reports.append(stage_report)
+        if int(stage_report.get("rc") or 0) != 0:
             break
     return reports
 
@@ -4695,6 +5706,109 @@ def parse_macos_time_metrics(path: Path) -> Mapping[str, int]:
     return result
 
 
+def parse_worker_stage_metrics(path: Path, stage: str) -> Mapping[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {}
+    decoder = json.JSONDecoder()
+    objects: list[Mapping[str, Any]] = []
+    cursor = 0
+    while cursor < len(raw):
+        start = raw.find("{", cursor)
+        if start < 0:
+            break
+        try:
+            value, end = decoder.raw_decode(raw, start)
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        if isinstance(value, Mapping):
+            objects.append(value)
+        cursor = end
+    for payload in reversed(objects):
+        totals = payload.get("totals")
+        if not isinstance(totals, Mapping):
+            continue
+        stage_totals = totals.get(stage)
+        if not isinstance(stage_totals, Mapping):
+            continue
+        strict_totals: dict[str, int] = {}
+        for name in ("processed", "success", "failed"):
+            value = stage_totals.get(name)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                return {}
+            strict_totals[name] = value
+        strict_run_counts: dict[str, int] = {}
+        for name in ("cycles", "idle_cycles"):
+            value = payload.get(name)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+                or (name == "cycles" and value < 1)
+            ):
+                return {}
+            strict_run_counts[name] = value
+        if strict_run_counts["idle_cycles"] > strict_run_counts["cycles"]:
+            return {}
+        receipts = payload.get("runtime_receipts")
+        if not isinstance(receipts, Mapping):
+            return {}
+        stage_receipt = receipts.get(stage)
+        if not isinstance(stage_receipt, Mapping):
+            return {}
+        expected_receipt_fields = {
+            "provider_invocations",
+            "mlx_cache_release_attempts",
+            "mlx_cache_release_successes",
+        }
+        if set(stage_receipt) != expected_receipt_fields:
+            return {}
+        providers = stage_receipt.get("provider_invocations")
+        if not isinstance(providers, Mapping):
+            return {}
+        strict_providers: dict[str, int] = {}
+        for provider, count in providers.items():
+            if (
+                not isinstance(provider, str)
+                or not provider
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+            ):
+                return {}
+            strict_providers[provider] = count
+        strict_receipt_counts: dict[str, int] = {}
+        for name in (
+            "mlx_cache_release_attempts",
+            "mlx_cache_release_successes",
+        ):
+            value = stage_receipt.get(name)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                return {}
+            strict_receipt_counts[name] = value
+        runtime_receipt: Mapping[str, Any] = {
+            "provider_invocations": strict_providers,
+            **strict_receipt_counts,
+        }
+        return {
+            **strict_totals,
+            **strict_run_counts,
+            "stop_reason": optional_text(payload.get("stop_reason")),
+            "runtime_receipt": runtime_receipt,
+        }
+    return {}
+
+
 def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
     return cli_command(
         config,
@@ -4708,6 +5822,18 @@ def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
         "--max-idle-cycles",
         str(config.max_idle_cycles),
     )
+
+
+def stage_subprocess_command(
+    config: CallsTwoProcessesConfig,
+    command: Sequence[str],
+) -> list[str]:
+    """Keep the controlled worker directly parented by its orchestrator."""
+    if config.processing_scope == "controlled_1":
+        return list(command)
+    if Path("/usr/bin/time").is_file():
+        return ["/usr/bin/time", "-l", *command]
+    return list(command)
 
 
 def cli_command(config: CallsTwoProcessesConfig, *args: str) -> list[str]:
@@ -5980,7 +7106,13 @@ def assert_no_pdn(payload: Mapping[str, Any]) -> None:
 
 
 def safe_exception_diagnostic(exc: Exception) -> Mapping[str, str]:
-    return {"type": type(exc).__name__}
+    diagnostic = {"type": type(exc).__name__}
+    code = str(exc).strip()
+    if code.startswith("controlled_") and re.fullmatch(
+        r"[a-z0-9_.:-]{1,160}", code
+    ):
+        diagnostic["code"] = code
+    return diagnostic
 
 
 def compact_import_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -6361,6 +7493,12 @@ def compact_command_reports(reports: Sequence[Mapping[str, Any]]) -> list[Mappin
             "peak_rss_raw": item.get("peak_rss_raw"),
             "swap_operations": item.get("swap_operations"),
             "timed_out": item.get("timed_out"),
+            "controlled_stage_contract_ok": item.get(
+                "controlled_stage_contract_ok"
+            ),
+            "orchestrator_stop_reason": item.get(
+                "orchestrator_stop_reason"
+            ),
         }
         if isinstance(item.get("metrics"), Mapping):
             row["metrics"] = dict(item["metrics"])

@@ -548,6 +548,171 @@ def test_first_lineage_requires_fresh_old_host_proof_then_becomes_stable(
     assert steady["source_cursor_lineage_ok"] is True
     assert fresh_required == [False, True, False, True, False]
 
+    repeated = calls_runtime.cutover_authority_report(
+        config, initialize_lineage=True
+    )
+    assert repeated["ok"] is True
+    assert repeated["source_cursor_lineage_ok"] is True
+    assert fresh_required == [False, True, False, True, False, False]
+
+
+def test_lineage_initialization_rejects_transferred_cursor_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_sha = "a" * 40
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha=expected_sha,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+    config.host_id_file.parent.mkdir(parents=True, exist_ok=True)
+    config.host_id_file.write_text("m1-host\n", encoding="utf-8")
+    config.host_id_file.chmod(0o600)
+    config.cutover_manifest_file.write_text("{}", encoding="utf-8")
+    config.cutover_manifest_file.chmod(0o600)
+    config.cursor_path.write_bytes(b"wrong-transferred-cursor")
+
+    monkeypatch.setattr(
+        calls_runtime,
+        "verify_cutover_authority",
+        lambda **_kwargs: {
+            "ok": True,
+            "errors": [],
+            "active_host_id": "m1-host",
+            "source_cursor_sha256": hashlib.sha256(
+                b"expected-transferred-cursor"
+            ).hexdigest(),
+        },
+    )
+
+    report = calls_runtime.cutover_authority_report(
+        config, initialize_lineage=True
+    )
+
+    assert report["ok"] is False
+    assert report["source_cursor_lineage_ok"] is False
+    assert "source_cursor_lineage_unproven" in report["errors"]
+    assert not config.cutover_cursor_lineage_path.exists()
+
+
+def test_controlled_read_only_lineage_does_not_unlock_service_cutover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_sha = "a" * 40
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha=expected_sha,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+    config.host_id_file.parent.mkdir(parents=True, exist_ok=True)
+    config.host_id_file.write_text("m1-host\n", encoding="utf-8")
+    config.host_id_file.chmod(0o600)
+    config.cutover_manifest_file.write_text("{}", encoding="utf-8")
+    config.cutover_manifest_file.chmod(0o600)
+    config.cursor_path.write_bytes(b"transferred-cursor")
+    config.cursor_path.chmod(0o600)
+    cursor_sha = sha256_file(config.cursor_path)
+    fresh_required: list[bool] = []
+
+    def verify(**kwargs: object) -> dict[str, object]:
+        fresh_required.append(
+            bool(kwargs["require_fresh_previous_host_proof"])
+        )
+        return {
+            "ok": True,
+            "errors": [],
+            "active_host_id": "m1-host",
+            "source_cursor_sha256": cursor_sha,
+        }
+
+    monkeypatch.setattr(calls_runtime, "verify_cutover_authority", verify)
+
+    controlled = calls_runtime.controlled_read_only_cutover_authority_report(
+        config
+    )
+    service = calls_runtime.cutover_authority_report(config)
+    pipeline = run_pipeline(
+        config,
+        command_runner=lambda *_args: pytest.fail("worker must stay blocked"),
+    )
+    process_a = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=lambda *_args: pytest.fail("worker must stay blocked"),
+    )
+
+    assert controlled["ok"] is True
+    assert controlled["source_cursor_lineage_ok"] is True
+    assert controlled["controlled_cursor_binding_ok"] is True
+    assert controlled["lineage_mode"] == "controlled_read_only"
+    assert controlled["shared_service_lineage_written"] is False
+    assert service["ok"] is False
+    assert service["source_cursor_lineage_ok"] is False
+    assert pipeline["status"] == "failed"
+    assert pipeline["stop_reason"] == "cutover_authority_failed"
+    assert process_a["status"] == "failed"
+    assert process_a["stop_reason"] == "cutover_authority_failed"
+    assert fresh_required == [True, False, False, False]
+    assert not config.cutover_cursor_lineage_path.exists()
+
+    config.cursor_path.write_bytes(b"changed-cursor")
+    config.cursor_path.chmod(0o600)
+    mismatch = calls_runtime.controlled_read_only_cutover_authority_report(
+        config
+    )
+    assert mismatch["ok"] is False
+    assert "controlled_source_cursor_mismatch" in mismatch["errors"]
+    assert not config.cutover_cursor_lineage_path.exists()
+
+
+def test_controlled_read_only_lineage_rejects_manifest_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_sha = "a" * 40
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha=expected_sha,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+    config.host_id_file.parent.mkdir(parents=True, exist_ok=True)
+    config.host_id_file.write_text("m1-host\n", encoding="utf-8")
+    config.host_id_file.chmod(0o600)
+    config.cutover_manifest_file.write_text("{}", encoding="utf-8")
+    config.cutover_manifest_file.chmod(0o600)
+    config.cursor_path.write_bytes(b"transferred-cursor")
+    config.cursor_path.chmod(0o600)
+    cursor_sha = sha256_file(config.cursor_path)
+
+    def verify(**_kwargs: object) -> dict[str, object]:
+        config.cutover_manifest_file.write_text(
+            '{"changed":true}', encoding="utf-8"
+        )
+        config.cutover_manifest_file.chmod(0o600)
+        return {
+            "ok": True,
+            "errors": [],
+            "active_host_id": "m1-host",
+            "source_cursor_sha256": cursor_sha,
+        }
+
+    monkeypatch.setattr(calls_runtime, "verify_cutover_authority", verify)
+
+    report = calls_runtime.controlled_read_only_cutover_authority_report(
+        config
+    )
+
+    assert report["ok"] is False
+    assert "controlled_cutover_manifest_changed_during_check" in report[
+        "errors"
+    ]
+    assert not config.cutover_cursor_lineage_path.exists()
+
 
 def test_run_pipeline_reuses_unchanged_frozen_snapshot_without_workers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

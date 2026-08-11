@@ -21,6 +21,11 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.services.controlled_call_scope import (
+    call_artifact_directory,
+    require_unique_controlled_call,
+    write_call_artifact_bytes,
+)
 from mango_mvp.quality.non_conversation import detect_non_conversation_signals
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
@@ -321,9 +326,16 @@ class AnalyzeService:
 
     def _release_stale_claims(self, session: Session, now: datetime) -> int:
         cutoff = self._analysis_lease_cutoff(now)
+        scope = require_unique_controlled_call(session, self._settings)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {"now": now, "cutoff": cutoff}
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         result = session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET analysis_status = 'pending',
                        analysis_worker_id = NULL,
@@ -334,9 +346,10 @@ class AnalyzeService:
                         analysis_claimed_at IS NULL
                         OR analysis_claimed_at <= :cutoff
                    )
+                   {scope_sql}
                 """
             ),
-            {"now": now, "cutoff": cutoff},
+            params,
         )
         return int(result.rowcount or 0)
 
@@ -347,9 +360,21 @@ class AnalyzeService:
         max_attempts = max(1, self._settings.analyze_max_attempts)
         release_stale_pipeline_claims(session, self._settings, now)
         self._release_stale_claims(session, now)
+        scope = require_unique_controlled_call(session, self._settings)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {
+            "worker_id": worker_id,
+            "now": now,
+            "max_attempts": max_attempts,
+            "limit": int(limit),
+        }
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET analysis_status = 'in_progress',
                        analysis_worker_id = :worker_id,
@@ -367,31 +392,28 @@ class AnalyzeService:
                        AND pipeline_stage IS NULL
                        AND pipeline_worker_id IS NULL
                        AND pipeline_claimed_at IS NULL
+                       {scope_sql}
                      ORDER BY id ASC
                      LIMIT :limit
                  )
                 """
             ),
-            {
-                "worker_id": worker_id,
-                "now": now,
-                "max_attempts": max_attempts,
-                "limit": int(limit),
-            },
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE analysis_status = 'in_progress'
                        AND analysis_worker_id = :worker_id
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
@@ -1681,7 +1703,12 @@ class AnalyzeService:
         if not export_dir:
             return None
         source_path = Path(call.source_file)
-        target_dir = Path(export_dir) / source_path.parent.name
+        target_dir = call_artifact_directory(
+            self._settings,
+            export_dir=Path(export_dir),
+            source_file=source_path,
+            source_call_id=call.source_call_id,
+        )
         stem = source_path.stem
         return (
             target_dir / f"{stem}_history_summary.txt",
@@ -1693,21 +1720,28 @@ class AnalyzeService:
         if not paths:
             return
         summary_path, structured_path = paths
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-
         history_summary = self._clean_text(analysis.get("history_summary"))
         if not history_summary:
             history_summary = self._clean_text(analysis.get("history_short"))
         if not history_summary:
             history_summary = self._clean_text(analysis.get("summary"))
-        summary_path.write_text((history_summary or "") + "\n", encoding="utf-8")
+        write_call_artifact_bytes(
+            self._settings,
+            summary_path,
+            ((history_summary or "") + "\n").encode("utf-8"),
+        )
 
         structured_fields = analysis.get("structured_fields")
         if not isinstance(structured_fields, dict):
             structured_fields = self._nested_dict(analysis, "crm_blocks")
-        structured_path.write_text(
-            json.dumps(structured_fields, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        write_call_artifact_bytes(
+            self._settings,
+            structured_path,
+            json.dumps(
+                structured_fields,
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8"),
         )
 
     def _normalize_analysis(
@@ -2463,6 +2497,9 @@ class AnalyzeService:
                 continue
             if call.analysis_status != "in_progress" or call.analysis_worker_id != worker_id:
                 continue
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
             call.analyze_attempts = int(call.analyze_attempts or 0) + 1
             attempt = call.analyze_attempts
             try:

@@ -139,6 +139,18 @@ class Settings:
     sync_dry_run: bool
     legacy_amocrm_sync_enabled: bool
     follow_up_task_threshold: int
+    calls_processing_scope: str = "service"
+    controlled_call_allowlist_path: Optional[str] = None
+    controlled_call_allowlist_sha256: Optional[str] = None
+    controlled_call_tenant_id: Optional[str] = None
+    controlled_call_code_sha: Optional[str] = None
+    controlled_call_host_id: Optional[str] = None
+    controlled_call_host_id_path: Optional[str] = None
+    controlled_call_run_authority_path: Optional[str] = None
+    controlled_call_run_authority_sha256: Optional[str] = None
+    controlled_call_audio_snapshot_path: Optional[str] = None
+    controlled_call_audio_snapshot_sha256: Optional[str] = None
+    controlled_call_audio_snapshot_size_bytes: Optional[int] = None
 
 
 def _optional_int(raw: Optional[str]) -> Optional[int]:
@@ -285,4 +297,45 @@ def get_settings() -> Settings:
         sync_dry_run=_bool_env("SYNC_DRY_RUN", True),
         legacy_amocrm_sync_enabled=_bool_env("LEGACY_AMOCRM_SYNC_ENABLED", False),
         follow_up_task_threshold=_int_env("FOLLOW_UP_TASK_THRESHOLD", 70),
+        calls_processing_scope=(
+            os.getenv("MANGO_CALLS_PROCESSING_SCOPE", "service").strip().lower()
+            or "service"
+        ),
+        controlled_call_allowlist_path=(
+            os.getenv("MANGO_CALLS_CONTROLLED_ALLOWLIST_PATH", "").strip() or None
+        ),
+        controlled_call_allowlist_sha256=(
+            os.getenv("MANGO_CALLS_CONTROLLED_ALLOWLIST_SHA256", "").strip() or None
+        ),
+        controlled_call_tenant_id=(
+            os.getenv("MANGO_CALLS_CONTROLLED_TENANT_ID", "").strip() or None
+        ),
+        controlled_call_code_sha=(
+            os.getenv("MANGO_CALLS_CONTROLLED_CODE_SHA", "").strip() or None
+        ),
+        controlled_call_host_id=(
+            os.getenv("MANGO_CALLS_CONTROLLED_HOST_ID", "").strip() or None
+        ),
+        controlled_call_host_id_path=(
+            os.getenv("MANGO_CALLS_CONTROLLED_HOST_ID_PATH", "").strip() or None
+        ),
+        controlled_call_run_authority_path=(
+            os.getenv("MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_PATH", "").strip()
+            or None
+        ),
+        controlled_call_run_authority_sha256=(
+            os.getenv("MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_SHA256", "").strip()
+            or None
+        ),
+        controlled_call_audio_snapshot_path=(
+            os.getenv("MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_PATH", "").strip()
+            or None
+        ),
+        controlled_call_audio_snapshot_sha256=(
+            os.getenv("MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SHA256", "").strip()
+            or None
+        ),
+        controlled_call_audio_snapshot_size_bytes=_optional_int(
+            os.getenv("MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SIZE_BYTES")
+        ),
     )

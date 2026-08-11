@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.amocrm import AmoCRMClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.services.controlled_call_scope import load_controlled_call_scope
 
 LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE = (
     "Legacy amoCRM contact sync is disabled by default. "
@@ -198,6 +199,8 @@ class AmoCRMSyncService:
         return timedelta(seconds=base * multiplier)
 
     def run(self, session: Session, limit: int) -> Dict[str, int]:
+        if load_controlled_call_scope(self._settings) is not None:
+            raise RuntimeError("controlled_call_scope_forbids_amocrm_sync")
         ensure_legacy_amocrm_sync_enabled(self._settings)
         now = self._utc_now()
         max_attempts = max(1, self._settings.sync_max_attempts)

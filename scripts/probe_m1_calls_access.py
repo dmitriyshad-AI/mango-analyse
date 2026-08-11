@@ -41,6 +41,9 @@ from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     CallsTwoProcessesConfig,
     codex_network_available,
     command_path,
+    controlled_call_bound_snapshot,
+    controlled_call_scope_for_config,
+    controlled_read_only_cutover_authority_report,
     cutover_authority_report,
     ensure_codex_runtime_anchor,
     observe_runtime_fingerprint,
@@ -69,6 +72,14 @@ CAPACITY_CHECKS = frozenset(
         "measurement_evidence_bound_and_fresh",
     }
 )
+CONTROLLED_ONE_CHECKS = frozenset(
+    {
+        "processing_scope_is_controlled_one",
+        "controlled_one_allowlist_bound",
+        "controlled_one_target_unique_in_working_db",
+    }
+)
+SERVICE_SCOPE_CHECKS = frozenset({"processing_scope_is_service"})
 
 
 def command_output(command: Sequence[str]) -> str:
@@ -649,9 +660,13 @@ def probe(
     if parsed_config is not None:
         try:
             host_id = read_host_id(parsed_config.host_id_file)
-            authority = cutover_authority_report(
-                parsed_config,
-                initialize_lineage=False,
+            authority = (
+                controlled_read_only_cutover_authority_report(parsed_config)
+                if parsed_config.processing_scope == "controlled_1"
+                else cutover_authority_report(
+                    parsed_config,
+                    initialize_lineage=False,
+                )
             )
         except (OSError, RuntimeError):
             pass
@@ -665,6 +680,29 @@ def probe(
         and getattr(parsed_config, "expected_previous_host_id", None)
         != host_id
     )
+    controlled_scope_ok = False
+    controlled_target_unique = False
+    controlled_scope: Mapping[str, Any] = {}
+    controlled_scope_error_type = ""
+    if parsed_config is not None:
+        try:
+            loaded_scope = controlled_call_scope_for_config(parsed_config)
+            controlled_scope_ok = bool(
+                loaded_scope is not None
+                and parsed_config.processing_scope == "controlled_1"
+                and parsed_config.stage_limit == 1
+            )
+            if loaded_scope is not None:
+                controlled_scope = {
+                    "allowlist_sha256": loaded_scope.allowlist_sha256,
+                    "code_sha": loaded_scope.code_sha,
+                    "tenant_id": loaded_scope.tenant_id,
+                    "host_id": loaded_scope.host_id,
+                }
+                controlled_call_bound_snapshot(parsed_config, loaded_scope)
+                controlled_target_unique = True
+        except (AttributeError, OSError, RuntimeError, ValueError) as exc:
+            controlled_scope_error_type = type(exc).__name__
     measurements_ok = _measurement_evidence_ok(
         evidence, expected_sha=expected_sha, host_id=host_id
     )
@@ -698,17 +736,46 @@ def probe(
         "capacity_2x_and_memory_ok": capacity.get("capacity_ok") is True,
         "measurement_evidence_bound_and_fresh": measurements_ok,
         "timezone_is_europe_moscow": configured_timezone == "Europe/Moscow",
+        "processing_scope_is_service": bool(
+            parsed_config is not None
+            and parsed_config.processing_scope == "service"
+        ),
+        "processing_scope_is_controlled_one": bool(
+            parsed_config is not None
+            and parsed_config.processing_scope == "controlled_1"
+        ),
+        "controlled_one_allowlist_bound": controlled_scope_ok,
+        "controlled_one_target_unique_in_working_db": controlled_target_unique,
         "ffmpeg_present": shutil.which("ffmpeg") is not None,
         "ffprobe_present": shutil.which("ffprobe") is not None,
         **access,
     }
+    base_checks = {
+        key: value
+        for key, value in checks.items()
+        if key
+        not in CAPACITY_CHECKS | CONTROLLED_ONE_CHECKS | SERVICE_SCOPE_CHECKS
+    }
     controlled_1_checks = {
-        key: value for key, value in checks.items() if key not in CAPACITY_CHECKS
+        **base_checks,
+        **{key: checks[key] for key in sorted(CONTROLLED_ONE_CHECKS)},
     }
     capacity_checks = {key: checks[key] for key in sorted(CAPACITY_CHECKS)}
+    service_machine_checks = {
+        **base_checks,
+        **{key: checks[key] for key in sorted(SERVICE_SCOPE_CHECKS)},
+        **capacity_checks,
+    }
+    production_service_checks = {
+        **service_machine_checks,
+        # The read-only/synthetic probe cannot manufacture or approve the
+        # human evidence from a real controlled-one result.
+        "controlled_1_human_pass_verified": False,
+    }
     controlled_1_ok = all(controlled_1_checks.values())
     service_capacity_ok = all(capacity_checks.values())
-    production_service_ok = controlled_1_ok and service_capacity_ok
+    service_machine_ok = all(service_machine_checks.values())
+    production_service_ok = all(production_service_checks.values())
     asr_attempted = bool(
         offline.get("offline_whisper_synthetic_attempted")
         or offline.get("offline_gigaam_synthetic_attempted")
@@ -743,9 +810,8 @@ def probe(
             if run_codex_model_probes
             else "read_only_access_no_models_invoked"
         ),
-        # Backward-compatible alias: the historical host verdict remains the
-        # stricter service/capacity verdict.  A one-call pilot can now be
-        # assessed independently without pretending controlled-10 exists.
+        # Backward-compatible alias: production stays STOP until a separate
+        # owner-reviewed controlled-one evidence artifact can be verified.
         "host_readiness": "OK" if production_service_ok else "STOP",
         "controlled_1_readiness": {
             "status": "OK" if controlled_1_ok else "STOP",
@@ -759,10 +825,20 @@ def probe(
             "checks": capacity_checks,
             "requires_controlled_10": True,
         },
+        "service_machine_preflight": {
+            "status": "OK" if service_machine_ok else "STOP",
+            "ok": service_machine_ok,
+            "checks": service_machine_checks,
+            "does_not_authorize_launch": True,
+        },
         "production_service_readiness": {
             "status": "OK" if production_service_ok else "STOP",
             "ok": production_service_ok,
+            "checks": production_service_checks,
+            "scope": "machine_plus_human_gate",
+            "does_not_authorize_launch": True,
             "requires_controlled_1": True,
+            "controlled_1_human_pass_is_external": True,
             "requires_service_capacity": True,
         },
         "checks": checks,
@@ -775,6 +851,8 @@ def probe(
             "expected_active_host_id": expected_active_host_id,
             "cutover_authority_ok": authority.get("ok") is True,
         },
+        "controlled_one_scope": controlled_scope,
+        "controlled_one_scope_error_type": controlled_scope_error_type,
         "capacity": capacity,
         "machine": {
             "model": command_output(("sysctl", "-n", "hw.model")),

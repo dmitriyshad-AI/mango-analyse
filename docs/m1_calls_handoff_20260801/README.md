@@ -126,6 +126,71 @@ skills, plugins и MCP. Пользовательские skills нужны то�
 
 ### 4.1 Проверить готовность ровно одного звонка
 
+Для controlled-1 используется отдельная копия runtime-конфига. Обычный
+service-конфиг сохраняет `"processing_scope": "service"` и
+`"stage_limit": 20`. После переноса рабочей БД и выбора одного уже скачанного
+звонка создать owner-only allowlist без API и моделей:
+
+```bash
+set -euo pipefail
+mkdir -p "$HOME/.mango_local/mango_calls_controlled_one"
+chmod 700 "$HOME/.mango_local/mango_calls_controlled_one"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/create_m1_calls_controlled_allowlist.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --source-call-id '<EXACT_SOURCE_CALL_ID>' \
+  --out "$HOME/.mango_local/mango_calls_controlled_one/allowlist.json"
+```
+
+Скрипт откажет до записи, если SHA кода не совпадает, worktree грязный,
+фактический owner-only `host_id` другой, БД неавторитетна,
+`source_call_id` отсутствует/дублируется либо исходное аудио отсутствует, пусто,
+является символической ссылкой или лежит вне рабочего audio-каталога. Штатный
+hardlink, созданный `hardlink_or_copy`, разрешён и проверяется по inode, SHA и
+размеру; оба ASR читают отдельную приватную копию запуска.
+После проверки строки и аудио этот же скрипт read-only подтверждает lineage
+перенесённого cursor: повторно требует свежий shutdown-proof исходного Mac,
+точный SHA cursor и неизменный cutover manifest. Общий service-маркер
+`cutover_cursor_lineage.json` он не создаёт, поэтому обычные capture/Process A
+остаются STOP до отдельного разрешения cutover. Mango API, модели и обработку
+звонка скрипт не запускает. На время проверки и записи allowlist он удерживает
+локальные pipeline и capture lock; занятый lock, stale или несовпадающее
+доказательство означает STOP до создания allowlist.
+Полученный SHA записать в отдельный `config.controlled-one.json` вместе с:
+
+```json
+{
+  "processing_scope": "controlled_1",
+  "stage_limit": 1,
+  "controlled_call_allowlist_path": "<HOME>/.mango_local/mango_calls_controlled_one/allowlist.json",
+  "controlled_call_allowlist_sha256": "<ALLOWLIST_SHA256>"
+}
+```
+
+Этот конфиг запрещает capture, ingest, `run-all`, Process A/B, cycle, sync и
+publication через оркестратор; самостоятельные publication-скрипты остаются
+за своими confirmation-гейтами и в этой фазе не запускаются. Прямые тяжёлые
+CLI-команды в controlled scope запрещены. Каждый отдельный
+Whisper/GigaAM/Resolve/Analyze worker получает только свежий короткоживущий
+owner-only stage-ticket родительской команды, заново проверяет manifest, SHA,
+code/tenant/host binding, фактический owner-only `host_id`, PID и удерживаемый
+pipeline lock, точные production-провайдеры и единственную строку БД. Ticket
+защищает от случайного прямого CLI и устаревшего запуска, но не является
+криптографической защитой от произвольного процесса того же пользователя
+`dmitriy`: same-UID является локальной границей доверия. Allowlist также связан
+с ID строки, SHA и размером аудио. `stage_limit=1` сам по себе изоляцией не
+считается.
+
+Если после аварийного завершения осталась приватная копия в
+`$HOME/.mango_local/.../state/controlled_runs/`, следующий controlled-one
+завершится STOP до ASR. Не удалять её автоматически: сначала подтвердить, что
+worker не запущен, сверить owner/права и получить решение владельца на очистку.
+Если стадии уже завершились, но удалить каталог копии не удалось, команда
+сохраняет полный отчёт `before/stages/after`, помечает его `status=failed` и
+`pilot_transition_proven=false`, а остаток продолжает блокировать повтор. Так
+результат не теряется, но ошибка уборки не превращается в успешный пилот.
+
 Только когда на M1 не идёт тяжёлая сборка Customer Timeline, разрешена
 синтетическая проверка моделей без аудио и текста клиентов:
 
@@ -134,7 +199,7 @@ set -euo pipefail
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
   "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
   scripts/probe_m1_calls_access.py \
-  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.controlled-one.json" \
   --run-offline-model-probes \
   --run-codex-model-probes \
   --readiness-target controlled-1
@@ -145,6 +210,37 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 отдельного доказательства capacity. В отчёте `requested`, `attempted` и
 успешные синтетические вызовы разделены; реальные Resolve/Analyze, аудио и
 внешние записи эта команда не выполняет.
+
+`service_machine_preflight=OK` означает только готовность машины и не разрешает
+запуск службы. `production_service_readiness` и старый `host_readiness`
+остаются `STOP`, пока отдельный owner-reviewed controlled-one evidence не
+свяжет реальный результат, ручную проверку и идемпотентный повтор.
+
+После отдельного разрешения на один реальный звонок единственная допустимая
+команда тяжёлого пилота будет:
+
+```bash
+set -euo pipefail
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/run_mango_calls_pipeline.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.controlled-one.json" \
+  controlled-one
+```
+
+Сейчас эту команду не выполнять. Она не делает capture, не запускает Process B
+и не публикует ничего наружу. Отчёт сравнивает digest всех нецелевых строк до и
+после. Первый новый полный проход получает
+`execution_class=transitioned_to_ready`; уже готовая строка —
+`idempotent_noop` и не выдаётся за первый пилот. Отдельный повтор по готовому
+звонку обязан показать по четыре `processed=0`. В обоих отчётах
+`controlled_1_human_pass=false`, `business_pass=false` и `runtime_pass=false`
+до ручной сверки аудио и отдельного гейта.
+`pilot_transition_proven=true` дополнительно требует фактические runtime-
+квитанции MLX Whisper, успешной очистки MLX-кэша и GigaAM; cache reuse или
+отсутствующий финальный JSON worker не выдаются за свежий пилот. Controlled-
+артефакты пишутся в изолированный каталог по хэшу `source_call_id`, поэтому
+совпадающие имена файлов других звонков не перезаписываются.
 
 ### 5. Подготовить локальные файлы
 

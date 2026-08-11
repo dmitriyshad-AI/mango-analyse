@@ -20,6 +20,11 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.services.controlled_call_scope import (
+    call_artifact_directory,
+    read_call_artifact_text,
+    require_unique_controlled_call,
+)
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.services.transcribe import TranscribeService
@@ -126,9 +131,21 @@ class ResolveService:
         now = self._utc_now()
         max_attempts = max(1, self._settings.resolve_max_attempts)
         release_stale_pipeline_claims(session, self._settings, now)
+        scope = require_unique_controlled_call(session, self._settings)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {
+            "worker_id": worker_id,
+            "now": now,
+            "max_attempts": max_attempts,
+            "limit": int(limit),
+        }
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET resolve_status = 'in_progress',
                        pipeline_stage = 'resolve',
@@ -144,32 +161,29 @@ class ResolveService:
                        AND resolve_attempts < :max_attempts
                        AND (next_retry_at IS NULL OR next_retry_at <= :now)
                        AND pipeline_stage IS NULL
+                       {scope_sql}
                      ORDER BY id ASC
                      LIMIT :limit
                  )
                 """
             ),
-            {
-                "worker_id": worker_id,
-                "now": now,
-                "max_attempts": max_attempts,
-                "limit": int(limit),
-            },
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE resolve_status = 'in_progress'
                        AND pipeline_stage = 'resolve'
                        AND pipeline_worker_id = :worker_id
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
@@ -177,14 +191,28 @@ class ResolveService:
 
     def count_queue_state(self, session: Session) -> Dict[str, int]:
         now = self._utc_now()
-        candidate_calls = session.scalars(
+        scope = require_unique_controlled_call(session, self._settings)
+        candidate_query = (
             select(CallRecord)
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.resolve_status.in_(["pending", "failed"]))
             .where(CallRecord.resolve_attempts < max(1, self._settings.resolve_max_attempts))
             .order_by(CallRecord.id.asc())
-        ).all()
+        )
+        progress_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.resolve_status == "in_progress")
+            .where(CallRecord.pipeline_stage == "resolve")
+        )
+        if scope:
+            candidate_query = candidate_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+            progress_query = progress_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        candidate_calls = session.scalars(candidate_query).all()
         ready = 0
         blocked_waiting_secondary = 0
         for call in candidate_calls:
@@ -193,11 +221,7 @@ class ResolveService:
             elif self._is_retry_due(call.next_retry_at, now):
                 ready += 1
         in_progress = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.resolve_status == "in_progress")
-                .where(CallRecord.pipeline_stage == "resolve")
-            )
+            session.scalar(progress_query)
             or 0
         )
         return {
@@ -281,7 +305,12 @@ class ResolveService:
         if not export_dir:
             return None
         source_path = Path(call.source_file)
-        return Path(export_dir) / source_path.parent.name / f"{source_path.stem}_text.txt"
+        return call_artifact_directory(
+            self._settings,
+            export_dir=Path(export_dir),
+            source_file=source_path,
+            source_call_id=call.source_call_id,
+        ) / f"{source_path.stem}_text.txt"
 
     def _load_dialogue_lines_from_export(self, call: CallRecord) -> List[str]:
         payload = self._safe_json(call.transcript_variants_json or "")
@@ -292,7 +321,15 @@ class ResolveService:
             path = self._dialogue_export_path(call)
             if not path or not path.exists():
                 return []
-            lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+            lines = [
+                line.strip()
+                for line in read_call_artifact_text(
+                    self._settings,
+                    path,
+                    errors="ignore",
+                ).splitlines()
+                if line.strip()
+            ]
         parsed = [self._parse_timed_line(line) for line in lines]
         if any(item is None for item in parsed):
             return []
@@ -345,7 +382,11 @@ class ResolveService:
         elif allow_export_fallback:
             path = self._dialogue_export_path(call)
             if path and path.exists():
-                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                lines = read_call_artifact_text(
+                    self._settings,
+                    path,
+                    errors="ignore",
+                ).splitlines()
         for raw in lines:
             parsed = self._parse_timed_line(raw)
             if parsed is None:
@@ -1684,6 +1725,9 @@ class ResolveService:
         for idx, call in enumerate(calls, start=1):
             if call.resolve_status != "in_progress" or call.pipeline_stage != "resolve":
                 continue
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
             if self._waiting_for_secondary_asr(call):
                 wait_retry_sec = max(10, min(int(self._settings.worker_poll_sec or 10), 60))
                 call.resolve_status = "pending"

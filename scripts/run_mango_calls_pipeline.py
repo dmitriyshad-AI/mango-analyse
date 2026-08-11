@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     CallsTwoProcessesConfig,
     run_capture,
+    run_controlled_one,
     run_cycle,
     run_local_watchdog,
     run_pipeline,
@@ -34,6 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--until")
     sub.add_parser("pipeline", help="Drain a frozen capture snapshot through sequential stages.")
     sub.add_parser("watchdog", help="Read local heartbeats and provenance without processing calls.")
+    sub.add_parser(
+        "controlled-one",
+        help="Run only the four heavy stages for one owner-authorized source_call_id.",
+    )
     process_a = sub.add_parser("process-a", help="Capture, ASR, Resolve+Analyze, publish ready drop DB.")
     process_a.add_argument("--since")
     process_a.add_argument("--until")
@@ -57,6 +62,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             config = CallsTwoProcessesConfig.from_json(Path(args.config))
             if args.command == "capture":
                 report = run_capture(config, since=args.since, until=args.until)
+            elif args.command == "controlled-one":
+                report = run_controlled_one(config)
             elif args.command == "pipeline":
                 report = run_pipeline(config)
             elif args.command == "watchdog":

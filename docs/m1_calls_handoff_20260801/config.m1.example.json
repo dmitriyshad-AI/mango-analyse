@@ -14,6 +14,7 @@
   "api_window_hours": 12,
   "min_free_gib": 40,
   "stage_limit": 20,
+  "processing_scope": "service",
   "asr_mode": "mlx_dual",
   "poll_seconds": 10,
   "max_idle_cycles": 1,

@@ -69,6 +69,44 @@ class ParallelPipelineClaimsTest(unittest.TestCase):
 
         self.assertEqual(state, "not_needed")
 
+    def test_secondary_backfill_skips_valid_audited_dual_asr_exception(self) -> None:
+        state = TranscribeService.secondary_backfill_state_from_payload(
+            {
+                "mode": "mono_or_fallback",
+                "primary_provider": "mlx",
+                "secondary_provider": "gigaam",
+                "full": {"variant_a": "primary", "variant_b": ""},
+                "dual_asr_exception": {
+                    "approved": True,
+                    "reason": "synthetic audited exception",
+                    "approved_by": "owner",
+                    "approved_at": "2026-07-01T00:00:00+00:00",
+                },
+            },
+            secondary_provider="gigaam",
+        )
+
+        self.assertEqual(state, "not_needed")
+
+    def test_secondary_backfill_does_not_skip_unapproved_exception(self) -> None:
+        state = TranscribeService.secondary_backfill_state_from_payload(
+            {
+                "mode": "mono_or_fallback",
+                "primary_provider": "mlx",
+                "secondary_provider": "gigaam",
+                "full": {"variant_a": "primary", "variant_b": ""},
+                "dual_asr_exception": {
+                    "approved": False,
+                    "reason": "not approved",
+                    "approved_by": "owner",
+                    "approved_at": "2026-07-01T00:00:00+00:00",
+                },
+            },
+            secondary_provider="gigaam",
+        )
+
+        self.assertEqual(state, "retry")
+
     def test_transcribe_claims_are_disjoint(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_parallel_tr_claims_") as td:
             db_path = Path(td) / "claims.db"

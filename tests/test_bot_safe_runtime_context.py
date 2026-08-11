@@ -941,7 +941,7 @@ def test_bot_safe_crm_context_rejects_noncanonical_amo_identity_source(tmp_path:
     assert context["warnings"] == ["customer_not_resolved"]
 
 
-def test_bot_safe_crm_context_accepts_unique_contact_when_supplied_lead_is_not_indexed(tmp_path: Path) -> None:
+def test_bot_safe_crm_context_rejects_unique_contact_when_supplied_lead_is_not_indexed(tmp_path: Path) -> None:
     db_path, _ = _seed_bot_safe_timeline(tmp_path)
     with sqlite3.connect(db_path) as con:
         con.execute("DELETE FROM identity_links WHERE link_type='amo_lead_id'")
@@ -953,8 +953,8 @@ def test_bot_safe_crm_context_accepts_unique_contact_when_supplied_lead_is_not_i
         lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
     )
 
-    assert context["found"] is True
-    assert context["timeline_context"]["warnings"] == ["amo_lead_identity_missing_contact_used"]
+    assert context["found"] is False
+    assert context["warnings"] == ["customer_identity_incomplete"]
 
 
 def test_bot_safe_crm_context_rejects_lead_when_supplied_contact_is_not_indexed(tmp_path: Path) -> None:

@@ -1,4 +1,8 @@
-Ветка: создать `codex/m1-customer-timeline-followup-20260811` от актуального `main`
+> FAIL 2026-08-11 14:33 | ветка codex/m1-customer-timeline-followup-20260811 | codex | причина: Независимая приёмка: выполнено 38/58; code/data/semantic/business/runtime gates не закрыты, база и код разных SHA, S100 не содержит 100 фактических черновиков. В main принимается только отдельный exact-AMO fix; остаток перенесён в follow-up ТЗ.
+
+> TAKE 2026-08-11 14:25 | ветка main | codex
+
+Ветка: codex/m1-customer-timeline-followup-20260811
 Зоны: `src/mango_mvp/customer_timeline/`, связанные Timeline-вызовы в `src/mango_mvp/channels/` и `src/mango_mvp/amocrm_runtime/`, точечные `scripts/`, `tests/`, `docs/`, `tasks/`
 Тест-команда: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q`
 Семантический-аудит: да

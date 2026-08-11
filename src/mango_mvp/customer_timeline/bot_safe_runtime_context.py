@@ -566,8 +566,7 @@ def _resolve_customer_id(
     customer_id = next(iter(candidates))
     matched_types = candidates[customer_id]
     missing_types = requested_types - matched_types
-    contact_only_fallback = missing_types == {"amo_lead_id"} and "amo_contact_id" in matched_types
-    if missing_types and not contact_only_fallback:
+    if missing_types:
         return "", ("customer_identity_incomplete",)
     customer = api.store.get_customer(tenant_id, customer_id)
     identity_status = _normalize_tag(customer.get("identity_status")) if customer else ""
@@ -576,7 +575,7 @@ def _resolve_customer_id(
         and "amo_contact_id" in matched_types
     ):
         return "", ("customer_identity_not_strong",)
-    return customer_id, ("amo_lead_identity_missing_contact_used",) if contact_only_fallback else ()
+    return customer_id, ()
 
 
 def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int) -> tuple[Mapping[str, Any], ...]:

@@ -26,6 +26,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     dead_letter_mass_failure,
     environment_preflight,
     finalize_report,
+    hardlink_or_copy,
     module_probe_command,
     missing_capture_recovery_events,
     new_calls_run_id,
@@ -47,6 +48,8 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     safe_daily_payload,
     sha256_file,
     sqlite_check,
+    stage_timeout_deadline,
+    terminate_process_group,
     worker_command,
     write_json,
 )
@@ -99,6 +102,83 @@ def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> Non
             with process_lease(lock, stale_seconds=60):
                 pass
         assert caught.value.metadata["pid"] == first["pid"]
+
+
+def test_process_lock_rejects_symlink_without_touching_target(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("must remain unchanged", encoding="utf-8")
+    lock = tmp_path / "process_a.lock"
+    lock.symlink_to(victim)
+
+    with pytest.raises(RuntimeError, match="lock is unsafe"):
+        with process_lease(lock, stale_seconds=60):
+            pass
+
+    assert lock.is_symlink()
+    assert victim.read_text(encoding="utf-8") == "must remain unchanged"
+
+
+def test_terminate_process_group_kills_children_after_parent_exits_on_term(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {"parent": True, "group": True}
+    delivered: list[int] = []
+
+    class FakeProcess:
+        pid = 424242
+
+        def poll(self) -> int | None:
+            return None if state["parent"] else 0
+
+        def wait(self, timeout: float) -> int:
+            assert timeout > 0
+            state["parent"] = False
+            return 0
+
+    def killpg(_pid: int, sent_signal: int) -> None:
+        if sent_signal == 0:
+            if not state["group"]:
+                raise ProcessLookupError
+            return
+        delivered.append(sent_signal)
+        if sent_signal == 15:
+            state["parent"] = False
+        elif sent_signal == 9:
+            state["group"] = False
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.os.killpg", killpg
+    )
+    terminate_process_group(FakeProcess(), grace_seconds=0.1)  # type: ignore[arg-type]
+
+    assert delivered == [15, 9]
+    assert state == {"parent": False, "group": False}
+
+
+def test_hardlink_race_rejects_a_concurrent_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"synthetic audio")
+    target = tmp_path / "target.mp3"
+    real_link = os.link
+
+    def race_link(src: object, dst: object, **_kwargs: object) -> None:
+        assert Path(src) == source
+        Path(dst).symlink_to(source)
+        raise FileExistsError
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.os.link", race_link
+    )
+    with pytest.raises(RuntimeError, match="concurrent audio target is unsafe"):
+        hardlink_or_copy(source, target)
+
+    assert target.is_symlink()
+    assert source.read_bytes() == b"synthetic audio"
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.os.link", real_link
+    )
 
 
 def test_run_cycle_imports_partial_ready_drop_and_keeps_partial_status(
@@ -213,7 +293,7 @@ def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytes
     )
 
     assert [event.provider_call_id for event in captured] == ["late", "ready"]
-    assert report["status"] == "partial"
+    assert report["status"] == "ok"
     assert report["api_requests"] == 2
     assert report["api_events_without_recording"] == 1
 
@@ -394,9 +474,10 @@ def test_capture_recovers_torn_manifest_when_api_window_is_empty(
             ended_at=None,
             direction="inbound",
             client_phone=None,
-            manager_ref=None,
-            status="recording_retry_expired",
-        )
+                manager_ref=None,
+                status="recording_retry_expired",
+                error="recording_missing_after_retry_ttl",
+            )
     )
     with config.capture_manifest.open("ab") as handle:
         handle.write(b'{"event_key":"unfinished"')
@@ -459,6 +540,8 @@ def test_capture_reports_tail_recovered_during_new_append(
             client_phone=None,
             manager_ref=None,
             status="recording_retry_expired",
+            error="recording_missing_after_retry_ttl",
+            remediation_code="manual_review_or_retry_if_recording_appears",
         )
     )
     with config.capture_manifest.open("ab") as handle:
@@ -589,9 +672,9 @@ def test_pending_recording_widens_poll_window_beyond_normal_overlap(
         datetime(2026, 7, 9, 11, tzinfo=timezone.utc),
     )
 
-    assert requested[0] == datetime(2026, 7, 9, 7, 45, tzinfo=timezone.utc)
+    assert requested[0] == datetime(2026, 7, 9, 7, 30, tzinfo=timezone.utc)
     assert report["pending_recording_retries"] == 1
-    assert report["status"] == "partial"
+    assert report["status"] == "ok"
 
 
 def test_recording_retry_ttl_uses_first_seen_and_expires_once(
@@ -657,7 +740,7 @@ def test_recording_retry_ttl_uses_first_seen_and_expires_once(
     )
 
     assert first["api_requests"] == 2
-    assert first["status"] == "partial"
+    assert first["status"] == "ok"
     assert first["pending_recording_expired"] == 1
     assert store.latest_by_event_key()["foton:mango:old-call-newly-seen"].status == "recording_retry_expired"
     assert second["status"] == "ok"
@@ -756,7 +839,7 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
                 "status": "downloaded",
                 "local_audio_path": str(source),
                 "size_bytes": source.stat().st_size,
-                "checksum_sha256": "x",
+                    "checksum_sha256": sha256_file(source),
             }
         )
         + "\n",
@@ -771,7 +854,11 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_prepare_ingest_inputs_waits_for_recording_set_stabilization(tmp_path: Path) -> None:
-    config = replace(config_for(tmp_path), pending_recording_retry_hours=24)
+    config = replace(
+        config_for(tmp_path),
+        pending_recording_retry_hours=24,
+        recording_set_stabilization_minutes=120,
+    )
     source = config.recordings_dir / "recent.mp3"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"audio")
@@ -828,7 +915,7 @@ def test_prepare_ingest_inputs_skips_call_already_present_in_working_db(tmp_path
     result = prepare_ingest_inputs(config)
 
     assert result["audio_files"] == 0
-    assert result["skipped"] == {"already_ingested": 1}
+    assert result["skipped"] == {"already_in_working": 1}
     assert result["incomplete_total"] == 0
 
 
@@ -955,7 +1042,7 @@ def test_existing_manifest_event_is_not_hidden_by_external_known_call(
 
     assert [event.recording_refs for event in captured] == [("rec-1", "rec-2")]
     assert report["api_events_already_known_external"] == 0
-    assert report["status"] == "partial"
+    assert report["status"] == "ok"
     assert report["open_multiple_recordings_needs_review"] == 1
 
 
@@ -1007,6 +1094,17 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     assert calls[2][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert calls[3][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert all("sync" not in command for command, _ in calls)
+
+
+def test_each_sequential_stage_gets_its_own_timeout_window() -> None:
+    timeout = 4 * 60 * 60
+
+    assert stage_timeout_deadline(started_at=100.0, timeout_seconds=timeout) == (
+        100.0 + timeout
+    )
+    assert stage_timeout_deadline(started_at=14_000.0, timeout_seconds=timeout) == (
+        14_000.0 + timeout
+    )
 
 
 def test_single_asr_fallback_mode_is_rejected(tmp_path: Path) -> None:
@@ -1125,7 +1223,7 @@ def test_pipeline_freshness_does_not_call_missing_drop_fresh(tmp_path: Path) -> 
     assert report["stages"]["process_b"]["status"] == "missing"
 
 
-def test_pipeline_freshness_uses_data_not_recent_check(tmp_path: Path) -> None:
+def test_pipeline_freshness_uses_recent_success_during_a_quiet_period(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
     create_empty_capture_manifest(config)
     write_json(
@@ -1138,7 +1236,8 @@ def test_pipeline_freshness_uses_data_not_recent_check(tmp_path: Path) -> None:
         },
     )
     report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 5, tzinfo=timezone.utc))
-    assert report["stages"]["process_a"]["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "fresh"
+    assert report["stages"]["process_a"]["age_seconds"] == 3900.0
 
 
 def test_pipeline_freshness_missing_data_is_not_fresh(tmp_path: Path) -> None:
@@ -1775,6 +1874,7 @@ def test_launchd_installer_defaults_to_near_realtime_900_seconds(tmp_path: Path)
         ),
         encoding="utf-8",
     )
+    config_path.chmod(0o600)
     env_path.write_text("MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\n", encoding="utf-8")
     env_path.chmod(0o600)
 
@@ -1979,10 +2079,10 @@ def test_process_a_processes_available_audio_then_marks_missing_partial(
     )
 
     assert report["status"] == "partial"
-    assert report["stop_reason"] == "capture_audio_incomplete"
+    assert report["stop_reason"] == "capture_asset_integrity_failed"
     assert report["counters"]["metadata"]["skipped_total"] == 1
-    assert report["counters"]["drop"]["status"] == "ready"
-    assert config.ready_db.exists()
+    assert report["counters"]["drop"]["status"] == "blocked"
+    assert not config.ready_db.exists()
     assert any(" ingest " in f" {command} " for command in commands)
     assert read_json(config.cursor_path) == {}
 
@@ -2041,6 +2141,8 @@ def test_process_a_reports_recovered_manifest_tail_and_blocks_downstream(
             client_phone=None,
             manager_ref=None,
             status="recording_retry_expired",
+            error="recording_missing_after_retry_ttl",
+            remediation_code="manual_review_or_retry_if_recording_appears",
         )
 
     store.append(terminal_entry("before-crash"))
@@ -2540,3 +2642,34 @@ def test_call_audio_artifact_path_never_reaches_a_projection(tmp_path: Path) -> 
     assert "path" not in projected
     assert projected["has_path"] is True
     assert stored[0]["path"] not in json.dumps(projected, ensure_ascii=False)
+
+
+def test_mlx_cache_is_released_once_after_success_and_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mango_mvp.services import transcribe
+
+    releases: list[str] = []
+    monkeypatch.setattr(
+        transcribe,
+        "release_mlx_free_cache",
+        lambda: releases.append("released") or True,
+    )
+
+    assert transcribe.run_with_mlx_cache_release(lambda: "ok", mlx_executed=True) == "ok"
+    assert releases == ["released"]
+
+    def fail() -> str:
+        raise RuntimeError("synthetic failure")
+
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        transcribe.run_with_mlx_cache_release(fail, mlx_executed=True)
+    assert releases == ["released", "released"]
+
+
+def test_transcribe_does_not_apply_a_global_mlx_cache_limit() -> None:
+    import inspect
+
+    from mango_mvp.services import transcribe
+
+    assert "set_cache_limit" not in inspect.getsource(transcribe)

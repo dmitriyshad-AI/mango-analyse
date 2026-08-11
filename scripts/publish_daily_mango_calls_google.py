@@ -342,13 +342,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     plan = load_plan(args.report_root, args.day)
     if not args.execute:
-        result = {"status": "dry_run", "day": plan["day"], "name": plan["name"], "content_sha256": plan["content_sha256"]}
+        result = {
+            "status": "dry_run",
+            "day": plan["day"],
+            "name": plan["name"],
+            "content_sha256": plan["content_sha256"],
+            "external_write_allowed": False,
+            "reason": "full_daily_transcript_google_publication_disabled",
+        }
     else:
-        with publication_lock(args.report_root, str(plan["day"]), str(plan["content_sha256"]), args.folder_id) as journal:
-            if args.confirmation != CONFIRMATION or not args.credentials:
-                raise RuntimeError("explicit Google upload confirmation and credentials are required")
-            credentials = validate_credentials(args.credentials, Path(__file__).resolve().parents[1])
-            result = publish(authorized_session(credentials), args.folder_id, plan, journal=journal)
+        raise RuntimeError(
+            "full daily transcript Google publication is disabled; use the safe current-day projection"
+        )
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

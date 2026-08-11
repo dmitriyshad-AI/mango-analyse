@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Mapping
 from unittest.mock import patch
 
+import pytest
+
 from mango_mvp.productization.mango_office_client import MangoOfficeCredentials
 from mango_mvp.productization.mango_recordings import (
     MangoRecordingDownloader,
+    download_url,
     parse_location_from_text,
 )
 
@@ -33,6 +37,10 @@ class FakeGetResponse:
         yield b"abc"
         yield b""
         yield b"def"
+
+
+class WrongLengthResponse(FakeGetResponse):
+    headers = {"Content-Length": "99"}
 
 
 def test_mango_recording_downloader_signs_link_request_and_downloads(tmp_path: Path) -> None:
@@ -72,3 +80,50 @@ def test_mango_recording_downloader_signs_link_request_and_downloads(tmp_path: P
 
 def test_parse_location_from_text_accepts_header_like_body() -> None:
     assert parse_location_from_text("HTTP/1.1 302\nLocation: /x/y.mp3\n") == "/x/y.mp3"
+
+
+def test_download_size_mismatch_leaves_no_partial_or_final_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "recording.mp3"
+    with patch(
+        "mango_mvp.productization.mango_recordings.requests.get",
+        return_value=WrongLengthResponse(),
+    ):
+        with pytest.raises(RuntimeError, match="Content-Length"):
+            download_url("https://example.test/recording.mp3", target)
+
+    assert not target.exists()
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_download_refuses_exact_temporary_symlink_without_touching_victim(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "recording.mp3"
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"must remain unchanged")
+    temporary = tmp_path / f".{target.name}.{os.getpid()}.fixed.part"
+    temporary.symlink_to(victim)
+
+    with patch(
+        "mango_mvp.productization.mango_recordings.secrets.token_hex",
+        return_value="fixed",
+    ), patch(
+        "mango_mvp.productization.mango_recordings.requests.get",
+        return_value=FakeGetResponse(),
+    ):
+        with pytest.raises(FileExistsError):
+            download_url("https://example.test/recording.mp3", target)
+
+    assert victim.read_bytes() == b"must remain unchanged"
+    assert temporary.is_symlink()
+    assert not target.exists()
+
+
+def test_download_never_overwrites_an_existing_target(tmp_path: Path) -> None:
+    target = tmp_path / "recording.mp3"
+    target.write_bytes(b"existing immutable audio")
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        download_url("https://example.test/recording.mp3", target)
+    assert target.read_bytes() == b"existing immutable audio"

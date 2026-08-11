@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import csv
 import fcntl
+import hashlib
 import json
 import os
 import re
+import resource
+import signal
 import shutil
 import socket
 import sqlite3
@@ -18,6 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from mango_mvp.customer_timeline.import_cli import (
     TimelineImportCliConfig,
@@ -35,12 +39,28 @@ from mango_mvp.productization.capture_staging import (
     ManifestEntry,
     acknowledge_capture_recovery,
     capture_manifest_health,
+    entry_from_json,
     entry_recording_ids,
     event_recording_ids,
     manifest_assets_exist,
     merge_recording_ids,
     atomic_write_private_json,
     stage_capture_events,
+)
+from mango_mvp.productization.mango_calls_service_contract import (
+    READY_MANIFEST_SCHEMA,
+    approved_runtime_fingerprint,
+    build_stage10_verdict,
+    current_git_sha,
+    foreign_host_ids,
+    load_ready_rows,
+    parse_aware_datetime,
+    read_host_id,
+    ready_row_is_complete,
+    stage_capacity_report,
+    validate_ready_manifest_payload,
+    validate_runtime_fingerprint,
+    verify_cutover_authority,
 )
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 from mango_mvp.productization.mango_office_client import (
@@ -54,12 +74,15 @@ from mango_mvp.services.transcribe import TranscribeService
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
-PARALLEL_PIPELINE_STAGES = (
+SEQUENTIAL_PIPELINE_STAGES = (
     "transcribe",
     "backfill-second-asr",
     "resolve",
     "analyze",
 )
+# Backward-compatible import for callers/tests written before the name was
+# corrected.  Execution remains strictly sequential.
+PARALLEL_PIPELINE_STAGES = SEQUENTIAL_PIPELINE_STAGES
 REQUIRED_PIPELINE_MODULES = ("sqlalchemy", "dotenv", "mlx_whisper", "gigaam", "mango_mvp.cli")
 PHONE_RE = re.compile(r"(?:\+7|\b8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -82,20 +105,31 @@ class CallsTwoProcessesConfig:
     base_url: str = DEFAULT_MANGO_BASE_URL
     bootstrap_since: Optional[str] = None
     first_lookback_hours: int = 24
-    poll_overlap_minutes: int = 15
-    pending_recording_retry_hours: int = 24
+    poll_overlap_minutes: int = 30
+    pending_recording_retry_hours: int = 72
+    recording_set_stabilization_minutes: int = 15
     api_window_hours: int = 12
     min_free_gib: float = 40.0
-    stale_lock_seconds: int = 6 * 60 * 60
+    stale_lock_seconds: int = 30 * 60
     stage_limit: int = 20
     poll_seconds: int = 10
-    max_idle_cycles: int = 30
+    max_idle_cycles: int = 1
     freshness_max_age_minutes: int = 90
     manifest_recheck_sleep_sec: float = 2.0
     asr_mode: str = "mlx_dual"
     codex_resolve_model: str = "gpt-5.4"
     codex_analyze_model: str = "gpt-5.4-mini"
     codex_reasoning_effort: str = "medium"
+    mlx_whisper_snapshot_path: Optional[Path] = None
+    heavy_stage_timeout_seconds: int = 4 * 60 * 60
+    expected_code_sha: Optional[str] = None
+    host_id_path: Optional[Path] = None
+    cutover_manifest_path: Optional[Path] = None
+    cutover_proof_max_age_minutes: int = 90
+    max_catch_up_days: int = 7
+    require_cutover_authority: bool = False
+    strict_ready_provenance: bool = False
+    publication_root: Optional[Path] = None
 
     @classmethod
     def from_json(cls, path: Path) -> "CallsTwoProcessesConfig":
@@ -115,20 +149,60 @@ class CallsTwoProcessesConfig:
             base_url=str(payload.get("base_url") or DEFAULT_MANGO_BASE_URL),
             bootstrap_since=optional_text(payload.get("bootstrap_since")),
             first_lookback_hours=int(payload.get("first_lookback_hours", 24)),
-            poll_overlap_minutes=int(payload.get("poll_overlap_minutes", 15)),
-            pending_recording_retry_hours=int(payload.get("pending_recording_retry_hours", 24)),
+            poll_overlap_minutes=int(payload.get("poll_overlap_minutes", 30)),
+            pending_recording_retry_hours=int(payload.get("pending_recording_retry_hours", 72)),
+            recording_set_stabilization_minutes=int(
+                payload.get("recording_set_stabilization_minutes", 15)
+            ),
             api_window_hours=int(payload.get("api_window_hours", 12)),
             min_free_gib=float(payload.get("min_free_gib", 40.0)),
-            stale_lock_seconds=int(payload.get("stale_lock_seconds", 6 * 60 * 60)),
+            stale_lock_seconds=int(payload.get("stale_lock_seconds", 30 * 60)),
             stage_limit=int(payload.get("stage_limit", 20)),
             poll_seconds=int(payload.get("poll_seconds", 10)),
-            max_idle_cycles=int(payload.get("max_idle_cycles", 30)),
+            max_idle_cycles=int(payload.get("max_idle_cycles", 1)),
             freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
             manifest_recheck_sleep_sec=float(payload.get("manifest_recheck_sleep_sec", 2.0)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
             codex_resolve_model=str(payload.get("codex_resolve_model") or "gpt-5.4"),
             codex_analyze_model=str(payload.get("codex_analyze_model") or "gpt-5.4-mini"),
             codex_reasoning_effort=str(payload.get("codex_reasoning_effort") or "medium"),
+            mlx_whisper_snapshot_path=(
+                Path(str(payload["mlx_whisper_snapshot_path"])).expanduser()
+                if payload.get("mlx_whisper_snapshot_path")
+                else None
+            ),
+            heavy_stage_timeout_seconds=int(
+                payload.get("heavy_stage_timeout_seconds", 4 * 60 * 60)
+            ),
+            expected_code_sha=optional_text(
+                payload.get("expected_code_sha")
+                or os.getenv("MANGO_CALLS_EXPECTED_CODE_SHA")
+            ),
+            host_id_path=(
+                Path(str(payload["host_id_path"])).expanduser()
+                if payload.get("host_id_path")
+                else None
+            ),
+            cutover_manifest_path=(
+                Path(str(payload["cutover_manifest_path"])).expanduser()
+                if payload.get("cutover_manifest_path")
+                else None
+            ),
+            cutover_proof_max_age_minutes=int(
+                payload.get("cutover_proof_max_age_minutes", 90)
+            ),
+            max_catch_up_days=int(payload.get("max_catch_up_days", 7)),
+            require_cutover_authority=bool(
+                payload.get("require_cutover_authority", True)
+            ),
+            strict_ready_provenance=bool(
+                payload.get("strict_ready_provenance", True)
+            ),
+            publication_root=(
+                Path(str(payload["publication_root"])).expanduser()
+                if payload.get("publication_root")
+                else None
+            ),
         )
         config.validate()
         return config
@@ -150,10 +224,33 @@ class CallsTwoProcessesConfig:
             raise ValueError("api_window_hours must be between 1 and 24")
         if self.pending_recording_retry_hours < 1:
             raise ValueError("pending_recording_retry_hours must be positive")
+        if self.recording_set_stabilization_minutes < 0:
+            raise ValueError("recording_set_stabilization_minutes must be non-negative")
         if self.asr_mode != "mlx_dual":
             raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
         if self.min_free_gib < 1:
             raise ValueError("min_free_gib must be at least 1")
+        if self.heavy_stage_timeout_seconds < 60:
+            raise ValueError("heavy_stage_timeout_seconds must be at least 60")
+        if self.max_catch_up_days < 1:
+            raise ValueError("max_catch_up_days must be positive")
+        if self.require_cutover_authority != self.strict_ready_provenance:
+            raise ValueError(
+                "cutover authority and strict ready provenance must be enabled together"
+            )
+        if self.require_cutover_authority and not self.expected_code_sha:
+            raise ValueError("expected_code_sha is required for cutover authority")
+        if self.publication_root is not None:
+            publication = self.publication_root.resolve(strict=False)
+            owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+            try:
+                publication.relative_to(owner_local)
+            except ValueError:
+                raise ValueError(
+                    "publication_root must stay below $HOME/.mango_local"
+                ) from None
+            if publication == owner_local:
+                raise ValueError("publication_root must be a dedicated directory")
 
     @property
     def capture_dir(self) -> Path:
@@ -192,12 +289,20 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "drop" / "mango_calls_ready.sqlite"
 
     @property
+    def ready_manifest(self) -> Path:
+        return self.ready_db.with_suffix(".manifest.json")
+
+    @property
     def cursor_path(self) -> Path:
         return self.pipeline_root / "state" / "mango_api_freshness.json"
 
     @property
     def process_a_lock(self) -> Path:
         return self.pipeline_root / "locks" / "process_a.lock"
+
+    @property
+    def capture_lock(self) -> Path:
+        return self.pipeline_root / "locks" / "capture.lock"
 
     @property
     def process_b_lock(self) -> Path:
@@ -212,12 +317,38 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "state" / "process_a_status.json"
 
     @property
+    def process_a_heartbeat_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_a_heartbeat.json"
+
+    @property
+    def capture_status_path(self) -> Path:
+        return self.pipeline_root / "state" / "capture_status.json"
+
+    @property
+    def host_id_file(self) -> Path:
+        return self.host_id_path or self.pipeline_root / "state" / "host_id"
+
+    @property
+    def cutover_manifest_file(self) -> Path:
+        return self.cutover_manifest_path or self.pipeline_root / "state" / "cutover_manifest.json"
+
+    @property
+    def cutover_cursor_lineage_path(self) -> Path:
+        return self.pipeline_root / "state" / "cutover_cursor_lineage.json"
+
+    @property
     def process_b_status_path(self) -> Path:
         return self.pipeline_root / "state" / "process_b_status.json"
 
     @property
     def process_b_cursor_path(self) -> Path:
         return self.pipeline_root / "state" / "process_b_cursor.json"
+
+    @property
+    def local_publication_root(self) -> Path:
+        return self.publication_root or (
+            Path.home() / ".mango_local" / "mango_calls_publication"
+        )
 
     @property
     def ingest_dir(self) -> Path:
@@ -230,6 +361,287 @@ ProducerRunner = Callable[[CallsTwoProcessesConfig, Path, Path, Optional[str]], 
 ImportRunner = Callable[[TimelineImportCliConfig], Mapping[str, Any]]
 
 
+def configured_host_id(config: CallsTwoProcessesConfig, *, required: bool) -> str:
+    try:
+        return read_host_id(config.host_id_file)
+    except RuntimeError:
+        if required:
+            raise
+        fallback = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname()).strip("-")
+        return fallback or "legacy-local-host"
+
+
+def cutover_authority_report(
+    config: CallsTwoProcessesConfig, *, initialize_lineage: bool = False
+) -> Mapping[str, Any]:
+    if not config.require_cutover_authority:
+        return {
+            "ok": True,
+            "mode": "compatibility_not_for_service",
+            "active_host_id": configured_host_id(config, required=False),
+        }
+    assert config.expected_code_sha is not None
+    report = dict(verify_cutover_authority(
+        cutover_manifest_path=config.cutover_manifest_file,
+        host_id_path=config.host_id_file,
+        expected_code_sha=config.expected_code_sha,
+        project_root=Path(__file__).resolve().parents[3],
+        proof_max_age_minutes=config.cutover_proof_max_age_minutes,
+        require_fresh_previous_host_proof=False,
+    ))
+    if report.get("ok") is not True:
+        return report
+    expected_cursor_sha = str(report.get("source_cursor_sha256") or "")
+    cutover_sha = sha256_file(config.cutover_manifest_file)
+    marker = read_json(config.cutover_cursor_lineage_path)
+    marker_ok = bool(
+        marker.get("schema_version") == "mango_calls_cutover_cursor_lineage_v1"
+        and marker.get("source_cursor_sha256") == expected_cursor_sha
+        and marker.get("cutover_manifest_sha256") == cutover_sha
+        and marker.get("active_host_id") == report.get("active_host_id")
+    )
+    if not marker_ok and initialize_lineage:
+        try:
+            cursor_sha = sha256_file(config.cursor_path)
+        except OSError:
+            cursor_sha = ""
+        if cursor_sha == expected_cursor_sha:
+            write_json(
+                config.cutover_cursor_lineage_path,
+                {
+                    "schema_version": "mango_calls_cutover_cursor_lineage_v1",
+                    "source_cursor_sha256": expected_cursor_sha,
+                    "cutover_manifest_sha256": cutover_sha,
+                    "active_host_id": report.get("active_host_id"),
+                    "verified_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            marker_ok = True
+    if not marker_ok:
+        report["ok"] = False
+        report["errors"] = [*list(report.get("errors") or ()), "source_cursor_lineage_unproven"]
+    report["source_cursor_lineage_ok"] = marker_ok
+    return report
+
+
+def run_capture(
+    config: CallsTwoProcessesConfig,
+    *,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    capture_runner: CaptureRunner = None,
+) -> Mapping[str, Any]:
+    config.validate()
+    capture_runner = capture_runner or capture_mango_window
+    started = datetime.now(timezone.utc)
+    run_id = new_calls_run_id(started)
+    try:
+        with process_lease(
+            config.capture_lock, stale_seconds=config.stale_lock_seconds
+        ) as lock_info:
+            authority = cutover_authority_report(config, initialize_lineage=True)
+            if authority.get("ok") is not True:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "capture",
+                    "failed",
+                    "cutover_authority_failed",
+                    {"authority": authority, "lock": lock_info},
+                )
+            disk = disk_preflight(config)
+            if not disk.get("ok"):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "capture",
+                    "failed",
+                    "insufficient_disk_space",
+                    {"authority": authority, "disk": disk, "lock": lock_info},
+                )
+            window_since, window_until = resolve_capture_window(
+                config, since=since, until=until
+            )
+            capture = capture_runner(config, window_since, window_until)
+            if capture.get("status") == "failed" or capture.get(
+                "mango_enumeration_complete"
+            ) is not True:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "capture",
+                    "failed",
+                    "capture_or_enumeration_failed",
+                    {
+                        "authority": authority,
+                        "disk": disk,
+                        "capture": capture,
+                        "lock": lock_info,
+                    },
+                )
+            status = "partial" if capture.get("status") == "partial" else "ok"
+            manifest_tail_incomplete = any(
+                positive_int(capture.get(name)) > 0
+                for name in (
+                    "incomplete_trailing_manifest_records",
+                    "recovered_trailing_manifest_records",
+                )
+            )
+            report = finalize_report(
+                config,
+                run_id,
+                "capture",
+                status,
+                (
+                    "capture_manifest_tail_incomplete"
+                    if manifest_tail_incomplete
+                    else "capture_audio_incomplete"
+                    if status == "partial"
+                    else ""
+                ),
+                {
+                    "authority": authority,
+                    "disk": disk,
+                    "capture": capture,
+                    "window": {
+                        "since": window_since.isoformat(),
+                        "until": window_until.isoformat(),
+                    },
+                    "lock": lock_info,
+                },
+            )
+            if not manifest_tail_incomplete:
+                write_cursor(config.cursor_path, window_until, capture)
+            recovered = positive_int(
+                capture.get("recovered_trailing_manifest_records")
+            )
+            if recovered:
+                incident_sha = str(capture.get("recovery_incident_sha256") or "")
+                if not incident_sha:
+                    raise RuntimeError("capture recovery incident identity is missing")
+                acknowledge_capture_recovery(
+                    config.capture_manifest,
+                    expected_count=recovered,
+                    expected_incident_sha256=incident_sha,
+                )
+            return report
+    except LockBusy as exc:
+        return finalize_report(
+            config,
+            run_id,
+            "capture",
+            "locked",
+            "capture_locked",
+            {"lock": exc.metadata},
+        )
+    except Exception as exc:
+        return finalize_report(
+            config,
+            run_id,
+            "capture",
+            "failed",
+            f"capture_exception:{type(exc).__name__}",
+            {"diagnostic": safe_exception_diagnostic(exc)},
+        )
+
+
+def run_pipeline(
+    config: CallsTwoProcessesConfig,
+    *,
+    command_runner: CommandRunner = None,
+    process_b_runner: Callable[[CallsTwoProcessesConfig], Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    config.validate()
+    authority = cutover_authority_report(config)
+    if authority.get("ok") is not True:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "process": "pipeline",
+            "status": "failed",
+            "stop_reason": "cutover_authority_failed",
+            "authority": authority,
+        }
+    cursor = read_json(config.cursor_path)
+    try:
+        manifest_end_offset = int(cursor.get("manifest_end_offset"))
+    except (TypeError, ValueError):
+        manifest_end_offset = -1
+    expected_snapshot_sha = str(cursor.get("manifest_snapshot_sha256") or "")
+    if (
+        cursor.get("mango_enumeration_complete") is not True
+        or manifest_end_offset < 0
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_sha)
+        or not config.capture_manifest.is_file()
+        or config.capture_manifest.is_symlink()
+    ):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "process": "pipeline",
+            "status": "failed",
+            "stop_reason": "capture_snapshot_not_proven",
+            "authority": authority,
+        }
+    snapshot = capture_manifest_snapshot(
+        config.capture_manifest, end_offset=manifest_end_offset
+    )
+    if snapshot.get("sha256") != expected_snapshot_sha:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "process": "pipeline",
+            "status": "failed",
+            "stop_reason": "capture_snapshot_sha256_mismatch",
+            "authority": authority,
+        }
+    process_a = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=command_runner,
+        manifest_end_offset=manifest_end_offset,
+        capture_evidence=cursor,
+    )
+    counters = process_a.get("counters") if isinstance(
+        process_a.get("counters"), Mapping
+    ) else {}
+    metadata = counters.get("metadata") if isinstance(
+        counters.get("metadata"), Mapping
+    ) else {}
+    drop = counters.get("drop") if isinstance(counters.get("drop"), Mapping) else {}
+    process_b: Optional[Mapping[str, Any]] = None
+    if process_a.get("downstream_ready"):
+        process_b = (process_b_runner or run_process_b)(config)
+    status = str(process_a.get("status") or "failed")
+    if process_b is not None and process_b.get("status") not in {"ok", "idle"}:
+        status = "failed"
+    no_change = bool(
+        positive_int(metadata.get("audio_files")) == 0
+        and not metadata.get("db_open_work")
+        and drop.get("reused") is True
+        and isinstance(process_b, Mapping)
+        and process_b.get("status") == "idle"
+        and process_b.get("stop_reason") == "drop_unchanged"
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "process": "pipeline",
+        "status": "idle" if no_change and status == "ok" else status,
+        "stop_reason": (
+            "unchanged_snapshot"
+            if no_change
+            else "process_b_not_ready"
+            if process_b is not None and process_b.get("status") not in {"ok", "idle"}
+            else str(process_a.get("stop_reason") or "")
+        ),
+        "new": positive_int(metadata.get("audio_files")),
+        "reused": positive_int(metadata.get("skipped", {}).get("already_ingested"))
+        if isinstance(metadata.get("skipped"), Mapping)
+        else 0,
+        "manifest_snapshot_end_offset": manifest_end_offset,
+        "process_a": process_a,
+        "process_b": process_b,
+        "authority": authority,
+    }
+
+
 def run_process_a(
     config: CallsTwoProcessesConfig,
     *,
@@ -239,6 +651,8 @@ def run_process_a(
     skip_workers: bool = False,
     command_runner: CommandRunner = None,
     capture_runner: CaptureRunner = None,
+    manifest_end_offset: Optional[int] = None,
+    capture_evidence: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     config.validate()
     command_runner = command_runner or run_command
@@ -247,6 +661,18 @@ def run_process_a(
     run_id = new_calls_run_id(started)
     try:
         with process_lease(config.process_a_lock, stale_seconds=config.stale_lock_seconds) as lock_info:
+            authority = cutover_authority_report(
+                config, initialize_lineage=not skip_capture
+            )
+            if authority.get("ok") is not True:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "cutover_authority_failed",
+                    {"authority": authority, "lock": lock_info},
+                )
             disk = disk_preflight(config)
             environment = environment_preflight(
                 config,
@@ -273,7 +699,11 @@ def run_process_a(
                 )
             window_since, window_until = resolve_capture_window(config, since=since, until=until)
             capture = (
-                {"status": "skipped", "reason": "skip_capture"}
+                {
+                    "status": "skipped",
+                    "reason": "skip_capture",
+                    **dict(capture_evidence or {}),
+                }
                 if skip_capture
                 else capture_runner(config, window_since, window_until)
             )
@@ -286,7 +716,17 @@ def run_process_a(
                     "capture_failed",
                     {"disk": disk, "environment": environment, "capture": capture, "lock": lock_info},
                 )
-            metadata = dict(prepare_ingest_inputs(config))
+            metadata = dict(
+                prepare_ingest_inputs(config)
+                if manifest_end_offset is None
+                else prepare_ingest_inputs(
+                    config,
+                    manifest_end_offset=manifest_end_offset,
+                    expected_manifest_sha256=optional_text(
+                        (capture_evidence or {}).get("manifest_snapshot_sha256")
+                    ),
+                )
+            )
             metadata["db_open_work"] = call_db_has_open_work(config.working_db)
             worker_reports: list[Mapping[str, Any]] = []
             if not skip_workers and (metadata["audio_files"] or metadata["db_open_work"]):
@@ -307,11 +747,12 @@ def run_process_a(
                         )
                     )
                 worker_reports.extend(
-                    run_parallel_pipeline_workers(
+                    run_sequential_pipeline_workers(
                         config,
                         base_env,
                         command_runner,
                         include_llm=bool(environment.get("codex_network_ok")),
+                        run_id=run_id,
                     )
                 )
             failed_commands = [item for item in worker_reports if int(item.get("rc", 0)) != 0]
@@ -350,36 +791,34 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
-            capture_incomplete = capture.get("status") == "partial"
-            audio_incomplete = positive_int(metadata.get("incomplete_total", metadata.get("skipped_total"))) > 0
-            if capture_incomplete or audio_incomplete:
-                manifest_tail_incomplete = any(
-                    positive_int(value) > 0
-                    for value in (
-                        capture.get("incomplete_trailing_manifest_records"),
-                        capture.get("recovered_trailing_manifest_records"),
-                        metadata.get("incomplete_trailing_manifest_records"),
-                        metadata.get("recovered_trailing_manifest_records"),
-                    )
+            manifest_tail_incomplete = any(
+                positive_int(value) > 0
+                for value in (
+                    capture.get("incomplete_trailing_manifest_records"),
+                    capture.get("recovered_trailing_manifest_records"),
+                    metadata.get("incomplete_trailing_manifest_records"),
+                    metadata.get("recovered_trailing_manifest_records"),
                 )
-                if manifest_tail_incomplete:
-                    drop = {"status": "blocked", "reason": "capture_manifest_tail_incomplete"}
-                else:
-                    drop = (
-                        publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers)))
-                        if bool(environment.get("codex_network_ok")) and config.working_db.exists()
-                        else {"status": "not_created"}
-                    )
-                if not skip_capture and not manifest_tail_incomplete:
-                    # Failed captures remain in the manifest recovery queue, so
-                    # advancing the API window cannot lose them.
-                    write_cursor(config.cursor_path, window_until, capture)
+            )
+            asset_integrity_failed = positive_int(
+                metadata.get("asset_integrity_failures")
+            ) > 0
+            if manifest_tail_incomplete or asset_integrity_failed:
+                blocking_reason = (
+                    "capture_manifest_tail_incomplete"
+                    if manifest_tail_incomplete
+                    else "capture_asset_integrity_failed"
+                )
+                drop = {
+                    "status": "blocked",
+                    "reason": blocking_reason,
+                }
                 report = finalize_report(
                     config,
                     run_id,
                     "process_a",
                     "partial",
-                    "capture_manifest_tail_incomplete" if manifest_tail_incomplete else "capture_audio_incomplete",
+                    blocking_reason,
                     {
                         "disk": disk,
                         "environment": environment,
@@ -433,9 +872,25 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
-            drop = publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers))) if config.working_db.exists() else {"status": "not_created"}
-            if not skip_capture:
-                write_cursor(config.cursor_path, window_until, capture)
+            drop = (
+                publish_ready_db_if_changed(
+                    config,
+                    db_counts,
+                    changed=bool(
+                        metadata["audio_files"]
+                        or (metadata["db_open_work"] and not skip_workers)
+                    ),
+                    run_id=run_id,
+                    capture_evidence=capture,
+                    manifest_end_offset=metadata.get(
+                        "manifest_snapshot_end_offset"
+                    ),
+                    stage_reports=worker_reports,
+                    runtime_fingerprint=environment.get("runtime_fingerprint"),
+                )
+                if config.working_db.exists()
+                else {"status": "not_created"}
+            )
             counters = {
                 "disk": disk,
                 "environment": environment,
@@ -448,7 +903,29 @@ def run_process_a(
                 "window": {"since": window_since.isoformat(), "until": window_until.isoformat()},
                 "lock": lock_info,
             }
-            return finalize_report(config, run_id, "process_a", "ok", "", counters)
+            balance_green = bool(
+                isinstance(drop, Mapping)
+                and drop.get("status") == "ready"
+                and drop.get("consistency_ok") is True
+            )
+            capture_partial = capture.get("status") == "partial"
+            report = finalize_report(
+                config,
+                run_id,
+                "process_a",
+                "ok" if balance_green and not capture_partial else "partial",
+                (
+                    ""
+                    if balance_green and not capture_partial
+                    else "capture_partial"
+                    if capture_partial
+                    else "stage10_consistency_not_proven"
+                ),
+                counters,
+            )
+            if not skip_capture:
+                write_cursor(config.cursor_path, window_until, capture)
+            return report
     except LockBusy as exc:
         return finalize_report(
             config,
@@ -542,6 +1019,25 @@ def _run_process_b(
             "producer_event_count_mismatch",
             {"producer": producer, "quick_check_before": quick_before},
         )
+    drop_after_producer = ready_drop_fingerprint(config)
+    if (
+        drop_after_producer.get("manifest_valid") is not True
+        or drop_after_producer.get("sha256") != drop_fingerprint.get("sha256")
+        or drop_after_producer.get("size_bytes") != drop_fingerprint.get("size_bytes")
+    ):
+        return finalize_report(
+            config,
+            run_id,
+            "process_b",
+            "failed",
+            "drop_changed_during_producer",
+            {
+                "producer": producer,
+                "quick_check_before": quick_before,
+                "drop_before": drop_fingerprint,
+                "drop_after": drop_after_producer,
+            },
+        )
     import_config = TimelineImportCliConfig(
         tenant_id=config.tenant_id,
         source_kind="mango_processed_summary",
@@ -623,6 +1119,16 @@ def run_process_b(
         )
     try:
         with process_lease(config.process_b_lock, stale_seconds=config.stale_lock_seconds):
+            authority = cutover_authority_report(config)
+            if authority.get("ok") is not True:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_b",
+                    "failed",
+                    "cutover_authority_failed",
+                    {"authority": authority},
+                )
             return _run_process_b(
                 config,
                 producer_runner=producer_runner,
@@ -695,7 +1201,7 @@ def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mappi
             "process_b": None,
         }
     second = run_process_b(config)
-    second_ok = second.get("status") in {"ok", "idle", "locked"}
+    second_ok = second.get("status") in {"ok", "idle"}
     cycle_status = "failed" if not second_ok else ("partial" if first.get("status") == "partial" else "ok")
     return {
         "schema_version": SCHEMA_VERSION,
@@ -716,7 +1222,38 @@ class LockBusy(RuntimeError):
 @contextmanager
 def process_lease(path: Path, *, stale_seconds: int) -> Iterator[Mapping[str, Any]]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+", encoding="utf-8")
+    parent = os.lstat(path.parent)
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or stat.S_ISLNK(parent.st_mode)
+        or parent.st_uid != os.getuid()
+    ):
+        raise RuntimeError("process lock directory is unsafe")
+    path.parent.chmod(0o700)
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise RuntimeError("process lock is unsafe") from exc
+    handle = os.fdopen(descriptor, "a+", encoding="utf-8")
+    opened = os.fstat(handle.fileno())
+    current = os.lstat(path)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or opened.st_uid != os.getuid()
+        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        handle.close()
+        raise RuntimeError("process lock is unsafe")
+    if stat.S_IMODE(opened.st_mode) != 0o600:
+        os.fchmod(handle.fileno(), 0o600)
     handle.seek(0)
     previous = parse_json_object(handle.read())
     try:
@@ -724,7 +1261,13 @@ def process_lease(path: Path, *, stale_seconds: int) -> Iterator[Mapping[str, An
     except BlockingIOError as exc:
         handle.close()
         raise LockBusy(previous) from exc
-    age_seconds = max(0.0, time.time() - path.stat().st_mtime) if path.exists() else 0.0
+    locked_info = os.fstat(handle.fileno())
+    current = os.lstat(path)
+    if (locked_info.st_dev, locked_info.st_ino) != (current.st_dev, current.st_ino):
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+        raise RuntimeError("process lock changed while acquiring")
+    age_seconds = max(0.0, time.time() - locked_info.st_mtime)
     previous_pid = int(previous.get("pid") or 0)
     stale_recovered = bool(previous and (age_seconds > stale_seconds or not pid_exists(previous_pid)))
     metadata = {
@@ -778,6 +1321,9 @@ def capture_mango_window(
     )
     mapper = MangoOfficePayloadMapper()
     tenant = TenantRef(config.tenant_id)
+    host_id = configured_host_id(
+        config, required=config.require_cutover_authority
+    )
     rows: list[Mapping[str, Any]] = []
     manifest_store = CaptureManifestStore(config.capture_manifest)
     if not os.path.lexists(config.capture_manifest) and capture_runtime_has_prior_state(config):
@@ -785,13 +1331,33 @@ def capture_mango_window(
     manifest_store.ensure_exists()
     manifest_store.recover_incomplete_tail()
     latest_manifest = manifest_store.latest_by_event_key()
-    pending_entries = [entry for entry in latest_manifest.values() if entry.status == "skipped_no_recording"]
+    pending_entries = [
+        entry
+        for entry in latest_manifest.values()
+        if entry.status in {"skipped_no_recording", "failed"}
+    ]
     pending_keys = {entry.event_key for entry in pending_entries}
     threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
     recent_entries = [entry for entry in latest_manifest.values() if parse_datetime(entry.started_at) >= threshold]
-    expired_keys = {entry.event_key for entry in pending_entries if parse_datetime(entry.created_at) < threshold}
+    expired_keys = {
+        entry.event_key
+        for entry in pending_entries
+        if parse_datetime(entry.started_at) < threshold
+    }
     overlap = timedelta(minutes=config.poll_overlap_minutes)
-    poll_windows = [(since, until)]
+    # The permanent service always proves a rolling TTL window.  Direct legacy
+    # callers retain their explicit window; service JSON enables strict mode.
+    rolling_day_start = (
+        threshold.astimezone(ZoneInfo("Europe/Moscow"))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
+    base_window_start = (
+        min(since, rolling_day_start)
+        if config.strict_ready_provenance
+        else since
+    )
+    poll_windows = [(base_window_start, until)]
     for entry in {entry.event_key: entry for entry in (*pending_entries, *recent_entries)}.values():
         started = parse_datetime(entry.started_at)
         ended = parse_datetime(entry.ended_at) if entry.ended_at else started + timedelta(hours=1)
@@ -803,12 +1369,24 @@ def capture_mango_window(
         else:
             merged_windows.append((start, end))
     api_requests = 0
+    covered_intervals: list[Mapping[str, Any]] = []
     for window_start, window_end in merged_windows:
         chunk_start = window_start
         while chunk_start < window_end:
             chunk_end = min(window_end, chunk_start + timedelta(hours=config.api_window_hours))
-            rows.extend(client.poll_call_history(since=chunk_start, until=chunk_end))
+            chunk_rows = client.poll_call_history(
+                since=chunk_start, until=chunk_end
+            )
+            rows.extend(chunk_rows)
             api_requests += 1
+            covered_intervals.append(
+                {
+                    "since": chunk_start.isoformat(),
+                    "until": chunk_end.isoformat(),
+                    "result_complete": True,
+                    "rows": len(chunk_rows),
+                }
+            )
             chunk_start = chunk_end
     unique_events: dict[str, Any] = {}
     for row in rows:
@@ -818,19 +1396,49 @@ def capture_mango_window(
             refs = merge_recording_ids(event_recording_ids(prior), event_recording_ids(event))
             event = replace(event, recording_ref=refs[0] if refs else None, recording_refs=refs)
         unique_events[event.event_key] = event
-    recovery_events = missing_capture_recovery_events(config)
-    recovery_keys = set(latest_manifest) | {event.event_key for event in recovery_events} | pending_keys
+    if config.strict_ready_provenance:
+        # After cutover only the transferred SQLite generations are authority;
+        # neighbouring archives must never silently suppress a new API event.
+        known_recordings: set[str] = set()
+        known_calls = (
+            read_ingested_call_ids(config.working_db)
+            | read_ingested_call_ids(config.ready_db)
+        )
+        fully_ready_calls = read_fully_ready_call_ids(config)
+    else:
+        known_recordings, known_calls = read_known_processed_ids(
+            config.pipeline_root.parent
+        )
+        fully_ready_calls = set()
+    recovery_events = [
+        event
+        for event in missing_capture_recovery_events(config)
+        if not (
+            config.strict_ready_provenance
+            and event.provider_call_id in fully_ready_calls
+        )
+    ]
+    recovery_keys = {event.event_key for event in recovery_events} | pending_keys
     for event in recovery_events:
         unique_events.setdefault(event.event_key, event)
-    mapped_events = sorted(unique_events.values(), key=lambda event: (event.started_at, event.provider_call_id))
-    known_recordings, known_calls = read_known_processed_ids(config.pipeline_root.parent)
+    mapped_events = sorted(
+        unique_events.values(),
+        key=lambda event: (event.started_at, event.provider_call_id),
+    )
     external_known_keys = {
         event.event_key
         for event in mapped_events
-        if event.event_key not in recovery_keys and len(event_recording_ids(event)) < 2
+        if len(event_recording_ids(event)) < 2
+        and event.event_key not in recovery_keys
         and (
-            (event.recording_ref and event.recording_ref in known_recordings)
-            or event.provider_call_id in known_calls
+            (
+                config.strict_ready_provenance
+                and event.provider_call_id in known_calls
+            )
+            or (
+                (event.recording_ref and event.recording_ref in known_recordings)
+                or event.provider_call_id in known_calls
+            )
         )
     }
     events = [
@@ -845,32 +1453,105 @@ def capture_mango_window(
         downloader=downloader,
         dry_run=False,
         sleep_sec=1.5,
+        host_id=host_id,
+        require_integrity_metadata=config.strict_ready_provenance,
     )
     latest = manifest_store.latest_by_event_key()
     pending_expired = 0
     for event_key in expired_keys:
         entry = latest.get(event_key)
-        if entry is not None and entry.status == "skipped_no_recording":
-            manifest_store.append(replace(entry, created_at=until.isoformat(), status="recording_retry_expired", error="recording_missing_after_retry_ttl"))
+        if entry is not None and entry.status in {"skipped_no_recording", "failed"}:
+            manifest_store.append(
+                replace(
+                    entry,
+                    created_at=until.isoformat(),
+                    status="recording_retry_expired",
+                    error="recording_missing_after_retry_ttl",
+                    remediation_code="manual_review_or_retry_if_recording_appears",
+                    host_id=host_id,
+                )
+            )
             pending_expired += 1
     final_latest = manifest_store.latest_by_event_key()
-    remaining_pending = {key for key, entry in final_latest.items() if entry.status == "skipped_no_recording"}
+    remaining_pending = {
+        key
+        for key, entry in final_latest.items()
+        if entry.status in {"skipped_no_recording", "failed"}
+    }
     open_multi_review = sum(entry.status == "multiple_recordings_needs_review" for entry in final_latest.values())
     incomplete_tail = manifest_store.incomplete_trailing_records
     recovered_tail = manifest_store.recovered_trailing_records
     recovery_incident_sha256 = manifest_store.recovery_incident_sha256
-    complete = (
-        summary.failed == 0
-        and summary.skipped_no_recording == 0
-        and not remaining_pending
-        and pending_expired == 0
-        and open_multi_review == 0
-        and incomplete_tail == 0
-        and recovered_tail == 0
+    # Pending/failed recordings and reasoned quarantine are queue state, not an
+    # enumeration failure.  Only manifest lineage damage makes capture itself
+    # partial; SLA/closure are evaluated separately by Stage 10/watchdog.
+    status = (
+        "ok"
+        if summary.failed == 0 and incomplete_tail == 0 and recovered_tail == 0
+        else "partial"
     )
-    status = "ok" if complete else "partial"
+    calls_by_moscow_day: dict[str, list[str]] = {}
+    for event in mapped_events:
+        day_key = event.started_at.astimezone(
+            ZoneInfo("Europe/Moscow")
+        ).date().isoformat()
+        calls_by_moscow_day.setdefault(day_key, []).append(event.provider_call_id)
+    for values in calls_by_moscow_day.values():
+        values[:] = sorted(set(values))
+    previous_cursor = read_json(config.cursor_path)
+    previous_zero = previous_cursor.get("independent_zero_enumerations_by_day")
+    if not isinstance(previous_zero, Mapping):
+        previous_zero = {}
+    zero_proofs: dict[str, int] = {}
+    enumeration_start = min(start for start, _end in merged_windows)
+    day_cursor = enumeration_start.astimezone(
+        ZoneInfo("Europe/Moscow")
+    ).date()
+    last_day = until.astimezone(ZoneInfo("Europe/Moscow")).date()
+    while day_cursor <= last_day:
+        key = day_cursor.isoformat()
+        zero_proofs[key] = (
+            0
+            if calls_by_moscow_day.get(key)
+            else positive_int(previous_zero.get(key)) + 1
+        )
+        day_cursor += timedelta(days=1)
+    manifest_end_offset = config.capture_manifest.stat().st_size
+    sealed_capture = capture_manifest_snapshot(
+        config.capture_manifest, end_offset=manifest_end_offset
+    )
+    catch_up = (until - since) > timedelta(
+        minutes=max(60, config.poll_overlap_minutes * 2)
+    )
     return {
         "status": status,
+        "host_id": host_id,
+        "catch_up": catch_up,
+        "sla_mode": "catch_up" if catch_up else "live",
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": {
+            "mode": (
+                "strict_service"
+                if config.strict_ready_provenance
+                else "compatibility_not_for_service"
+            ),
+            "since": enumeration_start.isoformat(),
+            "rolling_since": base_window_start.isoformat(),
+            "until": until.isoformat(),
+            "cursor": "not_applicable_stats_request_result",
+            "pages": None,
+            "pagination": "not_applicable_stats_request_result",
+            "requests": api_requests,
+            "covered_intervals": covered_intervals,
+            "catch_up": catch_up,
+        },
+        "call_keys": sorted(
+            {event.provider_call_id for event in mapped_events}
+        ),
+        "calls_by_moscow_day": calls_by_moscow_day,
+        "independent_zero_enumerations_by_day": zero_proofs,
+        "manifest_end_offset": manifest_end_offset,
+        "manifest_snapshot_sha256": sealed_capture["sha256"],
         "api_requests": api_requests,
         "api_rows_total": len(rows),
         "api_events_total": len(mapped_events),
@@ -885,6 +1566,12 @@ def capture_mango_window(
         "incomplete_trailing_manifest_records": incomplete_tail,
         "recovered_trailing_manifest_records": recovered_tail,
         "recovery_incident_sha256": recovery_incident_sha256,
+        "capture_assets_complete": bool(
+            summary.failed == 0
+            and not remaining_pending
+            and pending_expired == 0
+            and open_multi_review == 0
+        ),
     }
 
 
@@ -971,7 +1658,11 @@ def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[Te
     for entry in store.latest_by_event_key().values() if config.capture_manifest.exists() else ():
         if entry.status not in {"downloaded", "failed", "multiple_recordings_needs_review"} or not entry_recording_ids(entry):
             continue
-        if entry.status != "failed" and manifest_assets_exist(entry):
+        if entry.status != "failed" and manifest_assets_exist(
+            entry,
+            config.recordings_dir,
+            require_integrity_metadata=config.strict_ready_provenance,
+        ):
             continue
         recovered.append(capture_event_from_manifest(entry))
     return tuple(recovered)
@@ -997,15 +1688,90 @@ def capture_event_from_manifest(entry: ManifestEntry) -> TelephonyCallEvent:
     )
 
 
-def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
+def capture_manifest_snapshot(
+    path: Path, *, end_offset: Optional[int] = None
+) -> Mapping[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        if end_offset is not None:
+            raise RuntimeError("capture manifest snapshot source is missing")
+        return {
+            "entries": (),
+            "end_offset": 0,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "source_size_bytes": 0,
+        }
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError("capture manifest snapshot source is not regular")
+        limit = before.st_size if end_offset is None else int(end_offset)
+        if limit < 0 or limit > before.st_size:
+            raise RuntimeError("capture manifest snapshot offset is invalid")
+        raw = handle.read(limit)
+        after = os.fstat(handle.fileno())
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise RuntimeError("capture manifest changed identity during snapshot")
+    if len(raw) != limit:
+        raise RuntimeError("capture manifest snapshot is incomplete")
+    incomplete_tail = 0
+    entries = []
+    valid_size = 0
+    cursor = 0
+    for line in raw.splitlines(keepends=True):
+        cursor += len(line)
+        if not line.strip():
+            valid_size = cursor
+            continue
+        try:
+            entries.append(entry_from_json(json.loads(line.decode("utf-8"))))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            if end_offset is not None or line.endswith((b"\n", b"\r")):
+                raise RuntimeError("capture manifest snapshot contains invalid JSONL")
+            incomplete_tail = 1
+            break
+        valid_size = cursor
+    if incomplete_tail:
+        raw = raw[:valid_size]
+        limit = valid_size
+    return {
+        "entries": tuple(entries),
+        "end_offset": limit,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "source_size_bytes": before.st_size,
+        "incomplete_trailing_records": incomplete_tail,
+    }
+
+
+def prepare_ingest_inputs(
+    config: CallsTwoProcessesConfig,
+    *,
+    manifest_end_offset: Optional[int] = None,
+    expected_manifest_sha256: Optional[str] = None,
+) -> Mapping[str, Any]:
     config.working_audio_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     actions: dict[str, int] = {}
     skipped: dict[str, int] = {}
-    stable_before = datetime.now(timezone.utc) - timedelta(hours=max(1, config.pending_recording_retry_hours))
-    ingested_call_ids = read_ingested_call_ids(config.working_db)
+    stable_before = datetime.now(timezone.utc) - timedelta(
+        minutes=max(0, config.recording_set_stabilization_minutes)
+    )
+    fully_ready_call_ids = read_fully_ready_call_ids(config)
+    working_call_ids = read_ingested_call_ids(config.working_db)
     manifest_store = CaptureManifestStore(config.capture_manifest)
-    latest = manifest_store.latest_by_event_key() if config.capture_manifest.exists() else {}
+    # Load the recovery ledger as well as the valid append-only prefix.  This is
+    # read-only: an incomplete tail is reported and never silently accepted.
+    manifest_store.read_entries()
+    snapshot = capture_manifest_snapshot(
+        config.capture_manifest, end_offset=manifest_end_offset
+    )
+    if expected_manifest_sha256 and snapshot["sha256"] != expected_manifest_sha256:
+        raise RuntimeError("capture manifest frozen prefix digest mismatch")
+    latest: dict[str, ManifestEntry] = {}
+    for entry in snapshot["entries"]:
+        latest[entry.event_key] = entry
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
             continue
@@ -1013,23 +1779,34 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
             skipped["recording_set_stabilizing"] = skipped.get("recording_set_stabilizing", 0) + 1
             continue
         source = Path(entry.local_audio_path)
-        # A manifest row promised audio that is gone or empty: count it, so a
-        # lost recording never reads as a clean run.
-        if not source.is_file():
-            skipped["audio_file_missing"] = skipped.get("audio_file_missing", 0) + 1
-            continue
-        if source.stat().st_size <= 0:
-            skipped["audio_file_empty"] = skipped.get("audio_file_empty", 0) + 1
-            continue
-        target = config.working_audio_dir / source.name
-        if entry.provider_call_id in ingested_call_ids:
-            if not target.is_file():
-                action = hardlink_or_copy(source, target)
-                actions[action] = actions.get(action, 0) + 1
+        if entry.provider_call_id in fully_ready_call_ids:
+            # The transferred DB is the durable completion authority.  Ready
+            # historical audio is intentionally optional after cutover and
+            # must not be copied or downloaded again.
             skipped["already_ingested"] = skipped.get("already_ingested", 0) + 1
             continue
+        # A manifest row promised audio that is gone or empty: count it, so a
+        # lost recording never reads as a clean run.
+        if not manifest_assets_exist(
+            entry,
+            config.recordings_dir,
+            require_integrity_metadata=config.strict_ready_provenance,
+        ):
+            source = Path(entry.local_audio_path)
+            if source.is_file() and not source.is_symlink() and source.stat().st_size <= 0:
+                reason = "audio_file_empty"
+            elif source.is_file() and not source.is_symlink():
+                reason = "audio_file_integrity_mismatch"
+            else:
+                reason = "audio_file_missing"
+            skipped[reason] = skipped.get(reason, 0) + 1
+            continue
+        target = config.working_audio_dir / source.name
         action = hardlink_or_copy(source, target)
         actions[action] = actions.get(action, 0) + 1
+        if entry.provider_call_id in working_call_ids:
+            skipped["already_in_working"] = skipped.get("already_in_working", 0) + 1
+            continue
         rows.append(
             {
                 "filename": target.name,
@@ -1055,14 +1832,37 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
         "metadata_rows": len(rows),
         "skipped": skipped,
         "skipped_total": sum(skipped.values()),
-        "incomplete_total": (
-            sum(count for reason, count in skipped.items() if reason != "already_ingested")
-            + manifest_store.incomplete_trailing_records
-            + manifest_store.recovered_trailing_records
+        "asset_integrity_failures": sum(
+            skipped.get(reason, 0)
+            for reason in (
+                "audio_file_missing",
+                "audio_file_empty",
+                "audio_file_integrity_mismatch",
+            )
         ),
-        "incomplete_trailing_manifest_records": manifest_store.incomplete_trailing_records,
-        "recovered_trailing_manifest_records": manifest_store.recovered_trailing_records,
+        "pending_stabilizing": skipped.get("recording_set_stabilizing", 0),
+        "incomplete_total": (
+            sum(
+                skipped.get(reason, 0)
+                for reason in (
+                    "audio_file_missing",
+                    "audio_file_empty",
+                    "audio_file_integrity_mismatch",
+                )
+            )
+            + int(snapshot.get("incomplete_trailing_records") or 0)
+            + int(manifest_store.recovered_trailing_records or 0)
+        ),
+        "incomplete_trailing_manifest_records": int(
+            snapshot.get("incomplete_trailing_records") or 0
+        ),
+        "recovered_trailing_manifest_records": int(
+            manifest_store.recovered_trailing_records or 0
+        ),
         "recovery_incident_sha256": manifest_store.recovery_incident_sha256,
+        "manifest_snapshot_end_offset": snapshot["end_offset"],
+        "manifest_snapshot_sha256": snapshot["sha256"],
+        "manifest_source_size_bytes": snapshot["source_size_bytes"],
     }
 
 
@@ -1076,6 +1876,44 @@ def read_ingested_call_ids(path: Path) -> set[str]:
         if "no such table" in str(exc).casefold():
             return set()
         raise
+
+
+def read_fully_ready_call_ids(config: CallsTwoProcessesConfig) -> set[str]:
+    """Return calls durably complete in both working and sealed generations."""
+
+    def complete(path: Path) -> set[str]:
+        rows = load_ready_rows(path)
+        counts: dict[str, int] = {}
+        for row in rows:
+            call_id = str(row.get("source_call_id") or "").strip()
+            if call_id:
+                counts[call_id] = counts.get(call_id, 0) + 1
+        return {
+            call_id
+            for row in rows
+            if (call_id := str(row.get("source_call_id") or "").strip())
+            and counts[call_id] == 1
+            and ready_row_is_complete(row)
+        }
+
+    if config.strict_ready_provenance:
+        try:
+            manifest = read_json(config.ready_manifest)
+            if (
+                validate_ready_manifest_payload(
+                    manifest,
+                    expected_code_sha=config.expected_code_sha,
+                    expected_host_id=configured_host_id(config, required=True),
+                )
+                or manifest.get("sha256") != sha256_file(config.ready_db)
+                or int(manifest.get("size_bytes") or -1)
+                != config.ready_db.stat().st_size
+            ):
+                return set()
+        except (OSError, TypeError, ValueError, RuntimeError):
+            return set()
+
+    return complete(config.working_db) & complete(config.ready_db)
 
 
 def call_db_has_open_work(path: Path) -> bool:
@@ -1183,6 +2021,7 @@ def environment_preflight(
     codex_ok = config.codex_binary.is_file() and os.access(config.codex_binary, os.X_OK)
     auth_ok = False
     modules_ok = False
+    runtime_observation = observe_runtime_fingerprint(config)
     network_ok = codex_network_available() if run_commands else True
     if run_commands and python_ok:
         try:
@@ -1200,7 +2039,10 @@ def environment_preflight(
             modules_ok = False
     if run_commands and codex_ok:
         try:
-            codex_home = prepare_codex_home(config.codex_home_root / "worker")
+            codex_home = prepare_codex_home(
+                config.codex_home_root / "worker",
+                strict=config.strict_ready_provenance,
+            )
             auth = subprocess.run(
                 [str(config.codex_binary), "login", "status"],
                 env={
@@ -1228,8 +2070,17 @@ def environment_preflight(
         "codex_binary": codex_ok,
         "codex_auth": auth_ok,
         "codex_network": network_ok,
+        "runtime_fingerprint": runtime_observation.get("ok") is True,
     }
-    required = ("mango_credentials", "python_executable", "asr_modules", "codex_binary", "codex_auth")
+    required: tuple[str, ...] = (
+        "mango_credentials",
+        "python_executable",
+        "asr_modules",
+        "codex_binary",
+        "codex_auth",
+    )
+    if config.strict_ready_provenance:
+        required = (*required, "runtime_fingerprint")
     failed_checks = [name for name in required if run_commands and not checks[name]]
     return {
         "ok": not failed_checks,
@@ -1244,8 +2095,87 @@ def environment_preflight(
         "codex_authenticated": auth_ok,
         "codex_network_ok": network_ok,
         "asr_mode": config.asr_mode,
-        "parallel_stages": list(pipeline_stages(config, include_llm=network_ok)),
+        "sequential_stages": list(
+            pipeline_stages(config, include_llm=network_ok)
+        ),
+        "runtime_fingerprint": runtime_observation.get("fingerprint"),
+        "runtime_fingerprint_errors": runtime_observation.get("errors"),
     }
+
+
+def observe_runtime_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
+    fingerprint = json.loads(
+        json.dumps(approved_runtime_fingerprint(), ensure_ascii=False)
+    )
+    errors: list[str] = []
+    versions: Mapping[str, Any] = {}
+    if config.python_executable.is_file() and os.access(config.python_executable, os.X_OK):
+        code = (
+            "import importlib.metadata,json;"
+            "print(json.dumps({n:importlib.metadata.version(n) for n in "
+            "('mlx-whisper','gigaam')}))"
+        )
+        try:
+            result = subprocess.run(
+                [str(config.python_executable), "-c", code],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                parsed = json.loads(result.stdout)
+                versions = parsed if isinstance(parsed, Mapping) else {}
+            else:
+                errors.append("asr_package_version_probe_failed")
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            errors.append("asr_package_version_probe_failed")
+    else:
+        errors.append("python_executable_unavailable")
+    fingerprint["whisper"]["library_version"] = str(
+        versions.get("mlx-whisper") or ""
+    )
+    fingerprint["gigaam"]["library_version"] = str(versions.get("gigaam") or "")
+
+    snapshot = config.mlx_whisper_snapshot_path
+    if snapshot is None:
+        fingerprint["whisper"]["weights_revision"] = ""
+        errors.append("mlx_whisper_snapshot_path_missing")
+    else:
+        resolved = snapshot.expanduser().resolve(strict=False)
+        if (
+            not snapshot.exists()
+            or not snapshot.is_dir()
+            or resolved.name
+            != str(approved_runtime_fingerprint()["whisper"]["weights_revision"])
+        ):
+            fingerprint["whisper"]["weights_revision"] = ""
+            errors.append("mlx_whisper_snapshot_revision_unproven")
+        else:
+            fingerprint["whisper"]["weights_revision"] = resolved.name
+
+    codex_version = ""
+    if config.codex_binary.is_file() and os.access(config.codex_binary, os.X_OK):
+        try:
+            result = subprocess.run(
+                [str(config.codex_binary), "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            match = re.search(r"\b(\d+\.\d+\.\d+)\b", result.stdout + result.stderr)
+            codex_version = match.group(1) if result.returncode == 0 and match else ""
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    for stage in ("resolve", "analyze"):
+        fingerprint[stage]["codex_cli_version"] = codex_version
+    fingerprint["resolve"]["model"] = config.codex_resolve_model
+    fingerprint["analyze"]["model"] = config.codex_analyze_model
+    fingerprint["resolve"]["reasoning"] = config.codex_reasoning_effort
+    fingerprint["analyze"]["reasoning"] = config.codex_reasoning_effort
+    errors.extend(validate_runtime_fingerprint(fingerprint))
+    return {"ok": not errors, "errors": sorted(set(errors)), "fingerprint": fingerprint}
 
 
 def module_probe_command(config: CallsTwoProcessesConfig) -> list[str]:
@@ -1292,6 +2222,10 @@ def resolve_capture_window(
         raw = optional_text(cursor.get("until")) or config.bootstrap_since
         if raw:
             start = parse_datetime(raw) - timedelta(minutes=config.poll_overlap_minutes)
+            if end - start > timedelta(days=config.max_catch_up_days):
+                raise ValueError(
+                    "capture gap exceeds max_catch_up_days; provide explicit --since after dry-run review"
+                )
         else:
             start = end - timedelta(hours=config.first_lookback_hours)
     if end <= start:
@@ -1303,7 +2237,10 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
     project_root = Path(__file__).resolve().parents[3]
     isolated_codex = project_root / "scripts" / "run_codex_cli_isolated.sh"
     config.transcripts_dir.mkdir(parents=True, exist_ok=True)
-    codex_home = prepare_codex_home(config.codex_home_root / "worker")
+    codex_home = prepare_codex_home(
+        config.codex_home_root / "worker",
+        strict=config.strict_ready_provenance,
+    )
     return {
         **os.environ,
         "PATH": command_path(config),
@@ -1324,6 +2261,7 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         "RESOLVE_RESCUE_PROVIDER": "none",
         "RESOLVE_RESCUE_DUAL_ENABLED": "0",
         "ANALYZE_PROVIDER": "codex_cli",
+        "MANGO_STRICT_ASR_RUNTIME": "1" if config.strict_ready_provenance else "0",
     }
 
 
@@ -1337,14 +2275,46 @@ def transcribe_environment(config: CallsTwoProcessesConfig, base: Mapping[str, s
         "MONO_ROLE_ASSIGNMENT_MODE": "rule",
         "TRANSCRIBE_LANGUAGE": "ru",
         "SPLIT_STEREO_CHANNELS": "1",
+        "MLX_WHISPER_MODEL": str(
+            config.mlx_whisper_snapshot_path
+            or "mlx-community/whisper-large-v3-mlx"
+        ),
+        "MLX_CONDITION_ON_PREVIOUS_TEXT": "0",
+        "MLX_WORD_TIMESTAMPS": "1",
+        "GIGAAM_MODEL": "v2_rnnt",
         "GIGAAM_DEVICE": "cpu",
     }
 
 
-def prepare_codex_home(target: Path) -> Path:
+def prepare_codex_home(target: Path, *, strict: bool = False) -> Path:
     source = Path.home() / ".codex"
+    resolved_target = target.expanduser().resolve(strict=False)
+    cloud_markers = {"yandex.disk", "icloud drive", "mobile documents", "dropbox", "onedrive"}
+    if strict:
+        if any(
+            marker in part.casefold()
+            for part in resolved_target.parts
+            for marker in cloud_markers
+        ):
+            raise RuntimeError("isolated CODEX_HOME must stay outside cloud folders")
+        project_root = Path(__file__).resolve().parents[3]
+        if resolved_target == project_root or project_root in resolved_target.parents:
+            raise RuntimeError("isolated CODEX_HOME must stay outside the Git worktree")
+        owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+        if owner_local not in resolved_target.parents:
+            raise RuntimeError("isolated CODEX_HOME must stay under ~/.mango_local")
     target.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(target, 0o700)
+    allowed_existing = {
+        "auth.json",
+        "installation_id",
+        "models_cache.json",
+        "config.toml",
+        "AGENTS.md",
+    }
+    unknown = sorted(entry.name for entry in target.iterdir() if entry.name not in allowed_existing)
+    if strict and unknown:
+        raise RuntimeError("isolated CODEX_HOME contains unknown persistent files")
     for name in ("auth.json", "installation_id", "models_cache.json"):
         src = source / name
         dst = target / name
@@ -1393,18 +2363,19 @@ def pipeline_stages(
     *,
     include_llm: bool = True,
 ) -> tuple[str, ...]:
-    stages = PARALLEL_PIPELINE_STAGES
+    stages = SEQUENTIAL_PIPELINE_STAGES
     if include_llm:
         return stages
     return tuple(stage for stage in stages if stage not in {"resolve", "analyze"})
 
 
-def run_parallel_pipeline_workers(
+def run_sequential_pipeline_workers(
     config: CallsTwoProcessesConfig,
     base_env: Mapping[str, str],
     runner: CommandRunner,
     *,
     include_llm: bool = True,
+    run_id: Optional[str] = None,
 ) -> list[Mapping[str, Any]]:
     stages = pipeline_stages(config, include_llm=include_llm)
     if runner is not run_command:
@@ -1417,32 +2388,175 @@ def run_parallel_pipeline_workers(
             for stage in stages
         ]
     logs_dir = config.working_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    logs_dir.chmod(0o700)
+    log_run_id = re.sub(
+        r"[^A-Za-z0-9_.-]", "_", run_id or new_calls_run_id(datetime.now(timezone.utc))
+    )
     reports: list[Mapping[str, Any]] = []
     for stage in stages:
         label = stage.replace("-", "_")
-        log_path = logs_dir / f"stage_{label}.log"
+        log_path = logs_dir / f"stage_{label}_{log_run_id}.log"
         worker_env = {
             **stage_worker_environment_for(config, base_env, stage),
             "CODEX_HOME": str(
-                prepare_codex_home(config.codex_home_root / label)
+                prepare_codex_home(
+                    config.codex_home_root / label,
+                    strict=config.strict_ready_provenance,
+                )
             ),
         }
-        with log_path.open("w", encoding="utf-8") as log_handle:
-            proc = subprocess.run(
-                worker_command(config, stage),
-                cwd=config.working_dir,
-                env=worker_env,
-                text=True,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
-        rc = int(proc.returncode or 0)
-        reports.append({"rc": rc, "command": f"worker:{stage}", "log_path": str(log_path)})
+        started_at = time.monotonic()
+        before_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        deadline = stage_timeout_deadline(
+            started_at=started_at,
+            timeout_seconds=config.heavy_stage_timeout_seconds,
+        )
+        heartbeat_path = config.process_a_heartbeat_path
+        proc: subprocess.Popen[str] | None = None
+        timed_out = False
+        try:
+            with log_path.open("x", encoding="utf-8") as log_handle:
+                log_path.chmod(0o600)
+                command = worker_command(config, stage)
+                timed_command = (
+                    ["/usr/bin/time", "-l", *command]
+                    if Path("/usr/bin/time").is_file()
+                    else command
+                )
+                proc = subprocess.Popen(
+                    timed_command,
+                    cwd=config.working_dir,
+                    env=worker_env,
+                    text=True,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                last_heartbeat = 0.0
+                while proc.poll() is None:
+                    current = time.monotonic()
+                    if current - last_heartbeat >= 30:
+                        write_json(
+                            heartbeat_path,
+                            {
+                                "schema_version": "mango_calls_heavy_heartbeat_v1",
+                                "stage": stage,
+                                "pid": proc.pid,
+                                "updated_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        last_heartbeat = current
+                    if current >= deadline:
+                        timed_out = True
+                        terminate_process_group(proc)
+                        break
+                    time.sleep(1)
+                rc = 124 if timed_out else int(proc.returncode or 0)
+                if timed_out:
+                    log_handle.write("stage_timeout\n")
+        finally:
+            if proc is not None and proc.poll() is None:
+                terminate_process_group(proc)
+            heartbeat_path.unlink(missing_ok=True)
+        after_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        stage_metrics = parse_macos_time_metrics(log_path)
+        reports.append(
+            {
+                "rc": rc,
+                "command": f"worker:{stage}",
+                "log_path": str(log_path),
+                "log_size_bytes": log_path.stat().st_size,
+                "log_sha256": sha256_file(log_path),
+                "wall_seconds": round(time.monotonic() - started_at, 3),
+                "peak_rss_raw": stage_metrics.get("peak_rss_bytes"),
+                "swap_operations": stage_metrics.get(
+                    "swap_operations",
+                    max(0, int(after_usage.ru_nswap - before_usage.ru_nswap)),
+                ),
+                "timed_out": rc == 124,
+            }
+        )
         if rc != 0:
             break
     return reports
+
+
+def stage_timeout_deadline(*, started_at: float, timeout_seconds: int) -> float:
+    """Give every sequential heavy command its own complete timeout window."""
+    return started_at + timeout_seconds
+
+
+def terminate_process_group(
+    proc: subprocess.Popen[str],
+    *,
+    grace_seconds: float = 10.0,
+) -> None:
+    def group_exists() -> bool:
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    if not group_exists():
+        if proc.poll() is None:
+            proc.wait(timeout=grace_seconds)
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+    # The session leader may exit while a worker child ignores SIGTERM.  A
+    # successful wait for the parent therefore does not prove that the process
+    # group is gone.
+    if group_exists():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if proc.poll() is None:
+        proc.wait(timeout=grace_seconds)
+    deadline = time.monotonic() + grace_seconds
+    while group_exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if group_exists():
+        raise RuntimeError("pipeline worker process group survived termination")
+
+
+def parse_macos_time_metrics(path: Path) -> Mapping[str, int]:
+    try:
+        text_value = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {}
+    peak = re.findall(r"(?m)^\s*(\d+)\s+maximum resident set size\s*$", text_value)
+    swaps = re.findall(r"(?m)^\s*(\d+)\s+swaps\s*$", text_value)
+    result: dict[str, int] = {}
+    if peak:
+        result["peak_rss_bytes"] = int(peak[-1])
+    if swaps:
+        result["swap_operations"] = int(swaps[-1])
+    return result
+
+
+def run_parallel_pipeline_workers(
+    config: CallsTwoProcessesConfig,
+    base_env: Mapping[str, str],
+    runner: CommandRunner,
+    *,
+    include_llm: bool = True,
+    run_id: Optional[str] = None,
+) -> list[Mapping[str, Any]]:
+    """Compatibility alias; the implementation is intentionally sequential."""
+    return run_sequential_pipeline_workers(
+        config, base_env, runner, include_llm=include_llm, run_id=run_id
+    )
 
 
 def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
@@ -1531,10 +2645,84 @@ def run_increment_producer(
     return {"status": "ok" if proc.returncode == 0 else "failed", "rc": proc.returncode, **report}
 
 
-def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any]) -> Mapping[str, Any]:
+def _ready_verdicts(
+    config: CallsTwoProcessesConfig,
+    *,
+    capture_evidence: Mapping[str, Any],
+    manifest_end_offset: Optional[int],
+) -> tuple[Mapping[str, Mapping[str, Any]], Mapping[str, Any], Mapping[str, Any]]:
+    snapshot = capture_manifest_snapshot(
+        config.capture_manifest, end_offset=manifest_end_offset
+    )
+    # Verdict and manifest must describe the sealed generation, never a live
+    # working DB that may advance immediately after backup.
+    rows = load_ready_rows(config.ready_db)
+    evidence: dict[str, Any] = dict(capture_evidence)
+    calls_by_day = evidence.get("calls_by_moscow_day")
+    if not isinstance(calls_by_day, Mapping) and not config.strict_ready_provenance:
+        inferred: dict[str, list[str]] = {}
+        for entry in snapshot["entries"]:
+            call_key = str(entry.provider_call_id or "").strip()
+            if not call_key or not entry.started_at:
+                continue
+            day_key = parse_aware_datetime(entry.started_at).astimezone(
+                ZoneInfo("Europe/Moscow")
+            ).date().isoformat()
+            inferred.setdefault(day_key, []).append(call_key)
+        for row in rows:
+            call_key = str(row.get("source_call_id") or "").strip()
+            raw_started = row.get("started_at")
+            if not call_key or not raw_started:
+                continue
+            day_key = parse_aware_datetime(raw_started).astimezone(
+                ZoneInfo("Europe/Moscow")
+            ).date().isoformat()
+            inferred.setdefault(day_key, []).append(call_key)
+        for day_values in inferred.values():
+            day_values[:] = sorted(set(day_values))
+        evidence.update(
+            mango_enumeration_complete=True,
+            calls_by_moscow_day=inferred,
+            independent_zero_enumerations_by_day={},
+            mango_enumeration_source={
+                "mode": "compatibility_not_for_service",
+                "since": "not_proven",
+                "until": "not_proven",
+            },
+        )
+        calls_by_day = inferred
+    zero_days = evidence.get("independent_zero_enumerations_by_day")
+    day_keys = sorted(
+        set(calls_by_day) | set(zero_days)
+        if isinstance(calls_by_day, Mapping) and isinstance(zero_days, Mapping)
+        else set(calls_by_day) if isinstance(calls_by_day, Mapping) else set()
+    )
+    verdicts = {
+        day_key: build_stage10_verdict(
+            day=datetime.fromisoformat(day_key).date(),
+            enumeration=evidence,
+            capture_entries=snapshot["entries"],
+            ready_rows=rows,
+        )
+        for day_key in day_keys
+    }
+    return verdicts, snapshot, evidence
+
+
+def publish_ready_db(
+    config: CallsTwoProcessesConfig,
+    counts: Mapping[str, Any],
+    *,
+    run_id: Optional[str] = None,
+    capture_evidence: Optional[Mapping[str, Any]] = None,
+    manifest_end_offset: Optional[int] = None,
+    stage_reports: Sequence[Mapping[str, Any]] = (),
+    runtime_fingerprint: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
     config.ready_db.parent.mkdir(parents=True, exist_ok=True)
     temp = config.ready_db.with_suffix(".sqlite.tmp")
     cleanup_sqlite_sidecars(temp)
+    source_before = sqlite_storage_signature(config.working_db)
     with sqlite3.connect(f"file:{config.working_db}?mode=ro", uri=True, timeout=60) as source:
         source.execute("PRAGMA query_only=ON")
         with sqlite3.connect(temp) as target:
@@ -1542,22 +2730,92 @@ def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any])
             target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             target.execute("PRAGMA journal_mode=DELETE")
             quick = str(target.execute("PRAGMA quick_check").fetchone()[0])
-    if quick != "ok":
-        raise RuntimeError("ready DB quick_check failed")
+            integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0])
+    source_after = sqlite_storage_signature(config.working_db)
+    if source_before != source_after:
+        temp.unlink(missing_ok=True)
+        cleanup_sqlite_sidecars(temp)
+        raise RuntimeError("working DB changed while sealing ready generation")
+    if quick != "ok" or integrity != "ok":
+        raise RuntimeError("ready DB integrity check failed")
     temp.replace(config.ready_db)
     cleanup_sqlite_sidecars(temp)
     sha = sha256_file(config.ready_db)
+    evidence = dict(capture_evidence or read_json(config.cursor_path))
+    verdicts, snapshot, evidence = _ready_verdicts(
+        config,
+        capture_evidence=evidence,
+        manifest_end_offset=manifest_end_offset,
+    )
+    expected_capture_sha = optional_text(evidence.get("manifest_snapshot_sha256"))
+    if config.strict_ready_provenance and expected_capture_sha != snapshot["sha256"]:
+        raise RuntimeError("ready generation capture snapshot digest mismatch")
+    consistency_ok = bool(verdicts) and all(
+        verdict.get("consistency_ok") is True for verdict in verdicts.values()
+    )
+    closure_ok = bool(verdicts) and all(
+        verdict.get("closure_ok") is True for verdict in verdicts.values()
+    )
+    if not config.strict_ready_provenance and not verdicts:
+        consistency_ok = closure_ok = True
+    project_root = Path(__file__).resolve().parents[3]
+    producer_sha = config.expected_code_sha or current_git_sha(project_root)
+    host_id = configured_host_id(
+        config, required=config.require_cutover_authority
+    )
+    source = evidence.get("mango_enumeration_source")
+    if not isinstance(source, Mapping):
+        source = {}
+    created = datetime.now(timezone.utc)
+    observed_fingerprint = (
+        dict(runtime_fingerprint)
+        if isinstance(runtime_fingerprint, Mapping)
+        else approved_runtime_fingerprint()
+    )
+    fingerprint_errors = validate_runtime_fingerprint(observed_fingerprint)
+    if config.strict_ready_provenance and fingerprint_errors:
+        raise RuntimeError(
+            "runtime fingerprint is not proven: " + ",".join(fingerprint_errors)
+        )
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": READY_MANIFEST_SCHEMA,
         "status": "ready",
-        "published_at": datetime.now(timezone.utc).isoformat(),
+        "published_at": created.isoformat(),
+        "created_at_utc": created.isoformat(),
+        "moscow_dates": sorted(verdicts),
+        "producer_git_sha": producer_sha,
+        "host_id": host_id,
+        "run_id": run_id or new_calls_run_id(created),
         "ready_db": str(config.ready_db),
         "sha256": sha,
         "size_bytes": config.ready_db.stat().st_size,
         "ready_mtime_ns": config.ready_db.stat().st_mtime_ns,
         "quick_check": quick,
+        "integrity_check": integrity,
+        "provenance_mode": (
+            "strict_service"
+            if config.strict_ready_provenance
+            else "compatibility_not_for_service"
+        ),
+        "mango_window": {
+            "since": source.get("rolling_since") or source.get("since") or "not_proven",
+            "until": source.get("until") or "not_proven",
+        },
+        "mango_enumeration_complete": evidence.get("mango_enumeration_complete") is True,
+        "mango_enumeration_source": dict(source),
+        "catch_up": bool(source.get("catch_up")),
+        "sla_mode": "catch_up" if source.get("catch_up") else "live",
+        "manifest_snapshot": {
+            "end_offset": snapshot["end_offset"],
+            "sha256": snapshot["sha256"],
+        },
+        "consistency_ok": consistency_ok,
+        "closure_ok": closure_ok,
+        "daily_verdicts": verdicts,
+        "runtime_fingerprint": observed_fingerprint,
+        "stage_metrics": compact_command_reports(stage_reports),
         "counts": counts,
-        "source_storage": sqlite_storage_signature(config.working_db),
+        "source_storage": source_after,
     }
     write_json(config.ready_db.with_suffix(".manifest.json"), manifest)
     return manifest
@@ -1572,32 +2830,135 @@ def sqlite_storage_signature(path: Path) -> Mapping[str, Mapping[str, int]]:
     return result
 
 
-def publish_ready_db_if_changed(config: CallsTwoProcessesConfig, counts: Mapping[str, Any], *, changed: bool) -> Mapping[str, Any]:
+def publish_ready_db_if_changed(
+    config: CallsTwoProcessesConfig,
+    counts: Mapping[str, Any],
+    *,
+    changed: bool,
+    run_id: Optional[str] = None,
+    capture_evidence: Optional[Mapping[str, Any]] = None,
+    manifest_end_offset: Optional[int] = None,
+    stage_reports: Sequence[Mapping[str, Any]] = (),
+    runtime_fingerprint: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
     manifest_path = config.ready_db.with_suffix(".manifest.json")
     if not changed and config.ready_db.is_file() and manifest_path.is_file():
         manifest = read_json(manifest_path)
         ready_stat = config.ready_db.stat()
         ready_unchanged = manifest.get("size_bytes") == ready_stat.st_size and manifest.get("ready_mtime_ns") == ready_stat.st_mtime_ns
-        if manifest.get("status") == "ready" and ready_unchanged and manifest.get("source_storage") == sqlite_storage_signature(config.working_db):
+        evidence = dict(capture_evidence or read_json(config.cursor_path))
+        expected_offset = positive_int(
+            manifest_end_offset
+            if manifest_end_offset is not None
+            else evidence.get("manifest_end_offset")
+        )
+        expected_snapshot_sha = optional_text(
+            evidence.get("manifest_snapshot_sha256")
+        )
+        current_snapshot = capture_manifest_snapshot(
+            config.capture_manifest,
+            end_offset=expected_offset,
+        ) if config.capture_manifest.is_file() else {
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "end_offset": 0,
+        }
+        if expected_snapshot_sha is None and not config.strict_ready_provenance:
+            expected_snapshot_sha = str(current_snapshot["sha256"])
+        prior_snapshot = manifest.get("manifest_snapshot")
+        snapshot_same = bool(
+            isinstance(prior_snapshot, Mapping)
+            and positive_int(prior_snapshot.get("end_offset")) == expected_offset
+            and prior_snapshot.get("sha256") == expected_snapshot_sha
+            and current_snapshot.get("sha256") == expected_snapshot_sha
+        )
+        if (
+            manifest.get("status") == "ready"
+            and ready_unchanged
+            and snapshot_same
+            and manifest.get("source_storage")
+            == sqlite_storage_signature(config.working_db)
+            and not validate_ready_manifest_payload(
+                manifest,
+                expected_code_sha=(
+                    config.expected_code_sha
+                    if config.strict_ready_provenance
+                    else None
+                ),
+                expected_host_id=(
+                    configured_host_id(config, required=True)
+                    if config.strict_ready_provenance
+                    else None
+                ),
+                allow_compatibility=not config.strict_ready_provenance,
+            )
+        ):
             return {**manifest, "reused": True}
-    return {**publish_ready_db(config, counts), "reused": False}
+    return {
+        **publish_ready_db(
+            config,
+            counts,
+            run_id=run_id,
+            capture_evidence=capture_evidence,
+            manifest_end_offset=manifest_end_offset,
+            stage_reports=stage_reports,
+            runtime_fingerprint=runtime_fingerprint,
+        ),
+        "reused": False,
+    }
 
 
 def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     manifest = read_json(config.ready_db.with_suffix(".manifest.json"))
+    before = config.ready_db.stat()
     actual_sha = sha256_file(config.ready_db)
     manifest_sha = optional_text(manifest.get("sha256"))
     manifest_size = positive_int(manifest.get("size_bytes")) or None
     actual_size = config.ready_db.stat().st_size
     try:
         actual_quick_check = sqlite_check(config.ready_db, "quick_check")
+        actual_integrity_check = sqlite_check(config.ready_db, "integrity_check")
     except (OSError, sqlite3.DatabaseError):
         actual_quick_check = "error"
-    errors: list[str] = []
-    if optional_text(manifest.get("status")) != "ready":
-        errors.append("status_not_ready")
+        actual_integrity_check = "error"
+    after = config.ready_db.stat()
+    strict_manifest = bool(
+        config.strict_ready_provenance
+        or manifest.get("schema_version") == READY_MANIFEST_SCHEMA
+    )
+    if strict_manifest:
+        errors = validate_ready_manifest_payload(
+            manifest,
+            expected_code_sha=(
+                config.expected_code_sha if config.strict_ready_provenance else None
+            ),
+            expected_host_id=(
+                configured_host_id(config, required=True)
+                if config.strict_ready_provenance
+                else None
+            ),
+            allow_compatibility=not config.strict_ready_provenance,
+        )
+    else:
+        # Compatibility is intentionally available only to direct library
+        # callers.  Service configs loaded from JSON always enable strict mode.
+        errors = []
+        if manifest.get("status") != "ready":
+            errors.append("status_not_ready")
+        if optional_text(manifest.get("quick_check")) != "ok":
+            errors.append("quick_check_not_ok")
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        errors.append("ready_db_changed_while_reading")
     if optional_text(manifest.get("quick_check")) != "ok" or actual_quick_check != "ok":
         errors.append("quick_check_not_ok")
+    if actual_integrity_check != "ok" or (
+        strict_manifest and optional_text(manifest.get("integrity_check")) != "ok"
+    ):
+        errors.append("integrity_check_not_ok")
     if not manifest_sha:
         errors.append("sha256_missing")
     elif manifest_sha != actual_sha:
@@ -1613,6 +2974,13 @@ def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]
         "manifest_size_bytes": manifest_size,
         "manifest_quick_check": optional_text(manifest.get("quick_check")),
         "actual_quick_check": actual_quick_check,
+        "actual_integrity_check": actual_integrity_check,
+        "consistency_ok": (
+            manifest.get("consistency_ok") is True if strict_manifest else True
+        ),
+        "closure_ok": manifest.get("closure_ok") is True,
+        "producer_git_sha": manifest.get("producer_git_sha"),
+        "host_id": manifest.get("host_id"),
         "manifest_valid": not errors,
         "manifest_errors": errors,
         "manifest_mismatch": any(error.endswith("_mismatch") for error in errors),
@@ -1746,6 +3114,7 @@ def finalize_report(
         and status in {"ok", "partial"}
         and isinstance(counters.get("drop"), Mapping)
         and counters["drop"].get("status") == "ready"
+        and counters["drop"].get("consistency_ok") is True
     )
     local_path = config.reports_dir / f"{run_id}_{process}.json"
     if status in {"failed", "partial"}:
@@ -1851,12 +3220,24 @@ def compact_producer_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def write_stage_status(config: CallsTwoProcessesConfig, report: Mapping[str, Any]) -> None:
     process = str(report.get("process") or "")
-    if process not in {"process_a", "process_b"}:
+    if process not in {"capture", "process_a", "process_b"}:
         return
     counters = report.get("counters") if isinstance(report.get("counters"), Mapping) else {}
     data_through: Any = None
     checked_through: Any = None
-    if process == "process_a":
+    if process == "capture":
+        window = counters.get("window") if isinstance(
+            counters.get("window"), Mapping
+        ) else {}
+        capture = counters.get("capture") if isinstance(
+            counters.get("capture"), Mapping
+        ) else {}
+        data_through = window.get("until")
+        checked_through = window.get("until") if capture.get(
+            "mango_enumeration_complete"
+        ) is True else None
+        path = config.capture_status_path
+    elif process == "process_a":
         call_db = counters.get("call_db") if isinstance(counters.get("call_db"), Mapping) else {}
         window = counters.get("window") if isinstance(counters.get("window"), Mapping) else {}
         data_through = call_db.get("max_analyzed_at")
@@ -1869,9 +3250,13 @@ def write_stage_status(config: CallsTwoProcessesConfig, report: Mapping[str, Any
         checked_through = datetime.now(timezone.utc).isoformat()
         path = config.process_b_status_path
     previous = read_json(path)
-    if report.get("status") in {"locked", "idle"}:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if report.get("status") == "locked":
         data_through = data_through or previous.get("data_through")
         checked_through = previous.get("checked_through")
+    elif report.get("status") == "idle":
+        data_through = data_through or previous.get("data_through")
+        checked_through = checked_at
     write_json(
         path,
         {
@@ -1879,7 +3264,7 @@ def write_stage_status(config: CallsTwoProcessesConfig, report: Mapping[str, Any
             "process": process,
             "status": report.get("status"),
             "stop_reason": report.get("stop_reason"),
-            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checked_at": checked_at,
             "checked_through": checked_through,
             "data_through": data_through,
         },
@@ -1898,10 +3283,20 @@ def pipeline_freshness(
     recovery_status = str(capture_health["recovery_status"])
     recovery_unresolved_count = positive_int(capture_health["recovery_unresolved_count"])
     stages: dict[str, Any] = {}
-    for process, path in (
-        ("process_a", config.process_a_status_path),
-        ("process_b", config.process_b_status_path),
-    ):
+    process_paths = (
+        (
+            ("capture", config.capture_status_path),
+            ("process_a", config.process_a_status_path),
+            ("process_b", config.process_b_status_path),
+        )
+        if config.strict_ready_provenance
+        else (
+            ("process_a", config.process_a_status_path),
+            ("process_b", config.process_b_status_path),
+        )
+    )
+    capture_process = "capture" if config.strict_ready_provenance else "process_a"
+    for process, path in process_paths:
         state = read_json(path)
         raw_checked = optional_text(state.get("checked_through") or state.get("checked_at"))
         raw_data = optional_text(state.get("data_through"))
@@ -1909,21 +3304,27 @@ def pipeline_freshness(
         data_at = parse_datetime(raw_data) if raw_data else None
         checked_age = max(0.0, (current - checked).total_seconds()) if checked else None
         data_age = max(0.0, (current - data_at).total_seconds()) if data_at else None
-        status = "missing" if data_at is None else "stale" if data_age > threshold else "fresh"
+        status = (
+            "missing"
+            if checked is None
+            else "stale"
+            if checked_age is not None and checked_age > threshold
+            else "fresh"
+        )
         stage_stop_reason = state.get("stop_reason")
         if state.get("status") == "failed":
             status = "failed"
-        elif process == "process_a" and (tail_status == "invalid" or recovery_status == "invalid"):
+        elif process == capture_process and (tail_status == "invalid" or recovery_status == "invalid"):
             status = "failed"
             stage_stop_reason = (
                 "capture_manifest_tail_invalid"
                 if tail_status == "invalid"
                 else "capture_recovery_ledger_invalid"
             )
-        elif process == "process_a" and (tail_status == "incomplete" or recovery_unresolved_count):
+        elif process == capture_process and (tail_status == "incomplete" or recovery_unresolved_count):
             status = "partial"
             stage_stop_reason = "capture_manifest_tail_incomplete"
-        elif process == "process_a" and tail_status == "missing":
+        elif process == capture_process and tail_status == "missing":
             status = "missing"
             stage_stop_reason = "capture_manifest_missing"
         elif state.get("status") == "partial":
@@ -1939,12 +3340,209 @@ def pipeline_freshness(
             "last_run_status": state.get("status"),
             "stop_reason": stage_stop_reason,
         }
-        if process == "process_a":
+        if process == capture_process:
             stages[process]["capture_manifest_tail_status"] = tail_status
             stages[process]["capture_recovery_status"] = recovery_status
             stages[process]["capture_recovery_unresolved_count"] = recovery_unresolved_count
-    ok = all(item["status"] == "fresh" for item in stages.values())
-    return {"schema_version": "mango_calls_freshness_v1", "status": "fresh" if ok else "stale", "stages": stages}
+    heartbeat = read_json(config.process_a_heartbeat_path)
+    heartbeat_state: Mapping[str, Any] = {}
+    if heartbeat:
+        raw_heartbeat = optional_text(heartbeat.get("updated_at"))
+        try:
+            heartbeat_at = parse_datetime(raw_heartbeat) if raw_heartbeat else None
+            heartbeat_age = (
+                max(0.0, (current - heartbeat_at).total_seconds())
+                if heartbeat_at
+                else None
+            )
+        except (TypeError, ValueError):
+            heartbeat_age = None
+        heartbeat_pid = positive_int(heartbeat.get("pid"))
+        heartbeat_live = bool(
+            heartbeat_age is not None
+            and heartbeat_age <= 90
+            and pid_exists(heartbeat_pid)
+            and str(heartbeat.get("stage") or "") in SEQUENTIAL_PIPELINE_STAGES
+        )
+        heartbeat_state = {
+            "status": "running" if heartbeat_live else "stale_or_dead",
+            "age_seconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
+            "stage": heartbeat.get("stage"),
+        }
+        if heartbeat_live and "process_a" in stages:
+            stages["process_a"] = {
+                **stages["process_a"],
+                "status": "running",
+                "stop_reason": "",
+            }
+    ok = all(item["status"] in {"fresh", "running"} for item in stages.values())
+    return {
+        "schema_version": "mango_calls_freshness_v1",
+        "status": "fresh" if ok else "stale",
+        "stages": stages,
+        "heavy_heartbeat": heartbeat_state,
+    }
+
+
+def run_local_watchdog(
+    config: CallsTwoProcessesConfig,
+    *,
+    now: Optional[datetime] = None,
+) -> Mapping[str, Any]:
+    """Read only local heartbeat/provenance state; never processes a call."""
+    config.validate()
+    freshness = pipeline_freshness(config, now=now)
+    authority = cutover_authority_report(config)
+    snapshot = capture_manifest_snapshot(config.capture_manifest)
+    active_host = configured_host_id(
+        config, required=config.require_cutover_authority
+    )
+    foreign_after: Optional[datetime] = None
+    if authority.get("previous_host_disabled_at"):
+        try:
+            foreign_after = parse_aware_datetime(authority["previous_host_disabled_at"])
+        except (TypeError, ValueError):
+            foreign_after = None
+    foreign = foreign_host_ids(
+        snapshot["entries"],
+        active_host_id=active_host,
+        foreign_after=foreign_after,
+    )
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    moscow_now = current.astimezone(ZoneInfo("Europe/Moscow"))
+    yesterday = moscow_now.date() - timedelta(days=1)
+    manifest = read_json(config.ready_manifest)
+    manifest_errors = (
+        validate_ready_manifest_payload(
+            manifest,
+            expected_code_sha=(
+                config.expected_code_sha if config.strict_ready_provenance else None
+            ),
+            expected_host_id=(
+                active_host if config.strict_ready_provenance else None
+            ),
+            allow_compatibility=not config.strict_ready_provenance,
+        )
+        if manifest
+        else ["ready_manifest_missing"]
+    )
+    if manifest and config.strict_ready_provenance:
+        try:
+            ready_stat = os.lstat(config.ready_db)
+            if (
+                not stat.S_ISREG(ready_stat.st_mode)
+                or config.ready_db.is_symlink()
+                or sha256_file(config.ready_db) != manifest.get("sha256")
+                or ready_stat.st_size != manifest.get("size_bytes")
+            ):
+                manifest_errors.append("ready_db_seal_mismatch")
+        except OSError:
+            manifest_errors.append("ready_db_seal_mismatch")
+    verdicts = manifest.get("daily_verdicts") if isinstance(manifest, Mapping) else None
+    yesterday_verdict = (
+        verdicts.get(yesterday.isoformat())
+        if isinstance(verdicts, Mapping)
+        else None
+    )
+    yesterday_verdict = (
+        yesterday_verdict if isinstance(yesterday_verdict, Mapping) else {}
+    )
+    today_verdict = (
+        verdicts.get(moscow_now.date().isoformat())
+        if isinstance(verdicts, Mapping)
+        else None
+    )
+    today_verdict = today_verdict if isinstance(today_verdict, Mapping) else {}
+    try:
+        free_bytes = shutil.disk_usage(config.pipeline_root).free
+    except OSError:
+        free_bytes = 0
+    required_free_bytes = int(config.min_free_gib * 1024**3)
+    operational_reasons: list[str] = []
+    if int(today_verdict.get("pending_over_sla") or 0) > 0:
+        operational_reasons.append("pending_over_sla")
+    if (
+        int(today_verdict.get("mango_unique") or 0) > 0
+        and int(today_verdict.get("pending_unique") or 0)
+        == int(today_verdict.get("mango_unique") or 0)
+        and float(today_verdict.get("oldest_pending_age_minutes") or 0) > 60
+    ):
+        operational_reasons.append("all_calls_pending_over_60_minutes")
+    if free_bytes < required_free_bytes:
+        operational_reasons.append("disk_below_threshold")
+    if (moscow_now.hour, moscow_now.minute) >= (8, 30) and (
+        yesterday_verdict.get("closure_ok") is not True
+    ):
+        operational_reasons.append("previous_day_not_closed")
+    status_file = (
+        config.local_publication_root
+        / "status"
+        / f"{yesterday.isoformat()}.json"
+    )
+    if (moscow_now.hour, moscow_now.minute) >= (9, 0) and not status_file.is_file():
+        operational_reasons.append("daily_status_missing_after_0900")
+    p0 = bool(foreign or authority.get("ok") is not True)
+    status = (
+        "p0"
+        if p0
+        else "alert"
+        if manifest_errors or operational_reasons
+        else "ok"
+        if freshness.get("status") == "fresh"
+        else "stale"
+    )
+    alert = {
+        "schema_version": "mango_calls_watchdog_alert_v1",
+        "status": status,
+        "stop_reason": (
+            "foreign_host_or_cutover_authority_failed"
+            if p0
+            else ",".join(
+                [
+                    *(("ready_manifest_invalid",) if manifest_errors else ()),
+                    *operational_reasons,
+                ]
+            )
+            if status == "alert"
+            else "heartbeat_stale"
+            if status == "stale"
+            else ""
+        ),
+        "foreign_host_count": len(foreign),
+        "pending_over_sla": int(today_verdict.get("pending_over_sla") or 0),
+        "oldest_pending_age_minutes": float(
+            today_verdict.get("oldest_pending_age_minutes") or 0
+        ),
+        "closure_ok": yesterday_verdict.get("closure_ok") is True,
+        "free_bytes": free_bytes,
+        "required_free_bytes": required_free_bytes,
+        "watchdog_alive": True,
+    }
+    return {
+        "schema_version": "mango_calls_local_watchdog_v1",
+        "process": "watchdog",
+        "status": status,
+        "stop_reason": alert["stop_reason"],
+        "freshness": freshness,
+        "authority": authority,
+        "foreign_host_ids": foreign,
+        "daily": {
+            "moscow_day": yesterday.isoformat(),
+            "closure_ok": yesterday_verdict.get("closure_ok") is True,
+            "today_pending_over_sla": int(
+                today_verdict.get("pending_over_sla") or 0
+            ),
+            "status_present": status_file.is_file(),
+            "manifest_errors": list(manifest_errors),
+        },
+        "safe_alert": safe_alert_payload(alert),
+        "safety": {
+            "read_only": True,
+            "runs_asr": False,
+            "runs_resolve_analyze": False,
+            "writes_external_systems": False,
+        },
+    }
 
 
 def compact_command_reports(reports: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -1954,6 +3552,12 @@ def compact_command_reports(reports: Sequence[Mapping[str, Any]]) -> list[Mappin
             "rc": item.get("rc"),
             "command": item.get("command"),
             "log_path": item.get("log_path"),
+            "log_size_bytes": item.get("log_size_bytes"),
+            "log_sha256": item.get("log_sha256"),
+            "wall_seconds": item.get("wall_seconds"),
+            "peak_rss_raw": item.get("peak_rss_raw"),
+            "swap_operations": item.get("swap_operations"),
+            "timed_out": item.get("timed_out"),
         }
         if isinstance(item.get("metrics"), Mapping):
             row["metrics"] = dict(item["metrics"])
@@ -1972,17 +3576,153 @@ def compact_command_name(command: Sequence[str]) -> str:
     return str(command[-1]) if command else "unknown"
 
 
+def _sha256_regular_nofollow(path: Path, *, label: str) -> str:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
+            raise RuntimeError(f"{label} is not a non-empty regular file: {path}")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        path_stat = os.lstat(path)
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        if identity != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or (path_stat.st_dev, path_stat.st_ino) != (after.st_dev, after.st_ino):
+            raise RuntimeError(f"{label} changed while hashing: {path}")
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
 def hardlink_or_copy(source: Path, target: Path) -> str:
-    if target.exists():
-        if sha256_file(source) != sha256_file(target):
+    source = source.absolute()
+    source_stat = os.lstat(source)
+    if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_size <= 0:
+        raise RuntimeError(f"source audio is not a non-empty regular file: {source}")
+    source_digest = _sha256_regular_nofollow(source, label="source audio")
+    if os.path.lexists(target):
+        try:
+            target_digest = _sha256_regular_nofollow(
+                target, label="existing audio target"
+            )
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"existing audio target is unsafe: {target}") from exc
+        if source_digest != target_digest:
             raise RuntimeError(f"existing audio differs: {target}")
         return "exists_same_hash"
     try:
-        os.link(source, target)
+        os.link(source, target, follow_symlinks=False)
+        linked = os.lstat(target)
+        current_source = os.lstat(source)
+        if (
+            not stat.S_ISREG(linked.st_mode)
+            or (linked.st_dev, linked.st_ino)
+            != (source_stat.st_dev, source_stat.st_ino)
+            or (current_source.st_dev, current_source.st_ino)
+            != (source_stat.st_dev, source_stat.st_ino)
+        ):
+            raise RuntimeError("source audio changed during hardlink")
+        _fsync_directory(target.parent)
         return "hardlink"
+    except FileExistsError:
+        try:
+            target_digest = _sha256_regular_nofollow(
+                target, label="concurrent audio target"
+            )
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"concurrent audio target is unsafe: {target}") from exc
+        if source_digest != target_digest:
+            raise RuntimeError(f"concurrent audio target differs: {target}")
+        return "exists_same_hash"
     except OSError:
-        shutil.copy2(source, target)
+        pass
+
+    temporary = target.parent / (
+        f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.copying"
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_source = os.fstat(source_descriptor)
+        if (opened_source.st_dev, opened_source.st_ino) != (
+            source_stat.st_dev,
+            source_stat.st_ino,
+        ):
+            os.close(source_descriptor)
+            raise RuntimeError("source audio changed before copy")
+        with os.fdopen(source_descriptor, "rb") as source_handle, os.fdopen(
+            descriptor, "wb", closefd=False
+        ) as target_handle:
+            shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
+            target_handle.flush()
+            os.fsync(descriptor)
+        if source_digest != _sha256_regular_nofollow(
+            temporary, label="temporary audio copy"
+        ):
+            raise RuntimeError("audio changed or copy verification failed")
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            try:
+                target_digest = _sha256_regular_nofollow(
+                    target, label="concurrent audio target"
+                )
+            except (OSError, RuntimeError) as exc:
+                raise RuntimeError(
+                    f"concurrent audio target is unsafe: {target}"
+                ) from exc
+            if source_digest != target_digest:
+                raise RuntimeError(f"concurrent audio target differs: {target}")
+            return "exists_same_hash"
+        _fsync_directory(target.parent)
         return "copy"
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        _fsync_directory(target.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> None:
@@ -1995,6 +3735,24 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "capture_status": capture.get("status"),
             "downloaded": capture.get("downloaded"),
             "failed": capture.get("failed"),
+            "host_id": capture.get("host_id"),
+            "manifest_end_offset": capture.get("manifest_end_offset"),
+            "manifest_snapshot_sha256": capture.get(
+                "manifest_snapshot_sha256"
+            ),
+            "mango_enumeration_complete": capture.get(
+                "mango_enumeration_complete"
+            ),
+            "mango_enumeration_source": capture.get(
+                "mango_enumeration_source"
+            ),
+            "catch_up": bool(capture.get("catch_up")),
+            "sla_mode": capture.get("sla_mode") or "live",
+            "call_keys": capture.get("call_keys"),
+            "calls_by_moscow_day": capture.get("calls_by_moscow_day"),
+            "independent_zero_enumerations_by_day": capture.get(
+                "independent_zero_enumerations_by_day"
+            ),
         },
     )
 

@@ -34,6 +34,32 @@ def _load_installer():
     return module
 
 
+def test_plist_writer_rejects_fixed_temp_symlink_attack(tmp_path: Path) -> None:
+    installer = _load_installer()
+    target = tmp_path / "service.plist"
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"must remain unchanged")
+    legacy_temp = target.with_suffix(".plist.tmp")
+    legacy_temp.symlink_to(victim)
+
+    installer._write_plist(target, {"Label": "synthetic.safe"})
+
+    assert victim.read_bytes() == b"must remain unchanged"
+    assert legacy_temp.is_symlink()
+    assert target.is_file() and not target.is_symlink()
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def _allow_test_install_path(
+    monkeypatch: pytest.MonkeyPatch, installer: object, out_dir: Path
+) -> None:
+    monkeypatch.setattr(
+        installer,
+        "_standard_plist",
+        lambda label: out_dir.resolve() / f"{label}.plist",
+    )
+
+
 def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     config_path = tmp_path / "config.json"
     env_path = tmp_path / "mango.env"
@@ -52,6 +78,7 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
+    config_path.chmod(0o600)
     env_path.write_text(
         f"MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\nMANGO_CALLS_PIPELINE_ROOT={pipeline_root}\n",
         encoding="utf-8",
@@ -142,6 +169,81 @@ def test_launchd_installer_renders_scheduled_a_and_demand_only_b(tmp_path: Path)
     assert "cycle" not in process_b["ProgramArguments"]
     assert process_a["StandardOutPath"] != process_b["StandardOutPath"]
     assert process_a["StandardErrorPath"] != process_b["StandardErrorPath"]
+
+
+def test_fast_service_renders_exact_publication_schedule_without_execute(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    out_dir = tmp_path / "launchd"
+    subprocess.run(
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_path),
+            "--out-dir",
+            str(out_dir),
+            "--fast-service",
+        ],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    plists = {
+        path.stem: plistlib.loads(path.read_bytes())
+        for path in out_dir.glob("*.plist")
+    }
+    expected = {
+        "com.mango.calls-publication-close-0600": (6, 0, "publication-close"),
+        "com.mango.calls-publication-close-0700": (7, 0, "publication-close"),
+        "com.mango.calls-publication-close-0800": (8, 0, "publication-close"),
+        "com.mango.calls-publication-alert-0830": (8, 30, "publication-alert"),
+        "com.mango.calls-publication-status-0850": (8, 50, "publication-status"),
+    }
+    for label, (hour, minute, command) in expected.items():
+        assert plists[label]["StartCalendarInterval"] == [
+            {"Hour": hour, "Minute": minute}
+        ]
+        assert plists[label]["ProgramArguments"][-1] == command
+        assert "--execute" not in json.dumps(plists[label])
+    assert plists["com.mango.calls-pipeline"]["StartCalendarInterval"] == [
+        {"Minute": 7},
+        {"Minute": 37},
+    ]
+    runner = RUNNER.read_text(encoding="utf-8")
+    assert "current-plan" in runner
+    assert "publish_daily_mango_calls_google.py" not in runner
+    assert "UPLOAD_MANGO_DAILY_REPORT" not in runner
+
+
+def test_render_only_without_output_refuses_before_runtime_mutation(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    pipeline = Path(json.loads(config_path.read_text(encoding="utf-8"))["pipeline_root"])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_path),
+            "--fast-service",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "explicit --out" in result.stderr
+    assert not pipeline.exists()
 
 
 def test_launchd_installer_process_a_only_never_renders_b(tmp_path: Path) -> None:
@@ -262,7 +364,7 @@ def test_runner_rejects_readable_secret_env_before_source(tmp_path: Path) -> Non
     assert result.returncode == 2
 
 
-def test_successful_process_b_runs_daily_export_when_out_is_configured(tmp_path: Path) -> None:
+def test_successful_process_b_never_runs_daily_export_inline(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     out = _verified_yandex_target(tmp_path, "yandex")
@@ -293,8 +395,7 @@ fi
 
     calls = captured.read_text(encoding="utf-8").split("--call--\n")
     assert sum("run_mango_calls_pipeline.py" in call for call in calls) == 1
-    export_call = next(call for call in calls if "export_daily_mango_calls_resolve.py" in call)
-    assert str(out) in export_call and "process-a" not in export_call
+    assert all("export_daily_mango_calls_resolve.py" not in call for call in calls)
 
 
 def test_runner_does_not_inherit_missing_worker_env_values(tmp_path: Path) -> None:
@@ -322,7 +423,7 @@ def test_runner_does_not_inherit_missing_worker_env_values(tmp_path: Path) -> No
     assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
-def test_process_b_runs_google_publisher_only_with_complete_config(tmp_path: Path) -> None:
+def test_process_b_never_runs_google_publisher_even_with_legacy_config(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     out = _verified_yandex_target(tmp_path)
@@ -353,12 +454,11 @@ fi
                    env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
 
     calls = captured.read_text(encoding="utf-8").split("--call--\n")
-    export_index = next(i for i, call in enumerate(calls) if "export_daily_mango_calls_resolve.py" in call)
-    google_index = next(i for i, call in enumerate(calls) if "publish_daily_mango_calls_google.py" in call)
-    assert export_index < google_index and "--execute" in calls[google_index]
+    assert all("export_daily_mango_calls_resolve.py" not in call for call in calls)
+    assert all("publish_daily_mango_calls_google.py" not in call for call in calls)
 
 
-def test_process_b_rejects_partial_google_config(tmp_path: Path) -> None:
+def test_process_b_ignores_legacy_partial_google_config(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     env_path.write_text(
         env_path.read_text(encoding="utf-8")
@@ -382,7 +482,7 @@ fi
 
     result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
 
-    assert result.returncode == 4
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize("status,reason", [("locked", "timeline_writer_locked"), ("deferred", "network"), ("idle", "drop_missing")])
@@ -408,11 +508,11 @@ fi
     result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
                             env={**__import__("os").environ, "CAPTURED": str(captured)}, check=False)
 
-    assert result.returncode != 0
+    assert result.returncode == 0
     assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
-def test_process_b_idle_unchanged_retries_daily_export(tmp_path: Path) -> None:
+def test_process_b_idle_unchanged_does_not_publish_inline(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     out = _verified_yandex_target(tmp_path)
@@ -435,10 +535,10 @@ fi
     subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
                    env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
 
-    assert "export_daily_mango_calls_resolve.py" in captured.read_text(encoding="utf-8")
+    assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
-def test_process_b_unparseable_result_fails_closed(tmp_path: Path) -> None:
+def test_process_b_wrapper_returns_pipeline_rc_without_parsing_publication(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n", encoding="utf-8")
     fake_python = tmp_path / "configured-python"
@@ -457,7 +557,7 @@ fi
 
     result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
 
-    assert result.returncode == 3
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize("status", ["failed", "deferred", "locked"])
@@ -592,9 +692,9 @@ fi
     ]
 
 
-@pytest.mark.parametrize("process_status,expected_export", [("ok", True), ("partial", False)])
-def test_process_a_worker_publishes_only_complete_sealed_report(
-    tmp_path: Path, process_status: str, expected_export: bool
+@pytest.mark.parametrize("process_status", ["ok", "partial"])
+def test_process_a_worker_never_publishes_inline(
+    tmp_path: Path, process_status: str
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
@@ -641,13 +741,11 @@ fi
     exports = [call for call in calls if "export_daily_mango_calls_resolve.py" in call]
     ready = str(tmp_path / ".mango_local" / "pipeline" / "drop" / "mango_calls_ready.sqlite")
     assert result.returncode == (0 if process_status == "ok" else 1)
-    assert bool(exports) is expected_export
-    if exports:
-        assert exports[0].count(ready) == 2 and "--day" in exports[0] and "--sealed-only" in exports[0]
+    assert not exports
     assert not launchctl_capture.exists()
 
 
-def test_process_a_worker_refuses_unverified_yandex_target(tmp_path: Path) -> None:
+def test_process_a_worker_does_not_touch_unverified_yandex_target(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     out = tmp_path / "ordinary-local-folder"
     out.mkdir()
@@ -683,11 +781,11 @@ fi
         check=False,
     )
 
-    assert result.returncode == 4
-    assert "yandex_publish_target_not_verified" in result.stderr
+    assert result.returncode == 0
+    assert "yandex_publish_target_not_verified" not in result.stderr
 
 
-def test_process_a_worker_requires_yandex_publish_target(tmp_path: Path) -> None:
+def test_process_a_worker_does_not_require_yandex_publish_target(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     clean_repo, head = _clean_git_repo(tmp_path)
     env_path.write_text(
@@ -719,8 +817,8 @@ fi
         check=False,
     )
 
-    assert result.returncode == 4
-    assert "m1_yandex_publish_target_missing" in result.stderr
+    assert result.returncode == 0
+    assert "m1_yandex_publish_target_missing" not in result.stderr
 
 
 def test_legacy_process_b_keeps_existing_unmarked_export_path(tmp_path: Path) -> None:
@@ -1072,6 +1170,7 @@ def test_install_boots_out_old_loaded_label_without_deleting_plist(
     config_path, env_path = _write_config(tmp_path)
     out_dir = tmp_path / "launchd"
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -1106,6 +1205,7 @@ def test_process_a_only_install_refuses_if_process_b_is_loaded(
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, tmp_path / "launchd")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -1126,6 +1226,7 @@ def test_single_role_install_refuses_loaded_legacy_service(
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, tmp_path / "launchd")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -1159,6 +1260,7 @@ def test_single_role_install_refuses_opposite_live_process_lock(
     lock_handle = lock_path.open("r+", encoding="utf-8")
     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, tmp_path / "launchd")
     monkeypatch.setattr(installer.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1))
 
     try:
@@ -1204,6 +1306,7 @@ def test_partial_install_rolls_back_process_a(monkeypatch: pytest.MonkeyPatch, t
     config_path, env_path = _write_config(tmp_path)
     out_dir = tmp_path / "launchd"
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     domain = f"gui/{installer.os.getuid()}"
     old_target = f"{domain}/com.mango.calls-two-processes"
     loaded: set[str] = {old_target}
@@ -1246,6 +1349,7 @@ def test_failed_upgrade_restores_loaded_incumbent_pair(
     out_dir = tmp_path / "launchd"
     out_dir.mkdir()
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     domain = f"gui/{installer.os.getuid()}"
     paths = {
         label: out_dir / f"{label}.plist"
@@ -1301,6 +1405,7 @@ def test_failed_bootout_restores_loaded_incumbent_pair(
     out_dir = tmp_path / "launchd"
     out_dir.mkdir()
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     domain = f"gui/{installer.os.getuid()}"
     paths = {
         label: out_dir / f"{label}.plist"

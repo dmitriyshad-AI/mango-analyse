@@ -86,6 +86,15 @@ def _manifest_row(
     if recording_paths is not None:
         row["recording_paths"] = recording_paths
         row["recording_ids"] = [f"recording-{event}-{index}" for index in range(len(recording_paths))]
+        row["recording_assets"] = [
+            {
+                "recording_id": row["recording_ids"][index],
+                "path": value,
+                "size_bytes": Path(value).stat().st_size,
+                "checksum_sha256": _sha(Path(value)),
+            }
+            for index, value in enumerate(recording_paths)
+        ]
     return row
 
 
@@ -151,13 +160,21 @@ def _write_sqlite(path: Path, source_files: list[str], *, journal_mode: str, old
                             "manager_quality_allowed": True,
                             "topology": "simple_two_party",
                         },
-                        "manager": {"physical_channel": "left"},
-                        "client": {"physical_channel": "right"},
+                        "manager": {
+                            "physical_channel": "left",
+                            "variant_a": "Добрый день",
+                            "variant_b": "Добрый день",
+                        },
+                        "client": {
+                            "physical_channel": "right",
+                            "variant_a": "Нужна программа курса",
+                            "variant_b": "Нужна программа курса",
+                        },
                         "dialogue_lines": [
                             "[00:00.000] Менеджер: Добрый день",
                             "[00:01.000] Клиент: Нужна программа курса",
                         ],
-                        "primary_provider": "whisper",
+                        "primary_provider": "mlx",
                         "secondary_provider": "gigaam",
                     },
                     ensure_ascii=False,
@@ -416,6 +433,17 @@ def synthetic_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mappi
     }
     _private_json(source / relocation.READY_MANIFEST_REL, ready_manifest)
     (source / relocation.READY_MANIFEST_REL).chmod(0o644)
+    _private_json(
+        source / relocation.CURSOR_REL,
+        {
+            "schema_version": "mango_api_freshness_v1",
+            "until": "2026-08-08T00:00:00+00:00",
+            "mango_enumeration_complete": True,
+            "manifest_end_offset": len(complete_prefix),
+            "manifest_snapshot_sha256": hashlib.sha256(complete_prefix).hexdigest(),
+        },
+    )
+    (source / relocation.CURSOR_REL).chmod(0o644)
     (source / "locks/README.txt").write_text("synthetic, no process locks yet\n", encoding="utf-8")
     (source / "reports/control.json").write_text(
         json.dumps({"message": f"do not rewrite {source}/reports/control"}) + "\n",
@@ -510,6 +538,81 @@ def test_inventory_build_and_verify_are_root_independent_and_private(
     (copied / "capture/recordings/a.mp3").write_bytes(b"tampered")
     with pytest.raises(relocation.RelocationError, match="inventories differ"):
         relocation.verify_inventory(output, copied)
+
+
+def test_selective_inventory_copies_exact_files_and_omits_only_strict_ready_audio(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    source = synthetic_pipeline["source"]
+    private = synthetic_pipeline["local"] / "selective-contract"
+    private.mkdir(mode=0o700)
+    inventory_path = private / "inventory.json"
+    files_from_path = private / "files-from.nul"
+
+    inventory = relocation.write_selective_inventory(
+        source, inventory_path, files_from_path
+    )
+    files_from = files_from_path.read_bytes()
+    selected = [value.decode("utf-8") for value in files_from.split(b"\0") if value]
+
+    assert "." not in selected
+    assert selected == sorted(set(selected))
+    assert relocation.CURSOR_REL in selected
+    assert "working/audio/a.mp3" not in selected
+    assert "working/audio/b.mp3" in selected
+    assert "capture/recordings/a.mp3" in selected
+    assert inventory["selection"]["omitted_audio"] == [
+        next(
+            item
+            for item in relocation.build_inventory(source)["files"]
+            if item["relative_path"] == "working/audio/a.mp3"
+        )
+    ]
+    assert relocation.verify_selective_source(
+        inventory_path, source, files_from_path
+    )["status"] == "source_verified"
+
+    target = synthetic_pipeline["local"] / "selective-copy"
+    target.mkdir(mode=0o700)
+    for relative in selected:
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / relative, destination)
+    assert relocation.verify_inventory(inventory_path, target)["status"] == "verified"
+
+    tampered = json.loads(inventory_path.read_text(encoding="utf-8"))
+    tampered["selection"]["omitted_audio"][0]["sha256"] = "0" * 64
+    _private_json(inventory_path, tampered)
+    with pytest.raises(relocation.RelocationError, match="omitted-audio digest"):
+        relocation.verify_selective_source(inventory_path, source, files_from_path)
+
+
+def test_selective_inventory_refuses_missing_unfinished_audio(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    source = synthetic_pipeline["source"]
+    (source / "working/audio/b.mp3").unlink()
+
+    with pytest.raises(relocation.RelocationError, match="unfinished or multi audio"):
+        relocation.build_selective_inventory(source)
+
+
+def test_selective_inventory_retains_unreferenced_audio_after_capture_crash(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    source = synthetic_pipeline["source"]
+    capture_orphan = source / "capture/recordings/orphan-after-download.mp3"
+    working_orphan = source / "working/audio/orphan-before-ingest-commit.mp3"
+    capture_orphan.write_bytes(b"capture orphan must survive")
+    working_orphan.write_bytes(b"working orphan must survive")
+
+    _inventory, files_from = relocation.build_selective_inventory(source)
+    selected = {
+        value.decode("utf-8") for value in files_from.split(b"\0") if value
+    }
+
+    assert "capture/recordings/orphan-after-download.mp3" in selected
+    assert "working/audio/orphan-before-ingest-commit.mp3" in selected
 
 
 def test_inventory_documents_stay_out_of_external_git_and_cloud_locations(
@@ -625,7 +728,8 @@ def test_dry_run_is_strictly_read_only_and_plans_exact_fields(
     assert report["capture"] == {
         "rows": 4,
         "changed_rows": 4,
-        "changed_paths": 5,
+        "changed_paths": 7,
+        "omitted_historical_ready_assets": 0,
         "incomplete_tail_preserved": True,
         "tail_size_bytes": len(synthetic_pipeline["torn_tail"]),
         "tail_sha256": hashlib.sha256(synthetic_pipeline["torn_tail"]).hexdigest(),
@@ -636,6 +740,69 @@ def test_dry_run_is_strictly_read_only_and_plans_exact_fields(
     assert not state_parent.exists()
     assert Path(str(synthetic_pipeline["pipeline"] / relocation.WORKING_DB_REL) + "-wal").read_bytes() == b""
     assert len(Path(str(synthetic_pipeline["pipeline"] / relocation.WORKING_DB_REL) + "-shm").read_bytes()) == 32768
+
+
+def test_selective_transfer_omits_only_historical_ready_audio(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    pipeline = synthetic_pipeline["pipeline"]
+    old = synthetic_pipeline["old"]
+    capture_path = pipeline / relocation.CAPTURE_REL
+    ready_row = _manifest_row(
+        "call-a",
+        "downloaded",
+        old_root=old,
+        local_audio_path=str(old / "capture/recordings/a.mp3"),
+    )
+    pending_row = _manifest_row(
+        "call-b",
+        "downloaded",
+        old_root=old,
+        local_audio_path=str(old / "capture/recordings/b.mp3"),
+    )
+    capture_path.write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+            for row in (ready_row, pending_row)
+        ),
+        encoding="utf-8",
+    )
+    (pipeline / "capture/recordings/a.mp3").unlink()
+    (pipeline / "working/audio/a.mp3").unlink()
+    _source_inventory(pipeline, synthetic_pipeline["source_inventory"], old)
+
+    dry_run = _relocate(synthetic_pipeline, execute=False)
+
+    assert dry_run["status"] == "dry_run"
+    assert dry_run["capture"]["omitted_historical_ready_assets"] == 1
+    assert dry_run["working"]["omitted_historical_ready_assets"] == 1
+    assert dry_run["ready"]["omitted_historical_ready_assets"] == 1
+    assert _relocate(synthetic_pipeline, execute=True)["status"] == "relocated"
+    assert not (pipeline / "capture/recordings/a.mp3").exists()
+    assert not (pipeline / "working/audio/a.mp3").exists()
+    assert (pipeline / "capture/recordings/b.mp3").is_file()
+    assert (pipeline / "working/audio/b.mp3").is_file()
+    pipeline.rename(synthetic_pipeline["new"])
+    assert relocation.relocate_pipeline(
+        synthetic_pipeline["new"],
+        old,
+        synthetic_pipeline["new"],
+        synthetic_pipeline["source_inventory"],
+        execute=True,
+        confirmation=relocation.CONFIRM_VALUE,
+    )["status"] == "already_relocated"
+
+
+def test_selective_transfer_still_requires_unfinished_audio(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    pipeline = synthetic_pipeline["pipeline"]
+    old = synthetic_pipeline["old"]
+    (pipeline / "working/audio/b.mp3").unlink()
+    _source_inventory(pipeline, synthetic_pipeline["source_inventory"], old)
+
+    with pytest.raises(relocation.RelocationError, match="target asset is missing or empty"):
+        _relocate(synthetic_pipeline, execute=False)
 
 
 @pytest.mark.parametrize("artifact", ["capture", "working", "ready", "ready_manifest"])
@@ -1111,6 +1278,7 @@ def test_torn_tail_survives_relocation_and_real_process_a_recovers_it(
                 if stage == "transcribe":
                     payload = {
                         "mode": "mono_or_fallback",
+                        "primary_provider": "mlx",
                         "secondary_provider": "",
                         "full": {"variant_a": "синтетический Whisper", "variant_b": ""},
                     }
@@ -1127,6 +1295,7 @@ def test_torn_tail_survives_relocation_and_real_process_a_recovers_it(
                 elif stage == "backfill-second-asr":
                     payload = {
                         "mode": "mono_or_fallback",
+                        "primary_provider": "mlx",
                         "secondary_provider": "gigaam",
                         "full": {
                             "variant_a": "синтетический Whisper",
@@ -1192,7 +1361,8 @@ def test_torn_tail_survives_relocation_and_real_process_a_recovers_it(
         if "--stages" in command
     ]
     assert stages == ["transcribe", "backfill-second-asr", "resolve", "analyze"], continued
-    assert continued["status"] == "ok", continued
+    assert continued["status"] == "partial", continued
+    assert continued["stop_reason"] == "stage10_consistency_not_proven"
     with closing(sqlite3.connect(f"file:{config.working_db}?mode=ro", uri=True)) as connection:
         completed = connection.execute(
             """

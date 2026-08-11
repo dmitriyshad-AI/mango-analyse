@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -17,8 +18,10 @@ from mango_mvp.productization.capture_staging import (
     acknowledge_capture_recovery,
     atomic_write_private_json,
     audit_capture_manifest,
+    build_capture_audio_filename,
     capture_recovery_incident_sha256,
     capture_recovery_path,
+    recording_part_paths,
     stage_capture_events,
 )
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
@@ -42,7 +45,7 @@ def fake_validator(path: Path) -> AudioValidation:
     size = path.stat().st_size
     return AudioValidation(
         size_bytes=size,
-        checksum_sha256=f"sha-{size}",
+        checksum_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         duration_sec=12.5,
         codec_name="mp3",
         channels=2,
@@ -926,9 +929,70 @@ def test_stage_capture_events_downloads_and_writes_validated_manifest(tmp_path: 
     assert len(rows) == 1
     assert rows[0]["status"] == "downloaded"
     assert rows[0]["recording_id"] == "rec-1"
-    assert rows[0]["checksum_sha256"].startswith("sha-")
+    assert rows[0]["checksum_sha256"] == hashlib.sha256(
+        Path(rows[0]["local_audio_path"]).read_bytes()
+    ).hexdigest()
     assert rows[0]["duration_sec"] == 12.5
     assert Path(rows[0]["local_audio_path"]).exists()
+
+
+def test_stage_capture_events_rejects_existing_audio_symlink_without_download(
+    tmp_path: Path,
+) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    item = event("CALL-SYMLINK", "rec-symlink")
+    target = recordings / build_capture_audio_filename(item, "rec-symlink")
+    victim = tmp_path / "victim.mp3"
+    victim.write_bytes(b"synthetic victim")
+    target.symlink_to(victim)
+    downloader = FakeDownloader()
+
+    summary = stage_capture_events(
+        [item],
+        CaptureManifestStore(tmp_path / "capture_manifest.jsonl"),
+        recordings,
+        downloader,
+        validator=fake_validator,
+    )
+
+    assert summary.failed == 1
+    assert summary.reused_existing_file == 0
+    assert downloader.calls == []
+    assert target.is_symlink()
+    assert victim.read_bytes() == b"synthetic victim"
+
+
+def test_stage_capture_events_rejects_multi_part_symlink_without_download(
+    tmp_path: Path,
+) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    item = event(
+        "CALL-MULTI-SYMLINK",
+        "rec-1",
+        recording_refs=("rec-1", "rec-2"),
+    )
+    base = recordings / build_capture_audio_filename(item, "rec-1")
+    first_part, _second_part = recording_part_paths(base, ("rec-1", "rec-2"))
+    victim = tmp_path / "victim-part.mp3"
+    victim.write_bytes(b"synthetic victim")
+    first_part.symlink_to(victim)
+    downloader = FakeDownloader()
+
+    summary = stage_capture_events(
+        [item],
+        CaptureManifestStore(tmp_path / "capture_manifest.jsonl"),
+        recordings,
+        downloader,
+        validator=fake_validator,
+    )
+
+    assert summary.failed == 1
+    assert summary.needs_review_multiple_recordings == 0
+    assert downloader.calls == []
+    assert first_part.is_symlink()
+    assert victim.read_bytes() == b"synthetic victim"
 
 
 def test_stage_capture_events_is_idempotent_on_second_run(tmp_path: Path) -> None:
@@ -1144,7 +1208,7 @@ def test_stage_capture_events_retries_failed_download_without_duplicate_asset(tm
     assert len(list(recordings.iterdir())) == 1
 
 
-def test_stage_capture_events_replaces_nonempty_file_after_validation_failure(tmp_path: Path) -> None:
+def test_stage_capture_events_reuses_file_when_retry_validation_now_passes(tmp_path: Path) -> None:
     manifest = tmp_path / "capture_manifest.jsonl"
     recordings = tmp_path / "recordings"
     store = CaptureManifestStore(manifest)
@@ -1160,9 +1224,9 @@ def test_stage_capture_events_replaces_nonempty_file_after_validation_failure(tm
     second = stage_capture_events(events, store, recordings, retry_downloader, validator=fake_validator)
 
     assert first.failed == 1
-    assert second.downloaded == 1
-    assert len(retry_downloader.calls) == 1
-    assert corrupt_path.read_bytes() == b"fake-audio:rec-1"
+    assert second.reused_existing_file == 1
+    assert retry_downloader.calls == []
+    assert corrupt_path.read_bytes() == b"still-nonempty-but-corrupt"
 
 
 def test_stage_capture_events_links_duplicate_recording_to_canonical_asset(tmp_path: Path) -> None:

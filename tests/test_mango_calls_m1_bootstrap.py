@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -32,6 +33,7 @@ def test_bootstrap_plan_is_safe_and_complete() -> None:
     assert payload["starts_services"] is False
     assert payload["runs_asr"] is False
     assert payload["runs_resolve_analyze"] is False
+    assert payload["writes_external_systems"] is False
     assert {"git", "ffmpeg", "node", "python@3.12"} <= set(payload["system_packages"])
     assert "Tallanto contacts CSV" in payload["report_access"]
     assert "requirements-local-whisper.txt" in payload["python_requirements"]
@@ -73,7 +75,9 @@ def test_bootstrap_cannot_start_pipeline_or_launchd() -> None:
     assert '"network_access_verified":false' in source
     assert '&& "$tallanto_export" == true' in source
     assert '&& "$google_config_valid" == true' in source
-    assert '&& "$yandex" == true' in source
+    assert '&& "$google_config_valid" == true && "$secrets_dir_owner_only"' in source
+    assert '&& "$yandex" == true && "$secrets_dir_owner_only"' not in source
+    assert '"external_publication_ready":%s' in source
     assert '"developer_profile_ready":%s' in source
     assert '&& "$skills" == true' not in source
     assert '&& "$owner_local_root_only" == true' in source
@@ -91,6 +95,18 @@ def test_bootstrap_cannot_start_pipeline_or_launchd() -> None:
     assert '${GOOGLE_APPLICATION_CREDENTIALS:-' not in source
     assert 'manifest["local_skills"]' in source
     assert '== "codex-cli 0.142.3"' in source
+    for label in (
+        "com.mango.calls-capture",
+        "com.mango.calls-pipeline",
+        "com.mango.calls-watchdog",
+        "com.mango.calls-publication-close-0600",
+        "com.mango.calls-publication-close-0700",
+        "com.mango.calls-publication-close-0800",
+        "com.mango.calls-publication-alert-0830",
+        "com.mango.calls-publication-status-0850",
+    ):
+        assert label in source
+    assert '"capture.lock", "pipeline.lock"' in source
 
     config = json.loads((HANDOFF / "config.m1.example.json").read_text(encoding="utf-8"))
     assert "Projects/Mango analyse" not in config["pipeline_root"]
@@ -103,8 +119,8 @@ def test_google_is_optional_but_partial_google_config_is_blocked() -> None:
     assert '[[ -z "$google_path" && -z "$google_folder_id" ]]' in source
     assert '[[ "$google" == true ]] && google_config_valid=true' in source
     env_example = (HANDOFF / "mango_calls_m1_worker.env.example").read_text(encoding="utf-8")
-    assert "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID=\n" in env_example
-    assert "GOOGLE_APPLICATION_CREDENTIALS=\n" in env_example
+    assert "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID" not in env_example
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in env_example
 
 
 def test_handoff_examples_contain_no_secret_values() -> None:
@@ -112,7 +128,6 @@ def test_handoff_examples_contain_no_secret_values() -> None:
     secret_keys = {
         "MANGO_OFFICE_API_KEY",
         "MANGO_OFFICE_API_SALT",
-        "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID",
     }
     values = {
         line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -198,6 +213,59 @@ def test_owner_local_root_mode_and_symlink_are_reported_fail_closed(tmp_path: Pa
     assert result.returncode != 0
     assert payload["owner_local_root_only"] is False
 
+
+def test_secrets_root_symlink_is_reported_fail_closed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    outside = tmp_path / "outside-secrets"
+    outside.mkdir(mode=0o700)
+    (home / ".mango_secrets").symlink_to(outside, target_is_directory=True)
+
+    result = subprocess.run(
+        [str(BOOTSTRAP), "check"],
+        cwd=ROOT,
+        env={**os.environ, "HOME": str(home)},
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert json.loads(result.stdout)["secrets_dir_owner_only"] is False
+
+
+def test_readiness_probe_accepts_tuple_and_rejects_future_measurement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from mango_mvp.productization.mango_office_client import MangoOfficeClient
+    from scripts import probe_m1_calls_access as probe
+
+    monkeypatch.setattr(
+        probe,
+        "_owner_env",
+        lambda _path: {
+            "MANGO_OFFICE_API_KEY": "synthetic-key",
+            "MANGO_OFFICE_API_SALT": "synthetic-salt",
+            "MANGO_OFFICE_BASE_URL": "https://example.invalid",
+        },
+    )
+    monkeypatch.setattr(
+        MangoOfficeClient,
+        "poll_call_history",
+        lambda _self, **_kwargs: (),
+    )
+    assert probe.probe_mango_readonly({"mango_env_path": str(tmp_path / "unused")})
+
+    future = datetime.now(timezone.utc) + timedelta(minutes=1)
+    assert not probe._measurement_evidence_ok(
+        {
+            "schema_version": "m1_mango_calls_measurements_v1",
+            "expected_code_sha": "a" * 40,
+            "host_id": "m1-host",
+            "captured_at_utc": future.isoformat(),
+        },
+        expected_sha="a" * 40,
+        host_id="m1-host",
+    )
 
 def test_duplicate_or_blank_env_values_are_not_accepted() -> None:
     with tempfile.TemporaryDirectory() as home:
@@ -308,12 +376,32 @@ def test_runbook_sqlite_checks_assert_results() -> None:
     assert 'assert_existing_single_link_database "$SOURCE_WORKING_DB"' in runbook
     inventory = '--inventory-root "$SOURCE_PIPELINE" --inventory-out "$SOURCE_INVENTORY"'
     verify = '--verify-inventory "$SOURCE_INVENTORY" --inventory-root "$SOURCE_PIPELINE"'
+    selective_inventory = (
+        '--selective-inventory-root "$SOURCE_PIPELINE" \\\n'
+        '  --inventory-out "$SOURCE_INVENTORY"'
+    )
+    selective_verify = '--verify-selective-source "$SOURCE_INVENTORY"'
     wal_gate = 'test ! -s "$SOURCE_WORKING_WAL"'
     dry_run = '--source-inventory "$SOURCE_INVENTORY" --dry-run'
-    first_verify = runbook.index(verify)
-    second_verify = runbook.index(verify, first_verify + 1)
-    assert runbook.index(inventory) < first_verify < runbook.index(wal_gate)
-    assert runbook.index(wal_gate) < second_verify < runbook.index(dry_run)
+    transfer = '/usr/bin/rsync -aH --relative --from0'
+    first_selective_verify = runbook.index(selective_verify)
+    second_selective_verify = runbook.index(
+        selective_verify, first_selective_verify + 1
+    )
+    assert runbook.index(inventory) < runbook.index(verify) < runbook.index(wal_gate)
+    assert (
+        runbook.index(wal_gate)
+        < runbook.index(selective_inventory)
+        < first_selective_verify
+        < runbook.index(dry_run)
+        < runbook.index(transfer)
+        < second_selective_verify
+    )
+    assert "--from0" in runbook
+    selective_transfer = runbook[
+        runbook.index(selective_inventory):runbook.index("Последняя команда обязана")
+    ]
+    assert "--delete" not in selective_transfer
     assert 'assert_existing_single_link_file "$SOURCE_WORKING_WAL"' in runbook
     assert 'assert_existing_single_link_file "$SOURCE_WORKING_SHM"' in runbook
     source_stop = runbook[runbook.index("После снимка"):runbook.index("Если lock занят")]

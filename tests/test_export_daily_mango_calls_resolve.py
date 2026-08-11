@@ -904,7 +904,7 @@ def test_tallanto_api_is_loaded_once_for_all_missing_phones(tmp_path: Path) -> N
     assert rows[1]["client_fio"] == ""
 
 
-def test_tallanto_api_uses_explicit_snapshot_time_not_copied_file_mtime(
+def test_stale_explicit_tallanto_snapshot_never_calls_api_or_claims_fio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     export = tmp_path / "tallanto.csv"
@@ -922,7 +922,9 @@ def test_tallanto_api_uses_explicit_snapshot_time_not_copied_file_mtime(
         snapshot_as_of=datetime.fromisoformat("2026-06-20T00:00:00+03:00"),
     )  # type: ignore[arg-type]
 
-    assert seen == ["2026-06-20 00:00:00"]
+    assert seen == []
+    assert rows[0]["tallanto_source"] == "ФИО не подтверждено"
+    assert rows[0]["manager_ready"] is False
 
 
 def test_tallanto_api_failure_is_not_reported_as_phone_absent(tmp_path: Path) -> None:

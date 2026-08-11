@@ -67,6 +67,31 @@ ROLE_ASSIGN_LOW_INFO_TOKENS = {
     "ясно",
 }
 CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
+
+
+def release_mlx_free_cache() -> bool:
+    """Release only MLX's unused cache; never impose a hard cache limit."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return False
+    for owner in (mx, getattr(mx, "metal", None)):
+        clear = getattr(owner, "clear_cache", None) if owner is not None else None
+        if callable(clear):
+            clear()
+            return True
+    return False
+
+
+def run_with_mlx_cache_release(
+    action: Callable[[], Any], *, mlx_executed: bool
+) -> Any:
+    """Run one source-file Whisper unit and clear free cache exactly once."""
+    try:
+        return action()
+    finally:
+        if mlx_executed:
+            release_mlx_free_cache()
 CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
 sandbox_mode = "read-only"
 service_tier = "flex"
@@ -2798,6 +2823,10 @@ class TranscribeService:
             try:
                 result = mlx_whisper.transcribe(str(path), **kwargs)
             except TypeError:
+                if os.getenv("MANGO_STRICT_ASR_RUNTIME", "0").strip() == "1":
+                    raise RuntimeError(
+                        "strict MLX runtime rejected an incompatible transcribe signature"
+                    )
                 # Keep compatibility with older mlx-whisper argument signatures.
                 kwargs.pop("language", None)
                 kwargs.pop("word_timestamps", None)
@@ -2844,23 +2873,45 @@ class TranscribeService:
             if split:
                 left, right, temp_dir = split
                 try:
-                    manager_primary = self._cached_variant_candidate(
+                    manager_primary_cached = self._cached_variant_candidate(
                         call,
                         slot="manager",
                         provider=primary_provider,
                         primary_provider=primary_provider,
                         physical_channel="left",
-                    ) or self._try_transcribe_file_with_meta(
-                        left, provider=primary_provider
                     )
-                    client_primary = self._cached_variant_candidate(
+                    client_primary_cached = self._cached_variant_candidate(
                         call,
                         slot="client",
                         provider=primary_provider,
                         primary_provider=primary_provider,
                         physical_channel="right",
-                    ) or self._try_transcribe_file_with_meta(
-                        right, provider=primary_provider
+                    )
+                    primary_mlx_executed = bool(
+                        primary_provider == "mlx"
+                        and (
+                            not manager_primary_cached
+                            or not client_primary_cached
+                        )
+                    )
+                    def primary_stereo_pair() -> tuple[Dict[str, Any], Dict[str, Any]]:
+                        manager_primary = (
+                            manager_primary_cached
+                            or self._try_transcribe_file_with_meta(
+                                left, provider=primary_provider
+                            )
+                        )
+                        client_primary = (
+                            client_primary_cached
+                            or self._try_transcribe_file_with_meta(
+                                right, provider=primary_provider
+                            )
+                        )
+                        return manager_primary, client_primary
+
+                    manager_primary, client_primary = run_with_mlx_cache_release(
+                        primary_stereo_pair,
+                        mlx_executed=primary_mlx_executed,
                     )
                     manager_secondary: Optional[Dict[str, Any]] = None
                     client_secondary: Optional[Dict[str, Any]] = None
@@ -3146,12 +3197,17 @@ class TranscribeService:
                             ),
                         }
 
-        full_primary = self._cached_variant_candidate(
+        full_primary_cached = self._cached_variant_candidate(
             call,
             slot="full",
             provider=primary_provider,
             primary_provider=primary_provider,
-        ) or self._try_transcribe_file_with_meta(path, provider=primary_provider)
+        )
+        full_primary = run_with_mlx_cache_release(
+            lambda: full_primary_cached
+            or self._try_transcribe_file_with_meta(path, provider=primary_provider),
+            mlx_executed=bool(primary_provider == "mlx" and not full_primary_cached),
+        )
         full_primary_text = str(full_primary["text"]).strip()
         full_secondary_text = ""
         full_secondary: Optional[Dict[str, Any]] = None

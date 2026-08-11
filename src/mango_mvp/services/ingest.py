@@ -178,6 +178,13 @@ def ingest_from_directory(
                 source_call_id = _pick(row, "call_id", "id", "record_id") or filename_meta.get(
                     "source_call_id"
                 )
+                if source_call_id and session.scalar(
+                    select(CallRecord.id).where(
+                        CallRecord.source_call_id == source_call_id
+                    )
+                ):
+                    skipped += 1
+                    continue
                 started_at = _as_datetime(
                     _pick(row, "started_at", "start_time", "date_time")
                 ) or filename_meta.get("started_at")

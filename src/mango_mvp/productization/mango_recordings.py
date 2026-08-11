@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import secrets
+import stat
 import time
 from pathlib import Path
 from typing import Optional
@@ -73,20 +76,69 @@ class MangoRecordingDownloader:
 
 def download_url(link: str, target_path: Path, timeout_sec: int = 60) -> int:
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = target_path.with_suffix(target_path.suffix + ".part")
-    with requests.get(link, stream=True, timeout=timeout_sec) as response:
-        if response.status_code >= 400:
-            raise RuntimeError(f"download HTTP {response.status_code}: {response.text[:300]}")
-        with tmp_path.open("wb") as fh:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    fh.write(chunk)
-    size_bytes = tmp_path.stat().st_size
-    if size_bytes <= 0:
+    tmp_path = target_path.with_name(
+        f".{target_path.name}.{os.getpid()}.{secrets.token_hex(8)}.part"
+    )
+    if os.path.lexists(target_path):
+        raise RuntimeError("recording target already exists; refusing to overwrite")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(tmp_path, flags, 0o600)
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        with requests.get(link, stream=True, timeout=timeout_sec) as response:
+            if response.status_code >= 400:
+                raise RuntimeError(f"download HTTP {response.status_code}")
+            with os.fdopen(descriptor, "wb") as fh:
+                descriptor = -1
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    raise RuntimeError("recording temporary target is not a regular file")
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+                        digest.update(chunk)
+                        size_bytes += len(chunk)
+                fh.flush()
+                os.fsync(fh.fileno())
+        if size_bytes <= 0:
+            raise RuntimeError("downloaded file is empty")
+        content_length = getattr(response, "headers", {}).get("Content-Length")
+        if content_length not in (None, "") and int(content_length) != size_bytes:
+            raise RuntimeError("downloaded file size does not match Content-Length")
+        if _sha256_file(tmp_path) != digest.hexdigest():
+            raise RuntimeError("downloaded file checksum changed before publication")
+        # link+unlink is an atomic no-overwrite publication on the same volume.
+        os.link(tmp_path, target_path, follow_symlinks=False)
+        os.unlink(tmp_path)
+        _fsync_directory(target_path.parent)
+        return size_bytes
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
         tmp_path.unlink(missing_ok=True)
-        raise RuntimeError("downloaded file is empty")
-    tmp_path.replace(target_path)
-    return size_bytes
+        raise
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def parse_location_from_text(text: str) -> Optional[str]:

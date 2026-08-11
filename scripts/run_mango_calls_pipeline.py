@@ -14,7 +14,10 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     CallsTwoProcessesConfig,
+    run_capture,
     run_cycle,
+    run_local_watchdog,
+    run_pipeline,
     run_process_a,
     run_process_b,
     pipeline_freshness,
@@ -25,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the isolated two-process Mango calls pipeline.")
     parser.add_argument("--config", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
+    capture = sub.add_parser("capture", help="Mango API -> immutable audio -> capture manifest only.")
+    capture.add_argument("--since")
+    capture.add_argument("--until")
+    sub.add_parser("pipeline", help="Drain a frozen capture snapshot through sequential stages.")
+    sub.add_parser("watchdog", help="Read local heartbeats and provenance without processing calls.")
     process_a = sub.add_parser("process-a", help="Capture, ASR, Resolve+Analyze, publish ready drop DB.")
     process_a.add_argument("--since")
     process_a.add_argument("--until")
@@ -44,7 +52,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         config = CallsTwoProcessesConfig.from_json(Path(args.config))
-        if args.command == "process-a":
+        if args.command == "capture":
+            report = run_capture(config, since=args.since, until=args.until)
+        elif args.command == "pipeline":
+            report = run_pipeline(config)
+        elif args.command == "watchdog":
+            report = run_local_watchdog(config)
+        elif args.command == "process-a":
             report = run_process_a(
                 config,
                 since=args.since,

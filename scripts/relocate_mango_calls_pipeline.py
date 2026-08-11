@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack, closing, contextmanager
@@ -34,6 +35,9 @@ from mango_mvp.productization.capture_staging import (  # noqa: E402
     recoverable_json_tail,
     recoverable_utf8_tail,
 )
+from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
+    ready_row_is_complete,
+)
 
 
 INVENTORY_SCHEMA = "mango_calls_pipeline_inventory_v1"
@@ -44,7 +48,9 @@ CAPTURE_REL = "capture/capture_manifest.jsonl"
 WORKING_DB_REL = "working/mango_calls_pipeline.sqlite"
 READY_DB_REL = "drop/mango_calls_ready.sqlite"
 READY_MANIFEST_REL = "drop/mango_calls_ready.manifest.json"
+CURSOR_REL = "state/mango_api_freshness.json"
 ARTIFACT_ORDER = (CAPTURE_REL, WORKING_DB_REL, READY_DB_REL, READY_MANIFEST_REL)
+REQUIRED_TRANSFER_FILES = (*ARTIFACT_ORDER, CURSOR_REL)
 CAPTURE_PATH_FIELDS = ("local_audio_path", "canonical_audio_path")
 SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 FORBIDDEN_PATH_MARKERS = (
@@ -470,6 +476,67 @@ def validate_inventory(payload: Any) -> Mapping[str, Any]:
             raise RelocationError("inventory file metadata is invalid")
     if payload.get("symlinks") != [] or payload.get("special") != []:
         raise RelocationError("inventory records unsupported entries")
+    totals = payload.get("totals")
+    if not isinstance(totals, Mapping) or totals != {
+        "directories": len(directories),
+        "files": len(files),
+        "size_bytes": sum(int(item["size_bytes"]) for item in files),
+    }:
+        raise RelocationError("inventory totals are invalid")
+    selection = payload.get("selection")
+    if selection is not None:
+        if (
+            not isinstance(selection, Mapping)
+            or selection.get("schema_version")
+            != "mango_calls_selective_transfer_v1"
+            or selection.get("policy")
+            != "all_non_audio_plus_unfinished_and_all_multi_audio"
+        ):
+            raise RelocationError("selective inventory contract is invalid")
+        selected_paths = [str(item["relative_path"]) for item in files]
+        expected_files_from = _nul_files_from(selected_paths)
+        if selection.get("files_from_sha256") != sha256_bytes(expected_files_from):
+            raise RelocationError("selective files-from digest is invalid")
+        omitted = selection.get("omitted_audio")
+        if not isinstance(omitted, list):
+            raise RelocationError("selective omitted-audio evidence is invalid")
+        omitted_seen: set[str] = set()
+        for item in omitted:
+            if not isinstance(item, Mapping):
+                raise RelocationError("selective omitted-audio entry is invalid")
+            relative = _safe_relative(
+                item.get("relative_path"), label="omitted audio path"
+            )
+            if relative in seen or relative in omitted_seen:
+                raise RelocationError("selective audio sets overlap or contain duplicates")
+            omitted_seen.add(relative)
+            if (
+                not isinstance(item.get("size_bytes"), int)
+                or int(item["size_bytes"]) <= 0
+                or not isinstance(item.get("sha256"), str)
+                or len(str(item["sha256"])) != 64
+            ):
+                raise RelocationError("selective omitted-audio metadata is invalid")
+        if selection.get("omitted_audio_sha256") != sha256_bytes(
+            canonical_json({"files": omitted}, indent=None)
+        ):
+            raise RelocationError("selective omitted-audio digest is invalid")
+        for key in (
+            "full_inventory_sha256",
+            "completed_call_ids_sha256",
+        ):
+            value = selection.get(key)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise RelocationError(f"selective {key} is invalid")
+        if (
+            not isinstance(selection.get("completed_call_ids_count"), int)
+            or int(selection["completed_call_ids_count"]) < 0
+        ):
+            raise RelocationError("selective completed-call count is invalid")
     result = dict(payload)
     result["source_root"] = str(source_root)
     return result
@@ -569,10 +636,18 @@ def inventory_projection(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
-def transfer_inventory_projection(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+def transfer_inventory_projection(
+    payload: Mapping[str, Any], *, selective: bool | None = None
+) -> Mapping[str, Any]:
+    if selective is None:
+        selective = isinstance(payload.get("selection"), Mapping)
     return {
         "directories": [
-            {"relative_path": item["relative_path"], "mode": item["mode"]}
+            (
+                {"relative_path": item["relative_path"]}
+                if selective
+                else {"relative_path": item["relative_path"], "mode": item["mode"]}
+            )
             for item in payload["directories"]
         ],
         "files": [
@@ -590,6 +665,360 @@ def transfer_inventory_projection(payload: Mapping[str, Any]) -> Mapping[str, An
     }
 
 
+def _nul_files_from(relative_paths: Sequence[str]) -> bytes:
+    normalized = sorted(set(relative_paths))
+    for relative in normalized:
+        _safe_relative(relative, label="rsync files-from path")
+        if "\n" in relative or "\r" in relative or relative == ".":
+            raise RelocationError("rsync files-from contains an unsafe path")
+    return b"".join(value.encode("utf-8") + b"\0" for value in normalized)
+
+
+def _inventory_subset(
+    full: Mapping[str, Any],
+    selected_paths: set[str],
+    *,
+    files_from_sha256: str,
+    omitted_audio: Sequence[Mapping[str, Any]],
+    completed_call_ids: set[str],
+) -> Mapping[str, Any]:
+    files = [
+        dict(item)
+        for item in full["files"]
+        if str(item["relative_path"]) in selected_paths
+    ]
+    directory_paths = {"."}
+    for relative in selected_paths:
+        parent = PurePosixPath(relative).parent
+        while parent.as_posix() != ".":
+            directory_paths.add(parent.as_posix())
+            parent = parent.parent
+    directories = [
+        dict(item)
+        for item in full["directories"]
+        if str(item["relative_path"]) in directory_paths
+    ]
+    omitted_payload = [dict(item) for item in omitted_audio]
+    omitted_bytes = canonical_json({"files": omitted_payload}, indent=None)
+    completed_digest = hashlib.sha256(
+        "\n".join(sorted(completed_call_ids)).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": INVENTORY_SCHEMA,
+        "source_root": full["source_root"],
+        "directories": directories,
+        "files": files,
+        "symlinks": [],
+        "special": [],
+        "totals": {
+            "directories": len(directories),
+            "files": len(files),
+            "size_bytes": sum(int(item["size_bytes"]) for item in files),
+        },
+        "selection": {
+            "schema_version": "mango_calls_selective_transfer_v1",
+            "policy": "all_non_audio_plus_unfinished_and_all_multi_audio",
+            "full_inventory_sha256": sha256_bytes(canonical_json(full)),
+            "files_from_sha256": files_from_sha256,
+            "omitted_audio": omitted_payload,
+            "omitted_audio_sha256": sha256_bytes(omitted_bytes),
+            "completed_call_ids_count": len(completed_call_ids),
+            "completed_call_ids_sha256": completed_digest,
+        },
+    }
+
+
+def _embedded_relative(value: Any, root: Path, *, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise RelocationError(f"{label} must be a non-empty absolute path")
+    relative, _was_old = classify_embedded_path(value, root, root, label=label)
+    return relative.as_posix()
+
+
+def _source_row_call_ids(path: Path) -> Mapping[Any, str]:
+    with closing(sqlite3.connect(immutable_sqlite_uri(path), uri=True, timeout=30)) as connection:
+        return {
+            row[0]: str(row[1] or "").strip()
+            for row in connection.execute(
+                "SELECT id, source_call_id FROM call_records"
+            )
+        }
+
+
+def build_selective_inventory(root: Path) -> tuple[Mapping[str, Any], bytes]:
+    """Build the exact transfer set while retaining completed historical audio."""
+    root = absolute_path(root, label="selective_inventory_root")
+    full = validate_inventory(build_inventory(root))
+    full_files, _directories = inventory_sets(full)
+    for relative in REQUIRED_TRANSFER_FILES:
+        if relative not in full_files:
+            raise RelocationError(f"required pipeline artifact is missing: {relative}")
+    validate_transfer_cursor(root)
+
+    ready_manifest = validate_ready_manifest(
+        root / READY_MANIFEST_REL,
+        root / READY_DB_REL,
+        root / WORKING_DB_REL,
+        expected_ready_mtime_ns=int(full_files[READY_DB_REL]["mtime_ns"]),
+        expected_source_storage=inventory_sqlite_storage_signature(
+            full_files, WORKING_DB_REL
+        ),
+    )
+    if ready_manifest.get("status") != "ready":
+        raise RelocationError("sealed ready manifest is not ready")
+    completed_call_ids = read_completed_call_ids(
+        root / WORKING_DB_REL
+    ) & read_completed_call_ids(root / READY_DB_REL)
+    _capture_bytes, _capture_report = plan_capture(
+        root / CAPTURE_REL,
+        old_root=root,
+        new_root=root,
+        files=full_files,
+        directories={str(item["relative_path"]) for item in full["directories"]},
+        completed_call_ids=completed_call_ids,
+    )
+
+    all_audio: set[str] = {
+        relative
+        for relative in full_files
+        if relative.startswith("capture/recordings/")
+        or relative.startswith("working/audio/")
+    }
+    required_audio: set[str] = set()
+    omittable_audio: set[str] = set()
+
+    def is_transfer_audio(relative: str) -> bool:
+        return relative.startswith("capture/recordings/") or relative.startswith(
+            "working/audio/"
+        )
+    capture_raw = _read_regular_bytes(root / CAPTURE_REL, label="capture manifest")
+    capture_rows, _tail = split_capture_rows(capture_raw)
+    latest: dict[str, Mapping[str, Any]] = {}
+    for _raw, _newline, payload in capture_rows:
+        latest[str(payload.get("event_key") or "")] = payload
+    for payload in latest.values():
+        call_id = str(payload.get("provider_call_id") or "").strip()
+        status_value = str(payload.get("status") or "")
+        paths: list[tuple[str, Any]] = []
+        if payload.get("local_audio_path"):
+            paths.append(("local_audio_path", payload["local_audio_path"]))
+        if payload.get("canonical_audio_path"):
+            paths.append(("canonical_audio_path", payload["canonical_audio_path"]))
+        recording_paths = payload.get("recording_paths")
+        if recording_paths not in (None, []):
+            if not isinstance(recording_paths, list):
+                raise RelocationError("capture.recording_paths must be a list")
+            paths.extend(("recording_paths", value) for value in recording_paths)
+        relative_paths = [
+            _embedded_relative(value, root, label=f"capture.{field}")
+            for field, value in paths
+        ]
+        all_audio.update(relative for relative in relative_paths if is_transfer_audio(relative))
+        is_multi = status_value == "multiple_recordings_needs_review" or bool(
+            recording_paths
+        )
+        if is_multi:
+            required_audio.update(relative_paths)
+        elif call_id in completed_call_ids and status_value == "downloaded":
+            omittable_audio.update(
+                relative for relative in relative_paths if is_transfer_audio(relative)
+            )
+        elif call_id not in completed_call_ids:
+            if status_value == "downloaded" and payload.get("local_audio_path"):
+                required_audio.add(
+                    _embedded_relative(
+                        payload["local_audio_path"], root, label="capture.local_audio_path"
+                    )
+                )
+            if status_value == "duplicate_recording" and payload.get(
+                "canonical_audio_path"
+            ):
+                required_audio.add(
+                    _embedded_relative(
+                        payload["canonical_audio_path"],
+                        root,
+                        label="capture.canonical_audio_path",
+                    )
+                )
+
+    for database in (root / WORKING_DB_REL, root / READY_DB_REL):
+        locally_complete, complete_rows = read_completed_rows(database)
+        row_call_ids = _source_row_call_ids(database)
+        for row_id, source_file in read_source_rows(database):
+            relative = _embedded_relative(
+                source_file, root, label=f"{database.name}.source_file"
+            )
+            if is_transfer_audio(relative):
+                all_audio.add(relative)
+            row_is_complete = bool(
+                row_id in complete_rows
+                and row_call_ids.get(row_id) in completed_call_ids
+                and row_call_ids.get(row_id) in locally_complete
+            )
+            if row_is_complete and is_transfer_audio(relative):
+                omittable_audio.add(relative)
+            elif not row_is_complete:
+                required_audio.add(relative)
+
+    missing_required = sorted(
+        relative
+        for relative in required_audio
+        if relative not in full_files or int(full_files[relative]["size_bytes"]) <= 0
+    )
+    if missing_required:
+        raise RelocationError("unfinished or multi audio is missing from source inventory")
+    # Retain every unreferenced/orphan audio by default.  An audio file may be
+    # omitted only when an exact capture/SQLite reference proves that every
+    # owner is in the strict working ∩ sealed-ready completion set.
+    omitted_paths = omittable_audio - required_audio
+    selected_paths = set(full_files) - omitted_paths
+    for relative in REQUIRED_TRANSFER_FILES:
+        selected_paths.add(relative)
+    omitted_audio = [
+        dict(full_files[relative])
+        for relative in sorted(omitted_paths)
+        if relative in full_files
+    ]
+    files_from = _nul_files_from(sorted(selected_paths))
+    return (
+        _inventory_subset(
+            full,
+            selected_paths,
+            files_from_sha256=sha256_bytes(files_from),
+            omitted_audio=omitted_audio,
+            completed_call_ids=completed_call_ids,
+        ),
+        files_from,
+    )
+
+
+def write_selective_inventory(
+    root: Path,
+    inventory_output: Path,
+    files_from_output: Path,
+) -> Mapping[str, Any]:
+    inventory_output = private_inventory_document_path(
+        inventory_output, label="inventory_out", allow_missing=True
+    )
+    files_from_output = private_inventory_document_path(
+        files_from_output, label="files_from_out", allow_missing=True
+    )
+    if inventory_output == files_from_output:
+        raise RelocationError("inventory and files-from outputs must differ")
+    for output in (inventory_output, files_from_output):
+        secure_output_parent(output)
+    root = absolute_path(root, label="selective_inventory_root")
+    probe_rsync_from0(root)
+    with optional_process_locks(root):
+        inventory, files_from = build_selective_inventory(root)
+    atomic_write_bytes(files_from_output, files_from)
+    atomic_write_bytes(inventory_output, canonical_json(inventory))
+    return inventory
+
+
+def probe_rsync_from0(source_root: Path, binary: Path = Path("/usr/bin/rsync")) -> None:
+    if not binary.is_file():
+        raise RelocationError("rsync binary is missing")
+    with tempfile.TemporaryDirectory(prefix="mango-rsync-from0-") as temporary:
+        result = subprocess.run(
+            [
+                str(binary),
+                "-anR",
+                "--from0",
+                "--files-from=-",
+                f"{source_root}/",
+                f"{temporary}/",
+            ],
+            input=b"",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+        )
+    if result.returncode != 0:
+        raise RelocationError("rsync does not pass the required --from0 probe")
+
+
+def verify_selective_source(
+    expected_path: Path,
+    source_root: Path,
+    files_from_path: Path,
+) -> Mapping[str, Any]:
+    expected_path = private_inventory_document_path(
+        expected_path, label="verify_selective_source", allow_missing=False
+    )
+    files_from_path = private_inventory_document_path(
+        files_from_path, label="files_from", allow_missing=False
+    )
+    expected = validate_inventory(read_private_json(expected_path, label="inventory"))
+    if not isinstance(expected.get("selection"), Mapping):
+        raise RelocationError("source verification requires a selective inventory")
+    source_root = absolute_path(source_root, label="selective_inventory_root")
+    if expected["source_root"] != str(source_root):
+        raise RelocationError("selective inventory source_root mismatch")
+    files_from = _read_regular_bytes(files_from_path, label="files-from")
+    wanted_files_from = _nul_files_from(
+        [str(item["relative_path"]) for item in expected["files"]]
+    )
+    if files_from != wanted_files_from or sha256_bytes(files_from) != expected[
+        "selection"
+    ].get("files_from_sha256"):
+        raise RelocationError("selective files-from no longer matches inventory")
+    with optional_process_locks(source_root):
+        full = validate_inventory(build_inventory(source_root))
+        if sha256_bytes(canonical_json(full)) != expected["selection"].get(
+            "full_inventory_sha256"
+        ):
+            raise RelocationError("source tree changed after selective inventory")
+    full_files, _directories = inventory_sets(full)
+    selected_and_omitted = [
+        *expected["files"],
+        *expected["selection"].get("omitted_audio", ()),
+    ]
+    for item in selected_and_omitted:
+        current = full_files.get(str(item["relative_path"]))
+        if current is None or not _inventory_content_matches(current, item):
+            raise RelocationError("selective source evidence no longer matches a file")
+    return {
+        "status": "source_verified",
+        "selected_files": len(expected["files"]),
+        "omitted_historical_audio": len(
+            expected["selection"].get("omitted_audio", ())
+        ),
+        "files_from_sha256": sha256_bytes(files_from),
+    }
+
+
+def validate_transfer_cursor(root: Path) -> Mapping[str, Any]:
+    cursor = read_private_json(
+        root / CURSOR_REL, label="Mango freshness cursor", require_private=False
+    )
+    if (
+        cursor.get("schema_version") != "mango_api_freshness_v1"
+        or cursor.get("mango_enumeration_complete") is not True
+    ):
+        raise RelocationError("Mango freshness cursor is incomplete")
+    try:
+        parsed_until = datetime.fromisoformat(
+            str(cursor.get("until") or "").replace("Z", "+00:00")
+        )
+        if parsed_until.tzinfo is None or parsed_until.utcoffset() is None:
+            raise ValueError
+        end_offset = int(cursor.get("manifest_end_offset"))
+    except (TypeError, ValueError):
+        raise RelocationError("Mango freshness cursor identity is invalid") from None
+    manifest_raw = _read_regular_bytes(root / CAPTURE_REL, label="capture manifest")
+    if end_offset <= 0 or end_offset > len(manifest_raw):
+        raise RelocationError("Mango freshness cursor offset is invalid")
+    expected_sha = cursor.get("manifest_snapshot_sha256")
+    if (
+        not isinstance(expected_sha, str)
+        or expected_sha != sha256_bytes(manifest_raw[:end_offset])
+    ):
+        raise RelocationError("Mango freshness cursor capture digest is invalid")
+    return cursor
+
+
 def verify_inventory(expected_path: Path, target_root: Path) -> Mapping[str, Any]:
     expected_path = private_inventory_document_path(
         expected_path,
@@ -598,7 +1027,10 @@ def verify_inventory(expected_path: Path, target_root: Path) -> Mapping[str, Any
     )
     expected = validate_inventory(read_private_json(expected_path, label="inventory"))
     actual = validate_inventory(build_inventory(absolute_path(target_root, label="inventory_root")))
-    if transfer_inventory_projection(expected) != transfer_inventory_projection(actual):
+    selective = isinstance(expected.get("selection"), Mapping)
+    if transfer_inventory_projection(expected, selective=selective) != transfer_inventory_projection(
+        actual, selective=selective
+    ):
         raise RelocationError("source and target inventories differ")
     return {
         "status": "verified",
@@ -715,6 +1147,74 @@ def map_embedded_path(
     return mapped, was_old
 
 
+def embedded_asset_present(
+    value: str,
+    *,
+    old_root: Path,
+    new_root: Path,
+    files: Mapping[str, Mapping[str, Any]],
+    label: str,
+) -> bool:
+    relative, _was_old = classify_embedded_path(
+        value,
+        old_root,
+        new_root,
+        label=label,
+    )
+    entry = files.get(relative.as_posix())
+    return entry is not None and int(entry["size_bytes"]) > 0
+
+
+def _relocation_row_is_complete(row: Mapping[str, Any]) -> bool:
+    return ready_row_is_complete(row)
+
+
+def read_completed_rows(path: Path) -> tuple[set[str], set[Any]]:
+    """Return unambiguous durable call IDs and row IDs safe to leave audio behind."""
+    checks = sqlite_checks(path)
+    if checks != {"quick_check": "ok", "integrity_check": "ok"}:
+        raise RelocationError(f"SQLite checks failed: {path.name}")
+    with closing(sqlite3.connect(immutable_sqlite_uri(path), uri=True, timeout=30)) as connection:
+        configure_sqlite_memory_temp(connection)
+        connection.execute("PRAGMA query_only=ON")
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(call_records)")}
+        required = {
+            "id",
+            "source_call_id",
+            "transcription_status",
+            "resolve_status",
+            "analysis_status",
+            "analysis_json",
+            "transcript_variants_json",
+        }
+        if not required.issubset(columns):
+            return set(), set()
+        connection.row_factory = sqlite3.Row
+        rows = [dict(row) for row in connection.execute("SELECT * FROM call_records")]
+    counts: dict[str, int] = {}
+    for row in rows:
+        call_id = str(row.get("source_call_id") or "").strip()
+        if call_id:
+            counts[call_id] = counts.get(call_id, 0) + 1
+    complete_rows = {
+        row["id"]
+        for row in rows
+        if _relocation_row_is_complete(row)
+        and str(row.get("source_call_id") or "").strip()
+        and counts[str(row.get("source_call_id") or "").strip()] == 1
+    }
+    complete_calls = {
+        str(row.get("source_call_id") or "").strip()
+        for row in rows
+        if row["id"] in complete_rows
+    }
+    return complete_calls, complete_rows
+
+
+def read_completed_call_ids(path: Path) -> set[str]:
+    return read_completed_rows(path)[0]
+
+
 def plan_capture(
     path: Path,
     *,
@@ -722,6 +1222,7 @@ def plan_capture(
     new_root: Path,
     files: Mapping[str, Mapping[str, Any]],
     directories: set[str],
+    completed_call_ids: set[str],
 ) -> tuple[bytes, Mapping[str, Any]]:
     recovery_path = path.with_name(f".{path.name}.recovery.json")
     if path_exists(recovery_path):
@@ -736,19 +1237,39 @@ def plan_capture(
     output = bytearray()
     changed_rows = 0
     changed_paths = 0
+    omitted_historical_ready_assets = 0
+    completed_event_keys = {
+        str(payload.get("event_key") or "").strip()
+        for _original, _has_newline, payload in rows
+        if str(payload.get("provider_call_id") or "").strip() in completed_call_ids
+    }
     for original, has_newline, payload in rows:
         changed = False
         status_value = str(payload.get("status") or "")
+        provider_call_id = str(payload.get("provider_call_id") or "").strip()
+        canonical_event_key = str(payload.get("canonical_event_key") or "").strip()
+        historical_ready = provider_call_id in completed_call_ids or (
+            status_value == "duplicate_recording"
+            and canonical_event_key in completed_event_keys
+        )
         for field in CAPTURE_PATH_FIELDS:
             value = payload.get(field)
             if value in (None, ""):
                 continue
             if not isinstance(value, str):
                 raise RelocationError(f"capture field {field} must be a string")
-            required = (
+            normally_required = (
                 field == "local_audio_path" and status_value == "downloaded"
             ) or (
                 field == "canonical_audio_path" and status_value == "duplicate_recording"
+            )
+            required = normally_required and not historical_ready
+            present = embedded_asset_present(
+                value,
+                old_root=old_root,
+                new_root=new_root,
+                files=files,
+                label=f"capture.{field}",
             )
             mapped, was_old = map_embedded_path(
                 value,
@@ -759,6 +1280,8 @@ def plan_capture(
                 required=required,
                 label=f"capture.{field}",
             )
+            if normally_required and historical_ready and not present:
+                omitted_historical_ready_assets += 1
             if was_old:
                 payload[field] = mapped
                 changed = True
@@ -769,6 +1292,13 @@ def plan_capture(
                 raise RelocationError("capture.recording_paths must be a list of strings")
             mapped_paths: list[str] = []
             for item in recording_paths:
+                present = embedded_asset_present(
+                    item,
+                    old_root=old_root,
+                    new_root=new_root,
+                    files=files,
+                    label="capture.recording_paths",
+                )
                 mapped, was_old = map_embedded_path(
                     item,
                     old_root=old_root,
@@ -783,6 +1313,83 @@ def plan_capture(
                 changed_paths += int(was_old)
             if changed:
                 payload["recording_paths"] = mapped_paths
+        recording_assets = payload.get("recording_assets")
+        if status_value == "multiple_recordings_needs_review" and not recording_assets:
+            raise RelocationError(
+                "multiple recording capture row requires recording_assets integrity metadata"
+            )
+        if recording_assets not in (None, []):
+            if not isinstance(recording_assets, list) or any(
+                not isinstance(item, MutableMapping) for item in recording_assets
+            ):
+                raise RelocationError("capture.recording_assets must be a list of objects")
+            recording_ids = payload.get("recording_ids")
+            if (
+                not isinstance(recording_ids, list)
+                or not isinstance(recording_paths, list)
+                or len(recording_assets) != len(recording_ids)
+                or len(recording_assets) != len(recording_paths)
+            ):
+                raise RelocationError(
+                    "capture.recording_assets must align with recording_ids and recording_paths"
+                )
+            mapped_assets: list[MutableMapping[str, Any]] = []
+            for index, raw_asset in enumerate(recording_assets):
+                asset = dict(raw_asset)
+                value = asset.get("path")
+                if not isinstance(value, str) or not value:
+                    raise RelocationError("capture.recording_assets.path must be a string")
+                if (
+                    str(asset.get("recording_id") or "") != str(recording_ids[index])
+                    or value != recording_paths[index]
+                ):
+                    raise RelocationError(
+                        "capture.recording_assets order or identity is invalid"
+                    )
+                relative_asset, _was_old = classify_embedded_path(
+                    value,
+                    old_root,
+                    new_root,
+                    label="capture.recording_assets.path",
+                )
+                inventory_asset = files.get(relative_asset.as_posix())
+                asset_size = asset.get("size_bytes")
+                asset_sha = asset.get("checksum_sha256")
+                if (
+                    inventory_asset is None
+                    or not isinstance(asset_size, int)
+                    or isinstance(asset_size, bool)
+                    or asset_size
+                    != int(inventory_asset["size_bytes"])
+                    or not isinstance(asset_sha, str)
+                    or asset_sha
+                    != str(inventory_asset["sha256"])
+                ):
+                    raise RelocationError(
+                        "capture.recording_assets size or checksum_sha256 is invalid"
+                    )
+                present = embedded_asset_present(
+                    value,
+                    old_root=old_root,
+                    new_root=new_root,
+                    files=files,
+                    label="capture.recording_assets.path",
+                )
+                mapped, was_old = map_embedded_path(
+                    value,
+                    old_root=old_root,
+                    new_root=new_root,
+                    files=files,
+                    directories=directories,
+                    required=True,
+                    label="capture.recording_assets.path",
+                )
+                asset["path"] = mapped
+                mapped_assets.append(asset)
+                changed = changed or was_old
+                changed_paths += int(was_old)
+            if changed:
+                payload["recording_assets"] = mapped_assets
         if changed:
             changed_rows += 1
             encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -800,6 +1407,7 @@ def plan_capture(
         "rows": len(rows),
         "changed_rows": changed_rows,
         "changed_paths": changed_paths,
+        "omitted_historical_ready_assets": omitted_historical_ready_assets,
         "incomplete_tail_preserved": bool(tail),
         "tail_size_bytes": len(tail),
         "tail_sha256": sha256_bytes(tail) if tail else None,
@@ -931,28 +1539,56 @@ def plan_sqlite_rows(
     new_root: Path,
     files: Mapping[str, Mapping[str, Any]],
     directories: set[str],
+    completed_call_ids: set[str],
 ) -> tuple[list[tuple[Any, str, str]], list[tuple[Any, str]], Mapping[str, Any]]:
     updates: list[tuple[Any, str, str]] = []
     expected_rows: list[tuple[Any, str]] = []
     rows = read_source_rows(path)
+    _locally_completed_call_ids, completed_rows = read_completed_rows(path)
+    with closing(sqlite3.connect(immutable_sqlite_uri(path), uri=True, timeout=30)) as connection:
+        row_call_ids = {
+            row[0]: str(row[1] or "").strip()
+            for row in connection.execute(
+                "SELECT id, source_call_id FROM call_records"
+            )
+        }
     final_values: set[str] = set()
+    omitted_historical_ready_assets = 0
     for row_id, source_file in rows:
+        historical_ready = (
+            row_id in completed_rows
+            and row_call_ids.get(row_id) in completed_call_ids
+        )
+        present = embedded_asset_present(
+            source_file,
+            old_root=old_root,
+            new_root=new_root,
+            files=files,
+            label=f"{path.name}.call_records.source_file",
+        )
         mapped, was_old = map_embedded_path(
             source_file,
             old_root=old_root,
             new_root=new_root,
             files=files,
             directories=directories,
-            required=True,
+            required=not historical_ready,
             label=f"{path.name}.call_records.source_file",
         )
+        if historical_ready and not present:
+            omitted_historical_ready_assets += 1
         if mapped in final_values:
             raise RelocationError(f"relocation would create duplicate source_file values: {path.name}")
         final_values.add(mapped)
         expected_rows.append((row_id, mapped))
         if was_old:
             updates.append((row_id, source_file, mapped))
-    return updates, expected_rows, {"rows": len(rows), "updates": len(updates)}
+    return updates, expected_rows, {
+        "rows": len(rows),
+        "updates": len(updates),
+        "completed_call_ids": len(completed_call_ids),
+        "omitted_historical_ready_assets": omitted_historical_ready_assets,
+    }
 
 
 def sqlite_storage_signature(
@@ -1069,7 +1705,12 @@ def _metadata_content_matches(path: Path, expected: Mapping[str, Any]) -> bool:
 @contextmanager
 def optional_process_locks(pipeline_root: Path) -> Iterator[None]:
     with ExitStack() as stack:
-        for relative in ("locks/process_a.lock", "locks/process_b.lock"):
+        for relative in (
+            "locks/process_a.lock",
+            "locks/process_b.lock",
+            "locks/capture.lock",
+            "locks/pipeline.lock",
+        ):
             path = pipeline_root / relative
             if not path_exists(path):
                 continue
@@ -1490,7 +2131,7 @@ def preflight_plan(
 ) -> Mapping[str, Any]:
     files, directories = inventory_sets(inventory)
     source_files, _source_directories = inventory_sets(source_inventory)
-    for relative in ARTIFACT_ORDER:
+    for relative in REQUIRED_TRANSFER_FILES:
         if relative not in files:
             raise RelocationError(f"required pipeline artifact is missing: {relative}")
     working_journal_mode = sqlite_journal_mode(pipeline_root / WORKING_DB_REL)
@@ -1506,12 +2147,16 @@ def preflight_plan(
         if shm is not None and int(shm["size_bytes"]) != 32768:
             raise RelocationError(f"{label} SQLite has an unexpected SHM sidecar")
 
+    completed_call_ids = read_completed_call_ids(
+        pipeline_root / READY_DB_REL
+    ) & read_completed_call_ids(pipeline_root / WORKING_DB_REL)
     capture_target, capture_report = plan_capture(
         pipeline_root / CAPTURE_REL,
         old_root=old_root,
         new_root=new_root,
         files=files,
         directories=directories,
+        completed_call_ids=completed_call_ids,
     )
     working_updates, working_expected_rows, working_report = plan_sqlite_rows(
         pipeline_root / WORKING_DB_REL,
@@ -1519,6 +2164,7 @@ def preflight_plan(
         new_root=new_root,
         files=files,
         directories=directories,
+        completed_call_ids=completed_call_ids,
     )
     ready_updates, ready_expected_rows, ready_report = plan_sqlite_rows(
         pipeline_root / READY_DB_REL,
@@ -1526,6 +2172,7 @@ def preflight_plan(
         new_root=new_root,
         files=files,
         directories=directories,
+        completed_call_ids=completed_call_ids,
     )
     ready_manifest = validate_ready_manifest(
         pipeline_root / READY_MANIFEST_REL,
@@ -2058,7 +2705,10 @@ def _contract_matches(
 
 
 def _compare_inventory_to_source(current: Mapping[str, Any], source: Mapping[str, Any]) -> None:
-    if transfer_inventory_projection(current) != transfer_inventory_projection(source):
+    selective = isinstance(source.get("selection"), Mapping)
+    if transfer_inventory_projection(current, selective=selective) != transfer_inventory_projection(
+        source, selective=selective
+    ):
         raise RelocationError("pipeline_root no longer matches the verified source inventory")
 
 
@@ -2571,8 +3221,11 @@ def relocate_pipeline(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inventory or safely relocate an offline Mango Calls pipeline copy.")
     parser.add_argument("--inventory-root", type=Path)
+    parser.add_argument("--selective-inventory-root", type=Path)
     parser.add_argument("--inventory-out", type=Path)
+    parser.add_argument("--files-from-out", type=Path)
     parser.add_argument("--verify-inventory", type=Path)
+    parser.add_argument("--verify-selective-source", type=Path)
     parser.add_argument("--pipeline-root", type=Path)
     parser.add_argument("--old-root", type=Path)
     parser.add_argument("--new-root", type=Path)
@@ -2584,6 +3237,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     inventory_build = args.inventory_root is not None and args.inventory_out is not None and args.verify_inventory is None
     inventory_verify = args.verify_inventory is not None and args.inventory_root is not None and args.inventory_out is None
+    selective_build = (
+        args.selective_inventory_root is not None
+        and args.inventory_out is not None
+        and args.files_from_out is not None
+        and args.verify_selective_source is None
+    )
+    selective_verify = (
+        args.selective_inventory_root is not None
+        and args.verify_selective_source is not None
+        and args.files_from_out is not None
+        and args.inventory_out is None
+    )
     relocation = all(value is not None for value in (args.pipeline_root, args.old_root, args.new_root, args.source_inventory)) and (args.dry_run or args.execute)
     sqlite_check = args.check_sqlite is not None
     if sqlite_check and (
@@ -2591,8 +3256,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             value is not None
             for value in (
                 args.inventory_root,
+                args.selective_inventory_root,
                 args.inventory_out,
+                args.files_from_out,
                 args.verify_inventory,
+                args.verify_selective_source,
                 args.pipeline_root,
                 args.old_root,
                 args.new_root,
@@ -2603,15 +3271,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         or args.execute
     ):
         parser.error("SQLite check mode cannot be combined with inventory or relocation options")
-    if sum((inventory_build, inventory_verify, relocation, sqlite_check)) != 1:
-        parser.error("choose exactly one complete mode: inventory, verify, SQLite check, or relocation")
-    if (inventory_build or inventory_verify) and any(value is not None for value in (args.pipeline_root, args.old_root, args.new_root, args.source_inventory)):
+    if sum((inventory_build, inventory_verify, selective_build, selective_verify, relocation, sqlite_check)) != 1:
+        parser.error("choose exactly one complete mode: inventory, selective inventory, verify, SQLite check, or relocation")
+    if (inventory_build or inventory_verify or selective_build or selective_verify) and any(value is not None for value in (args.pipeline_root, args.old_root, args.new_root, args.source_inventory)):
         parser.error("inventory modes cannot be combined with relocation roots")
-    if (inventory_build or inventory_verify) and (args.dry_run or args.execute):
+    if (inventory_build or inventory_verify or selective_build or selective_verify) and (args.dry_run or args.execute):
         parser.error("inventory modes cannot be combined with dry-run/execute")
     if relocation and any(
         value is not None
-        for value in (args.inventory_root, args.inventory_out, args.verify_inventory)
+        for value in (
+            args.inventory_root,
+            args.selective_inventory_root,
+            args.inventory_out,
+            args.files_from_out,
+            args.verify_inventory,
+            args.verify_selective_source,
+        )
     ):
         parser.error("relocation mode cannot be combined with inventory options")
     return args
@@ -2622,6 +3297,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.check_sqlite is not None:
             result = check_sqlite_files(args.check_sqlite)
+        elif args.selective_inventory_root is not None and args.inventory_out is not None:
+            inventory = write_selective_inventory(
+                args.selective_inventory_root,
+                args.inventory_out,
+                args.files_from_out,
+            )
+            result = {
+                "status": "selective_inventory_written",
+                "source_root": inventory["source_root"],
+                "inventory_out": str(
+                    absolute_path(args.inventory_out, label="inventory_out")
+                ),
+                "files_from_out": str(
+                    absolute_path(args.files_from_out, label="files_from_out")
+                ),
+                "selected_files": inventory["totals"]["files"],
+                "omitted_historical_audio": len(
+                    inventory["selection"]["omitted_audio"]
+                ),
+            }
+        elif args.verify_selective_source is not None:
+            result = verify_selective_source(
+                args.verify_selective_source,
+                args.selective_inventory_root,
+                args.files_from_out,
+            )
         elif args.inventory_out is not None:
             inventory = write_inventory(args.inventory_root, args.inventory_out)
             result: Mapping[str, Any] = {

@@ -1000,7 +1000,15 @@ def stage_capture_events(
     host_id: Optional[str] = None,
     require_integrity_metadata: bool = False,
 ) -> CaptureStageSummary:
-    recordings_dir.mkdir(parents=True, exist_ok=True)
+    recordings_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    recordings_info = os.lstat(recordings_dir)
+    if (
+        not stat.S_ISDIR(recordings_info.st_mode)
+        or recordings_dir.is_symlink()
+        or recordings_info.st_uid != os.getuid()
+    ):
+        raise RuntimeError("capture recordings directory is unsafe")
+    recordings_dir.chmod(0o700)
     validate = validator or validate_audio_file
     latest_by_event = dict(manifest_store.latest_by_event_key())
     assets_by_recording = dict(
@@ -1022,6 +1030,7 @@ def stage_capture_events(
         if (
             existing is not None
             and existing.status in TERMINAL_EVENT_STATUSES
+            and existing.status != "recording_retry_expired"
             and manifest_assets_exist(
                 existing,
                 recordings_dir,
@@ -1192,12 +1201,22 @@ def stage_capture_events(
             assets_by_recording[recording_id] = entry
             counts["reused_existing_file" if reused_existing else "downloaded"] += 1
         except Exception as exc:
+            late_retry = (
+                existing is not None
+                and existing.status == "recording_retry_expired"
+            )
             entry = manifest_entry_from_event(
                 event,
-                status="failed",
+                status=("recording_retry_expired" if late_retry else "failed"),
                 local_audio_path=str(target_path),
                 error=f"{type(exc).__name__}:capture_failed",
+                remediation_code=(
+                    "manual_review_or_retry_if_recording_appears"
+                    if late_retry
+                    else None
+                ),
                 host_id=host_id,
+                recovery_state=("late_recording_retry_failed" if late_retry else None),
             )
             manifest_store.append(entry)
             latest_by_event[event.event_key] = entry

@@ -113,6 +113,7 @@ def _payload(
         "WorkingDirectory": str(ROOT),
         "RunAtLoad": False,
         "ProcessType": "Background",
+        "Umask": 63,
         "ThrottleInterval": 60,
         "StandardOutPath": str(log_dir / f"{command}.stdout.log"),
         "StandardErrorPath": str(log_dir / f"{command}.stderr.log"),

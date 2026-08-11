@@ -169,6 +169,7 @@ def test_launchd_installer_renders_scheduled_a_and_demand_only_b(tmp_path: Path)
     assert "cycle" not in process_b["ProgramArguments"]
     assert process_a["StandardOutPath"] != process_b["StandardOutPath"]
     assert process_a["StandardErrorPath"] != process_b["StandardErrorPath"]
+    assert process_a["Umask"] == process_b["Umask"] == 63
 
 
 def test_fast_service_renders_exact_publication_schedule_without_execute(
@@ -209,6 +210,7 @@ def test_fast_service_renders_exact_publication_schedule_without_execute(
         ]
         assert plists[label]["ProgramArguments"][-1] == command
         assert "--execute" not in json.dumps(plists[label])
+    assert all(payload["Umask"] == 63 for payload in plists.values())
     assert plists["com.mango.calls-pipeline"]["StartCalendarInterval"] == [
         {"Minute": 7},
         {"Minute": 37},

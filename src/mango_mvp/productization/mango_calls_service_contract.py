@@ -189,11 +189,26 @@ def read_stable_regular_bytes(
 
 
 def sha256_file(path: Path) -> str:
+    return str(stable_regular_file_evidence(path)["sha256"])
+
+
+def stable_regular_file_evidence(
+    path: Path, *, label: str = "sha256_source"
+) -> Mapping[str, Any]:
     digest = hashlib.sha256()
-    with _stable_regular_descriptor(path, label="sha256_source") as descriptor:
+    size_bytes = 0
+    with _stable_regular_descriptor(path, label=label) as descriptor:
+        opened = os.fstat(descriptor)
         while chunk := os.read(descriptor, 1024 * 1024):
             digest.update(chunk)
-    return digest.hexdigest()
+            size_bytes += len(chunk)
+    return {
+        "sha256": digest.hexdigest(),
+        "size_bytes": size_bytes,
+        "device": opened.st_dev,
+        "inode": opened.st_ino,
+        "mtime_ns": opened.st_mtime_ns,
+    }
 
 
 def current_git_sha(project_root: Path) -> str:

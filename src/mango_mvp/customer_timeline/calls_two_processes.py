@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
@@ -1492,7 +1493,7 @@ def capture_mango_window(
         fully_ready_calls = set()
     recovery_events = [
         event
-        for event in missing_capture_recovery_events(config)
+        for event in missing_capture_recovery_events(config, now=until)
         if not (
             config.strict_ready_provenance
             and event.provider_call_id in fully_ready_calls
@@ -1732,13 +1733,31 @@ def read_regular_json_marker(path: Path) -> Optional[Mapping[str, Any]]:
     return payload if isinstance(payload, Mapping) else None
 
 
-def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[TelephonyCallEvent, ...]:
+def missing_capture_recovery_events(
+    config: CallsTwoProcessesConfig,
+    *,
+    now: Optional[datetime] = None,
+    expired_retry_interval: timedelta = timedelta(hours=24),
+) -> tuple[TelephonyCallEvent, ...]:
     store = CaptureManifestStore(config.capture_manifest)
     recovered: list[TelephonyCallEvent] = []
     for entry in store.latest_by_event_key().values() if config.capture_manifest.exists() else ():
-        if entry.status not in {"downloaded", "failed", "multiple_recordings_needs_review"} or not entry_recording_ids(entry):
+        if entry.status not in {
+            "downloaded",
+            "failed",
+            "recording_retry_expired",
+            "multiple_recordings_needs_review",
+        } or not entry_recording_ids(entry):
             continue
-        if entry.status != "failed" and manifest_assets_exist(
+        if entry.status == "recording_retry_expired":
+            if now is None:
+                continue
+            attempted_at = parse_datetime(entry.created_at)
+            if now.astimezone(timezone.utc) - attempted_at.astimezone(
+                timezone.utc
+            ) < expired_retry_interval:
+                continue
+        if entry.status not in {"failed", "recording_retry_expired"} and manifest_assets_exist(
             entry,
             config.recordings_dir,
             require_integrity_metadata=config.strict_ready_provenance,
@@ -2828,26 +2847,55 @@ def publish_ready_db(
     stage_reports: Sequence[Mapping[str, Any]] = (),
     runtime_fingerprint: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
-    config.ready_db.parent.mkdir(parents=True, exist_ok=True)
-    temp = config.ready_db.with_suffix(".sqlite.tmp")
-    cleanup_sqlite_sidecars(temp)
+    config.ready_db.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config.ready_db.parent.chmod(0o700)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{config.ready_db.stem}.",
+        suffix=".sqlite",
+        dir=config.ready_db.parent,
+    )
+    os.fchmod(descriptor, 0o600)
+    os.close(descriptor)
+    temp = Path(temporary_name)
     source_before = sqlite_storage_signature(config.working_db)
-    with sqlite3.connect(f"file:{config.working_db}?mode=ro", uri=True, timeout=60) as source:
-        source.execute("PRAGMA query_only=ON")
-        with sqlite3.connect(temp) as target:
-            source.backup(target)
-            target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            target.execute("PRAGMA journal_mode=DELETE")
-            quick = str(target.execute("PRAGMA quick_check").fetchone()[0])
-            integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0])
+    try:
+        with sqlite3.connect(
+            f"file:{config.working_db}?mode=ro", uri=True, timeout=60
+        ) as source:
+            source.execute("PRAGMA query_only=ON")
+            with sqlite3.connect(temp) as target:
+                source.backup(target)
+                target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                target.execute("PRAGMA journal_mode=DELETE")
+                quick = str(target.execute("PRAGMA quick_check").fetchone()[0])
+                integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0])
+        temp.chmod(0o600)
+    except Exception:
+        temp.unlink(missing_ok=True)
+        cleanup_sqlite_sidecars(temp)
+        raise
     source_after = sqlite_storage_signature(config.working_db)
     if source_before != source_after:
         temp.unlink(missing_ok=True)
         cleanup_sqlite_sidecars(temp)
         raise RuntimeError("working DB changed while sealing ready generation")
     if quick != "ok" or integrity != "ok":
+        temp.unlink(missing_ok=True)
+        cleanup_sqlite_sidecars(temp)
         raise RuntimeError("ready DB integrity check failed")
+    if os.path.lexists(config.ready_db):
+        existing = os.lstat(config.ready_db)
+        if (
+            not stat.S_ISREG(existing.st_mode)
+            or config.ready_db.is_symlink()
+            or existing.st_uid != os.getuid()
+            or existing.st_nlink != 1
+        ):
+            temp.unlink(missing_ok=True)
+            cleanup_sqlite_sidecars(temp)
+            raise RuntimeError("ready DB target is unsafe")
     temp.replace(config.ready_db)
+    config.ready_db.chmod(0o600)
     cleanup_sqlite_sidecars(temp)
     sha = sha256_file(config.ready_db)
     evidence = dict(capture_evidence or read_json(config.cursor_path))

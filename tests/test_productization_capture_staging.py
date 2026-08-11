@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -101,6 +102,102 @@ def manifest_entry(call_id: str) -> ManifestEntry:
         duration_sec=12.34,
         dry_run=False,
     )
+
+
+def test_expired_recording_with_known_id_recovers_append_only(tmp_path: Path) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    store = CaptureManifestStore(manifest)
+    late_event = event("LATE-1", "recording-late")
+    expired = ManifestEntry(
+        schema_version="capture_manifest_v1",
+        created_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+        tenant_id="foton",
+        provider="mango",
+        event_key=late_event.event_key,
+        provider_call_id=late_event.provider_call_id,
+        recording_id="recording-late",
+        recording_ids=("recording-late",),
+        started_at=late_event.started_at.isoformat(),
+        ended_at=late_event.ended_at.isoformat() if late_event.ended_at else None,
+        direction="inbound",
+        client_phone=late_event.client_phone,
+        manager_ref=late_event.manager_ref,
+        status="recording_retry_expired",
+        error="recording_missing_after_retry_ttl",
+        remediation_code="manual_review_or_retry_if_recording_appears",
+    )
+    store.append(expired)
+
+    summary = stage_capture_events(
+        [late_event],
+        store,
+        tmp_path / "recordings",
+        FakeDownloader(),
+        validator=fake_validator,
+    )
+
+    entries = store.read_entries()
+    assert len(entries) == 2
+    assert entries[0].status == "recording_retry_expired"
+    assert entries[1].status == "downloaded"
+    assert entries[1].recovery_state == "recovered_late_recording"
+    assert summary.downloaded == 1
+
+
+def test_failed_late_recording_retry_stays_in_expired_quarantine(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    store = CaptureManifestStore(manifest)
+    late_event = event("LATE-FAIL", "recording-late-fail")
+    store.append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+            tenant_id="foton",
+            provider="mango",
+            event_key=late_event.event_key,
+            provider_call_id=late_event.provider_call_id,
+            recording_id="recording-late-fail",
+            recording_ids=("recording-late-fail",),
+            started_at=late_event.started_at.isoformat(),
+            ended_at=late_event.ended_at.isoformat() if late_event.ended_at else None,
+            direction="inbound",
+            client_phone=late_event.client_phone,
+            manager_ref=late_event.manager_ref,
+            status="recording_retry_expired",
+            error="recording_missing_after_retry_ttl",
+            remediation_code="manual_review_or_retry_if_recording_appears",
+        )
+    )
+
+    summary = stage_capture_events(
+        [late_event],
+        store,
+        tmp_path / "recordings",
+        FakeDownloader(fail_first=True),
+        validator=fake_validator,
+    )
+
+    latest = store.latest_by_event_key()[late_event.event_key]
+    assert latest.status == "recording_retry_expired"
+    assert latest.recovery_state == "late_recording_retry_failed"
+    assert len(store.read_entries()) == 2
+    assert summary.failed == 1
+
+
+def test_recordings_directory_is_owner_only_even_with_open_umask(
+    tmp_path: Path,
+) -> None:
+    previous = os.umask(0)
+    try:
+        stage_capture_events(
+            [], CaptureManifestStore(tmp_path / "capture.jsonl"), tmp_path / "recordings"
+        )
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE((tmp_path / "recordings").stat().st_mode) == 0o700
 
 
 def test_manifest_recovers_only_unterminated_final_record_before_append(tmp_path: Path) -> None:

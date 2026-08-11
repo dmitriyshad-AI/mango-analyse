@@ -1401,15 +1401,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    previous_umask = os.umask(0o077) if _env_truthy("MANGO_STRICT_ASR_RUNTIME") else None
     try:
-        return args.func(args)
-    except KeyboardInterrupt:
-        return 130
-    except Exception as exc:  # noqa: BLE001
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        try:
+            return args.func(args)
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    finally:
+        if previous_umask is not None:
+            os.umask(previous_umask)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 from datetime import date, datetime
@@ -12,6 +13,9 @@ from openpyxl import Workbook, load_workbook
 
 from scripts import export_daily_mango_calls_resolve as exporter
 from scripts import evaluate_dialogue_quality as dialogue_quality
+from mango_mvp.productization.mango_calls_service_contract import (
+    approved_runtime_fingerprint,
+)
 
 
 SCHEMA = """
@@ -131,6 +135,80 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pat
     )
     monkeypatch.setattr(exporter, "PIPELINE_ROOT", root)
     return ready_db, working_db, users, tallanto, tmp_path / "out"
+
+
+def _seal_ready(ready_db: Path, *, ready_count: int) -> Path:
+    day = "2026-07-28"
+    source = {
+        "mode": "strict_service",
+        "since": "2026-07-27T21:00:00+00:00",
+        "rolling_since": "2026-07-27T21:00:00+00:00",
+        "until": "2026-07-28T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "requests": 1,
+        "covered_intervals": [
+            {
+                "since": "2026-07-27T21:00:00+00:00",
+                "until": "2026-07-28T21:00:00+00:00",
+                "result_complete": True,
+                "rows": ready_count,
+            }
+        ],
+        "catch_up": False,
+    }
+    verdict = {
+        "schema_version": "mango_calls_stage10_verdict_v1",
+        "day": day,
+        "generated_at": "2026-07-29T00:00:00+00:00",
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "mango_unique": ready_count,
+        "ready_unique": ready_count,
+        "quarantine_unique": 0,
+        "pending_unique": 0,
+        "unexplained_missing": 0,
+        "state_overlap_count": 0,
+        "pending_awaiting_recording": 0,
+        "pending_over_sla": 0,
+        "quarantine_without_reason": 0,
+        "ready_without_dual_asr_or_explicit_exception": 0,
+        "ready_without_resolve": 0,
+        "ready_without_analyze": 0,
+        "duplicate_call_keys": 0,
+        "oldest_pending_age_minutes": 0,
+        "state_not_in_mango_enumeration": 0,
+        "independent_zero_enumerations": 0,
+        "consistency_ok": True,
+        "closure_ok": True,
+    }
+    manifest = {
+        "schema_version": "mango_calls_ready_v2",
+        "created_at_utc": "2026-07-29T00:00:01+00:00",
+        "published_at": "2026-07-29T00:00:02+00:00",
+        "status": "ready",
+        "consistency_ok": True,
+        "closure_ok": True,
+        "moscow_dates": [day],
+        "daily_verdicts": {day: verdict},
+        "producer_git_sha": "a" * 40,
+        "host_id": "m1-synthetic",
+        "run_id": "synthetic-run",
+        "mango_window": {"since": source["since"], "until": source["until"]},
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "manifest_snapshot": {"end_offset": 1, "sha256": "b" * 64},
+        "provenance_mode": "strict_service",
+        "quick_check": "ok",
+        "integrity_check": "ok",
+        "runtime_fingerprint": approved_runtime_fingerprint(),
+        "sha256": _sha(ready_db),
+        "size_bytes": ready_db.stat().st_size,
+    }
+    path = ready_db.with_suffix(".manifest.json")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
 
 
 class FakeTallantoClient:
@@ -876,6 +954,240 @@ def test_ready_database_manifest_mismatch_blocks_export(tmp_path: Path, monkeypa
     ready_db.write_bytes(ready_db.read_bytes() + b"changed")
     with pytest.raises(RuntimeError, match="контрольный файл"):
         exporter.export_day(ready_db, working_db, out, date(2026, 7, 28), users)
+
+
+def test_verify_ready_drop_rejects_manifest_swap_during_db_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, _working_db, _users, _tallanto, _out = _fixture(
+        tmp_path, monkeypatch
+    )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    real_connect = exporter.sqlite3.connect
+    swapped = False
+
+    def swapping_connect(database: object, *args: object, **kwargs: object):
+        nonlocal swapped
+        if not swapped and isinstance(database, str) and "mode=ro" in database:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload["published_at"] = "2026-07-29T00:00:01Z"
+            manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+            swapped = True
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.sqlite3, "connect", swapping_connect)
+
+    with pytest.raises(RuntimeError, match="поколение изменилось"):
+        exporter.verify_ready_drop(ready_db)
+    assert swapped
+
+
+def test_verify_ready_drop_rejects_identical_db_inode_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, _working_db, _users, _tallanto, _out = _fixture(
+        tmp_path, monkeypatch
+    )
+    replacement = tmp_path / "same.sqlite"
+    replacement.write_bytes(ready_db.read_bytes())
+    real_connect = exporter.sqlite3.connect
+    swapped = False
+
+    def swapping_connect(database: object, *args: object, **kwargs: object):
+        nonlocal swapped
+        if not swapped and isinstance(database, str) and "mode=ro" in database:
+            os.replace(replacement, ready_db)
+            swapped = True
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.sqlite3, "connect", swapping_connect)
+
+    with pytest.raises(RuntimeError, match="поколение изменилось"):
+        exporter.verify_ready_drop(ready_db)
+    assert swapped
+
+
+def test_export_rejects_manifest_only_change_during_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    real_apply = exporter.apply_tallanto_names
+
+    def mutate_manifest(*args: object, **kwargs: object):
+        result = real_apply(*args, **kwargs)
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["published_at"] = "2026-07-29T00:00:03Z"
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(exporter, "apply_tallanto_names", mutate_manifest)
+
+    with pytest.raises(RuntimeError, match="поколение изменилось"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+        )
+
+    assert not list(out.glob("*.xlsx")) and not list(out.glob("*.manifest.json"))
+
+
+def test_crash_after_xlsx_resumes_across_unrelated_ready_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    real_write = exporter.write_private_json
+
+    def crash_before_export_manifest(path: Path, payload: object) -> None:
+        if isinstance(payload, dict) and payload.get("schema_version") == exporter.EXPORT_SCHEMA_VERSION:
+            raise OSError("synthetic crash after XLSX")
+        real_write(path, payload)
+
+    monkeypatch.setattr(exporter, "write_private_json", crash_before_export_manifest)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    with pytest.raises(OSError, match="synthetic crash"):
+        exporter.export_day(
+            ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+        )
+
+    xlsx_before = list(out.glob("*.xlsx"))
+    assert len(xlsx_before) == 1
+    assert len(list(out.glob(".daily_export_*.journal.json"))) == 1
+    with sqlite3.connect(ready_db) as con:
+        con.execute("CREATE TABLE unrelated_generation(value TEXT)")
+    _seal_ready(ready_db, ready_count=1)
+    monkeypatch.setattr(exporter, "write_private_json", real_write)
+
+    result = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+
+    assert Path(result["xlsx"]) == xlsx_before[0]
+    assert result["supplement_number"] is None
+    assert len(list(out.glob("*.xlsx"))) == 1
+    assert not list(out.glob("*supplement-*.manifest.json"))
+    assert not list(out.glob(".daily_export_*.journal.json"))
+
+
+def test_final_supersedes_immutable_incomplete_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    kwargs = {"tallanto_export": tallanto, "tallanto_client": FakeTallantoClient()}
+    incomplete = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    old_paths = [
+        Path(incomplete["manifest"]),
+        Path(incomplete["xlsx"]),
+        *Path(incomplete["transcript_dir"]).glob("*.txt"),
+    ]
+    old_hashes = {path: _sha(path) for path in old_paths}
+    _seal_ready(ready_db, ready_count=1)
+
+    final = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+    link = final["supersedes_incomplete"]
+
+    assert link["manifest"] == Path(incomplete["manifest"]).name
+    assert link["sha256"] == old_hashes[Path(incomplete["manifest"])]
+    assert all(_sha(path) == digest for path, digest in old_hashes.items())
+    repeated = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+    assert repeated["reused"] is True
+    assert repeated["manifest"] == final["manifest"]
+
+
+def test_late_closed_call_creates_one_immutable_supplement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    base = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    base_paths = [
+        Path(base["manifest"]),
+        Path(base["xlsx"]),
+        *Path(base["transcript_dir"]).glob("*.txt"),
+    ]
+    base_hashes = {path: _sha(path) for path in base_paths}
+    with sqlite3.connect(working_db) as source:
+        pending = source.execute(
+            "SELECT * FROM call_records WHERE source_call_id='call-pending'"
+        ).fetchone()
+    assert pending is not None
+    with sqlite3.connect(ready_db) as target:
+        target.execute(
+            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            pending,
+        )
+        target.execute(
+            "UPDATE call_records SET resolve_status='done', analysis_status='done', "
+            "resolve_json=?, analysis_json=? WHERE source_call_id='call-pending'",
+            (json.dumps({"decision": "automatic"}), json.dumps(_analysis(), ensure_ascii=False)),
+        )
+    _seal_ready(ready_db, ready_count=2)
+
+    supplement = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+
+    assert supplement["supplement_number"] == 1
+    assert supplement["supplement_of"] == Path(base["manifest"]).name
+    assert supplement["supplement_of_sha256"] == base_hashes[Path(base["manifest"])]
+    assert all(_sha(path) == digest for path, digest in base_hashes.items())
+    repeated = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+    assert repeated["reused"] is True
+    assert repeated["manifest"] == supplement["manifest"]
+    assert not list(out.glob("*supplement-2.manifest.json"))
 
 
 def test_tallanto_multiple_matches_are_not_selected(tmp_path: Path) -> None:

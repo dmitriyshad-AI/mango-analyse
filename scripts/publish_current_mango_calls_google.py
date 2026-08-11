@@ -53,6 +53,11 @@ NEUTRAL_SUMMARY = (
 MISSING_SUMMARY = (
     "Смысловой анализ завершён, но краткое содержание отсутствует; нужна проверка."
 )
+OVERSIZED_SUMMARY = (
+    "Краткое содержание превышает допустимый предел Analyze; нужна проверка."
+)
+MAX_MANAGER_VALUE = 2_000
+MAX_ANALYZE_SUMMARY = 32_000
 TRANSCRIPT_LINK_HEADER = "Путь/ссылка на полную расшифровку в закрытой папке"
 HEADERS = (
     "call_key",
@@ -115,13 +120,20 @@ def json_object(value: Any) -> Mapping[str, Any]:
     return payload if isinstance(payload, Mapping) else {}
 
 
-def clean_text(value: Any, *, maximum: int = 2_000) -> str:
+def clean_text(value: Any, *, maximum: int = MAX_MANAGER_VALUE) -> str:
     text = " ".join(str(value or "").split())
     if len(text) > maximum:
         raise RuntimeError("manager-facing value is unexpectedly long")
     if text.startswith(("=", "+", "-", "@")):
         text = "'" + text
     return text
+
+
+def manager_summary(value: Any) -> tuple[str, str]:
+    text = " ".join(str(value or "").split())
+    if len(text) > MAX_ANALYZE_SUMMARY:
+        return OVERSIZED_SUMMARY, "Краткое содержание превышает допустимый предел Analyze"
+    return clean_text(text, maximum=MAX_ANALYZE_SUMMARY), ""
 
 
 def exact_acl_ok(
@@ -276,11 +288,14 @@ def load_manager_rows(
             if analysis_complete
             else {}
         )
-        summary = (
-            clean_text(normalized.get("history_summary")) or MISSING_SUMMARY
-            if analysis_complete
-            else NEUTRAL_SUMMARY
-        )
+        summary_issue = ""
+        if analysis_complete:
+            summary, summary_issue = manager_summary(
+                normalized.get("history_summary")
+            )
+            summary = summary or MISSING_SUMMARY
+        else:
+            summary = NEUTRAL_SUMMARY
         issues: list[str] = []
         if row.get("transcription_status") != "done":
             issues.append("Распознавание не завершено")
@@ -290,6 +305,8 @@ def load_manager_rows(
             issues.append("Смысловой анализ не завершён")
         elif summary == MISSING_SUMMARY:
             issues.append("Краткое содержание отсутствует")
+        if summary_issue:
+            issues.append(summary_issue)
         direction_value = str(row.get("direction") or "")
         if direction_value == "inbound":
             direction = "Входящий"
@@ -309,7 +326,13 @@ def load_manager_rows(
             business_analysis.get("result") or business_analysis.get("call_result")
         )
         if analysis_complete and not explicit_result:
-            issues.append("Результат разговора не выделен текущей схемой Analyze")
+            if clean_text(normalized.get("call_type")) == "non_conversation":
+                explicit_result = "Разговор не состоялся"
+            elif clean_text(normalized.get("next_step_action")):
+                explicit_result = "Согласован следующий шаг"
+            else:
+                explicit_result = "Итог не зафиксирован"
+                issues.append("Итог разговора требует ручной проверки")
         link = validate_private_link(
             call_key,
             (links.get(call_key) or {}).get("url")
@@ -400,7 +423,12 @@ def validate_safe_rows(rows: Any) -> list[Mapping[str, Any]]:
                 normalized[header] = numeric
                 continue
             text = str(value or "")
-            if len(text) > 2_000:
+            maximum = (
+                MAX_ANALYZE_SUMMARY
+                if header == "Краткое содержание"
+                else MAX_MANAGER_VALUE
+            )
+            if len(text) > maximum:
                 raise RuntimeError("safe Google plan contains an oversized value")
             if text.startswith(("=", "+", "-", "@")):
                 text = "'" + text

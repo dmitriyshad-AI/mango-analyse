@@ -432,6 +432,26 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
     return db, manifest_path
 
 
+def _rewrite_analysis(
+    db: Path,
+    manifest_path: Path,
+    mutate: object,
+) -> None:
+    with sqlite3.connect(db) as con:
+        payload = json.loads(
+            con.execute("SELECT analysis_json FROM call_records").fetchone()[0]
+        )
+        assert callable(mutate)
+        mutate(payload)
+        con.execute(
+            "UPDATE call_records SET analysis_json=?",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(sha256=sha256_file(db), size_bytes=db.stat().st_size)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_projection_never_contains_full_dialogue_path_or_diagnostic_json(tmp_path: Path) -> None:
     db, manifest = _ready_fixture(tmp_path, analyzed=False)
     rows = publisher.load_manager_rows(
@@ -493,9 +513,128 @@ def test_projection_uses_real_analyze_schema_without_list_repr(tmp_path: Path) -
     assert row["Главное возражение"] == "Стоимость | Расписание"
     assert row["Следующий шаг"] == "Перезвонить после обсуждения"
     assert row["Срок"] == "2026-08-12"
-    assert row["Результат"] == ""
+    assert row["Результат"] == "Согласован следующий шаг"
     assert row["Нужна проверка"] == "Да"
-    assert "текущей схемой Analyze" in str(row["Причина проверки"])
+    assert "текущей схемой Analyze" not in str(row["Причина проверки"])
+
+
+def test_v2_non_conversation_has_deterministic_result(tmp_path: Path) -> None:
+    db, manifest = _ready_fixture(tmp_path, analyzed=True)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["quality_flags"] = {"call_type": "non_conversation"}
+        payload["needs_review"] = False
+        structured = payload["structured_fields"]
+        assert isinstance(structured, dict)
+        structured["next_step"] = {"action": "", "due": ""}
+
+    _rewrite_analysis(db, manifest, mutate)
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert row["Результат"] == "Разговор не состоялся"
+    assert "Итог разговора" not in str(row["Причина проверки"])
+
+
+def test_v2_without_supported_outcome_gets_neutral_result_and_review(
+    tmp_path: Path,
+) -> None:
+    db, manifest = _ready_fixture(tmp_path, analyzed=True)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["quality_flags"] = {"call_type": "sales_call"}
+        payload["needs_review"] = False
+        structured = payload["structured_fields"]
+        assert isinstance(structured, dict)
+        structured["next_step"] = {"action": "", "due": ""}
+
+    _rewrite_analysis(db, manifest, mutate)
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert row["Результат"] == "Итог не зафиксирован"
+    assert row["Нужна проверка"] == "Да"
+    assert "Итог разговора требует ручной проверки" in str(row["Причина проверки"])
+
+
+def test_legacy_explicit_result_has_priority(tmp_path: Path) -> None:
+    db, manifest = _ready_fixture(tmp_path, analyzed=True)
+    _rewrite_analysis(
+        db,
+        manifest,
+        lambda payload: payload.update(result="Договор отправлен"),
+    )
+
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert row["Результат"] == "Договор отправлен"
+
+
+@pytest.mark.parametrize("length", [2_001, 32_000])
+def test_analyze_summary_is_preserved_without_truncation(
+    tmp_path: Path, length: int
+) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    expected = "я" * length
+    _rewrite_analysis(
+        db,
+        manifest_path,
+        lambda payload: payload.update(history_summary=expected),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest_path,
+        ready_manifest_payload=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )
+    plan = publisher.build_safe_plan(
+        day=date(2026, 8, 11),
+        rows=rows,
+        ready_manifest=manifest,
+        now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+    )
+
+    assert plan["rows"][0]["Краткое содержание"] == expected
+
+
+def test_summary_over_analyze_limit_is_replaced_per_row(tmp_path: Path) -> None:
+    db, manifest = _ready_fixture(tmp_path, analyzed=True)
+    _rewrite_analysis(
+        db,
+        manifest,
+        lambda payload: payload.update(history_summary="я" * 32_001),
+    )
+
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert row["Краткое содержание"] == publisher.OVERSIZED_SUMMARY
+    assert row["Нужна проверка"] == "Да"
+    assert "предел Analyze" in str(row["Причина проверки"])
 
 
 def test_safe_plan_expires_after_sixty_minutes(tmp_path: Path) -> None:

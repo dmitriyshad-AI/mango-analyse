@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp import cli as mango_cli
 import mango_mvp.customer_timeline.calls_two_processes as calls_runtime
+from mango_mvp.config import get_settings
 from mango_mvp.customer_timeline.calls_two_processes import (
     CallsTwoProcessesConfig,
     LockBusy,
@@ -1274,7 +1276,44 @@ def test_publish_ready_db_handles_space_path_wal_tmp(tmp_path: Path) -> None:
 
     assert manifest["quick_check"] == "ok"
     assert config.ready_db.exists()
+    assert config.ready_db.stat().st_mode & 0o777 == 0o600
+    assert config.ready_db.parent.stat().st_mode & 0o777 == 0o700
+    assert config.ready_manifest.stat().st_mode & 0o777 == 0o600
     assert not config.ready_db.with_suffix(".sqlite.tmp-shm").exists()
+
+
+def test_publish_ready_db_is_private_under_open_umask(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+    previous = os.umask(0)
+    try:
+        publish_ready_db(config, {"total": 0})
+    finally:
+        os.umask(previous)
+
+    assert config.ready_db.stat().st_mode & 0o777 == 0o600
+    assert config.ready_db.parent.stat().st_mode & 0o777 == 0o700
+    assert config.ready_manifest.stat().st_mode & 0o777 == 0o600
+
+
+def test_strict_cli_creates_owner_only_sqlite_under_open_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "strict-runtime" / "working.sqlite"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+    monkeypatch.setenv("MANGO_STRICT_ASR_RUNTIME", "1")
+    get_settings.cache_clear()
+    previous = os.umask(0)
+    try:
+        assert mango_cli.main(["init-db"]) == 0
+    finally:
+        os.umask(previous)
+        get_settings.cache_clear()
+
+    assert db.stat().st_mode & 0o777 == 0o600
+    assert db.parent.stat().st_mode & 0o777 == 0o700
 
 
 def test_unchanged_working_db_rebuilds_modified_ready_copy(tmp_path: Path) -> None:
@@ -2685,6 +2724,42 @@ def test_failed_capture_stays_in_recovery_queue(tmp_path: Path) -> None:
     recovered = missing_capture_recovery_events(config)
 
     assert [event.provider_call_id for event in recovered] == ["failed-1"]
+
+
+def test_expired_capture_with_known_recording_is_rechecked_at_most_daily(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    attempted_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at=attempted_at.isoformat(),
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:expired-known",
+            provider_call_id="expired-known",
+            recording_id="recording-known",
+            recording_ids=("recording-known",),
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+            error="recording_missing_after_retry_ttl",
+        )
+    )
+
+    assert missing_capture_recovery_events(
+        config, now=attempted_at + timedelta(hours=23)
+    ) == ()
+    due = missing_capture_recovery_events(
+        config, now=attempted_at + timedelta(hours=24)
+    )
+    assert [event.provider_call_id for event in due] == ["expired-known"]
 
 
 def test_recovery_is_not_filtered_by_known_processed_ids(

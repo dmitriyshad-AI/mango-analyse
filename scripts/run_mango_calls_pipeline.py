@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -49,45 +50,49 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    previous_umask = os.umask(0o077)
     try:
-        config = CallsTwoProcessesConfig.from_json(Path(args.config))
-        if args.command == "capture":
-            report = run_capture(config, since=args.since, until=args.until)
-        elif args.command == "pipeline":
-            report = run_pipeline(config)
-        elif args.command == "watchdog":
-            report = run_local_watchdog(config)
-        elif args.command == "process-a":
-            report = run_process_a(
-                config,
-                since=args.since,
-                until=args.until,
-                skip_capture=args.skip_capture,
-                skip_workers=args.skip_workers,
-            )
-        elif args.command == "process-b":
-            report = run_process_b(config)
-        elif args.command == "cycle":
-            report = run_cycle(
-                config,
-                since=args.since,
-                until=args.until,
-                skip_capture=args.skip_capture,
-                skip_workers=args.skip_workers,
-            )
-        else:
-            report = pipeline_freshness(config)
-    except Exception as exc:
-        report = {
-            "schema_version": "mango_calls_two_processes_v1",
-            "process": args.command,
-            "status": "failed",
-            "stop_reason": f"cli_exception:{type(exc).__name__}",
-            "counters": {},
-        }
-    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if report.get("status") in {"ok", "idle", "locked", "deferred", "fresh"} else 1
+        args = build_parser().parse_args(argv)
+        try:
+            config = CallsTwoProcessesConfig.from_json(Path(args.config))
+            if args.command == "capture":
+                report = run_capture(config, since=args.since, until=args.until)
+            elif args.command == "pipeline":
+                report = run_pipeline(config)
+            elif args.command == "watchdog":
+                report = run_local_watchdog(config)
+            elif args.command == "process-a":
+                report = run_process_a(
+                    config,
+                    since=args.since,
+                    until=args.until,
+                    skip_capture=args.skip_capture,
+                    skip_workers=args.skip_workers,
+                )
+            elif args.command == "process-b":
+                report = run_process_b(config)
+            elif args.command == "cycle":
+                report = run_cycle(
+                    config,
+                    since=args.since,
+                    until=args.until,
+                    skip_capture=args.skip_capture,
+                    skip_workers=args.skip_workers,
+                )
+            else:
+                report = pipeline_freshness(config)
+        except Exception as exc:
+            report = {
+                "schema_version": "mango_calls_two_processes_v1",
+                "process": args.command,
+                "status": "failed",
+                "stop_reason": f"cli_exception:{type(exc).__name__}",
+                "counters": {},
+            }
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if report.get("status") in {"ok", "idle", "locked", "deferred", "fresh"} else 1
+    finally:
+        os.umask(previous_umask)
 
 
 if __name__ == "__main__":

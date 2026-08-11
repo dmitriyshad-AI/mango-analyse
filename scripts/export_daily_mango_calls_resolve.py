@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -32,7 +33,11 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
     TallantoApiError,
 )
 from mango_mvp.productization.mango_office_client import MangoOfficeClient, MangoOfficeCredentials
-from mango_mvp.productization.mango_calls_service_contract import validate_ready_manifest_payload
+from mango_mvp.productization.mango_calls_service_contract import (
+    read_stable_regular_bytes,
+    stable_regular_file_evidence,
+    validate_ready_manifest_payload,
+)
 from mango_mvp.services.export_excel import call_to_row
 from mango_mvp.utils.filename_repair import repair_manager_name
 from mango_mvp.utils.phone import normalize_phone
@@ -83,6 +88,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def readonly_uri(path: Path, *, immutable: bool = False) -> str:
     option = "&immutable=1" if immutable else ""
     return f"file:{quote(str(path.resolve()), safe='/:')}?mode=ro{option}"
@@ -106,10 +124,34 @@ def verify_ready_drop(
     db: Path, *, require_closure: bool = False, day: date | None = None
 ) -> dict[str, Any]:
     manifest_path = db.with_suffix(".manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    actual = {"sha256": sha256_file(db), "size_bytes": db.stat().st_size}
+    manifest_raw = read_stable_regular_bytes(
+        manifest_path, label="ready manifest"
+    )
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("готовый manifest недействителен") from exc
+    if not isinstance(manifest, Mapping):
+        raise RuntimeError("готовый manifest недействителен")
+    manifest_before = stable_regular_file_evidence(
+        manifest_path, label="ready manifest"
+    )
+    if hashlib.sha256(manifest_raw).hexdigest() != manifest_before["sha256"]:
+        raise RuntimeError("готовый manifest изменился во время проверки")
+    db_before = stable_regular_file_evidence(db, label="ready database")
     with sqlite3.connect(readonly_uri(db, immutable=True), uri=True) as con:
-        actual["quick_check"] = str(con.execute("PRAGMA quick_check").fetchone()[0])
+        quick_check = str(con.execute("PRAGMA quick_check").fetchone()[0])
+    db_after = stable_regular_file_evidence(db, label="ready database")
+    manifest_after = stable_regular_file_evidence(
+        manifest_path, label="ready manifest"
+    )
+    if db_before != db_after or manifest_before != manifest_after:
+        raise RuntimeError("готовое поколение изменилось во время проверки")
+    actual = {
+        "sha256": db_before["sha256"],
+        "size_bytes": db_before["size_bytes"],
+        "quick_check": quick_check,
+    }
     expected = (manifest.get("sha256"), int(manifest.get("size_bytes") or 0), manifest.get("quick_check"), manifest.get("status"))
     observed = (actual["sha256"], actual["size_bytes"], actual["quick_check"], "ready")
     if expected != observed:
@@ -143,7 +185,23 @@ def verify_ready_drop(
             if isinstance(day_verdict, Mapping)
             else manifest.get("closure_ok") is True
         ),
-        "ready_manifest_sha256": sha256_file(manifest_path),
+        "ready_manifest_sha256": manifest_before["sha256"],
+        "ready_generation_fingerprint": {
+            "db_sha256": db_before["sha256"],
+            "db_size_bytes": db_before["size_bytes"],
+            "db_device": db_before["device"],
+            "db_inode": db_before["inode"],
+            "db_mtime_ns": db_before["mtime_ns"],
+            "manifest_sha256": manifest_before["sha256"],
+            "manifest_device": manifest_before["device"],
+            "manifest_inode": manifest_before["inode"],
+            "manifest_mtime_ns": manifest_before["mtime_ns"],
+            "closure_ok": (
+                day_verdict.get("closure_ok") is True
+                if isinstance(day_verdict, Mapping)
+                else manifest.get("closure_ok") is True
+            ),
+        },
     }
 
 
@@ -586,6 +644,7 @@ def publish_transcripts(rows: Sequence[dict[str, Any]], target: Path) -> tuple[i
             destination.write_text(body, encoding="utf-8")
             destination.chmod(0o600)
         os.replace(staging, target)
+        fsync_directory(target.parent)
     except Exception:
         for path in staging.glob("*") if staging.is_dir() else ():
             path.unlink(missing_ok=True)
@@ -594,7 +653,13 @@ def publish_transcripts(rows: Sequence[dict[str, Any]], target: Path) -> tuple[i
     return len(rows), 0, 0
 
 
-def publication_content_sha256(rows: Sequence[Mapping[str, Any]]) -> str:
+def publication_content_sha256(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    day: date | None = None,
+    manager_source: str = "",
+    package_status: str = "",
+) -> str:
     payload = [{
         "call_id": row["call_id"], "started": row["started"].isoformat(), "manager": row["manager"],
         "extension": row["extension"], "direction": row["direction"], "phone": row["phone"],
@@ -602,12 +667,113 @@ def publication_content_sha256(rows: Sequence[Mapping[str, Any]]) -> str:
         "issues": row["issues"], "transcript": row["transcript"], "base": row["base"],
         "client_fio": row["client_fio"], "tallanto_source": row["tallanto_source"],
     } for row in rows]
-    document = {"schema_version": EXPORT_SCHEMA_VERSION, "rows": payload}
+    document = {
+        "schema_version": EXPORT_SCHEMA_VERSION,
+        "day": day.isoformat() if day is not None else None,
+        "manager_source": manager_source,
+        "package_status": package_status,
+        "rows": payload,
+    }
     return hashlib.sha256(json.dumps(document, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def incomplete_prefix(incomplete: bool) -> str:
     return "НЕПОЛНЫЙ, НЕ ИСПОЛЬЗОВАТЬ КАК ИТОГ — " if incomplete else ""
+
+
+def export_manifest_paths(
+    output_root: Path, day: date, *, incomplete: bool
+) -> list[Path]:
+    prefix = incomplete_prefix(incomplete)
+    base = output_root / f"{prefix}Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
+    supplements: list[tuple[int, Path]] = []
+    for path in output_root.glob(
+        f"{prefix}Отчёт РОП по звонкам {day.isoformat()} supplement-*.manifest.json"
+    ):
+        match = re.search(r" supplement-(\d+)\.manifest\.json$", path.name)
+        if match:
+            supplements.append((int(match.group(1)), path))
+    return [base, *(path for _number, path in sorted(supplements))]
+
+
+def _private_package_name(value: Any, *, label: str) -> str:
+    name = str(value or "")
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise RuntimeError(f"existing export {label} is unsafe")
+    return name
+
+
+def verified_export_manifest(
+    manifest_path: Path, output_root: Path
+) -> Mapping[str, Any]:
+    raw = read_stable_regular_bytes(manifest_path, label="daily export manifest")
+    evidence = stable_regular_file_evidence(
+        manifest_path, label="daily export manifest"
+    )
+    if hashlib.sha256(raw).hexdigest() != evidence["sha256"]:
+        raise RuntimeError("existing export manifest changed while reading")
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("existing export manifest is invalid") from exc
+    if not isinstance(manifest, Mapping) or manifest.get(
+        "schema_version"
+    ) != EXPORT_SCHEMA_VERSION:
+        raise RuntimeError("existing export manifest is invalid")
+    xlsx_name = _private_package_name(manifest.get("xlsx"), label="XLSX path")
+    transcript_name = _private_package_name(
+        manifest.get("transcript_dir"), label="transcript directory"
+    )
+    xlsx = output_root / xlsx_name
+    xlsx_evidence = stable_regular_file_evidence(xlsx, label="daily export XLSX")
+    if xlsx_evidence["sha256"] != manifest.get("xlsx_sha256"):
+        raise RuntimeError("existing immutable XLSX generation is inconsistent")
+    transcript_dir = output_root / transcript_name
+    if (
+        transcript_dir.is_symlink()
+        or not transcript_dir.is_dir()
+        or transcript_dir.resolve().parent != output_root.resolve()
+    ):
+        raise RuntimeError("existing immutable transcript generation is inconsistent")
+    transcripts = manifest.get("transcripts")
+    if not isinstance(transcripts, list) or any(
+        not isinstance(item, Mapping) for item in transcripts
+    ):
+        raise RuntimeError("existing export transcript manifest is invalid")
+    expected: set[str] = set()
+    for item in transcripts:
+        filename = _private_package_name(item.get("file"), label="transcript path")
+        if filename in expected:
+            raise RuntimeError("existing export transcript manifest has duplicates")
+        expected.add(filename)
+        transcript_evidence = stable_regular_file_evidence(
+            transcript_dir / filename, label="daily export transcript"
+        )
+        if transcript_evidence["sha256"] != item.get("sha256"):
+            raise RuntimeError("existing immutable transcript generation is inconsistent")
+    actual = {path.name for path in transcript_dir.iterdir()}
+    if actual != expected:
+        raise RuntimeError("unexpected transcript files in current daily package")
+    return {
+        **manifest,
+        "_manifest_path": manifest_path,
+        "_manifest_sha256": evidence["sha256"],
+    }
+
+
+def existing_export_manifests(
+    output_root: Path, day: date, *, incomplete: bool
+) -> list[Mapping[str, Any]]:
+    paths = export_manifest_paths(output_root, day, incomplete=incomplete)
+    return [
+        verified_export_manifest(path, output_root)
+        for path in paths
+        if path.is_file() or os.path.lexists(path)
+    ]
+
+
+def public_manifest_payload(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {key: value for key, value in manifest.items() if not key.startswith("_")}
 
 
 def reusable_export(
@@ -618,33 +784,20 @@ def reusable_export(
     *,
     incomplete: bool,
 ) -> Mapping[str, Any] | None:
-    prefix = incomplete_prefix(incomplete)
-    paths = [output_root / f"{prefix}Отчёт РОП по звонкам {day.isoformat()}.manifest.json"]
-    paths.extend(
-        sorted(output_root.glob(f"{prefix}Отчёт РОП по звонкам {day.isoformat()} supplement-*.manifest.json"))
-    )
-    for manifest_path in paths:
-        if not manifest_path.is_file():
-            continue
-        manifest = parse_json(manifest_path.read_text(encoding="utf-8"))
+    for manifest in existing_export_manifests(
+        output_root, day, incomplete=incomplete
+    ):
         if (
-            manifest.get("schema_version") != EXPORT_SCHEMA_VERSION
-            or manifest.get("content_sha256") != content_sha256
+            manifest.get("content_sha256") != content_sha256
         ):
             continue
-        xlsx = output_root / str(manifest.get("xlsx") or "")
-        transcript_dir = output_root / str(manifest.get("transcript_dir") or "")
+        xlsx = output_root / str(manifest["xlsx"])
+        transcript_dir = output_root / str(manifest["transcript_dir"])
         transcripts = manifest.get("transcripts") if isinstance(manifest.get("transcripts"), list) else []
-        if not xlsx.is_file() or sha256_file(xlsx) != manifest.get("xlsx_sha256"):
-            raise RuntimeError("existing immutable XLSX generation is inconsistent")
         if len(transcripts) != row_count or any(not isinstance(item, Mapping) for item in transcripts):
             return None
-        if any(not (transcript_dir / str(item.get("file") or "")).is_file() or sha256_file(transcript_dir / str(item["file"])) != item.get("sha256") for item in transcripts):
-            raise RuntimeError("existing immutable transcript generation is inconsistent")
-        expected = {str(item["file"]) for item in transcripts}
-        if transcript_dir.is_dir() and {path.name for path in transcript_dir.iterdir()} != expected:
-            raise RuntimeError("unexpected transcript files in current daily package")
-        return {**manifest, "transcripts_copied": 0, "transcripts_reused": row_count, "transcripts_updated": 0, "reused": True, "xlsx": str(xlsx), "transcript_dir": str(transcript_dir), "manifest": str(manifest_path)}
+        payload = public_manifest_payload(manifest)
+        return {**payload, "transcripts_copied": 0, "transcripts_reused": row_count, "transcripts_updated": 0, "reused": True, "xlsx": str(xlsx), "transcript_dir": str(transcript_dir), "manifest": str(manifest["_manifest_path"])}
     return None
 
 
@@ -663,19 +816,33 @@ def write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         path.chmod(0o600)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def supplement_number(output_root: Path, day: date, *, incomplete: bool) -> int | None:
-    prefix = incomplete_prefix(incomplete)
-    base = output_root / f"{prefix}Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
-    if not base.exists():
+    paths = export_manifest_paths(output_root, day, incomplete=incomplete)
+    base_exists = paths[0].is_file() or os.path.lexists(paths[0])
+    supplement_exists = any(
+        path.is_file() or os.path.lexists(path) for path in paths[1:]
+    )
+    if supplement_exists and not base_exists:
+        raise RuntimeError("daily export supplement lineage has no immutable base")
+    manifests = existing_export_manifests(
+        output_root, day, incomplete=incomplete
+    )
+    if not manifests:
         return None
     numbers = [
         int(match.group(1))
-        for path in output_root.glob(f"{prefix}Отчёт РОП по звонкам {day.isoformat()} supplement-*.manifest.json")
-        if (match := re.search(r" supplement-(\d+)\.manifest\.json$", path.name))
+        for manifest in manifests
+        if (
+            match := re.search(
+                r" supplement-(\d+)\.manifest\.json$",
+                Path(str(manifest["_manifest_path"])).name,
+            )
+        )
     ]
     return max(numbers, default=0) + 1
 
@@ -742,7 +909,12 @@ def style_header(cells: Sequence[Any]) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manager_source: str, source_meta: Mapping[str, Any]) -> None:
+def write_workbook(
+    path: Path,
+    day: date,
+    rows: Sequence[dict[str, Any]],
+    manager_source: str,
+) -> None:
     wb = Workbook()
     wb.remove(wb.active)
     ready, manager_ready, unfinished = [row for row in rows if row["complete"]], [row for row in rows if row["manager_ready"]], [row for row in rows if not row["complete"]]
@@ -753,7 +925,7 @@ def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manage
                  ["Порядок реплик подтверждён", sum(row["chronology_confirmed"] for row in rows)],
                  ["ФИО найдено в Tallanto", sum(bool(row["client_fio"]) for row in rows)],
                  ["ФИО менеджера неполное или не найдено", sum(bool(manager_name_issue(row["manager"])) for row in rows)],
-                 ["Источник ФИО менеджеров", manager_source or "не задан"], ["Готовый снимок опубликован", source_meta.get("published_at") or ""]):
+                 ["Источник ФИО менеджеров", manager_source or "не задан"]):
         append_safe(summary, line)
     summary.append([])
     append_safe(summary, ["Менеджер", "Допущенных к оценке звонков", "Часов"])
@@ -798,12 +970,54 @@ def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manage
         finally:
             checked.close()
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
     path.chmod(0o600)
 
 
-def export_day(
+@contextmanager
+def daily_export_lock(output_root: Path, day: date):
+    lock_dir = PIPELINE_ROOT / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_dir.chmod(0o700)
+    output_key = hashlib.sha256(
+        str(output_root.expanduser().resolve(strict=False)).encode("utf-8")
+    ).hexdigest()[:16]
+    lock_path = lock_dir / f"daily-export-{day.isoformat()}-{output_key}.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    handle = os.fdopen(descriptor, "a+", encoding="utf-8")
+    try:
+        opened = os.fstat(handle.fileno())
+        current = os.lstat(lock_path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.getuid()
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise RuntimeError("daily export lock is unsafe")
+        os.fchmod(handle.fileno(), 0o600)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("daily export is already running") from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _export_day_locked(
     ready_db: Path,
     working_db: Path,
     output_root: Path,
@@ -891,12 +1105,28 @@ def export_day(
     )
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     output_root.chmod(0o700)
-    content_sha256 = publication_content_sha256(rows)
+    manager_source = (
+        "Mango API"
+        if current_manager_users
+        else manager_users.name
+        if manager_users
+        else ""
+    )
+    package_status = "INCOMPLETE_DO_NOT_USE_AS_FINAL" if incomplete else "FINAL_CLOSED"
+    content_sha256 = publication_content_sha256(
+        rows,
+        day=day,
+        manager_source=manager_source,
+        package_status=package_status,
+    )
     source_after = verify_ready_drop(
         ready_db, require_closure=sealed_only, day=day
     )
-    if source_before["sha256"] != source_after["sha256"]:
-        raise RuntimeError("готовая база изменилась во время выгрузки; повторите запуск")
+    if (
+        source_before["ready_generation_fingerprint"]
+        != source_after["ready_generation_fingerprint"]
+    ):
+        raise RuntimeError("готовое поколение изменилось во время выгрузки; повторите запуск")
     if reused := reusable_export(
         output_root,
         day,
@@ -907,6 +1137,16 @@ def export_day(
         return reused
     generation = content_sha256[:12]
     supplement = supplement_number(output_root, day, incomplete=incomplete)
+    current_lineage = existing_export_manifests(
+        output_root, day, incomplete=incomplete
+    )
+    supplement_base = current_lineage[0] if supplement is not None else None
+    incomplete_lineage = (
+        existing_export_manifests(output_root, day, incomplete=True)
+        if not incomplete
+        else []
+    )
+    superseded_incomplete = incomplete_lineage[-1] if incomplete_lineage else None
     supplement_suffix = f" supplement-{supplement}" if supplement is not None else ""
     prefix = incomplete_prefix(incomplete)
     transcript_dir = output_root / (
@@ -916,15 +1156,18 @@ def export_day(
     xlsx = output_root / (
         f"{prefix}Отчёт РОП по звонкам {day.isoformat()}{supplement_suffix} v4-{generation}.xlsx"
     )
-    manager_source = "Mango API" if current_manager_users else manager_users.name if manager_users else ""
     journal_path = output_root / f".daily_export_{day.isoformat()}_{generation}.journal.json"
     journal = parse_json(journal_path.read_text(encoding="utf-8")) if journal_path.is_file() else {}
     if xlsx.exists():
         if (
             journal.get("schema_version") != "daily_mango_calls_export_journal_v1"
+            or journal.get("day") != day.isoformat()
             or journal.get("content_sha256") != content_sha256
+            or journal.get("package_status") != package_status
+            or journal.get("xlsx") != xlsx.name
             or journal.get("xlsx_sha256") != sha256_file(xlsx)
-            or journal.get("source_ready_db_sha256") != source_before["sha256"]
+            or journal.get("transcript_dir") != transcript_dir.name
+            or journal.get("status") != "write_uncertain"
         ):
             raise RuntimeError("unreferenced immutable XLSX generation already exists")
         copied, reused, updated = publish_transcripts(rows, transcript_dir)
@@ -932,7 +1175,7 @@ def export_day(
         with tempfile.NamedTemporaryFile(prefix=f".Отчёт РОП {day.isoformat()}-", suffix=".staging.xlsx", dir=output_root, delete=False) as handle:
             staged_xlsx = Path(handle.name)
         try:
-            write_workbook(staged_xlsx, day, rows, manager_source, source_before)
+            write_workbook(staged_xlsx, day, rows, manager_source)
             staged_sha = sha256_file(staged_xlsx)
             write_private_json(
                 journal_path,
@@ -940,7 +1183,11 @@ def export_day(
                     "schema_version": "daily_mango_calls_export_journal_v1",
                     "day": day.isoformat(),
                     "content_sha256": content_sha256,
+                    "package_status": package_status,
                     "source_ready_db_sha256": source_before["sha256"],
+                    "source_ready_manifest_sha256": source_before[
+                        "ready_manifest_sha256"
+                    ],
                     "xlsx": xlsx.name,
                     "xlsx_sha256": staged_sha,
                     "transcript_dir": transcript_dir.name,
@@ -949,6 +1196,7 @@ def export_day(
             )
             copied, reused, updated = publish_transcripts(rows, transcript_dir)
             os.replace(staged_xlsx, xlsx)
+            fsync_directory(output_root)
             if sha256_file(xlsx) != staged_sha:
                 raise RuntimeError("published XLSX differs from staged generation")
         finally:
@@ -967,9 +1215,7 @@ def export_day(
         "tallanto_snapshot_as_of": tallanto_snapshot_as_of.isoformat() if tallanto_snapshot_as_of else None,
         "tallanto_freshness": tallanto_freshness,
         "closure_ok": source_before.get("closure_ok") is True,
-        "package_status": (
-            "INCOMPLETE_DO_NOT_USE_AS_FINAL" if incomplete else "FINAL_CLOSED"
-        ),
+        "package_status": package_status,
         "source_ready_manifest_sha256": source_before.get("ready_manifest_sha256"),
         "external_publication_authorized": bool(cloud_output),
         "xlsx": xlsx.name, "xlsx_sha256": sha256_file(xlsx), "transcript_dir": transcript_dir.name,
@@ -980,6 +1226,22 @@ def export_day(
             if supplement is not None
             else None
         ),
+        "supplement_of_sha256": (
+            supplement_base.get("_manifest_sha256")
+            if supplement_base is not None
+            else None
+        ),
+        "supersedes_incomplete": (
+            {
+                "manifest": Path(
+                    str(superseded_incomplete["_manifest_path"])
+                ).name,
+                "sha256": superseded_incomplete["_manifest_sha256"],
+                "content_sha256": superseded_incomplete.get("content_sha256"),
+            }
+            if superseded_incomplete is not None
+            else None
+        ),
         "reused": False,
     }
     manifest_path = output_root / (
@@ -987,7 +1249,42 @@ def export_day(
     )
     write_private_json(manifest_path, manifest)
     journal_path.unlink(missing_ok=True)
+    fsync_directory(output_root)
     return {**manifest, "xlsx": str(xlsx), "transcript_dir": str(transcript_dir), "manifest": str(manifest_path)}
+
+
+def export_day(
+    ready_db: Path,
+    working_db: Path,
+    output_root: Path,
+    day: date,
+    manager_users: Path | None,
+    *,
+    tallanto_export: Path = DEFAULT_TALLANTO_EXPORT,
+    tallanto_env: Path = DEFAULT_TALLANTO_ENV,
+    tallanto_snapshot_as_of: datetime | None = None,
+    tallanto_client: TallantoApiClient | None = None,
+    current_manager_users: Sequence[Mapping[str, Any]] = (),
+    sealed_only: bool = False,
+    external_publication_evidence: Path | None = None,
+) -> Mapping[str, Any]:
+    if day >= datetime.now(MOSCOW).date():
+        raise ValueError("можно выгружать только завершённые сутки по Москве")
+    with daily_export_lock(output_root, day):
+        return _export_day_locked(
+            ready_db,
+            working_db,
+            output_root,
+            day,
+            manager_users,
+            tallanto_export=tallanto_export,
+            tallanto_env=tallanto_env,
+            tallanto_snapshot_as_of=tallanto_snapshot_as_of,
+            tallanto_client=tallanto_client,
+            current_manager_users=current_manager_users,
+            sealed_only=sealed_only,
+            external_publication_evidence=external_publication_evidence,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

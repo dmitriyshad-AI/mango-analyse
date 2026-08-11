@@ -240,8 +240,6 @@ def test_production_env_stack_v2_contains_only_direct_path_profile() -> None:
         "TELEGRAM_PH2_TONE",
         "TELEGRAM_PH2_OBJECTION",
         "TELEGRAM_PH2_ANXIETY",
-        "TELEGRAM_TONE_WARM_FRAME",
-        "TELEGRAM_TONE_CLOSE_DETECT",
         "TELEGRAM_TONE_SELL_PROMPT",
         "TELEGRAM_TONE_RICH_FORMAT",
         "TELEGRAM_Q_PARTIAL_YIELD",

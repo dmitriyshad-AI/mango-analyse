@@ -32,9 +32,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     LLM_RETRIEVE_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
-    TONE_CLOSE_FRAME_VETO_ENV,
 )
-from mango_mvp.channels.tone_block import TONE_CLOSE_DETECT_ENV
 
 
 def test_per_call_context_enables_strict_semantic_slots_without_env(
@@ -112,8 +110,6 @@ def _direct_context() -> dict[str, object]:
     return {
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
-        TONE_CLOSE_DETECT_ENV: "1",
-        TONE_CLOSE_FRAME_VETO_ENV: "1",
         SEMANTIC_FRAME_SHADOW_ENV: "1",
     }
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt
 from mango_mvp.channels.subscription_llm_parts.post_layers import _direct_path_preblocked_result
-from mango_mvp.channels.subscription_llm_parts.policy_routing import apply_autonomy_matrix_guard
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     RELIABLE_ANSWERER_STEP1_ENV,
     apply_reliable_answerer_output_guard,
@@ -218,68 +217,3 @@ def test_step1_cross_brand_bypass_preblocks_before_model() -> None:
     assert "answer_coverage_plan" not in result.metadata["direct_path"]
     assert result.metadata["direct_path"]["model_called"] is False
     assert result.metadata["reliable_answerer_bypassed_reason"] == "cross_brand"
-
-
-def test_live_status_guard_preserves_partial_answer_as_manager_draft() -> None:
-    plan = build_answer_coverage_plan(
-        "Сколько стоит и есть ли места?",
-        fact_pack=_price_fact_pack(),
-        context={"active_brand": "foton", RELIABLE_ANSWERER_STEP1_ENV: "1"},
-    )
-    base = SubscriptionDraftResult(
-        route="draft_for_manager",
-        draft_text="Онлайн-курс стоит 37 000 рублей за семестр.",
-        message_type="question",
-        topic_id="theme:001_pricing",
-        missing_facts=("availability_by_group_or_shift",),
-        metadata={"answer_coverage_plan": plan},
-    )
-
-    guarded = apply_autonomy_matrix_guard(
-        base,
-        client_message="Сколько стоит и есть ли места?",
-        context={
-            "active_brand": "foton",
-            RELIABLE_ANSWERER_STEP1_ENV: "1",
-            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
-            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
-            "confirmed_facts": {"price.foton.online.semester": "Фотон: онлайн-курс стоит 37 000 рублей за семестр."},
-        },
-    )
-
-    assert guarded.route == "draft_for_manager"
-    assert "37 000" in guarded.draft_text
-    assert "до live-проверки" in guarded.draft_text
-    assert "reliable_answerer_live_status_partial_preserved" in guarded.safety_flags
-
-
-def test_live_status_guard_without_covered_facet_keeps_safe_handoff() -> None:
-    plan = build_answer_coverage_plan(
-        "Есть места?",
-        fact_pack=_price_fact_pack(),
-        context={"active_brand": "foton", RELIABLE_ANSWERER_STEP1_ENV: "1"},
-    )
-    base = SubscriptionDraftResult(
-        route="draft_for_manager",
-        draft_text="Передам менеджеру, он проверит наличие мест.",
-        message_type="question",
-        topic_id="theme:026_camp_general",
-        missing_facts=("availability_by_group_or_shift",),
-        metadata={"answer_coverage_plan": plan},
-    )
-
-    guarded = apply_autonomy_matrix_guard(
-        base,
-        client_message="Есть места?",
-        context={
-            "active_brand": "foton",
-            RELIABLE_ANSWERER_STEP1_ENV: "1",
-            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:026_camp_general"]},
-            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
-            "confirmed_facts": {"price.foton.online.semester": "Фотон: онлайн-курс стоит 37 000 рублей за семестр."},
-        },
-    )
-
-    assert guarded.route == "draft_for_manager"
-    assert "не буду обещать без проверки" in guarded.draft_text
-    assert "reliable_answerer_live_status_partial_preserved" not in guarded.safety_flags

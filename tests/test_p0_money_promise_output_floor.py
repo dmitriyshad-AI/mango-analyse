@@ -6,10 +6,8 @@ import pytest
 
 from mango_mvp.channels.output_verification_floor import verify_output
 from mango_mvp.channels.subscription_llm_parts import (
-    DEAL_ACTION_DECISION_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     SubscriptionDraftResult,
-    apply_deal_action_decision_layer,
     apply_authoritative_output_gate,
     apply_semantic_output_verifier,
     build_semantic_output_verifier_prompt,
@@ -94,15 +92,6 @@ def test_money_promise_model_code_blocks_real_authoritative_gate(text: str) -> N
     assert "p0_money_promise" in {
         item["code"] for item in gated.metadata["authoritative_output_gate"]["findings"]
     }
-    decided = apply_deal_action_decision_layer(
-        gated,
-        client_message="Подскажите, пожалуйста",
-        context={DEAL_ACTION_DECISION_ENV: True, "active_brand": "foton"},
-    )
-    assert decided.metadata["action_decision"]["p0_latched"] is True
-    assert decided.metadata["action_decision"]["action"] == "handoff_manager"
-
-
 def test_money_promise_prompt_defines_positive_and_negative_boundary() -> None:
     prompt = build_semantic_output_verifier_prompt(bot_text="Сделаем возврат.")
 

@@ -1997,54 +1997,6 @@ def test_turn_record_and_csv_include_model_intent_metadata(monkeypatch, tmp_path
     assert csv_row["bot_model_intent_confidence"] == "0.91"
 
 
-def test_dynamic_summary_includes_close_detect_counters(tmp_path):
-    transcripts = [
-        {
-            "dialog_id": "close_detect_case",
-            "brand": "foton",
-            "turns": [
-                {
-                    "turn": 1,
-                    "context_parity_checked": True,
-                    "bot_close_detect": {"status": "suppressed_handoff", "step": "contact", "contact_requested": False},
-                },
-                {
-                    "turn": 2,
-                    "context_parity_checked": True,
-                    "bot_close_detect": {"status": "suppressed_pending", "step": "pending", "contact_requested": True},
-                },
-                {
-                    "turn": 3,
-                    "context_parity_checked": True,
-                    "bot_close_detect": {"status": "fired", "step": "return", "contact_requested": True},
-                },
-            ],
-        }
-    ]
-    judge_results = [
-        {
-            "dialog_id": "close_detect_case",
-            "brand": "foton",
-            "hard_gates_passed": True,
-            "verdict": "PASS",
-        }
-    ]
-
-    summary = sim.build_summary(
-        transcripts,
-        judge_results,
-        scenario_path=tmp_path / "scenarios.jsonl",
-        snapshot_path=tmp_path / "snapshot.json",
-        parallel=1,
-    )
-
-    assert summary["close_detect"]["turns"] == 3
-    assert summary["close_detect"]["suppressed_handoff"] == 1
-    assert summary["close_detect"]["suppressed_pending"] == 1
-    assert summary["close_detect"]["contact_requested"] == 2
-    assert summary["close_detect"]["by_step"] == {"return": 1}
-
-
 def test_dynamic_summary_counts_model_vs_deterministic_text_sources(tmp_path):
     transcripts = [
         {
@@ -3500,9 +3452,7 @@ def _handoff_turn(
     retrieved_facts=None,
     missing_fact_keys=None,
     safety_flags=None,
-    close_status: str = "",
     contact_requested: bool = False,
-    action: str = "",
     contract=None,
     number_audit_items=None,
     reason_class: str = "",
@@ -3536,11 +3486,8 @@ def _handoff_turn(
         },
         "number_audit": {"items": number_audit_items or []},
     }
-    if close_status:
-        turn["bot_close_detect"] = {"status": close_status, "contact_requested": contact_requested}
-    if action:
-        turn["bot_action_decision"] = {"action": action}
-        turn["bot_action_decision_action"] = action
+    if contact_requested:
+        turn["bot_a2_proactive"] = {"contact_captured": True}
     return turn
 
 
@@ -3549,19 +3496,18 @@ def test_classify_handoff_bucket_respects_priority_and_uses_existing_signals(mon
 
     assert (
         sim._classify_handoff_bucket(
-            _handoff_turn(retrieved_facts=retrieved, close_status="suppressed_handoff", client_message="Спасибо, поняла")
+            _handoff_turn(retrieved_facts=retrieved, client_message="Спасибо, поняла")
         )
-        == "closing"
+        == "upsell_miss"
     )
     assert (
         sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved, client_message="Спасибо, поняла"))
-        == "closing"
+        == "upsell_miss"
     )
     assert (
         sim._classify_handoff_bucket(
             _handoff_turn(
                 retrieved_facts=retrieved,
-                close_status="suppressed_handoff",
                 client_message="Спасибо, а цена?",
             )
         )
@@ -3634,11 +3580,11 @@ def test_classify_handoff_bucket_respects_priority_and_uses_existing_signals(mon
     )
     assert (
         sim._classify_handoff_bucket(
-            _handoff_turn(
-                retrieved_facts=retrieved,
-                client_message="Мой телефон 89990000000",
-                action="capture_lead",
-            )
+                _handoff_turn(
+                    retrieved_facts=retrieved,
+                    client_message="Мой телефон 89990000000",
+                    contact_requested=True,
+                )
         )
         == "legitimate"
     )
@@ -3656,7 +3602,6 @@ def test_over_handoff_buckets_are_summary_only_and_keep_transcripts_unchanged(tm
             "turns": [
                 _handoff_turn(
                     retrieved_facts={"locations.address": "Адрес: Сретенка, 20."},
-                    close_status="suppressed_handoff",
                     client_message="Спасибо, поняла",
                 ),
                 _handoff_turn(
@@ -3679,45 +3624,9 @@ def test_over_handoff_buckets_are_summary_only_and_keep_transcripts_unchanged(tm
 
     after = json.dumps(transcripts, ensure_ascii=False, sort_keys=True)
     assert after == before
-    assert summary["over_handoff"]["buckets"]["counts"]["closing"] == 1
-    assert summary["over_handoff"]["buckets"]["counts"]["upsell_miss"] == 1
-    assert summary["over_handoff"]["buckets"]["examples"]["closing"][0]["client_message"] == "Спасибо, поняла"
+    assert summary["over_handoff"]["buckets"]["counts"]["upsell_miss"] == 2
     rendered = sim.render_summary_md(summary)
     assert "buckets" in rendered
-
-
-def test_over_handoff_closing_keeps_fabrication_audit_visible(tmp_path):
-    transcripts = [
-        {
-            "dialog_id": "closing_with_fabrication",
-            "brand": "unpk",
-            "run_status": "completed",
-            "turns": [
-                _handoff_turn(
-                    retrieved_facts={"locations.address": "Адрес: Сретенка, 20."},
-                    client_message="Спасибо, поняла",
-                    number_audit_items=[{"level": "no_match"}],
-                ),
-            ],
-        }
-    ]
-
-    summary = sim.build_summary(
-        transcripts,
-        [{"dialog_id": "closing_with_fabrication", "brand": "unpk", "verdict": "PASS", "hard_gates_passed": True}],
-        scenario_path=tmp_path / "scenarios.jsonl",
-        snapshot_path=tmp_path / "snapshot.json",
-        parallel=1,
-    )
-
-    handoff = summary["over_handoff"]
-    assert handoff["buckets"]["counts"]["closing"] == 1
-    assert handoff["buckets"]["closing_fabrication_count"] == 1
-    assert handoff["buckets"]["closing_hard_issue_count"] == 1
-    assert handoff["buckets"]["examples"]["closing"][0]["has_fabrication"] is True
-    assert handoff["buckets"]["examples"]["closing"][0]["has_hard_issue"] is True
-    assert handoff["candidates"][0]["has_fabrication"] is True
-    assert handoff["candidates"][0]["has_hard_issue"] is True
 
 
 def test_number_audit_levels_against_retrieved_client_and_snapshot(tmp_path):

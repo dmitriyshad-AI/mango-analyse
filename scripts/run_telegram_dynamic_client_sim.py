@@ -54,7 +54,6 @@ from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_fun
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
-from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_detect_is_close_message
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import SemanticReading
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     DEFAULT_BOT_SAFE_TENANT_ID,
@@ -2179,10 +2178,7 @@ def run_one_dialog(
             include_judge_generic_claims=_is_judge_prompt_v9(judge_prompt_version),
         )
         humanity_x2_metadata = dict(result.metadata.get("humanity_x2") or {}) if isinstance(result.metadata.get("humanity_x2"), Mapping) else {}
-        close_detect_metadata = dict(result.metadata.get("close_detect") or {}) if isinstance(result.metadata.get("close_detect"), Mapping) else {}
         tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
-        action_proposal_metadata = dict(result.metadata.get("action_proposal") or {}) if isinstance(result.metadata.get("action_proposal"), Mapping) else {}
-        action_decision_metadata = dict(result.metadata.get("action_decision") or {}) if isinstance(result.metadata.get("action_decision"), Mapping) else {}
         frame_decision_shadow_metadata = (
             dict(result.metadata.get("frame_decision_shadow") or {})
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("frame_decision_shadow"), Mapping)
@@ -2248,10 +2244,6 @@ def run_one_dialog(
             "bot_reason_evidence": dict(deferral_metadata.get("reason_evidence") or {}),
             "bot_authoritative_output_gate": authoritative_gate_metadata,
             "bot_semantic_output_verifier": semantic_output_verifier_metadata,
-            "bot_action_proposal": action_proposal_metadata,
-            "bot_action_decision": action_decision_metadata,
-            "bot_action_decision_action": str(action_decision_metadata.get("action") or ""),
-            "bot_close_detect": close_detect_metadata,
             "bot_frame_decision_shadow": frame_decision_shadow_metadata,
             "bot_semantic_frame_self_answer_shadow": semantic_frame_self_answer_shadow_metadata,
             "bot_semantic_reading_trace": semantic_reading_trace_metadata,
@@ -3388,33 +3380,6 @@ def _manager_deferral_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mappi
     }
 
 
-def _close_detect_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-    metas: list[Mapping[str, Any]] = []
-    for dialog in transcripts:
-        for turn in dialog.get("turns") or []:
-            if not isinstance(turn, Mapping):
-                continue
-            meta = turn.get("bot_close_detect")
-            if isinstance(meta, Mapping) and meta:
-                metas.append(meta)
-    return {
-        "turns": len(metas),
-        "by_status": dict(Counter(str(meta.get("status") or "") for meta in metas if str(meta.get("status") or "").strip())),
-        "by_step": dict(
-            Counter(
-                str(meta.get("step") or "")
-                for meta in metas
-                if str(meta.get("status") or "") == "fired" and str(meta.get("step") or "").strip()
-            )
-        ),
-        "fired": sum(1 for meta in metas if str(meta.get("status") or "") == "fired"),
-        "suppressed_handoff": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_handoff"),
-        "suppressed_p0": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_p0"),
-        "suppressed_pending": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_pending"),
-        "contact_requested": sum(1 for meta in metas if bool(meta.get("contact_requested"))),
-    }
-
-
 def _tone_sell_prompt_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     metas: list[Mapping[str, Any]] = []
     for dialog in transcripts:
@@ -3437,36 +3402,6 @@ def _tone_sell_prompt_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mappi
             for meta in metas
             if str(meta.get("step_match") or "").strip()
         ][:12],
-    }
-
-
-def _action_decision_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-    decisions: list[Mapping[str, Any]] = []
-    proposals: list[Mapping[str, Any]] = []
-    for dialog in transcripts:
-        if not isinstance(dialog, Mapping):
-            continue
-        for turn in dialog.get("turns") or []:
-            if not isinstance(turn, Mapping):
-                continue
-            decision = turn.get("bot_action_decision")
-            if isinstance(decision, Mapping) and decision:
-                decisions.append(decision)
-            proposal = turn.get("bot_action_proposal")
-            if isinstance(proposal, Mapping) and proposal:
-                proposals.append(proposal)
-    return {
-        "turns_with_decision": len(decisions),
-        "enabled_turns": sum(1 for item in decisions if bool(item.get("enabled"))),
-        "by_action": dict(Counter(str(item.get("action") or "") for item in decisions if str(item.get("action") or "").strip())),
-        "by_reason": dict(Counter(str(item.get("reason") or "") for item in decisions if str(item.get("reason") or "").strip())),
-        "proposal_by_action": dict(
-            Counter(str(item.get("action") or "") for item in proposals if str(item.get("action") or "").strip())
-        ),
-        "p0_latched": sum(1 for item in decisions if bool(item.get("p0_latched"))),
-        "requires_manager_approval": sum(1 for item in decisions if bool(item.get("requires_manager_approval"))),
-        "sync_flags": dict(Counter(str(item.get("sync_flag") or "") for item in decisions if str(item.get("sync_flag") or "").strip())),
-        "threshold_configured": any(bool(item.get("threshold_configured")) for item in decisions),
     }
 
 
@@ -3687,9 +3622,7 @@ def build_summary(
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
-    close_detect = _close_detect_summary(transcripts)
     tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
-    action_decision = _action_decision_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     answerability_trace = _answerability_trace_summary(transcripts)
@@ -3836,8 +3769,6 @@ def build_summary(
         ),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
-        "action_decision": action_decision,
-        "close_detect": close_detect,
         "tone_sell_prompt": tone_sell_prompt,
         "claude_cli_errors": claude_cli_errors,
         "over_handoff": over_handoff,
@@ -4146,9 +4077,7 @@ def _semantic_frame_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping
                 requested_actions[action] += 1
             if answerability_value:
                 answerability[answerability_value] += 1
-            action_decision = turn.get("bot_action_decision") if isinstance(turn.get("bot_action_decision"), Mapping) else {}
             intent_plan = turn.get("bot_conversation_intent_plan") if isinstance(turn.get("bot_conversation_intent_plan"), Mapping) else {}
-            close_detect = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
             mismatch = frame_must_handoff != actual_manager_review
             if mismatch and len(detector_mismatches) < 100:
                 detector_mismatches.append(
@@ -4161,8 +4090,6 @@ def _semantic_frame_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping
                         "semantic_intent": str(frame.get("intent") or ""),
                         "semantic_risk_class": risk,
                         "intent_plan_primary": str(intent_plan.get("primary_intent") or ""),
-                        "action_decision": str(action_decision.get("action") or ""),
-                        "close_detect_close": bool(close_detect.get("is_close_message")),
                     }
                 )
             if len(examples) < 50:
@@ -4203,7 +4130,6 @@ def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> 
     handoff_alignment: Counter[str] = Counter()
     p0_alignment: Counter[str] = Counter()
     answerability_alignment: Counter[str] = Counter()
-    close_alignment: Counter[str] = Counter()
     action_alignment: Counter[str] = Counter()
     mismatches: list[Mapping[str, Any]] = []
     examples: list[Mapping[str, Any]] = []
@@ -4223,14 +4149,12 @@ def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> 
             handoff = str(comparisons.get("must_handoff_vs_route") or "unknown")
             p0 = str(comparisons.get("p0_vs_actual") or "unknown")
             answerability = str(comparisons.get("answerability_vs_route") or "unknown")
-            close = str(comparisons.get("close_veto_vs_close_detect") or "unknown")
             action_value = str(action.get("alignment") or "unknown")
             handoff_alignment[handoff] += 1
             p0_alignment[p0] += 1
             answerability_alignment[answerability] += 1
-            close_alignment[close] += 1
             action_alignment[action_value] += 1
-            has_mismatch = "mismatch" in {handoff, p0, answerability, close, action_value}
+            has_mismatch = "mismatch" in {handoff, p0, answerability, action_value}
             row = {
                 "dialog_id": str(dialog.get("dialog_id") or ""),
                 "turn": turn.get("turn"),
@@ -4239,7 +4163,6 @@ def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> 
                 "status": status,
                 "handoff_alignment": handoff,
                 "p0_alignment": p0,
-                "close_alignment": close,
                 "action_alignment": action_value,
             }
             if has_mismatch and len(mismatches) < 100:
@@ -4253,7 +4176,6 @@ def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> 
         "must_handoff_vs_route": dict(handoff_alignment),
         "p0_vs_actual": dict(p0_alignment),
         "answerability_vs_route": dict(answerability_alignment),
-        "close_veto_vs_close_detect": dict(close_alignment),
         "action_alignment": dict(action_alignment),
         "mismatches": mismatches,
         "examples": examples,
@@ -4414,10 +4336,7 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
     false_handoff: list[dict[str, Any]] = []
     levels: Counter[str] = Counter()
     buckets: Counter[str] = Counter()
-    closing_fabrication_count = 0
-    closing_hard_issue_count = 0
     bucket_examples: dict[str, list[dict[str, Any]]] = {
-        "closing": [],
         "legitimate": [],
         "disputed_p0": [],
         "upsell_miss": [],
@@ -4434,11 +4353,6 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
             has_hard_issue = _turn_has_hard_issue(turn)
             levels[level] += 1
             buckets[bucket] += 1
-            if bucket == "closing":
-                if has_fabrication:
-                    closing_fabrication_count += 1
-                if has_hard_issue:
-                    closing_hard_issue_count += 1
             item = {
                 "dialog_id": dialog.get("dialog_id"),
                 "brand": dialog.get("brand"),
@@ -4482,8 +4396,6 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
         "buckets": {
             "counts": bucket_counts,
             "shares": bucket_shares,
-            "closing_fabrication_count": closing_fabrication_count,
-            "closing_hard_issue_count": closing_hard_issue_count,
             "examples": bucket_examples,
         },
         "false_handoff_count": len(false_handoff),
@@ -4496,8 +4408,6 @@ def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
     if not _is_over_handoff_turn(turn):
         return "unclassified"
     fact_level = _handoff_fact_level(turn)
-    if _turn_has_close_signal(turn) and not _turn_client_message_has_question_signal(turn):
-        return "closing"
     if _turn_is_real_p0(turn):
         if fact_level == "retrieved_match" and not _turn_is_manager_only_domain(turn):
             return "disputed_p0"
@@ -4507,28 +4417,6 @@ def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
     if fact_level in {"retrieved_match", "same_brand_global_match", "verified_by_memory", "wrong_scope"}:
         return "upsell_miss"
     return "unclassified"
-
-
-def _turn_has_close_signal(turn: Mapping[str, Any]) -> bool:
-    if _turn_has_close_detect_status(turn):
-        return True
-    return _tone_close_detect_is_close_message(
-        str(turn.get("client_message") or ""),
-        context=_turn_close_detect_context(turn),
-    )
-
-
-def _turn_has_close_detect_status(turn: Mapping[str, Any]) -> bool:
-    meta = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
-    return str(meta.get("status") or "") in {"fired", "suppressed_handoff", "suppressed_pending"}
-
-
-def _turn_close_detect_context(turn: Mapping[str, Any]) -> Mapping[str, Any]:
-    answer_contract = turn.get("bot_answer_contract") if isinstance(turn.get("bot_answer_contract"), Mapping) else {}
-    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
-    pipeline_contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
-    contract = answer_contract or pipeline_contract
-    return {"answer_contract": contract} if contract else {}
 
 
 def _turn_client_message_has_question_signal(turn: Mapping[str, Any]) -> bool:
@@ -4588,17 +4476,6 @@ def _turn_is_manager_only_legitimate(turn: Mapping[str, Any], *, fact_level: str
 def _turn_contact_requested_without_open_question(turn: Mapping[str, Any]) -> bool:
     if _turn_client_message_has_question_signal(turn):
         return False
-    close_meta = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
-    if bool(close_meta.get("contact_requested")):
-        return True
-    for key in ("bot_action_decision", "bot_action_proposal"):
-        meta = turn.get(key) if isinstance(turn.get(key), Mapping) else {}
-        action = str(meta.get("action") or "").strip()
-        if action in {"capture_lead", "lead_capture", "request_contact", "handoff_contact"}:
-            return True
-    action = str(turn.get("bot_action_decision_action") or "").strip()
-    if action in {"capture_lead", "lead_capture", "request_contact", "handoff_contact"}:
-        return True
     a2 = turn.get("bot_a2_proactive") if isinstance(turn.get("bot_a2_proactive"), Mapping) else {}
     return bool(a2.get("contact_captured"))
 
@@ -5688,7 +5565,6 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
             f"- LLM calls: `{llm_calls}`",
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
-            f"- Close detect: `{summary.get('close_detect')}`",
             f"- Frame decision shadow: `{frame_decision_shadow}`",
             f"- SemanticFrame self-answer shadow: `{self_answer_shadow}`",
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",

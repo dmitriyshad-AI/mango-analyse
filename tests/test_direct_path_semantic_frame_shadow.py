@@ -214,7 +214,6 @@ def test_semantic_frame_posthoc_prompt_does_not_copy_cautious_route() -> None:
             "direct_path": {
                 "reason_class": "manager_approval_required",
                 "model_intent": {"intent": "product_reference_question"},
-                "action_proposal": {"action": "answer_question"},
             },
             "conversation_intent_plan": {
                 "known_facts": [

@@ -79,15 +79,14 @@ CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/fact_claim_audit.py": 1,
     "src/mango_mvp/channels/few_shot_reference.py": 1,
     "src/mango_mvp/channels/output_verification_floor.py": 20,
-    "src/mango_mvp/channels/manager_handoff_summary.py": 1,
     "src/mango_mvp/channels/p0_recall_spec.py": 11,
     "src/mango_mvp/channels/subscription_llm_parts/contracts.py": 11,
-    "src/mango_mvp/channels/subscription_llm_parts/direct_path.py": 11,
+    "src/mango_mvp/channels/subscription_llm_parts/direct_path.py": 10,
     "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 15,
-    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 70,
+    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 45,
     "src/mango_mvp/channels/subscription_llm_parts/provider.py": 1,
     "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py": 11,
-    "src/mango_mvp/channels/subscription_llm_parts/support.py": 3,
+    "src/mango_mvp/channels/subscription_llm_parts/support.py": 2,
     "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py": 7,
 }
 
@@ -99,8 +98,8 @@ CHANNEL_MARKER_HELPER_BUDGET: dict[str, int] = {
     "src/mango_mvp/channels/held_state.py": 2,
     "src/mango_mvp/channels/new_lead_funnel.py": 31,
     "src/mango_mvp/channels/semantic_roles.py": 41,
-    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 17,
-    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 8,
+    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 6,
+    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 6,
     "src/mango_mvp/channels/text_signals.py": 1,
 }
 
@@ -211,7 +210,6 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "TELEGRAM_SEMANTIC_READING_CLASSES",
     ),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "AUTONOMY_SCOPE_PRECISION_ENV", "TELEGRAM_AUTONOMY_SCOPE_PRECISION"),
-    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DEAL_ACTION_DECISION_ENV", "TELEGRAM_DEAL_ACTION_DECISION"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DIRECT_PATH_MODEL_P0_ENV", "TELEGRAM_DIRECT_PATH_MODEL_P0"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DIRECT_P0_TEXT_HYGIENE_ENV", "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "INTENT_MODEL_LED_ENV", "TELEGRAM_INTENT_MODEL_LED"),
@@ -220,13 +218,9 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "P0_MODEL_LED_ENV", "TELEGRAM_P0_MODEL_LED"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "PROSE_MODEL_LED_ENV", "TELEGRAM_PROSE_MODEL_LED"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "SEMANTIC_OUTPUT_VERIFIER_ENV", "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"),
-    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_CLOSE_DETECT_ENV", "TELEGRAM_TONE_CLOSE_DETECT"),
-    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_CLOSE_FRAME_VETO_ENV", "TELEGRAM_TONE_CLOSE_FRAME_VETO"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_RICH_FORMAT_ENV", "TELEGRAM_TONE_RICH_FORMAT"),
-    ("src/mango_mvp/channels/tone_block.py", "TONE_CLOSE_DETECT_ENV", "TELEGRAM_TONE_CLOSE_DETECT"),
     ("src/mango_mvp/channels/tone_block.py", "TONE_RICH_FORMAT_ENV", "TELEGRAM_TONE_RICH_FORMAT"),
     ("src/mango_mvp/channels/tone_block.py", "TONE_SELL_PROMPT_ENV", "TELEGRAM_TONE_SELL_PROMPT"),
-    ("src/mango_mvp/channels/tone_block.py", "TONE_WARM_FRAME_ENV", "TELEGRAM_TONE_WARM_FRAME"),
 )
 
 SEMANTIC_FRAME_SHADOW_FLAG_REGISTRY = {
@@ -779,8 +773,8 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
 def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
     rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
-    assert len(rows) == 807
-    assert len({row["row_id"] for row in rows}) == 807
+    assert len(rows) == 735
+    assert len({row["row_id"] for row in rows}) == 735
     assert {row["node_kind"] for row in rows} == {
         "marker_helper_call",
         "regex_call",
@@ -814,9 +808,9 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
     mapped = _understanding_map_rows()
 
     source = payload["source"]
-    assert source["base_repo_head"] == "ca1c9ce534b9f64b8d0c775df5753694cfbb101f"
-    assert source["integrated_patch_heads"] == ["df4aee4395069e86db725d69a686c037a34a375d"]
-    assert source["snapshot_rows"] == len(snapshot_rows) == 807
+    assert source["base_repo_head"] == "8cfe4c8918ba436decf55da1ead74fbcdf8f531e"
+    assert source["integrated_patch_heads"] == []
+    assert source["snapshot_rows"] == len(snapshot_rows) == 735
     assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
     assert source["node_kind_counts"] == {
         kind: sum(row["node_kind"] == kind for row in snapshot_rows)
@@ -838,18 +832,18 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
     assert source["cyrillic_elements_in_ge8_tables"] == sum(
         row["cyrillic_string_count"] for row in text_tables if row["cyrillic_string_count"] >= 8
     )
-    assert source["marker_helper_budget_ceiling"] == sum(CHANNEL_MARKER_HELPER_BUDGET.values()) == 172
+    assert source["marker_helper_budget_ceiling"] == sum(CHANNEL_MARKER_HELPER_BUDGET.values()) == 159
     assert source["marker_helper_actual_snapshot_rows"] == sum(
         row["node_kind"] == "marker_helper_call" for row in snapshot_rows
     )
     membership_rows = _literal_left_membership_snapshot(UNDERSTANDING_MAP_PATH.parents[1])
-    assert source["literal_left_membership_total"] == len(membership_rows) == 308
+    assert source["literal_left_membership_total"] == len(membership_rows) == 297
     assert source["literal_left_membership_in_canonical_text_scope"] == sum(
         row["in_canonical_text_scope"] for row in membership_rows
     ) == 148
     assert source["literal_left_membership_outside_canonical_text_scope"] == sum(
         not row["in_canonical_text_scope"] for row in membership_rows
-    ) == 160
+    ) == 149
 
     assert set(mapped) <= set(snapshot_by_id)
     assert {row["bucket"] for row in mapped.values()} == {"2_verification", "3_format_hygiene"}
@@ -904,9 +898,6 @@ def test_adr003_understanding_map_keeps_reviewed_safety_families_in_verification
         "OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE",
         "PAYMENT_CONFIRMATION_RE",
         "PRESALE_PROMPT_SENSITIVE_KEY_RE",
-        "_DEAL_ACTION_CRM_DATA_RE",
-        "_DEAL_ACTION_MANAGER_APPROVAL_ACTIONS",
-        "_DEAL_ACTION_PAYMENT_RE",
         "_ROUTE_REFUND_RE",
         "UNSUPPORTED_PROMISE_PATTERNS",
     }

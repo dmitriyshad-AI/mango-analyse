@@ -6,7 +6,6 @@ import mango_mvp.channels.subscription_llm as subscription_llm
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.subscription_llm import DIRECT_PATH_ENV, SubscriptionDraftResult, SubscriptionLlmDraftProvider
 from mango_mvp.channels.subscription_llm_parts.text_hygiene import scrub_direct_path_p0_text
-from mango_mvp.channels.tone_block import close_detect_enabled
 
 
 class _DirectPathProvider(SubscriptionLlmDraftProvider):
@@ -24,16 +23,6 @@ class _DirectPathProvider(SubscriptionLlmDraftProvider):
 
 def _profile_context() -> dict[str, str]:
     return {subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION}
-
-
-def test_tone_close_detect_enabled_by_pilot_profile_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(subscription_llm.TONE_CLOSE_DETECT_ENV, raising=False)
-
-    assert close_detect_enabled({}) is False
-    assert subscription_llm.TONE_CLOSE_DETECT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert close_detect_enabled(_profile_context()) is True
-    assert close_detect_enabled({**_profile_context(), subscription_llm.TONE_CLOSE_DETECT_ENV: "0"}) is False
-    assert close_detect_enabled({**_profile_context(), "tone_close_detect_enabled": False}) is False
 
 
 def test_p0_adr_flags_enabled_by_pilot_profile_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,56 +47,6 @@ def test_p0_adr_flags_enabled_by_pilot_profile_with_explicit_override(monkeypatc
     ) is True
     assert subscription_llm._p0_model_classes_v2_enabled({**_profile_context(), "p0_model_classes_v2_enabled": False}) is False
     assert subscription_llm._direct_p0_text_hygiene_enabled({**_profile_context(), "direct_p0_text_hygiene_enabled": False}) is False
-
-
-def test_tone_close_detect_profile_on_stays_silent_on_p0() -> None:
-    result = subscription_llm.apply_tone_close_detect_layer(
-        SubscriptionDraftResult(
-            route="manager_only",
-            draft_text="Передам вопрос менеджеру.",
-            safety_flags=("manager_approval_required", "refund"),
-        ),
-        client_message="Спасибо",
-        context=_profile_context(),
-    )
-
-    assert result.route == "manager_only"
-    assert result.draft_text == "Передам вопрос менеджеру."
-    assert result.metadata["close_detect"]["status"] == "suppressed_p0"
-
-
-def test_tone_close_detect_keeps_pending_after_recent_manager_handoff() -> None:
-    result = subscription_llm.apply_tone_close_detect_layer(
-        SubscriptionDraftResult(
-            route="bot_answer_self_for_pilot",
-            draft_text="Спасибо вам! Будем рады видеть вас на занятиях — возвращайтесь, если появятся вопросы.",
-            safety_flags=("direct_path_model",),
-        ),
-        client_message="Хорошо, жду тогда менеджера.",
-        context={
-            **_profile_context(),
-            "dialogue_memory_view": {
-                "route_history": ["bot_answer_self_for_pilot", "manager_only"],
-                "recent_turns": [
-                    {
-                        "role": "bot",
-                        "text": (
-                            "Возможность возврата, сумму и порядок действий должен подтвердить менеджер. "
-                            "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."
-                        ),
-                    }
-                ],
-            },
-        },
-    )
-
-    lowered = result.draft_text.casefold()
-    assert result.route == "manager_only"
-    assert "tone_close_detect_pending" in result.safety_flags
-    assert "рады видеть" not in lowered
-    assert "занятиях" not in lowered
-    assert "менеджер" in lowered
-    assert result.metadata["close_detect"]["status"] == "suppressed_pending"
 
 
 def test_direct_p0_text_hygiene_default_off_is_noop() -> None:
@@ -997,7 +936,6 @@ def test_direct_p0_text_hygiene_routes_latched_refund_without_autonomy_matrix() 
         context={
             "active_brand": "foton",
             DIRECT_PATH_ENV: "1",
-            subscription_llm.DEAL_ACTION_DECISION_ENV: "1",
             subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1",
             "client_safe_fact_verified": True,
         },

@@ -408,14 +408,6 @@
     "pattern_preview": "возврат|верн(ите|уть|ули|у)|суд|прокуратур|роспотреб|жалоб|претензи|договор.*не то|оплатил.*не вид"
   },
   {
-    "path": "src/mango_mvp/channels/manager_handoff_summary.py",
-    "qualname": "<module>",
-    "target": "INTERNAL_TOKEN_RE",
-    "pattern_sha256": "6029607026d7855a032950057cade6717eff9dd9c4d5f8fdc87d2817863a819e",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:AMO|Tallanto|CRM|source_id|source:|lead_id|contact_id|token|api[_-]?key|debug_impersonation)\\b"
-  },
-  {
     "path": "src/mango_mvp/channels/output_verification_floor.py",
     "qualname": "<module>",
     "target": "_META_FACT_PHRASE_RE",
@@ -1002,14 +994,6 @@
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
-    "target": "_TONE_CLOSE_CONTACT_CTA_RE",
-    "pattern_sha256": "bd11f2dc4ee3d9b8d2837d1e963c5035097e60da1a62c62a0ec1e6a4f0df1d32",
-    "flags": "re.I",
-    "pattern_preview": "(?:оставьте|подскажите|пришлите|напишите)[^.?!\\n]{0,100}\\b(?:телефон|номер|контакт)\\b|\\b(?:позвоним|свяжемся)\\b|\\bменеджер\\s+подбер[её]т\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
     "target": "OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE",
     "pattern_sha256": "11632ed39d6a6b8bd7abb7b8fd883d3715af860c3275c1f80818afe9d4feff79",
     "flags": "re.I",
@@ -1022,22 +1006,6 @@
     "pattern_sha256": "f8a206270e4a1eb97a4813e58db8a87162d0b15c225a4678a8edf5b01ccd4c41",
     "flags": "re.I",
     "pattern_preview": "(?P<sentence>[^.?!\\n]{0,180}(?:(?:телефон|номер(?:\\s+телефона)?|почт[ауеы]|email|e-mail|адрес|контакт(?:ы|ные\\s+данные)?)[^.?!\\n]{0,180}(?:уже\\s+(?:есть|вижу|ук"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_PAYMENT_QUESTION_RE",
-    "pattern_sha256": "9cef35db987faea452ebfd342e30fad1c888823c32fa43068a915b32f8f6cc50",
-    "flags": "re.I",
-    "pattern_preview": "\\?(?:\\s*)$|(?:как|куда|можно\\s+ли|сколько|какая|какой|что)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_QUESTION_RE",
-    "pattern_sha256": "35f587407315714830f64945fa97a00e74d60d5acd1836a51176863888a266ad",
-    "flags": "re.I",
-    "pattern_preview": "\\?|\\b(?:подскажите|скажите|сколько|когда|как|где|куда|можно|есть\\s+ли|будет\\s+ли|получится\\s+ли|подойдет\\s+ли|подойд[её]т\\s+ли|какой|какая|какие|почему|зачем|чт"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
@@ -1058,74 +1026,10 @@
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
-    "target": "_DEAL_ACTION_CRM_DATA_RE",
-    "pattern_sha256": "5f73ff8e2a26f5e171d2f9e61d804eb73f1ffefae3c5d125e71a5b86c97bd375",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:баланс|остат\\w*|осталось\\s+(?:занят\\w*|урок\\w*|средств\\w*)|мои\\s+оплат\\w*|сколько(?:\\s+\\w+){0,4}\\s+(?:занят\\w*|урок\\w*|средств\\w*))\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_PAYMENT_RE",
-    "pattern_sha256": "d906e8334d682ae1997fe3ad399b68dc2d31356ab5ab658586e4e5c21f8ad197",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:беру|оформляйте|оформим|готов[аы]?\\s+(?:оплатить|платить|оформить)|давайте\\s+(?:оплат|оформ)|ссылк\\w+\\s+на\\s+оплат)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_TRIAL_CTA_RE",
-    "pattern_sha256": "c7f7cbb25fd1bf66d39c12f3c4ce9b864a7fcd3e907094baa50e1f99392e334a",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:бесплатн\\w*\\s+пробн\\w*|подсказать,\\s*как\\s+записаться)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
     "target": "",
     "pattern_sha256": "140e4aeb1318c07ef30feaeb8c75560ef3a67b15df611e255dde545422b4cdb5",
     "flags": "re.I",
     "pattern_preview": "\\b(?:верн[её]тся|свяжется|подключится|ответит)\\b[^.!?\\n]{0,80}\\b(?:менеджер\\w*|сотрудник\\w*)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_PROBLEM_MARKER_RE",
-    "pattern_sha256": "c488b590990bf0262e6a38e6efcf9a32d6cf2e07ff075c7d08da89fc8841b67f",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:деньг\\w*|списал\\w*|плат[её]ж\\w*|оплат\\w*|срочн\\w*|заняти[еяй]\\w*\\s+нет|доступ\\w*\\s+нет)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_DOCUMENT_RE",
-    "pattern_sha256": "34b2817d407145ce84b9bab7bb9a90e5f9cdf274bf24bd54404b2821bc4478aa",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:договор|оферт|сч[её]т|квитанц|документ|справк|акт)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_PENDING_REFERENCE_RE",
-    "pattern_sha256": "f9a538f93d26cae068153eae4baf9b64aed12ea079d3d94a67f6b02605d15901",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:жд\\w*|ожида\\w*)[^.!?\\n]{0,40}\\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)|\\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)[^.!?\\n]{0,40}\\b(?:жд\\w*|ожид"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_LEAD_RE",
-    "pattern_sha256": "4b6b3139a26de943e554e08b97b7d87c8b5822f51e689959f65caff05c3f32c0",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:запишите|записать|оставлю\\s+заявк|хочу\\s+записаться|интересно|подберите|подобрать\\s+групп)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_PAYMENT_QUERY_RE",
-    "pattern_sha256": "054db1d1cabb88caecf7c78b6413e032d1bb0bac8c0da391154e5ba614a631ed",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:как|куда|можно\\s+ли)\\s+(?:оплат|плат)|\\b(?:ссылк\\w+|реквизит\\w*)\\b"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
@@ -1154,62 +1058,6 @@
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
-    "target": "_TONE_CLOSE_UNANSWERED_RE",
-    "pattern_sha256": "8982854e16f65eed4b59d53a151325311498c295806d49c2ec9c7dc2d0c28d8c",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:не\\s+ответил|не\\s+ответили|не\\s+отвеч|по\\s+сути|без\\s+ответа|не\\s*понятн\\w*|не\\s+понял[аи]?)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_REFUSAL_RE",
-    "pattern_sha256": "663a9a4aa01c5aa2455b62544db7e142d0d1d556666166b928962a0f029a65ea",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:нет|не\\s+нужно|не\\s+надо|не\\s+требуется|не\\s+стоит|не\\s+хочу)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_ADVERSATIVE_RE",
-    "pattern_sha256": "f7165fdc3b713ba5009030b112ac4751b20eefcad4340d527d1e702d858f2650",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:но|однако|только)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_RECENT_MANAGER_HANDOFF_RE",
-    "pattern_sha256": "717d644b20799067eaeb535a306f2d2e7a843d36f80b2b0d60c75d138d591017",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:передам|передал[аи]?|переда[её]м|подключу|позову)[^.!?\\n]{0,80}\\bменеджер\\w*|\\bменеджер\\w*[^.!?\\n]{0,100}\\b(?:провер|уточн|свер|ответ|верн|связ)"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_FOLLOWUP_RE",
-    "pattern_sha256": "ff35fcb79e88988cc517f044a4a39a2775f5a2c53c3b03d6ff7297dbde389270",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:перезвон|позвоните|напишите\\s+позже|свяжитесь|напомните|завтра|вечером|утром)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_SELL_PROMPT_STEP_RE",
-    "pattern_sha256": "36ea3c02b4279a7278586601f147d12f427e74edf8417aa1135c7994337f56b6",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:подскаж(?:у|ите)|помогу|сориентирую|подбер[уеё]м?|подбер[её]т|подобрать|расскажу|обращайтесь|давайте|можно\\s+(?:начать|записаться|посмотреть)|оставьте\\s+(?"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_EXIT_SIGNAL_RE",
-    "pattern_sha256": "dc2f9ddd81a1da1b22b5c706fcce043b32def00fe4b7ed2b7e54a2ab7652d639",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:подумаю|подумаем|посмотрю|посмотрим|вернусь|вернемся|вернёмся|пока\\s+посмотр|посоветуюсь|обсужу|обсудим|решу|решим|сравню|сравним)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
     "target": "OFFLINE_VISIT_INVITATION_RE",
     "pattern_sha256": "9c7cf8fd9b69a1b50d405618605ccb9a94abbb201b6be5185075ab8eaef74f82",
     "flags": "re.I",
@@ -1226,22 +1074,6 @@
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
-    "target": "_DEAL_ACTION_MATERIALS_RE",
-    "pattern_sha256": "97912d6c56f2cf969bf103274ce996d2bb6bb2da807f2578afe7e85699f43ef2",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:пробн|фрагмент|материал|посмотреть\\s+(?:урок|занят)|пример\\s+(?:урока|занят))\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_SCHEDULE_RE",
-    "pattern_sha256": "e3296e06d94ed000d77f207c25879c4f8f8cf7d3af8f7c077cd7f705c66db065",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:распис|когда|во\\s+сколько|дни|дням|суббот|воскрес|будн|время\\s+занят)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
     "target": "MANAGER_ACTION_PROMISE_ACTION_RE",
     "pattern_sha256": "1fff418013b7e59e9451cc39de1541c906f1dfb2a61e0155161c22a0046e69f1",
     "flags": "re.I",
@@ -1254,22 +1086,6 @@
     "pattern_sha256": "ef11b886a8b298d97b00bbf0faa216abbbc5b63827dd898182055349bd065d65",
     "flags": "re.I",
     "pattern_preview": "\\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\\s+обеда|в\\s+течение\\s+\\d+\\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|до\\s+\\d{1,2}(?::\\d{2})?|к\\s+\\d{1,2}"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_GRATITUDE_RE",
-    "pattern_sha256": "41c0ac57382c3913587ed5b69788d9ae0fa14541a0250b2ca446c82f82ab03ce",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:спасибо|благодарю|понял[аи]?|ок(?:ей)?|хорошо|до\\s+свидания|всего\\s+доброго|всего\\s+хорошего)\\b"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_DEAL_ACTION_FACT_QUESTION_RE",
-    "pattern_sha256": "bb525eea9ad4dc77dc12b4279bc3d1dc0e11727b63d496ff377bd0c3ba5c0581",
-    "flags": "re.I",
-    "pattern_preview": "\\b(?:цена|стоимост|скидк|рассроч|долями|адрес|маткап|материнск|налог|платформ|запис[ьи]\\s+урок|вы\\s+бот|ты\\s+бот|кто\\s+вы)\\b"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
@@ -1366,14 +1182,6 @@
     "pattern_sha256": "b16570f8f49a8ae35d765eec0a73e885650fdabc3a4b508fc024c4f4aa939ec8",
     "flags": "re.I",
     "pattern_preview": "r\"(?P<sentence>[^.?!\\n]{0,120}(?:\"\n    r\"следующ(?:ий|им)\\s+шаг(?:ом)?\\s*(?:[—:-]|\\b(?:будет|это)\\b)\\s*\"\n    r\"|лучше\\s+начать\\s+с\\s+\"\n    rf\"|дальше\\s+(?:нужно"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "<module>",
-    "target": "_TONE_CLOSE_STEP_CTA_RE",
-    "pattern_sha256": "f6f7656619f3a4b0d5b75f50214d942986463fd8e003c962dfb247b4d3be8d28",
-    "flags": "re.I",
-    "pattern_preview": "rf\"(?:{_TONE_CLOSE_CONTACT_CTA_RE.pattern})|(?:{_TONE_CLOSE_TRIAL_CTA_RE.pattern})\""
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",

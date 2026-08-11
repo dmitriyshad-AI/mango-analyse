@@ -41,12 +41,6 @@ TEMPLATE_FROM_KB_ENV = "TELEGRAM_TEMPLATE_FROM_KB"
 ROUTE_RUBRIC_ENV = "TELEGRAM_ROUTE_RUBRIC"
 
 
-TONE_CLOSE_DETECT_ENV = "TELEGRAM_TONE_CLOSE_DETECT"
-
-
-TONE_CLOSE_FRAME_VETO_ENV = "TELEGRAM_TONE_CLOSE_FRAME_VETO"
-
-
 TONE_RICH_FORMAT_ENV = "TELEGRAM_TONE_RICH_FORMAT"
 
 
@@ -81,9 +75,6 @@ PII_RELATION_STOPWORDS_ENV = "TELEGRAM_PII_RELATION_STOPWORDS"
 
 
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
-
-
-DEAL_ACTION_DECISION_ENV = "TELEGRAM_DEAL_ACTION_DECISION"
 
 
 DIRECT_PATH_MODEL_P0_ENV = "TELEGRAM_DIRECT_PATH_MODEL_P0"
@@ -130,22 +121,18 @@ SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT = (
 DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_ENV,
     BOT_GOLD_REAL_ENV,
-    DEAL_ACTION_DECISION_ENV,
     DIRECT_PATH_MODEL_P0_ENV,
     P0_MODEL_CLASSES_V2_ENV,
     P0_MODEL_LED_ENV,
     DIRECT_P0_TEXT_HYGIENE_ENV,
     "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX",
-    TONE_CLOSE_FRAME_VETO_ENV,
     PROSE_MODEL_LED_ENV,
     "TELEGRAM_FACT_SELECT_FRAME",
     "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT",
-    "TELEGRAM_SEATS_DEFAULT_OPEN",
     "TELEGRAM_SEMANTIC_FRAME_SHADOW",
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
     ROUTE_RUBRIC_ENV,
-    TONE_CLOSE_DETECT_ENV,
     TONE_RICH_FORMAT_ENV,
     A_RICH_FORMAT_ENV,
     LLM_RETRIEVE_ENV,
@@ -444,21 +431,6 @@ def _pilot_profile_default_on_flag_enabled(
     if explicit is not None:
         return explicit
     return env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS and _pilot_gold_profile_enabled(context)
-
-
-def _deal_action_decision_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    explicit = _explicit_truthy_setting(
-        context,
-        DEAL_ACTION_DECISION_ENV,
-        aliases=("deal_action_decision_enabled", "action_decision_enabled"),
-    )
-    if explicit is not None:
-        return explicit
-    return _pilot_profile_default_on_flag_enabled(
-        context,
-        DEAL_ACTION_DECISION_ENV,
-        aliases=("deal_action_decision_enabled", "action_decision_enabled"),
-    )
 
 
 def _direct_path_model_p0_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

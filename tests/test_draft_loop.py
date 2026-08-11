@@ -276,6 +276,50 @@ def test_draft_loop_uses_composite_key_and_writes_single_note(tmp_path: Path) ->
     assert {item["message_id"] for item in state["processed"]} == {"m1", "m2"}
 
 
+@pytest.mark.parametrize(
+    ("route", "expected_step"),
+    (
+        ("draft_for_manager", "проверить и отправить ссылку на оплату"),
+        ("manager_only", "разобрать обращение вручную"),
+        ("blocked", "разобрать обращение вручную"),
+    ),
+)
+def test_draft_loop_exposes_model_manager_guidance_in_final_amo_note(
+    tmp_path: Path,
+    route: str,
+    expected_step: str,
+) -> None:
+    class SemanticBot(FakeBot):
+        def build_draft(self, client_message: str, *, context=None):
+            return SubscriptionDraftResult(
+                route=route,
+                draft_text="Подготовила ссылку на оплату.",
+                manager_checklist=("сверить курс и сумму",),
+                missing_facts=("актуальная ссылка",),
+                metadata={"semantic_frame": {"requested_action": "send_payment_link"}},
+            )
+
+    key = DraftLoopKey("profile-foton", "chat-1")
+    amo = FakeAmo()
+    loop = _loop(
+        tmp_path,
+        messages=[_message("m1", text="Пришлите ссылку на оплату")],
+        pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")},
+        amo=amo,
+        bot=SemanticBot(),
+    )
+
+    loop.run_once(dry_run=False)
+
+    note = amo.notes[0]["outgoing_visibility_note"]
+    assert "Клиенту не отправлено" in note
+    assert "Последнее сообщение клиента: Пришлите ссылку на оплату" in note
+    assert f"Следующий шаг: {expected_step}" in note
+    assert "Проверить: сверить курс и сумму" in note
+    assert "Не хватает данных: актуальная ссылка" in note
+    assert "Пришлите ссылку на оплату" not in (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+
+
 def test_untranscribed_voice_creates_one_manual_amo_control_without_llm(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
@@ -300,6 +344,7 @@ def test_untranscribed_voice_creates_one_manual_amo_control_without_llm(tmp_path
     assert amo.notes[0]["route"] == "manager_only"
     assert "тип: voice" in amo.notes[0]["draft_text"]
     assert "unsupported_inbound_requires_review" in amo.notes[0]["safety_flags"]
+    assert "Следующий шаг: разобрать обращение вручную" in amo.notes[0]["outgoing_visibility_note"]
 
 
 @pytest.mark.parametrize(

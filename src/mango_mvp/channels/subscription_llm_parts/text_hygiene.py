@@ -176,16 +176,11 @@ def scrub_direct_path_p0_text(
 
     safe_text = _direct_path_p0_safe_text(kind, context=context)
     metadata = dict(result.metadata)
-    action_decision = metadata.get("action_decision")
-    p0_latched = isinstance(action_decision, Mapping) and action_decision.get("p0_latched") is True
     force_manager_route = bool(
         result.route == "bot_answer_self_for_pilot"
         and (
-            p0_latched
-            or (
-                kind in _P0_HYGIENE_KINDS
-                and (text_needs_scrub or kind_mismatch_needs_scrub or semantic_guard.get("force_scrub"))
-            )
+            kind in _P0_HYGIENE_KINDS
+            and (text_needs_scrub or kind_mismatch_needs_scrub or semantic_guard.get("force_scrub"))
         )
     )
     hygiene_metadata = {
@@ -502,14 +497,6 @@ def _semantic_frame_payment_class(result: SubscriptionDraftResult, *, context: O
         "legal_threat",
     }:
         return ""
-    action_decision = metadata.get("action_decision") if isinstance(metadata.get("action_decision"), Mapping) else {}
-    if action_decision:
-        action = str(action_decision.get("action") or "").strip().casefold()
-        if action != "send_payment_link":
-            return ""
-        if action_decision.get("no_live_execution") is False:
-            return ""
-        return "forward_payment"
     return "forward_payment"
 
 

@@ -40,16 +40,7 @@ def _forward_payment_metadata() -> dict[str, object]:
         "requested_action": "send_payment_link",
         "must_handoff": False,
     }
-    return {
-        "semantic_frame": dict(frame),
-        "semantic_frame_shadow": dict(frame),
-        "action_decision": {
-            "schema_version": "deal_action_decision_v1_2026_06_17",
-            "action": "send_payment_link",
-            "no_live_execution": True,
-            "requires_manager_approval": True,
-        },
-    }
+    return {"semantic_frame": dict(frame), "semantic_frame_shadow": dict(frame)}
 
 
 def test_payment_refund_dispute_split_flag_is_profile_on_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:

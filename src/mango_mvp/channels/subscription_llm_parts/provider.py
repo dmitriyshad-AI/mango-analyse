@@ -11,11 +11,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from mango_mvp.channels.tone_block import (
-    TONE_CLOSE_DETECT_ENV,
     TONE_RICH_FORMAT_ENV,
     TONE_SELL_PROMPT_ENV,
-    TONE_WARM_FRAME_ENV,
-    apply_warm_frame,
 )
 from mango_mvp.channels.draft_prompt_builder import (
     IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES,
@@ -351,7 +348,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _context_has_missing_fact_signal,
     _context_with_dialogue_contract_retrieved_facts,
     _conversation_intent_plan,
-    _conversation_plan_semantic_non_p0,
     _dedupe_sentence,
     _dialog_context_haystack,
     _draft_confirms_payment,
@@ -367,7 +363,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _is_verified_safe_numeric_template,
     _known_context_repair_text,
     _known_fields_from_text,
-    _live_status_manager_check_text,
     _mapping_has_client_safe_current_fact,
     _mentioned_subjects,
     _mentions_unbacked_children_rule,
@@ -392,7 +387,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _select_nonrepeating_text,
     _semantic_haystack,
     _strict_informational_yield_ok,
-    _strip_false_p0_flags,
     _subjects_from_retrieved_facts,
     _unpk_moscow_address_template_from_kb,
     _unstated_subject_safe_text,
@@ -470,22 +464,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _HUMANE_GENERIC_HANDOFF_TEXTS,
     _MANAGER_CONTACT_PROMISE_PATTERNS,
     _SEMANTIC_OUTPUT_VERIFIER_CODES,
-    _TONE_CLOSE_ADVERSATIVE_RE,
-    _TONE_CLOSE_CONTACT_CTA_RE,
-    _TONE_CLOSE_CONTACT_TEXTS,
-    _TONE_CLOSE_EXIT_SIGNAL_RE,
-    _TONE_CLOSE_GRATITUDE_RE,
-    _TONE_CLOSE_P0_FLAGS,
-    _TONE_CLOSE_PENDING_REFERENCE_RE,
-    _TONE_CLOSE_PROBLEM_MARKER_RE,
-    _TONE_CLOSE_QUESTION_RE,
-    _TONE_CLOSE_REFUSAL_RE,
-    _TONE_CLOSE_RETURN_TEXTS,
-    _TONE_CLOSE_STEP_CTA_RE,
-    _TONE_CLOSE_TRIAL_CTA_RE,
-    _TONE_CLOSE_TRIAL_TEXTS,
-    _TONE_CLOSE_UNANSWERED_RE,
-    _TONE_SELL_PROMPT_STEP_RE,
     _a2_context_tag,
     _a2_enforce_emoji_limit,
     _a2_is_proactive_result,
@@ -574,34 +552,17 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _semantic_output_verifier_timeout_sec,
     _semantic_verifier_is_whitelisted_pure_handoff,
     _strict_antirepeat_fallback_text,
-    _tone_close_contact_requested_after_step,
-    _tone_close_contact_requested_from_memory,
-    _tone_close_detect_is_close_message,
-    _tone_close_detect_is_p0,
-    _tone_close_has_unanswered_or_problem_continuation,
-    _tone_close_message_references_pending,
-    _tone_close_metadata,
-    _tone_close_next_step_text,
-    _tone_close_old_p0_history,
-    _tone_close_pending_manager,
-    _tone_close_pending_text,
-    _tone_close_previous_contact_requested,
-    _tone_close_previous_trial_requested,
-    _tone_close_refused_previous_step,
-    _tone_sell_prompt_step_observation,
     _topic_id_from_context,
     _trim_repeated_cosmetic_opening,
     _unexpected_client_name_echoes,
     _unsupported_claims_by_pattern,
     _verifier_handoff_claims_enabled,
-    apply_deal_action_decision_layer,
     apply_authoritative_output_gate,
     apply_bot_safe_memory_step_guard,
     apply_no_memory_step_frame_guard,
     apply_night_hours_note,
     apply_output_sanitizer,
     apply_semantic_output_verifier,
-    apply_tone_sell_prompt_observer,
     apply_unconfirmed_contact_data_claim_guard,
     apply_unconfirmed_operational_specificity_guard,
     apply_unsupported_promise_guard,
@@ -672,11 +633,6 @@ class SubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
         direct_result = self._build_direct_path_draft(client_message, context=context)
-        direct_result = apply_deal_action_decision_layer(
-            direct_result,
-            client_message=client_message,
-            context=context,
-        )
         scrubbed = scrub_direct_path_p0_text(
             direct_result,
             context=context,
@@ -1442,7 +1398,6 @@ def build_direct_path_semantic_frame_posthoc_prompt(
         "direct_path": {
             "model_p0": direct.get("model_p0") or metadata.get("direct_path_model_p0") or {},
             "model_intent": direct.get("model_intent") or metadata.get("direct_path_model_intent") or {},
-            "action_proposal": direct.get("action_proposal") or metadata.get("action_proposal") or {},
             "reason_class": metadata.get("reason_class") or direct.get("reason_class") or "",
         },
         "conversation_intent_plan": planner,
@@ -1669,27 +1624,6 @@ _SEMANTIC_FRAME_P0_FLAGS = {
     "direct_path_model_p0_paid_operation_context",
 }
 
-_SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST = {
-    "answer_question": "answer_only",
-    "check_availability": "capture_lead",
-    "enroll": "capture_lead",
-    "send_materials": "send_materials",
-    "send_payment_link": "send_payment_link",
-    "send_document": "send_document",
-    "refund_or_cancel": "handoff_manager",
-    "handoff_manager": "handoff_manager",
-}
-
-_SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES = {"offer", "closing"}
-_SEMANTIC_FRAME_CLOSE_VETO_PAYMENT = {"asking_price", "considering", "ready_to_pay"}
-_SEMANTIC_FRAME_CLOSE_VETO_ACTIONS = {
-    "check_availability",
-    "enroll",
-    "send_materials",
-    "send_payment_link",
-    "send_document",
-}
-
 _SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE = 0.8
 _SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES = {"closing", "post_payment", "support"}
 _SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES = {"paid", "dispute"}
@@ -1779,37 +1713,6 @@ def _semantic_frame_expected_handoff(frame: Mapping[str, Any]) -> Optional[bool]
     if answerability == "answer_self" or risk_class == "safe":
         return False
     return None
-
-
-def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
-    if _clamp_float(frame.get("confidence", 0.0)) < 0.6:
-        return False
-    if _semantic_frame_value(frame, "risk_class") == "p0":
-        return False
-    if _semantic_frame_bool(frame.get("must_handoff")) is True:
-        return True
-    return (
-        _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
-        or _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_CLOSE_VETO_PAYMENT
-        or _semantic_frame_value(frame, "requested_action") in _SEMANTIC_FRAME_CLOSE_VETO_ACTIONS
-    )
-
-
-def _semantic_frame_action_alignment(frame: Mapping[str, Any], actual_action: str) -> dict[str, str]:
-    requested_action = _semantic_frame_value(frame, "requested_action")
-    expected_action = _SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST.get(requested_action, "")
-    if not expected_action or not actual_action:
-        alignment = "unknown"
-    elif expected_action == actual_action:
-        alignment = "match"
-    else:
-        alignment = "mismatch"
-    return {
-        "requested_action": requested_action,
-        "expected_deal_action": expected_action,
-        "actual_deal_action": actual_action,
-        "alignment": alignment,
-    }
 
 
 def _semantic_frame_requested_product_brand(frame: Mapping[str, Any]) -> str:
@@ -2449,17 +2352,6 @@ def apply_semantic_frame_decision_shadow(
         actual_p0 = _semantic_frame_actual_p0(result)
         frame_p0 = _semantic_frame_value(frame, "risk_class") == "p0"
         expected_handoff = _semantic_frame_expected_handoff(frame)
-        action_decision = metadata.get("action_decision") if isinstance(metadata.get("action_decision"), Mapping) else {}
-        close_detect = metadata.get("close_detect") if isinstance(metadata.get("close_detect"), Mapping) else {}
-        actual_action = str(action_decision.get("action") or "").strip()
-        close_status = str(close_detect.get("status") or "").strip()
-        close_veto_candidate = _semantic_frame_close_veto_candidate(frame)
-        if close_veto_candidate and close_status == "fired":
-            close_alignment = "mismatch"
-        elif close_veto_candidate:
-            close_alignment = "match"
-        else:
-            close_alignment = "not_applicable"
         shadow = {
             "schema_version": SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION,
             "enabled": True,
@@ -2486,17 +2378,12 @@ def apply_semantic_frame_decision_shadow(
                 "handoff": actual_handoff,
                 "manager_only": result.route == "manager_only",
                 "p0": actual_p0,
-                "action_decision": actual_action,
-                "close_detect_status": close_status,
                 "direct_selected_category": str(direct.get("selected_category") or "").strip(),
             },
             "comparisons": {
                 "must_handoff_vs_route": _semantic_frame_alignment(expected_handoff, actual_handoff),
                 "p0_vs_actual": _semantic_frame_alignment(frame_p0, actual_p0),
                 "answerability_vs_route": _semantic_frame_alignment(expected_handoff, actual_handoff),
-                "close_veto_candidate": close_veto_candidate,
-                "close_veto_vs_close_detect": close_alignment,
-                "action": _semantic_frame_action_alignment(frame, actual_action),
             },
         }
     metadata["frame_decision_shadow"] = shadow
@@ -2553,11 +2440,6 @@ def _normalize_direct_path_payload(
     model_intent_meta = _direct_path_model_intent_meta_from_payload(payload)
     if model_intent_meta:
         metadata["direct_path_model_intent"] = model_intent_meta
-    proposal = payload.get("action_proposal")
-    if isinstance(proposal, Mapping):
-        metadata["action_proposal"] = dict(proposal)
-    elif isinstance(proposal, str) and proposal.strip():
-        metadata["action_proposal"] = {"action": proposal.strip(), "source": "direct_model"}
     if include_answerability_self:
         metadata["answerability_self"] = _direct_path_answerability_self_from_payload(payload)
     semantic_frame = _direct_path_semantic_frame_from_payload(payload, source="inline") if include_semantic_frame_shadow else {}

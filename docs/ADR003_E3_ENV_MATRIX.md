@@ -17,7 +17,6 @@ Profile env: `TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1`
 | `TELEGRAM_DIRECT_PATH` | B and ON | enabled by pilot profile |
 | `TELEGRAM_BOT_GOLD_REAL` | B and ON | enabled by pilot profile |
 | `TELEGRAM_ANSWERABILITY_SHADOW` | B and ON | enabled by pilot profile |
-| `TELEGRAM_DEAL_ACTION_DECISION` | B and ON | enabled by pilot profile |
 | `TELEGRAM_DIRECT_PATH_MODEL_P0` | B and ON | enabled by pilot profile |
 | `TELEGRAM_INTENT_MODEL_LED` | B and ON | enabled by pilot profile |
 | `TELEGRAM_P0_MODEL_CLASSES_V2` | B and ON | enabled by pilot profile |

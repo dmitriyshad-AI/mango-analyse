@@ -61,7 +61,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _active_brand,
     _answerability_shadow_enabled,
     _client_clean_fact_text,
-    _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
     _intent_model_led_enabled,
     _p0_model_led_enabled,
@@ -3600,8 +3599,6 @@ def _build_direct_path_prompt(
     known_slots_next_step_block = _direct_path_known_slots_next_step_prompt_block(context)
     bot_safe_context_block = _direct_path_bot_safe_context_prompt_block(context)
     reliable_answerer_block = reliable_answerer_prompt_block(context, answer_coverage_plan)
-    action_proposal_instruction = ""
-    action_proposal_field = ""
     p0_instruction = ""
     p0_fields = ""
     intent_instruction = ""
@@ -3735,16 +3732,6 @@ def _build_direct_path_prompt(
             f"ПРЕДЫДУЩАЯ СВОДКА: {previous_summary or '—'}\n\n"
         )
         dialog_summary_field = '  "dialog_summary": "обновлённая короткая сводка диалога",\n'
-    if _deal_action_decision_enabled(context):
-        action_proposal_instruction = (
-            "Предложи одно следующее действие для менеджера в поле action_proposal из закрытого списка: "
-            "answer_only, send_schedule, send_materials, send_crm_data, capture_lead, schedule_followup, "
-            "send_payment_link, send_document, advance_stage, handoff_manager, unknown. "
-            "Это только предложение: не исполняй действие и не обещай его клиенту. Если не уверен — unknown.\n\n"
-        )
-        action_proposal_field = (
-            '  "action_proposal": {"action": "answer_only|send_schedule|send_materials|send_crm_data|capture_lead|schedule_followup|send_payment_link|send_document|advance_stage|handoff_manager|unknown", "confidence": 0.0, "reason": "кратко"},\n'
-        )
     if _assumed_scope_guard_enabled(context):
         assumed_scope_instruction = (
             "Правило неподтверждённых параметров: в «Известных слотах» status=confirmed_by_client означает, "
@@ -3768,7 +3755,6 @@ def _build_direct_path_prompt(
         f"{intent_instruction}"
         f"{semantic_frame_instruction}"
         f"{dialog_summary_instruction}"
-        f"{action_proposal_instruction}"
         f"{assumed_scope_instruction}"
         + (f"{reliable_answerer_block}\n\n" if reliable_answerer_block else "") +
         f"Активный бренд: {brand_label} ({active_brand}).\n"
@@ -3796,7 +3782,6 @@ def _build_direct_path_prompt(
         f"{intent_field}"
         f"{semantic_frame_field}"
         f"{dialog_summary_field}"
-        f"{action_proposal_field}"
         '  "manager_checklist": [],\n'
         '  "missing_facts": [],\n'
         '  "context_used": []\n'
@@ -4422,75 +4407,6 @@ def _direct_path_fallback_open_question(
     memory = context.get("dialogue_memory_view")
     open_question = memory.get("open_question") if isinstance(memory, Mapping) and isinstance(memory.get("open_question"), Mapping) else {}
     return bool(str(open_question.get("text") or "").strip() or str(open_question.get("kind") or "").strip())
-
-def _direct_path_fallback_reask_text(context: Optional[Mapping[str, Any]]) -> str:
-    requested: list[str] = []
-    if isinstance(context, Mapping):
-        plan = context.get("conversation_intent_plan")
-        raw = plan.get("requested_slots") if isinstance(plan, Mapping) else ()
-        if isinstance(raw, str):
-            requested.append(raw)
-        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
-            requested.extend(str(item or "") for item in raw)
-    do_not_reask = _direct_path_do_not_reask_slots(context)
-    for slot in requested:
-        normalized = str(slot or "").strip()
-        if not normalized or normalized in do_not_reask:
-            continue
-        if normalized in {"grade", "class"}:
-            return "Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее."
-        if normalized in {"subject", "course_subject"}:
-            return "Подскажите, пожалуйста, предмет — тогда сориентирую точнее."
-        if normalized in {"format", "training_format"}:
-            return "Подскажите, пожалуйста, какой формат удобнее: очно или онлайн?"
-    return "Уточните, пожалуйста, класс, предмет или формат — тогда сориентирую без риска ошибиться."
-
-def apply_direct_keyword_fallback_reask_layer(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]],
-) -> SubscriptionDraftResult:
-    if not _direct_keyword_fallback_relevance_enabled(context):
-        return result
-    if result.route != "draft_for_manager" or result.missing_facts:
-        return result
-    metadata = dict(result.metadata)
-    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
-    if not _direct_path_fallback_open_question(direct, context):
-        return result
-    if str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical", "high_risk"}:
-        return result
-    if any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", flag, re.I) for flag in result.safety_flags):
-        return result
-    llm_retrieve = direct.get("llm_retrieve") if isinstance(direct.get("llm_retrieve"), Mapping) else {}
-    trace = {
-        "schema_version": "direct_keyword_fallback_reask_v1_2026_06_17",
-        "enabled": True,
-        "status": "fired",
-        "fallback_reason": str(llm_retrieve.get("fallback_reason") or ""),
-    }
-    direct_copy = dict(direct)
-    direct_copy["keyword_fallback_reask"] = trace
-    direct_copy["route_after"] = "bot_answer_self_for_pilot"
-    direct_copy["is_manager_deferral"] = False
-    direct_copy["reason_class"] = ""
-    direct_copy["reason_evidence"] = {}
-    metadata["direct_path"] = direct_copy
-    metadata["keyword_fallback_reask"] = trace
-    metadata["text_composition_source"] = "deterministic_clarification_question"
-    metadata.pop("reason_class", None)
-    metadata["is_manager_deferral"] = False
-    safety_flags = tuple(flag for flag in result.safety_flags if flag != "manager_approval_required")
-    return replace(
-        result,
-        route="bot_answer_self_for_pilot",
-        draft_text=_direct_path_fallback_reask_text(context),
-        manager_followup_required=False,
-        safety_flags=tuple(dict.fromkeys((*safety_flags, "keyword_fallback_reask"))),
-        context_used=tuple(dict.fromkeys((*result.context_used, "keyword_fallback_reask"))),
-        missing_facts=("уточнить параметры вопроса",),
-        metadata=metadata,
-    )
 
 def _build_direct_path_route_rubric_regen_prompt(prompt: str, first_result: SubscriptionDraftResult) -> str:
     previous_json = json.dumps(first_result.to_json_dict(include_raw_response=False), ensure_ascii=False, indent=2)

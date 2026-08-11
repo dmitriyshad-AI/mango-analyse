@@ -8,7 +8,11 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 Ветка: `codex/adr003-semanticframe-migration`
 
-Статус: историческая карта. На 2026-07-19 владелец отказался от DCP fallback; `dialogue_contract_pipeline.py`, `humanity_guards.py`, `rules_engine.py` и `answer_quality_rewriter.py` удалены после выноса живого output-floor в `output_verification_floor.py`.
+Статус: историческая карта. Номера строк и утверждения о живости ниже относятся
+к HEAD `843c0b84` и не являются источником текущей правды. На 2026-08-11 из
+production direct-path удалены невызванные autonomy, conversation-intent guard,
+deal-action, keyword-reask и tone-close слои; P0, fact, identity и output floors
+сохранены. Текущую живость проверять по сырому коду актуального HEAD.
 
 ## Короткий вывод
 
@@ -18,7 +22,9 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 - Живой `direct-path` возвращает результат без старого монолитного конвейера. Владелец окончательно отказался от fallback; legacy-хвост, `answer_quality_rewriter`, `humanity_guards`, DCP и rules-engine удалены, а реально вызываемый output-floor сохранён отдельно.
 - Срезы `rewrite_quality`, `post_semantics` и `route_templates/redundant_guard` в локальной trace-диагностике дали 0 записей на 173 ходах. Для live direct-path их нельзя считать проверенными и нельзя строить для них apply-режим.
-- Живая точка `route_templates/autonomy_matrix` исполняется: в trace-диагностике 153 сравнимых записи, 1 расхождение. Расхождение безопасное: legacy выбрал более осторожный `manager_only` на оплатном/P0-соседнем ходе.
+- Исторический замер `route_templates/autonomy_matrix` дал 153 сравнимых записи и
+  одно безопасное расхождение. Этот production guard больше не вызывается и
+  удалён; замер не описывает актуальный runtime.
 
 Что остается:
 
@@ -39,9 +45,9 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 1. `provider.py:962` проверяет `_direct_path_enabled(context)`.
 2. `provider.py:963` вызывает `_build_direct_path_draft(...)`.
-3. `provider.py:964-966` при включенном deal-action применяет `_direct_path_autonomy_matrix_topic_result(...)` и `apply_autonomy_matrix_guard(...)`.
-4. `provider.py:967-989` применяет direct-path post-layers и возвращает `apply_semantic_reading_trace_finalize(...)`.
-5. Все, что ниже этого return, не исполняется на direct-path.
+3. Затем применяются только фактически вызываемые direct-path post-layers и
+   сохранённые P0/fact/output floors.
+4. Все, что ниже direct-path return, не исполняется на этом пути.
 
 Старый монолитный хвост начинается после direct-path return. В частности:
 
@@ -60,15 +66,11 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 | Route rubric regen | `provider.py:1186-1201`, `direct_path.py:3105-3121` | Один повторный вызов, если `draft_for_manager` без `missing_facts` при фактах или fallback open question | live, model+rule mixed |
 | Model P0 route | `provider.py:1202-1206`, `provider.py:2507-2555` | Поднимает route до `manager_only`, если модель/floor видит P0 | live, safety mixed |
 | P0 text hygiene | `provider.py:1207-1211`, `text_hygiene.py:113-185`, `text_hygiene.py:222-427` | Чистит текст по refund/payment/complaint/legal, различает presale refund / refund claim / payment dispute / forward payment | live, safety floor |
-| Conversation intent plan guard | `provider.py:1212-1220`, `policy_routing.py:3432-3458` | Legacy/LLM comparison for route/action; после `да №5` `intent_actions` входит в профильный default, а legacy output-ветка live_availability удалена | live, mixed |
 | Reliable answerer guard | `provider.py:1221-1225`, `direct_path.py:2611-2614`, `direct_path.py:2641`, `direct_path.py:2794`, `reliable_answerer.py:149-244`, `reliable_answerer.py:303-419` | Строит план покрытия вопроса, вставляет prompt-block и блокирует обещания мест/групп без live-факта, trace `sense_seats` | live, safety floor + trace |
 | Assumed scope guard | `provider.py:1226`, `direct_path.py:2773-2779`, `direct_path.py:3049-3102` | Не дает утверждать неподтвержденные параметры как клиентские; `2773-2779` - prompt-инструкция, `3049-3102` - runtime guard | live, safety/memory |
 | Semantic output verifier | `provider.py:1228-1234`, `post_layers.py:5064-5201` | Финальная проверка вывода/выдумок/claim issues | live, output safety |
 | Bot-safe memory step guard | `provider.py:1235`, `post_layers.py:4394-4435` | Не дает утверждать следующий шаг из памяти, если статус требует проверки менеджером | live, memory safety floor |
 | Authoritative output gate | `provider.py:1236-1238`, `post_layers.py:2677-2804` | Финальный gate; только понижает/блокирует, не улучшает | live, final floor |
-| Deal action decision layer | `provider.py:967-971`, `post_layers.py:1641-1710` | Превращает action proposal/model/facts в action decision; no live execution | live, mixed |
-| Direct keyword fallback reask | `provider.py:972`, `direct_path.py:3165-3205` | Может заменить draft_for_manager на уточняющий вопрос при fallback | live, understanding/reask |
-| Tone close detect | `provider.py:973`, `post_layers.py:2224-2284` | Теплое закрытие, suppress для P0/pending | live, tone+regex |
 | Second P0 text scrub | `provider.py:974-978`, `text_hygiene.py:113-148` | Повторная защита после deal/reask/close | live, safety floor |
 | SemanticFrame posthoc/gates | `provider.py:979-988`, `provider.py:1915-1952`, `provider.py:3103-3429` | Posthoc shadow extraction; existence/proof/self-answer/decision в основном shadow; manager-action gate при отдельном флаге может реально понизить autonomous route до `draft_for_manager` | live, mostly shadow; one optional active gate |
 | Reading trace finalize | `provider.py:989`, `provider.py:3432-3441` | Финализирует trace-метаданные | live, telemetry |
@@ -94,7 +96,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 ### 3. Direct-path prompt understanding
 
 - Код: `direct_path.py:581-720`, `direct_path.py:1622-1712`, `direct_path.py:2328-2450`, `direct_path.py:2609-2641`, `direct_path.py:2794-2806`.
-- Источники смысла: LLM-инструкции для route, P0, model_intent, SemanticFrame, action_proposal, dialog_summary, known slots, bot-safe CRM memory, reliable-answerer block, slot/topic shadow metadata.
+- Источники смысла: LLM-инструкции для route, P0, model_intent, SemanticFrame, dialog_summary, known slots, bot-safe CRM memory, reliable-answerer block, slot/topic shadow metadata.
 - Живость: prompt строится перед direct LLM call в `provider.py:1139-1154`.
 - Тип: `model understanding`.
 - Что делать: это целевой источник понимания по ADR-003, но внутри prompt уже есть safety/coverage рамки до LLM. Расширять можно, но нельзя смешивать модельное понимание с hard floors и нельзя превращать inferred slots в client-confirmed slots.
@@ -118,9 +120,11 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 ### 6. Conversation intent plan
 
-- Код: `conversation_intent_plan.py:146-230`, `conversation_intent_plan.py:300-527`, `conversation_intent_plan.py:590-619`; direct-path применяет guard в `provider.py:1212-1220`.
+- Код: `conversation_intent_plan.py`; план строится до основной модели при сборке
+  контекста, но отдельный post-model guard удалён.
 - Источники смысла: `semantic_roles`, known slots, current message, previous focus, held state, keyword/risk signals.
-- Живость: plan участвует в `required_fact_keys`, `fact_scope`, `answer_topics`, `route_bias`, prompt и guard.
+- Живость: plan участвует в `required_fact_keys`, `fact_scope`, `answer_topics`
+  и prompt; итоговый маршрут после модели он больше не переопределяет.
 - Тип: `mixed`.
 - Replacement-кандидат: частично уже заменяется SemanticReading/SemanticFrame (`slots_gsf`, `intent_actions`; `route_templates` остаётся отдельным apply-кандидатом). Нужна поузловая резка, не массовое удаление.
 
@@ -148,30 +152,13 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 - Тип: `safety floor + understanding trace`.
 - Replacement-кандидат: `sense_seats` уже подключен к SemanticReading trace, но floor шире trace: он держит prompt coverage и post-filter. Удалять floor нельзя, пока нет отдельного live-availability safety design.
 
-### 10. Autonomy matrix / route_templates
+### 10-12. Удалённые legacy-слои
 
-- Код: `policy_routing.py:2931-3118`, `policy_routing.py:3188-3222`, `policy_routing.py:3432-3505`, `actions.py:89-146`, `post_layers.py:1227-1708`.
-- Источники смысла: high-risk markers, funnel state, message type, brand, topic allowlist, live-status checks, missing fact signals, Fix1b corridor, action policy, payment/enroll action markers, SemanticReading trace.
-- Живость: direct-path вызывает `apply_autonomy_matrix_guard(...)` в `provider.py:964-966`; `apply_conversation_intent_plan_guard(...)` в `provider.py:1212-1220` также трассирует `route_templates/autonomy_matrix`.
-- Тип: `mixed`.
-- Текущий замер: 153 comparable, 1 mismatch, legacy more conservative.
-- Replacement-кандидат: да, но только как следующий эксперимент/замер для узкой live-точки `route_templates/autonomy_matrix`; не распространять на dead-on-direct-path stages. Текущая диагностика не является B/ON-приемкой.
-
-### 11. Direct keyword fallback reask
-
-- Код: `direct_path.py:3105-3205`.
-- Источники смысла: fallback_reason, open question, requested_slots, do_not_reask, P0 flag regex.
-- Живость: вызывается в `provider.py:972`.
-- Тип: `understanding/reask`.
-- Replacement-кандидат: возможно, но отдельно от route_templates. Нужна проверка "переспрашивает ли известное" и "не снимает ли manager handoff".
-
-### 12. Tone close detect
-
-- Код: `post_layers.py:2224-2284`, `post_layers.py:2372-2414`.
-- Источники смысла: close-message heuristics, pending manager regex, recent handoff regex, p0 history.
-- Живость: direct-path вызывает `apply_tone_close_detect_layer(...)` в `provider.py:973`.
-- Тип: `tone/mixed`.
-- Replacement-кандидат: да, но не в текущем срезе 3-4. Это живая direct-path точка и должна быть отдельной картой/замером, потому что она может менять route/text.
+Матрица автономности, post-model conversation-intent guard, keyword fallback
+reask и tone-close были невызванными или повторно решали смысл после основной
+модели. На 2026-08-11 они удалены вместе с мёртвой телеметрией. Возвращать их
+как regex fallback нельзя; модельный SemanticFrame уже является владельцем
+смысла, а детерминированные P0/fact/output floors остаются ниже.
 
 ### 13. Off-topic / identity / prompt injection
 

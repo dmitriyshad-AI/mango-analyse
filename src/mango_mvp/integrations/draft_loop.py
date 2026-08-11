@@ -1415,12 +1415,17 @@ class AmoWappiDraftLoop:
             "route": route,
             "safety_flags": list(safety_flags),
             "bot_draft_text": draft_text,
+            "manager_guidance_note": _manager_guidance_note(
+                result,
+                client_message=client_message,
+            ),
             "auto_note": pair.auto_note,
             "memory_status": memory_status,
             "config_fingerprint": dict(self.config.config_fingerprint or {}),
             "status": "note_pending",
         }
-        self.journal.append({**pending_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})
+        journal_payload = _journal_payload(pending_payload)
+        self.journal.append({**journal_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})
         if dry_run:
             for item in inbound_new:
                 message_outcomes[item.message_id] = (
@@ -1456,7 +1461,7 @@ class AmoWappiDraftLoop:
             self.state.save()
             self.journal.append(
                 {
-                    **pending_payload,
+                    **_journal_payload(pending_payload),
                     "event": event,
                     "status": "quarantined" if failed_status == "manual_review" else failed_status,
                     "error": str(exc)[:300],
@@ -1478,7 +1483,7 @@ class AmoWappiDraftLoop:
             self.state.mark_processed(item)
         self.journal.append(
             {
-                **pending_payload,
+                **_journal_payload(pending_payload),
                 "event": "note_written",
                 "status": "note_written",
                 "note_id": note_response.get("note_id"),
@@ -1583,7 +1588,7 @@ class AmoWappiDraftLoop:
                     }
                     self.journal.append(
                         {
-                            **dict(payload),
+                            **_journal_payload(payload),
                             "event": "allowlist_desync",
                             "status": "quarantined",
                             "error": str(exc)[:300],
@@ -1608,7 +1613,7 @@ class AmoWappiDraftLoop:
                     }
                     self.journal.append(
                         {
-                            **dict(payload),
+                            **_journal_payload(payload),
                             "event": "note_readback_missing",
                             "status": status,
                             "error": str(note_response.get("error") or "")[:300],
@@ -1627,7 +1632,7 @@ class AmoWappiDraftLoop:
                     )
             self.journal.append(
                 {
-                    **dict(payload),
+                    **_journal_payload(payload),
                     "event": retry_event,
                     "status": "note_written",
                     "note_id": note_id,
@@ -1727,6 +1732,9 @@ class AmoWappiDraftLoop:
         memory_note = _manager_memory_status_note(str(payload.get("memory_status") or ""))
         if memory_note:
             outgoing_note = "\n".join(item for item in (outgoing_note, memory_note) if item)
+        guidance_note = str(payload.get("manager_guidance_note") or "").strip()
+        if guidance_note:
+            outgoing_note = "\n".join(item for item in (guidance_note, outgoing_note) if item)
         entity_type = str(payload.get("note_entity_type") or ("lead" if payload.get("lead_id") else "contact"))
         entity_id = str(payload.get("note_entity_id") or payload.get("lead_id") or payload.get("contact_id") or "")
         writer = (
@@ -1928,6 +1936,40 @@ def _semantic_frame_from_result(result: object) -> Mapping[str, Any] | None:
         if isinstance(direct, Mapping):
             frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else direct.get("semantic_frame_shadow")
     return dict(frame) if isinstance(frame, Mapping) and frame else None
+
+
+_MANAGER_ACTION_LABELS = {
+    "answer_question": "проверить и отправить готовый ответ",
+    "check_availability": "проверить актуальное наличие",
+    "enroll": "помочь с записью",
+    "send_materials": "проверить и отправить материалы",
+    "send_payment_link": "проверить и отправить ссылку на оплату",
+    "send_document": "проверить и отправить документ",
+    "refund_or_cancel": "разобрать возврат или отмену",
+    "handoff_manager": "разобрать обращение вручную",
+}
+
+
+def _manager_guidance_note(result: object, *, client_message: str) -> str:
+    frame = _semantic_frame_from_result(result) or {}
+    route = str(getattr(result, "route", "") or "").strip()
+    action = "handoff_manager" if route in {"manager_only", "blocked"} else str(frame.get("requested_action") or "").strip()
+    lines = [
+        "Клиенту не отправлено: это черновик для проверки менеджером.",
+        f"Последнее сообщение клиента: {str(client_message or '').strip()[:700]}",
+    ]
+    lines.append(f"Следующий шаг: {_MANAGER_ACTION_LABELS.get(action, _MANAGER_ACTION_LABELS['handoff_manager'])}.")
+    checklist = tuple(str(item).strip() for item in (getattr(result, "manager_checklist", ()) or ()) if str(item).strip())
+    missing = tuple(str(item).strip() for item in (getattr(result, "missing_facts", ()) or ()) if str(item).strip())
+    if checklist:
+        lines.append("Проверить: " + "; ".join(checklist[:5]))
+    if missing:
+        lines.append("Не хватает данных: " + "; ".join(missing[:5]))
+    return "\n".join(lines)
+
+
+def _journal_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key != "manager_guidance_note"}
 
 
 def _prompt_history_lines(

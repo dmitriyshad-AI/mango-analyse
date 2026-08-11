@@ -530,6 +530,59 @@ def test_safe_plan_expires_after_sixty_minutes(tmp_path: Path) -> None:
         )
 
 
+def test_current_plan_uses_green_target_day_even_when_older_day_is_red(
+    tmp_path: Path,
+) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    green = manifest["daily_verdicts"]["2026-08-11"]
+    red = json.loads(json.dumps(green))
+    red.update(
+        day="2026-08-10",
+        mango_unique=2,
+        unexplained_missing=1,
+        consistency_ok=False,
+        closure_ok=False,
+    )
+    red_source = red["mango_enumeration_source"]
+    red_source.update(
+        since="2026-08-09T21:00:00+00:00",
+        until="2026-08-10T21:00:00+00:00",
+    )
+    red_source["covered_intervals"] = [
+        {
+            "since": "2026-08-09T21:00:00+00:00",
+            "until": "2026-08-10T21:00:00+00:00",
+            "result_complete": True,
+        }
+    ]
+    manifest.update(consistency_ok=False, closure_ok=False)
+    manifest["moscow_dates"] = ["2026-08-10", "2026-08-11"]
+    manifest["daily_verdicts"] = {
+        "2026-08-10": red,
+        "2026-08-11": green,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    rows = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest_path,
+        ready_manifest_payload=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )
+    plan = publisher.build_safe_plan(
+        day=date(2026, 8, 11),
+        rows=rows,
+        ready_manifest=manifest,
+        now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+    )
+
+    assert plan["consistency_ok"] is True
+    assert plan["moscow_day"] == "2026-08-11"
+
+
 def test_manifest_and_publication_lock_symlinks_are_rejected(
     tmp_path: Path,
 ) -> None:

@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import csv
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 
 DEFAULT_MANGO_BASE_URL = "https://app.mango-office.ru"
@@ -61,11 +62,21 @@ class MangoOfficeClient:
         base_url: str = DEFAULT_MANGO_BASE_URL,
         session: Optional[HttpSession] = None,
         timeout_sec: int = 30,
+        stats_result_poll_attempts: int = 13,
+        stats_result_poll_interval_sec: float = 5.0,
+        sleeper: Optional[Callable[[float], None]] = None,
     ) -> None:
+        if stats_result_poll_attempts < 1:
+            raise ValueError("stats_result_poll_attempts must be positive")
+        if stats_result_poll_interval_sec < 0:
+            raise ValueError("stats_result_poll_interval_sec must be non-negative")
         self.credentials = credentials
         self.base_url = base_url.rstrip("/")
         self.session = session
         self.timeout_sec = timeout_sec
+        self.stats_result_poll_attempts = stats_result_poll_attempts
+        self.stats_result_poll_interval_sec = stats_result_poll_interval_sec
+        self.sleeper = sleeper or time.sleep
 
     def build_signed_form(self, payload: Mapping[str, Any]) -> MangoSignedForm:
         json_body = _json_dumps(payload)
@@ -91,7 +102,10 @@ class MangoOfficeClient:
         return self.post_command("/vpbx/stats/request", payload)
 
     def fetch_stats_result(self, request_token: Mapping[str, Any]) -> Any:
-        return self.post_command("/vpbx/stats/result", request_token)
+        response = self._post_response("/vpbx/stats/result", request_token)
+        if response.status_code == 204:
+            raise MangoOfficeStatsPending("stats/result is not ready")
+        return _decode_json_response(response)
 
     def poll_call_history(
         self,
@@ -102,10 +116,25 @@ class MangoOfficeClient:
         request_token = self.create_stats_request(since=since, until=until, fields=fields)
         if not isinstance(request_token, Mapping):
             raise MangoOfficeApiError("stats/request returned non-object response")
-        result = self.fetch_stats_result(request_token)
-        return extract_stats_rows(result)
+        for attempt in range(self.stats_result_poll_attempts):
+            try:
+                result = self.fetch_stats_result(request_token)
+            except MangoOfficeStatsPending:
+                if attempt + 1 >= self.stats_result_poll_attempts:
+                    raise MangoOfficeApiError(
+                        "stats/result did not become ready before the polling deadline"
+                    ) from None
+                self.sleeper(self.stats_result_poll_interval_sec)
+                continue
+            return extract_stats_rows(result)
+        raise AssertionError("unreachable Mango stats polling state")
 
     def post_command(self, path: str, payload: Mapping[str, Any]) -> Any:
+        return _decode_json_response(self._post_response(path, payload))
+
+    def _post_response(
+        self, path: str, payload: Mapping[str, Any]
+    ) -> HttpResponse:
         signed = self.build_signed_form(payload)
         session = self.session or _RequestsSession()
         response = session.post(
@@ -117,10 +146,14 @@ class MangoOfficeClient:
             raise MangoOfficeApiError(
                 f"Mango Office API HTTP {response.status_code}: {response.text[:500]}"
             )
-        return _decode_json_response(response)
+        return response
 
 
 class MangoOfficeApiError(RuntimeError):
+    pass
+
+
+class MangoOfficeStatsPending(MangoOfficeApiError):
     pass
 
 

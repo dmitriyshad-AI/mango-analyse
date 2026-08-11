@@ -115,7 +115,11 @@ def verify_ready_drop(
     if expected != observed:
         raise RuntimeError("готовая база и её контрольный файл не совпадают")
     if require_closure:
-        errors = validate_ready_manifest_payload(manifest, require_closure=True)
+        errors = validate_ready_manifest_payload(
+            manifest,
+            require_closure=True,
+            required_day=day,
+        )
         verdict = (
             (manifest.get("daily_verdicts") or {}).get(day.isoformat())
             if day and isinstance(manifest.get("daily_verdicts"), Mapping)

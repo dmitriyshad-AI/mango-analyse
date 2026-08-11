@@ -165,6 +165,7 @@ def _ready_manifest(
     errors = validate_ready_manifest_payload(
         manifest,
         require_closure=False,
+        require_consistency=False,
         expected_code_sha=expected_code_sha,
         expected_host_id=expected_host_id,
     )

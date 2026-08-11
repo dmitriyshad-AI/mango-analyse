@@ -224,7 +224,11 @@ def load_manager_rows(
         if ready_manifest_payload is not None
         else stable_json_object(ready_manifest, label="ready manifest")
     )
-    errors = validate_ready_manifest_payload(manifest, require_closure=False)
+    errors = validate_ready_manifest_payload(
+        manifest,
+        require_closure=False,
+        required_day=day,
+    )
     if errors:
         raise RuntimeError("ready manifest rejected: " + ",".join(errors))
     before = ready_db.stat()
@@ -434,11 +438,13 @@ def build_safe_plan(
     ready_manifest: Mapping[str, Any],
     now: Optional[datetime] = None,
 ) -> Mapping[str, Any]:
-    errors = validate_ready_manifest_payload(ready_manifest, require_closure=False)
+    errors = validate_ready_manifest_payload(
+        ready_manifest,
+        require_closure=False,
+        required_day=day,
+    )
     if errors:
         raise RuntimeError("ready manifest rejected: " + ",".join(errors))
-    if ready_manifest.get("consistency_ok") is not True:
-        raise RuntimeError("ready manifest consistency gate is not green")
     safe_rows = validate_safe_rows(list(rows))
     verdicts = ready_manifest.get("daily_verdicts")
     verdict = verdicts.get(day.isoformat()) if isinstance(verdicts, Mapping) else None

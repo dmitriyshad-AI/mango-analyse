@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import mango_mvp.customer_timeline.calls_two_processes as calls_runtime
 from mango_mvp.customer_timeline.calls_two_processes import (
     CallsTwoProcessesConfig,
     LockBusy,
@@ -38,7 +39,9 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     publish_ready_db_if_changed,
     read_json,
     read_known_processed_ids,
+    run_capture,
     run_parallel_pipeline_workers,
+    run_pipeline,
     run_process_a,
     run_process_b,
     run_cycle,
@@ -102,6 +105,143 @@ def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> Non
             with process_lease(lock, stale_seconds=60):
                 pass
         assert caught.value.metadata["pid"] == first["pid"]
+
+
+def test_pipeline_and_direct_process_a_share_one_lock_while_capture_is_independent(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    assert config.process_a_lock == config.pipeline_lock
+
+    with process_lease(config.pipeline_lock, stale_seconds=60):
+        pipeline = run_pipeline(
+            config,
+            command_runner=lambda *_args: pytest.fail("worker must not start"),
+        )
+        direct = run_process_a(
+            config,
+            command_runner=lambda *_args: pytest.fail("worker must not start"),
+        )
+        for _ in range(3):
+            with process_lease(config.capture_lock, stale_seconds=60):
+                pass
+
+    assert pipeline["status"] == "locked"
+    assert pipeline["stop_reason"] == "pipeline_locked"
+    assert direct["status"] == "locked"
+    assert direct["stop_reason"] == "process_a_locked"
+
+
+def test_run_capture_writes_cursor_only_for_complete_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(calls_runtime, "cutover_authority_report", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(calls_runtime, "disk_preflight", lambda *_a, **_k: {"ok": True})
+    complete = config_for(tmp_path / "complete")
+    report = run_capture(
+        complete,
+        since="2026-08-11T00:00:00+00:00",
+        until="2026-08-11T01:00:00+00:00",
+        capture_runner=lambda *_a: {
+            "status": "ok",
+            "mango_enumeration_complete": True,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": "a" * 64,
+        },
+    )
+    assert report["status"] == "ok"
+    assert read_json(complete.cursor_path)["mango_enumeration_complete"] is True
+
+    incomplete = config_for(tmp_path / "incomplete")
+    failed = run_capture(
+        incomplete,
+        since="2026-08-11T00:00:00+00:00",
+        until="2026-08-11T01:00:00+00:00",
+        capture_runner=lambda *_a: {
+            "status": "partial",
+            "mango_enumeration_complete": False,
+        },
+    )
+    assert failed["status"] == "failed"
+    assert failed["stop_reason"] == "capture_or_enumeration_failed"
+    assert not incomplete.cursor_path.exists()
+
+
+def test_run_pipeline_reuses_unchanged_frozen_snapshot_without_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = config_for(tmp_path)
+    config.capture_manifest.parent.mkdir(parents=True)
+    config.capture_manifest.write_bytes(b"")
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest, end_offset=0
+    )
+    write_json(
+        config.cursor_path,
+        {
+            "mango_enumeration_complete": True,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": snapshot["sha256"],
+        },
+    )
+    monkeypatch.setattr(calls_runtime, "cutover_authority_report", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(
+        calls_runtime,
+        "run_process_a",
+        lambda *_a, **_k: {
+            "status": "ok",
+            "stop_reason": "",
+            "downstream_ready": True,
+            "counters": {
+                "metadata": {
+                    "audio_files": 0,
+                    "db_open_work": False,
+                    "skipped": {"already_ingested": 3},
+                },
+                "drop": {"reused": True},
+            },
+        },
+    )
+    report = run_pipeline(
+        config,
+        command_runner=lambda *_a: pytest.fail("worker must not start"),
+        process_b_runner=lambda _config: {
+            "status": "idle",
+            "stop_reason": "drop_unchanged",
+        },
+    )
+
+    assert report["status"] == "idle"
+    assert report["stop_reason"] == "unchanged_snapshot"
+    assert report["new"] == 0
+    assert report["reused"] == 3
+
+
+def test_run_pipeline_rejects_changed_capture_snapshot_before_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = config_for(tmp_path)
+    config.capture_manifest.parent.mkdir(parents=True)
+    config.capture_manifest.write_bytes(b"")
+    write_json(
+        config.cursor_path,
+        {
+            "mango_enumeration_complete": True,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": "0" * 64,
+        },
+    )
+    monkeypatch.setattr(calls_runtime, "cutover_authority_report", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(
+        calls_runtime,
+        "run_process_a",
+        lambda *_a, **_k: pytest.fail("Process A must not start"),
+    )
+
+    report = run_pipeline(config)
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "capture_snapshot_sha256_mismatch"
 
 
 def test_process_lock_rejects_symlink_without_touching_target(tmp_path: Path) -> None:
@@ -1096,14 +1236,23 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     assert all("sync" not in command for command, _ in calls)
 
 
-def test_each_sequential_stage_gets_its_own_timeout_window() -> None:
+def test_each_stage_timeout_is_capped_by_shared_four_hour_cycle() -> None:
     timeout = 4 * 60 * 60
+    cycle_deadline = 100.0 + timeout
 
-    assert stage_timeout_deadline(started_at=100.0, timeout_seconds=timeout) == (
-        100.0 + timeout
+    assert stage_timeout_deadline(
+        started_at=100.0,
+        timeout_seconds=timeout,
+        cycle_deadline=cycle_deadline,
+    ) == (
+        cycle_deadline
     )
-    assert stage_timeout_deadline(started_at=14_000.0, timeout_seconds=timeout) == (
-        14_000.0 + timeout
+    assert stage_timeout_deadline(
+        started_at=14_000.0,
+        timeout_seconds=timeout,
+        cycle_deadline=cycle_deadline,
+    ) == (
+        cycle_deadline
     )
 
 

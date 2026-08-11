@@ -739,6 +739,8 @@ def validate_ready_manifest_payload(
     manifest: Any,
     *,
     require_closure: bool = False,
+    required_day: Optional[date] = None,
+    require_consistency: bool = True,
     expected_code_sha: Optional[str] = None,
     expected_host_id: Optional[str] = None,
     allow_compatibility: bool = False,
@@ -756,9 +758,17 @@ def validate_ready_manifest_payload(
         errors.append("provenance_mode_not_strict")
     if manifest.get("status") != "ready":
         errors.append("status_not_ready")
-    if manifest.get("consistency_ok") is not True:
+    if (
+        require_consistency
+        and required_day is None
+        and manifest.get("consistency_ok") is not True
+    ):
         errors.append("consistency_not_proven")
-    if require_closure and manifest.get("closure_ok") is not True:
+    if (
+        required_day is None
+        and require_closure
+        and manifest.get("closure_ok") is not True
+    ):
         errors.append("closure_not_proven")
     if not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("producer_git_sha") or "")):
         errors.append("producer_git_sha_invalid")
@@ -945,6 +955,21 @@ def validate_ready_manifest_payload(
             errors.append("manifest_consistency_mismatch")
         if verdict_closure and manifest.get("closure_ok") is not all(verdict_closure):
             errors.append("manifest_closure_mismatch")
+        if required_day is not None:
+            required_verdict = daily_verdicts.get(required_day.isoformat())
+            if not isinstance(required_verdict, Mapping):
+                errors.append("required_day_verdict_missing")
+            else:
+                if (
+                    require_consistency
+                    and required_verdict.get("consistency_ok") is not True
+                ):
+                    errors.append("required_day_consistency_not_proven")
+                if (
+                    require_closure
+                    and required_verdict.get("closure_ok") is not True
+                ):
+                    errors.append("required_day_closure_not_proven")
     if manifest.get("quick_check") != "ok" or manifest.get("integrity_check") != "ok":
         errors.append("sqlite_check_failed")
     snapshot = manifest.get("manifest_snapshot")

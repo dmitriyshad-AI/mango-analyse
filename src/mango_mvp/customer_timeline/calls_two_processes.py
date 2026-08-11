@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -298,7 +298,13 @@ class CallsTwoProcessesConfig:
 
     @property
     def process_a_lock(self) -> Path:
-        return self.pipeline_root / "locks" / "process_a.lock"
+        # Compatibility alias: direct process-a and the scheduled pipeline must
+        # share one lock domain or either entry point could start a second ASR.
+        return self.pipeline_lock
+
+    @property
+    def pipeline_lock(self) -> Path:
+        return self.pipeline_root / "locks" / "pipeline.lock"
 
     @property
     def capture_lock(self) -> Path:
@@ -552,6 +558,37 @@ def run_pipeline(
     process_b_runner: Callable[[CallsTwoProcessesConfig], Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     config.validate()
+    try:
+        with process_lease(
+            config.pipeline_lock, stale_seconds=config.stale_lock_seconds
+        ) as lock_info:
+            return _run_pipeline_locked(
+                config,
+                command_runner=command_runner,
+                process_b_runner=process_b_runner,
+                lock_info=lock_info,
+            )
+    except LockBusy as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "process": "pipeline",
+            "status": "locked",
+            "stop_reason": "pipeline_locked",
+            "new": 0,
+            "reused": 0,
+            "process_a": None,
+            "process_b": None,
+            "lock": exc.metadata,
+        }
+
+
+def _run_pipeline_locked(
+    config: CallsTwoProcessesConfig,
+    *,
+    command_runner: CommandRunner,
+    process_b_runner: Callable[[CallsTwoProcessesConfig], Mapping[str, Any]] | None,
+    lock_info: Mapping[str, Any],
+) -> Mapping[str, Any]:
     authority = cutover_authority_report(config)
     if authority.get("ok") is not True:
         return {
@@ -598,6 +635,7 @@ def run_pipeline(
         command_runner=command_runner,
         manifest_end_offset=manifest_end_offset,
         capture_evidence=cursor,
+        pipeline_lock_info=lock_info,
     )
     counters = process_a.get("counters") if isinstance(
         process_a.get("counters"), Mapping
@@ -639,6 +677,7 @@ def run_pipeline(
         "process_a": process_a,
         "process_b": process_b,
         "authority": authority,
+        "lock": lock_info,
     }
 
 
@@ -653,6 +692,7 @@ def run_process_a(
     capture_runner: CaptureRunner = None,
     manifest_end_offset: Optional[int] = None,
     capture_evidence: Optional[Mapping[str, Any]] = None,
+    pipeline_lock_info: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     config.validate()
     command_runner = command_runner or run_command
@@ -660,7 +700,14 @@ def run_process_a(
     started = datetime.now(timezone.utc)
     run_id = new_calls_run_id(started)
     try:
-        with process_lease(config.process_a_lock, stale_seconds=config.stale_lock_seconds) as lock_info:
+        lease = (
+            nullcontext(pipeline_lock_info)
+            if pipeline_lock_info is not None
+            else process_lease(
+                config.pipeline_lock, stale_seconds=config.stale_lock_seconds
+            )
+        )
+        with lease as lock_info:
             authority = cutover_authority_report(
                 config, initialize_lineage=not skip_capture
             )
@@ -730,6 +777,9 @@ def run_process_a(
             metadata["db_open_work"] = call_db_has_open_work(config.working_db)
             worker_reports: list[Mapping[str, Any]] = []
             if not skip_workers and (metadata["audio_files"] or metadata["db_open_work"]):
+                heavy_cycle_deadline = (
+                    time.monotonic() + config.heavy_stage_timeout_seconds
+                )
                 base_env = worker_environment(config)
                 if metadata["audio_files"]:
                     worker_reports.append(
@@ -753,6 +803,7 @@ def run_process_a(
                         command_runner,
                         include_llm=bool(environment.get("codex_network_ok")),
                         run_id=run_id,
+                        cycle_deadline=heavy_cycle_deadline,
                     )
                 )
             failed_commands = [item for item in worker_reports if int(item.get("rc", 0)) != 0]
@@ -1190,7 +1241,34 @@ def process_b_failure_report(
 
 
 def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mapping[str, Any]:
-    first = run_process_a(config, **process_a_kwargs)
+    config.validate()
+    try:
+        with process_lease(
+            config.pipeline_lock, stale_seconds=config.stale_lock_seconds
+        ) as lock_info:
+            return _run_cycle_locked(config, lock_info, process_a_kwargs)
+    except LockBusy as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "process": "cycle",
+            "status": "locked",
+            "stop_reason": "pipeline_locked",
+            "process_a": None,
+            "process_b": None,
+            "lock": exc.metadata,
+        }
+
+
+def _run_cycle_locked(
+    config: CallsTwoProcessesConfig,
+    lock_info: Mapping[str, Any],
+    process_a_kwargs: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    first = run_process_a(
+        config,
+        **dict(process_a_kwargs),
+        pipeline_lock_info=lock_info,
+    )
     if not first.get("downstream_ready"):
         return {
             "schema_version": SCHEMA_VERSION,
@@ -1199,6 +1277,7 @@ def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mappi
             "stop_reason": "process_a_not_ok",
             "process_a": first,
             "process_b": None,
+            "lock": lock_info,
         }
     second = run_process_b(config)
     second_ok = second.get("status") in {"ok", "idle"}
@@ -1210,6 +1289,7 @@ def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mappi
         "stop_reason": "process_b_failed" if not second_ok else str(first.get("stop_reason") or ""),
         "process_a": first,
         "process_b": second,
+        "lock": lock_info,
     }
 
 
@@ -2376,6 +2456,7 @@ def run_sequential_pipeline_workers(
     *,
     include_llm: bool = True,
     run_id: Optional[str] = None,
+    cycle_deadline: Optional[float] = None,
 ) -> list[Mapping[str, Any]]:
     stages = pipeline_stages(config, include_llm=include_llm)
     if runner is not run_command:
@@ -2394,6 +2475,9 @@ def run_sequential_pipeline_workers(
         r"[^A-Za-z0-9_.-]", "_", run_id or new_calls_run_id(datetime.now(timezone.utc))
     )
     reports: list[Mapping[str, Any]] = []
+    heavy_cycle_deadline = cycle_deadline or (
+        time.monotonic() + config.heavy_stage_timeout_seconds
+    )
     for stage in stages:
         label = stage.replace("-", "_")
         log_path = logs_dir / f"stage_{label}_{log_run_id}.log"
@@ -2407,10 +2491,29 @@ def run_sequential_pipeline_workers(
             ),
         }
         started_at = time.monotonic()
+        if started_at >= heavy_cycle_deadline:
+            log_path.write_text("heavy_cycle_timeout_before_stage\n", encoding="utf-8")
+            log_path.chmod(0o600)
+            reports.append(
+                {
+                    "rc": 124,
+                    "command": f"worker:{stage}",
+                    "log_path": str(log_path),
+                    "log_size_bytes": log_path.stat().st_size,
+                    "log_sha256": sha256_file(log_path),
+                    "wall_seconds": 0.0,
+                    "peak_rss_raw": None,
+                    "swap_operations": 0,
+                    "timed_out": True,
+                    "timeout_scope": "heavy_cycle",
+                }
+            )
+            break
         before_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         deadline = stage_timeout_deadline(
             started_at=started_at,
             timeout_seconds=config.heavy_stage_timeout_seconds,
+            cycle_deadline=heavy_cycle_deadline,
         )
         heartbeat_path = config.process_a_heartbeat_path
         proc: subprocess.Popen[str] | None = None
@@ -2482,9 +2585,15 @@ def run_sequential_pipeline_workers(
     return reports
 
 
-def stage_timeout_deadline(*, started_at: float, timeout_seconds: int) -> float:
-    """Give every sequential heavy command its own complete timeout window."""
-    return started_at + timeout_seconds
+def stage_timeout_deadline(
+    *,
+    started_at: float,
+    timeout_seconds: int,
+    cycle_deadline: Optional[float] = None,
+) -> float:
+    """Apply both a per-command timeout and the shared heavy-cycle ceiling."""
+    command_deadline = started_at + timeout_seconds
+    return min(command_deadline, cycle_deadline) if cycle_deadline else command_deadline
 
 
 def terminate_process_group(

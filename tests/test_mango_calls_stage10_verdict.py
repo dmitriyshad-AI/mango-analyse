@@ -510,6 +510,53 @@ def test_valid_strict_ready_manifest_is_accepted() -> None:
     ) == []
 
 
+def test_required_day_can_be_green_while_another_day_keeps_generation_red() -> None:
+    green = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("complete"),
+            capture_entries=[_capture("complete")],
+            ready_rows=[_ready("complete")],
+            now=NOW,
+        )
+    )
+    old_day = DAY - timedelta(days=1)
+    red = json.loads(json.dumps(green))
+    red.update(
+        day=old_day.isoformat(),
+        mango_unique=2,
+        unexplained_missing=1,
+        consistency_ok=False,
+        closure_ok=False,
+    )
+    red_source = red["mango_enumeration_source"]
+    red_source.update(
+        since="2026-08-08T21:00:00+00:00",
+        until="2026-08-09T21:00:00+00:00",
+    )
+    red_source["covered_intervals"] = [
+        {
+            "since": "2026-08-08T21:00:00+00:00",
+            "until": "2026-08-09T21:00:00+00:00",
+            "result_complete": True,
+        }
+    ]
+    manifest = _strict_ready_manifest_for(green)
+    manifest.update(consistency_ok=False, closure_ok=False)
+    manifest["moscow_dates"] = [old_day.isoformat(), DAY.isoformat()]
+    manifest["daily_verdicts"] = {
+        old_day.isoformat(): red,
+        DAY.isoformat(): green,
+    }
+
+    assert "consistency_not_proven" in validate_ready_manifest_payload(manifest)
+    assert validate_ready_manifest_payload(manifest, required_day=DAY) == []
+    assert "required_day_consistency_not_proven" in validate_ready_manifest_payload(
+        manifest,
+        required_day=old_day,
+    )
+
+
 def test_ready_manifest_rejects_unknown_model_code_and_unclosed_day() -> None:
     manifest = _ready_manifest(closure_ok=False)
     manifest["runtime_fingerprint"]["resolve"]["model"] = "unknown"  # type: ignore[index]

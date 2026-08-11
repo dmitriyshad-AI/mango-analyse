@@ -1,5 +1,8 @@
 # Промпт для новой задачи Codex на M1
 
+> **Архив 2026-08-07. Не исполнять.** Канонический промпт fast-service:
+> `M1_FAST_SERVICE_CODEX_PROMPT_20260811.md`.
+
 ```text
 Ты работаешь на Mac M1 под пользователем `dmitriy` над переносом конвейера
 звонков Mango. Репозиторий: `$HOME/Projects/Mango analyse`.
@@ -13,7 +16,7 @@
 5. docs/RUNBOOK.md
 6. docs/DECISIONS_LOG.md
 7. docs/m1_calls_handoff_20260801/README.md
-8. tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md
+8. tasks/_running/2026-08-11_TZ_m1_calls_service_fast_value.md
 9. docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md
 10. tasks/_inbox_codex/2026-07-31_TZ_m1_calls_stage10_pilot.md
 

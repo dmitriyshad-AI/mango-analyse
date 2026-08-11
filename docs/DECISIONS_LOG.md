@@ -2259,3 +2259,27 @@ regex-бэкстопы, модельные вызовы и постоянные 
 Решение не ослабляет exact-owner, family conflict, source proof и DB integrity
 гейты. Оно разрешает только offline-кандидат; фактический `latest_published`
 на staging и любой cutover требуют полного прогона и отдельной приёмки.
+
+## 2026-08-11
+
+### D-115. Mango Calls Phase A остаётся локальной, последовательной и fail-closed
+
+Быстрый M1-контур состоит из лёгкого capture и одного тяжёлого pipeline.
+Тяжёлые команды идут только по порядку Whisper, GigaAM, Resolve, Analyze;
+каждая завершает свой процесс до старта следующей и имеет отдельный
+тайм-аут. Process B вызывается demand-only и пишет только в отдельную
+локальную Customer Timeline staging.
+
+Источник состояния — append-only capture manifest, working SQLite и sealed ready
+manifest с точными code SHA, host ID, SHA и размером ready DB. Stage 10 не
+закрывает день при незавершённой стадии, активной аренде, неполном
+перечислении, дубле, необъяснённом пропуске или pending. Перенос данных
+использует существующий relocation-механизм, отдельные source/M1 roots,
+выборочный manifest, dry-run и повтор без изменений. Слепая замена строк
+в SQLite запрещена.
+
+Phase A не запусает real Mango capture, ASR, Resolve/Analyze, launchd, cutover и
+внешние записи. Google/Яндекс готовятся только как локальные owner-only
+планы. Локальный manifest не является межмашинной арендой: без внешнего
+наблюдателя и свежего доказательства остановки старого Process A cutover
+остаётся `STOP`.

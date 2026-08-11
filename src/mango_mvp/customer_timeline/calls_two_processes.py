@@ -55,6 +55,7 @@ from mango_mvp.productization.mango_calls_service_contract import (
     build_stage10_verdict,
     current_git_sha,
     foreign_host_ids,
+    has_dual_asr_or_exception,
     load_ready_rows,
     moscow_day_bounds_utc,
     parse_aware_datetime,
@@ -69,6 +70,13 @@ from mango_mvp.productization.mango_calls_service_contract import (
 from mango_mvp.productization.mango_calls_config import (
     load_owner_only_runtime_config,
     strict_service_flags,
+)
+from mango_mvp.productization.owner_only_io import (
+    atomic_replace_owner_only_bytes,
+    path_has_cloud_marker,
+    read_stable_regular_bytes,
+    read_stable_regular_bytes_with_path,
+    validate_owner_only_directory,
 )
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 from mango_mvp.productization.mango_office_client import (
@@ -839,6 +847,22 @@ def run_process_a(
                 )
             )
             metadata["db_open_work"] = call_db_has_open_work(config.working_db)
+            if positive_int(metadata.get("legacy_topology_blocked")):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "partial",
+                    "legacy_asr_topology_blocked",
+                    {
+                        "disk": disk,
+                        "environment": environment,
+                        "capture": capture,
+                        "metadata": metadata,
+                        "workers": (),
+                        "lock": lock_info,
+                    },
+                )
             worker_reports: list[Mapping[str, Any]] = []
             if not skip_workers and (metadata["audio_files"] or metadata["db_open_work"]):
                 heavy_cycle_deadline = (
@@ -1011,6 +1035,12 @@ def run_process_a(
                     changed=bool(
                         metadata["audio_files"]
                         or (metadata["db_open_work"] and not skip_workers)
+                        or positive_int(
+                            metadata.get("legacy_topology_normalized")
+                        )
+                        or positive_int(
+                            metadata.get("legacy_state_normalized")
+                        )
                     ),
                     run_id=run_id,
                     capture_evidence=capture,
@@ -1998,6 +2028,9 @@ def prepare_ingest_inputs(
     expected_manifest_sha256: Optional[str] = None,
 ) -> Mapping[str, Any]:
     config.working_audio_dir.mkdir(parents=True, exist_ok=True)
+    legacy_topology = normalize_unambiguous_legacy_asr_topologies(
+        config.working_db
+    )
     rows: list[dict[str, str]] = []
     actions: dict[str, int] = {}
     skipped: dict[str, int] = {}
@@ -2109,7 +2142,339 @@ def prepare_ingest_inputs(
         "manifest_snapshot_end_offset": snapshot["end_offset"],
         "manifest_snapshot_sha256": snapshot["sha256"],
         "manifest_source_size_bytes": snapshot["source_size_bytes"],
+        "legacy_topology_normalized": legacy_topology["normalized"],
+        "legacy_downstream_invalidated": legacy_topology[
+            "downstream_invalidated"
+        ],
+        "legacy_state_normalized": legacy_topology["state_normalized"],
+        "legacy_topology_blocked": legacy_topology["blocked"],
+        "legacy_topology_blocked_reasons": legacy_topology["blocked_reasons"],
     }
+
+
+def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]:
+    """Add a missing ASR mode only when the stored topology proves it exactly.
+
+    This is deliberately narrower than a compatibility fallback.  Ambiguous or
+    non-terminal rows remain byte-for-byte unchanged and become an explicit
+    Process A blocker instead of being skipped forever or sent downstream.
+    """
+
+    result: dict[str, Any] = {
+        "normalized": 0,
+        "downstream_invalidated": 0,
+        "state_normalized": 0,
+        "blocked": 0,
+        "blocked_reasons": {},
+    }
+    if not path.is_file():
+        return result
+
+    required_columns = {
+        "id",
+        "source_call_id",
+        "transcription_status",
+        "transcript_variants_json",
+        "resolve_status",
+        "analysis_status",
+        "analysis_json",
+        "dead_letter_stage",
+        "pipeline_stage",
+        "pipeline_worker_id",
+        "pipeline_claimed_at",
+        "analysis_worker_id",
+        "analysis_claimed_at",
+        "resolve_attempts",
+        "analyze_attempts",
+        "next_retry_at",
+        "resolve_json",
+        "resolve_quality_score",
+        "last_error",
+    }
+
+    def complete_block(payload: Mapping[str, Any], key: str) -> bool:
+        block = payload.get(key)
+        return bool(
+            isinstance(block, Mapping)
+            and isinstance(block.get("variant_a"), str)
+            and block["variant_a"].strip()
+            and isinstance(block.get("variant_b"), str)
+            and block["variant_b"].strip()
+        )
+
+    def populated_block(payload: Mapping[str, Any], key: str) -> bool:
+        if key not in payload or payload.get(key) is None:
+            return False
+        block = payload.get(key)
+        return bool(block) if isinstance(block, Mapping) else True
+
+    def downstream_is_recoverable(row: Mapping[str, Any]) -> bool:
+        if row.get("pipeline_stage"):
+            return True
+        if row.get("analysis_status") == "in_progress":
+            return True
+        resolve_status = row.get("resolve_status")
+        if (
+            resolve_status in {"pending", "failed"}
+            and int(row.get("resolve_attempts") or 0)
+            < max(1, int(os.getenv("RESOLVE_MAX_ATTEMPTS", "2")))
+        ):
+            return True
+        return bool(
+            resolve_status in {None, "done", "skipped"}
+            and row.get("analysis_status") in {"pending", "failed"}
+            and int(row.get("analyze_attempts") or 0)
+            < max(1, int(os.getenv("ANALYZE_MAX_ATTEMPTS", "3")))
+        )
+
+    def add_block(reason: str) -> None:
+        result["blocked"] += 1
+        reasons = result["blocked_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    with sqlite3.connect(path, timeout=30) as con:
+        con.row_factory = sqlite3.Row
+        tables = {
+            str(row[0])
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "call_records" not in tables:
+            return result
+        columns = {
+            str(row[1])
+            for row in con.execute("PRAGMA table_info(call_records)")
+        }
+        if not required_columns.issubset(columns):
+            return result
+
+        con.execute("BEGIN IMMEDIATE")
+        canonicalized = con.execute(
+            """
+            UPDATE call_records
+               SET dead_letter_stage=NULL
+             WHERE dead_letter_stage IS NOT NULL
+               AND TRIM(dead_letter_stage)=''
+            """
+        )
+        result["state_normalized"] = int(canonicalized.rowcount or 0)
+        call_id_counts = {
+            str(row[0]).strip(): int(row[1])
+            for row in con.execute(
+                """
+                SELECT TRIM(source_call_id), COUNT(*)
+                  FROM call_records
+                 WHERE TRIM(COALESCE(source_call_id, ''))!=''
+                 GROUP BY TRIM(source_call_id)
+                """
+            )
+        }
+        rows = con.execute(
+            """
+            SELECT id, source_call_id, transcription_status,
+                   transcript_variants_json, resolve_status, analysis_status,
+                   analysis_json, dead_letter_stage, pipeline_stage,
+                   pipeline_worker_id, pipeline_claimed_at,
+                   analysis_worker_id, analysis_claimed_at,
+                   resolve_attempts, analyze_attempts, next_retry_at,
+                   resolve_json, resolve_quality_score, last_error
+              FROM call_records
+             WHERE transcription_status='done'
+               AND dead_letter_stage IS NULL
+             ORDER BY id
+            """
+        )
+        for raw_row in rows:
+            row = dict(raw_row)
+            raw = row.get("transcript_variants_json")
+            try:
+                payload = json.loads(str(raw or ""))
+            except json.JSONDecodeError:
+                payload = None
+            if ready_row_is_complete(row):
+                continue
+            try:
+                analysis = json.loads(str(row.get("analysis_json") or ""))
+            except json.JSONDecodeError:
+                analysis = None
+            lease_fields = (
+                "pipeline_stage",
+                "pipeline_worker_id",
+                "pipeline_claimed_at",
+                "analysis_worker_id",
+                "analysis_claimed_at",
+            )
+            downstream_terminal = bool(
+                row.get("resolve_status") in {"done", "skipped"}
+                and row.get("analysis_status") == "done"
+                and not any(row.get(field) for field in lease_fields)
+            )
+            if downstream_terminal and not (
+                isinstance(analysis, Mapping) and bool(analysis)
+            ):
+                add_block("terminal_payload_invalid")
+                continue
+            if isinstance(payload, Mapping):
+                mode = str(payload.get("mode") or "").strip()
+                if has_dual_asr_or_exception(row):
+                    if downstream_is_recoverable(row):
+                        continue
+                    add_block("terminal_payload_invalid")
+                    continue
+                if mode in {"stereo", "mono_or_fallback"}:
+                    if payload.get("primary_provider") != "mlx":
+                        add_block("primary_provider_mismatch")
+                        continue
+                    backfill_state = (
+                        TranscribeService.secondary_backfill_state_from_payload(
+                            dict(payload),
+                            secondary_provider="gigaam",
+                        )
+                    )
+                    if backfill_state in {"fresh", "retry"}:
+                        if downstream_terminal:
+                            add_block(
+                                "secondary_asr_after_downstream_terminal"
+                            )
+                            continue
+                        if downstream_is_recoverable(row):
+                            continue
+                        add_block("terminal_payload_invalid")
+                        continue
+                    add_block("strict_asr_topology_invalid")
+                    continue
+            else:
+                mode = ""
+
+            if mode:
+                add_block("unknown_mode")
+                continue
+            if not isinstance(payload, Mapping):
+                add_block("invalid_variants_json")
+                continue
+            if payload.get("legacy_topology_normalization") is not None:
+                add_block("normalization_audit_conflict")
+                continue
+            if (
+                payload.get("primary_provider") != "mlx"
+                or payload.get("secondary_provider") != "gigaam"
+            ):
+                add_block("provider_mismatch")
+                continue
+
+            call_id = str(row.get("source_call_id") or "").strip()
+            if not call_id or call_id_counts.get(call_id) != 1:
+                add_block("non_unique_source_call_id")
+                continue
+            terminal = bool(
+                str(row.get("resolve_status") or "") in {"done", "skipped"}
+                and str(row.get("analysis_status") or "") == "done"
+                and isinstance(analysis, Mapping)
+                and bool(analysis)
+                and not any(
+                    row.get(field)
+                    for field in lease_fields
+                )
+            )
+            if not terminal:
+                add_block("non_terminal_or_leased")
+                continue
+
+            stereo_complete = bool(
+                complete_block(payload, "manager")
+                and complete_block(payload, "client")
+                and not populated_block(payload, "full")
+            )
+            mono_complete = bool(
+                complete_block(payload, "full")
+                and not populated_block(payload, "manager")
+                and not populated_block(payload, "client")
+            )
+            if stereo_complete == mono_complete:
+                add_block("ambiguous_or_incomplete_topology")
+                continue
+
+            normalized = dict(payload)
+            normalized["mode"] = (
+                "stereo" if stereo_complete else "mono_or_fallback"
+            )
+            normalized["legacy_topology_normalization"] = {
+                "method": "complete_shape_xor_reset_downstream_v1",
+                "source_json_sha256": hashlib.sha256(
+                    str(raw).encode("utf-8")
+                ).hexdigest(),
+            }
+            serialized = json.dumps(normalized, ensure_ascii=False)
+            candidate = {
+                **row,
+                "transcript_variants_json": serialized,
+                "resolve_status": "pending",
+                "analysis_status": "pending",
+                "resolve_attempts": 0,
+                "analyze_attempts": 0,
+                "pipeline_stage": None,
+                "pipeline_worker_id": None,
+                "pipeline_claimed_at": None,
+                "analysis_worker_id": None,
+                "analysis_claimed_at": None,
+                "next_retry_at": None,
+                "resolve_json": None,
+                "resolve_quality_score": None,
+                "analysis_json": None,
+                "last_error": None,
+            }
+            if not (
+                has_dual_asr_or_exception(candidate)
+                and downstream_is_recoverable(candidate)
+                and not ready_row_is_complete(candidate)
+            ):
+                add_block("normalization_postcondition_failed")
+                continue
+            updated = con.execute(
+                """
+                UPDATE call_records
+                   SET transcript_variants_json=?,
+                       resolve_status='pending',
+                       analysis_status='pending',
+                       resolve_attempts=0,
+                       analyze_attempts=0,
+                       pipeline_stage=NULL,
+                       pipeline_worker_id=NULL,
+                       pipeline_claimed_at=NULL,
+                       analysis_worker_id=NULL,
+                       analysis_claimed_at=NULL,
+                       next_retry_at=NULL,
+                       resolve_json=NULL,
+                       resolve_quality_score=NULL,
+                       analysis_json=NULL,
+                       last_error=NULL
+                 WHERE id=?
+                   AND transcript_variants_json=?
+                   AND transcription_status='done'
+                   AND dead_letter_stage IS NULL
+                   AND resolve_status IN ('done', 'skipped')
+                   AND analysis_status='done'
+                   AND COALESCE(pipeline_stage, '')=''
+                   AND COALESCE(pipeline_worker_id, '')=''
+                   AND COALESCE(pipeline_claimed_at, '')=''
+                   AND COALESCE(analysis_worker_id, '')=''
+                   AND COALESCE(analysis_claimed_at, '')=''
+                """,
+                (
+                    serialized,
+                    row["id"],
+                    raw,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError(
+                    "legacy ASR topology changed during normalization"
+                )
+            result["normalized"] += 1
+            result["downstream_invalidated"] += 1
+        con.commit()
+    return result
 
 
 def read_ingested_call_ids(path: Path) -> set[str]:
@@ -2184,7 +2549,9 @@ def call_db_has_open_work(path: Path) -> bool:
             seconds = max(60, int(os.getenv(env_name, "1800")))
             return not value or parse_datetime(str(value)) <= now - timedelta(seconds=seconds)
 
-        for raw in con.execute("SELECT * FROM call_records WHERE dead_letter_stage IS NULL"):
+        for raw in con.execute(
+            "SELECT * FROM call_records WHERE COALESCE(dead_letter_stage, '')=''"
+        ):
             row = dict(raw)
             stage = row.get("pipeline_stage")
             if stage:
@@ -2208,7 +2575,22 @@ def call_db_has_open_work(path: Path) -> bool:
                 if isinstance(payload, dict):
                     state = TranscribeService.secondary_backfill_state_from_payload(payload, secondary_provider="gigaam")
             if state in {"fresh", "retry"}:
-                return True
+                downstream_terminal = bool(
+                    row.get("resolve_status") in {"done", "skipped"}
+                    and row.get("analysis_status") == "done"
+                    and not any(
+                        row.get(field)
+                        for field in (
+                            "pipeline_stage",
+                            "pipeline_worker_id",
+                            "pipeline_claimed_at",
+                            "analysis_worker_id",
+                            "analysis_claimed_at",
+                        )
+                    )
+                )
+                if not downstream_terminal:
+                    return True
             resolve = row.get("resolve_status")
             if transcription == "done" and resolve in {"pending", "failed"} and retry_due and int(row.get("resolve_attempts") or 0) < limits["resolve"]:
                 return True
@@ -2540,25 +2922,56 @@ def transcribe_environment(config: CallsTwoProcessesConfig, base: Mapping[str, s
     }
 
 
+def _validate_codex_location(
+    resolved_target: Path, *, require_owner_local: bool
+) -> None:
+    if path_has_cloud_marker(resolved_target):
+        raise RuntimeError("isolated CODEX_HOME must stay outside cloud folders")
+    project_root = Path(__file__).resolve().parents[3]
+    if resolved_target == project_root or project_root in resolved_target.parents:
+        raise RuntimeError("isolated CODEX_HOME must stay outside the Git worktree")
+    owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+    if require_owner_local and owner_local not in resolved_target.parents:
+        raise RuntimeError("isolated CODEX_HOME must stay under ~/.mango_local")
+
+
+def _cleanup_isolated_codex_atomic_temps(
+    target: Path,
+    allowed_names: set[str],
+) -> None:
+    removed = False
+    for entry in target.iterdir():
+        if not any(
+            re.fullmatch(
+                rf"\.{re.escape(name)}\.[A-Za-z0-9_-]+\.tmp",
+                entry.name,
+            )
+            for name in allowed_names
+        ):
+            continue
+        read_stable_regular_bytes(
+            entry,
+            label="isolated_codex_atomic_temp",
+            owner_only_mode=0o600,
+        )
+        entry.unlink()
+        removed = True
+    if removed:
+        _fsync_directory(target)
+
+
 def prepare_codex_home(target: Path, *, strict: bool = False) -> Path:
     source = Path.home() / ".codex"
     resolved_target = target.expanduser().resolve(strict=False)
-    cloud_markers = {"yandex.disk", "icloud drive", "mobile documents", "dropbox", "onedrive"}
-    if strict:
-        if any(
-            marker in part.casefold()
-            for part in resolved_target.parts
-            for marker in cloud_markers
-        ):
-            raise RuntimeError("isolated CODEX_HOME must stay outside cloud folders")
-        project_root = Path(__file__).resolve().parents[3]
-        if resolved_target == project_root or project_root in resolved_target.parents:
-            raise RuntimeError("isolated CODEX_HOME must stay outside the Git worktree")
-        owner_local = (Path.home() / ".mango_local").resolve(strict=False)
-        if owner_local not in resolved_target.parents:
-            raise RuntimeError("isolated CODEX_HOME must stay under ~/.mango_local")
+    _validate_codex_location(resolved_target, require_owner_local=strict)
     target.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(target, 0o700)
+    resolved_target = validate_owner_only_directory(
+        target,
+        label="isolated_codex_home",
+        owner_only_mode=0o700,
+    )
+    _validate_codex_location(resolved_target, require_owner_local=strict)
     allowed_existing = {
         "auth.json",
         "installation_id",
@@ -2566,6 +2979,7 @@ def prepare_codex_home(target: Path, *, strict: bool = False) -> Path:
         "config.toml",
         "AGENTS.md",
     }
+    _cleanup_isolated_codex_atomic_temps(target, allowed_existing)
     unknown = sorted(entry.name for entry in target.iterdir() if entry.name not in allowed_existing)
     if strict and unknown:
         raise RuntimeError("isolated CODEX_HOME contains unknown persistent files")
@@ -2573,8 +2987,34 @@ def prepare_codex_home(target: Path, *, strict: bool = False) -> Path:
         src = source / name
         dst = target / name
         if src.is_file():
-            shutil.copy2(src, dst)
-            os.chmod(dst, 0o600)
+            source_mode = 0o600 if strict and name == "auth.json" else None
+            label = f"codex_source_{name.replace('.', '_')}"
+            if strict and name == "auth.json":
+                payload, source_path = read_stable_regular_bytes_with_path(
+                    src,
+                    label=label,
+                    owner_only_mode=source_mode,
+                )
+                _validate_codex_location(
+                    source_path,
+                    require_owner_local=False,
+                )
+            else:
+                payload = read_stable_regular_bytes(
+                    src,
+                    label=label,
+                    owner_only_mode=source_mode,
+                )
+            atomic_replace_owner_only_bytes(
+                dst,
+                payload,
+                label=f"isolated_codex_{name.replace('.', '_')}",
+            )
+        elif name == "auth.json" and os.path.lexists(dst):
+            if stat.S_ISDIR(os.lstat(dst).st_mode):
+                raise RuntimeError("stale isolated Codex auth target is a directory")
+            dst.unlink()
+            _fsync_directory(target)
     # Isolate batch classification from desktop plugins/MCP servers and account
     # personality. Resolve/Analyze receive all task context in their own prompt.
     for name, content in (
@@ -2582,9 +3022,20 @@ def prepare_codex_home(target: Path, *, strict: bool = False) -> Path:
         ("AGENTS.md", "Follow the supplied task prompt exactly and return only its requested result.\n"),
     ):
         path = target / name
-        path.write_text(content, encoding="utf-8")
-        os.chmod(path, 0o600)
-    return target
+        atomic_replace_owner_only_bytes(
+            path,
+            content.encode("utf-8"),
+            label=f"isolated_codex_{name.replace('.', '_')}",
+        )
+    for name in allowed_existing:
+        path = target / name
+        if os.path.lexists(path):
+            read_stable_regular_bytes(
+                path,
+                label=f"isolated_codex_{name.replace('.', '_')}",
+                owner_only_mode=0o600,
+            )
+    return resolved_target
 
 
 def primary_transcribe_environment(

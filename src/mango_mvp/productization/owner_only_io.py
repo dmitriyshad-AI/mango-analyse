@@ -2,13 +2,32 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import hashlib
 import os
 import stat
 import sys
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
+
+CLOUD_PATH_MARKERS = (
+    "yandex.disk",
+    "yandexdisk",
+    "cloudstorage",
+    "mobile documents",
+    "icloud",
+    "dropbox",
+    "onedrive",
+    "google drive",
+    "googledrive",
+)
+
+
+def path_has_cloud_marker(path: Path) -> bool:
+    lowered = str(path).casefold()
+    return any(marker in lowered for marker in CLOUD_PATH_MARKERS)
 
 
 def _file_identity(
@@ -65,6 +84,30 @@ def _descriptor_has_extended_acl(descriptor: int, *, label: str) -> bool:
     raise RuntimeError(f"{label}_acl_check_unsupported")
 
 
+def _descriptor_resolved_path(descriptor: int, *, label: str) -> Path:
+    """Return the path attached to an open descriptor and bind it to its inode."""
+    try:
+        if sys.platform == "darwin":
+            raw = fcntl.fcntl(
+                descriptor,
+                fcntl.F_GETPATH,
+                b"\0" * 1024,
+            )
+            value = os.fsdecode(raw.split(b"\0", 1)[0])
+        elif sys.platform.startswith("linux"):
+            value = os.readlink(f"/proc/self/fd/{descriptor}")
+        else:
+            raise RuntimeError(f"{label}_descriptor_path_unsupported")
+        resolved = Path(value).resolve(strict=True)
+        opened = os.fstat(descriptor)
+        current = os.stat(resolved, follow_symlinks=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"{label}_descriptor_path_unavailable") from exc
+    if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        raise RuntimeError(f"{label}_descriptor_path_changed")
+    return resolved
+
+
 @contextmanager
 def _stable_regular_descriptor(
     path: Path,
@@ -94,6 +137,7 @@ def _stable_regular_descriptor(
         if owner_only_mode is not None and (
             opened.st_uid != os.getuid()
             or stat.S_IMODE(opened.st_mode) != owner_only_mode
+            or opened.st_nlink != 1
         ):
             raise RuntimeError(f"{label}_must_be_owner_only_{owner_only_mode:04o}")
         if owner_only_mode is not None and _descriptor_has_extended_acl(
@@ -131,6 +175,122 @@ def read_stable_regular_bytes(
         while chunk := os.read(descriptor, 1024 * 1024):
             chunks.append(chunk)
     return b"".join(chunks)
+
+
+def read_stable_regular_bytes_with_path(
+    path: Path,
+    *,
+    label: str,
+    owner_only_mode: Optional[int] = None,
+) -> tuple[bytes, Path]:
+    """Read stable bytes and the canonical path of the exact opened inode."""
+    chunks: list[bytes] = []
+    with _stable_regular_descriptor(
+        path, label=label, owner_only_mode=owner_only_mode
+    ) as descriptor:
+        resolved = _descriptor_resolved_path(descriptor, label=label)
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        resolved_after = _descriptor_resolved_path(descriptor, label=label)
+        if resolved_after != resolved:
+            raise RuntimeError(f"{label}_descriptor_path_changed_while_reading")
+    return b"".join(chunks), resolved
+
+
+def validate_owner_only_directory(
+    path: Path,
+    *,
+    label: str,
+    owner_only_mode: int = 0o700,
+) -> Path:
+    """Validate one directory by descriptor, including its extended ACL."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError(f"{label}_unsafe_or_missing") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != owner_only_mode
+        ):
+            raise RuntimeError(
+                f"{label}_must_be_owner_only_{owner_only_mode:04o}_directory"
+            )
+        if _descriptor_has_extended_acl(descriptor, label=label):
+            raise RuntimeError(f"{label}_must_not_have_extended_acl")
+        resolved = _descriptor_resolved_path(descriptor, label=label)
+        after = os.fstat(descriptor)
+        current_after = os.lstat(path)
+        if (
+            _file_identity(opened) != _file_identity(after)
+            or (after.st_dev, after.st_ino)
+            != (current_after.st_dev, current_after.st_ino)
+            or not stat.S_ISDIR(current_after.st_mode)
+        ):
+            raise RuntimeError(f"{label}_changed_while_validating")
+        if _descriptor_has_extended_acl(descriptor, label=label):
+            raise RuntimeError(f"{label}_must_not_have_extended_acl")
+        return resolved
+    finally:
+        os.close(descriptor)
+
+
+def atomic_replace_owner_only_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    label: str,
+) -> None:
+    """Atomically replace a private file without inheriting an unsafe old ACL."""
+    if os.path.lexists(path) and path.is_symlink():
+        raise RuntimeError(f"{label}_target_is_symlink")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        if _descriptor_has_extended_acl(descriptor, label=label):
+            raise RuntimeError(f"{label}_temporary_has_extended_acl")
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.path.lexists(path) and path.is_symlink():
+            raise RuntimeError(f"{label}_target_is_symlink")
+        os.replace(temporary, path)
+        directory = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        if read_stable_regular_bytes(
+            path, label=label, owner_only_mode=0o600
+        ) != payload:
+            raise RuntimeError(f"{label}_verification_failed")
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
 
 
 def stable_regular_file_evidence(

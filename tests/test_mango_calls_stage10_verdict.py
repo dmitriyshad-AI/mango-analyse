@@ -86,6 +86,7 @@ def _ready(call_key: str, **extra: object) -> dict[str, object]:
         "transcription_status": "done",
         "transcript_variants_json": json.dumps(
             {
+                "mode": "mono_or_fallback",
                 "primary_provider": "mlx",
                 "secondary_provider": "gigaam",
                 "full": {
@@ -496,12 +497,116 @@ def test_dual_asr_must_be_paired_inside_the_same_transcript_block() -> None:
     assert result["closure_ok"] is False
 
 
+def test_dual_asr_stereo_requires_both_complete_physical_channels() -> None:
+    row = _ready(
+        "one-stereo-channel",
+        transcript_variants_json=json.dumps(
+            {
+                "mode": "stereo",
+                "primary_provider": "mlx",
+                "secondary_provider": "gigaam",
+                "manager": {
+                    "variant_a": "Whisper manager",
+                    "variant_b": "GigaAM manager",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    result = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("one-stereo-channel"),
+        capture_entries=[_capture("one-stereo-channel")],
+        ready_rows=[row],
+        now=NOW,
+    )
+
+    assert result["ready_without_dual_asr_or_explicit_exception"] == 1
+    assert result["closure_ok"] is False
+
+
+def test_strict_dual_asr_rejects_full_block_without_mode() -> None:
+    row = _ready(
+        "legacy-full",
+        transcript_variants_json=json.dumps(
+            {
+                "primary_provider": "mlx",
+                "secondary_provider": "gigaam",
+                "full": {
+                    "variant_a": "Whisper full",
+                    "variant_b": "GigaAM full",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    result = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("legacy-full"),
+        capture_entries=[_capture("legacy-full")],
+        ready_rows=[row],
+        now=NOW,
+    )
+
+    assert result["ready_without_dual_asr_or_explicit_exception"] == 1
+    assert result["closure_ok"] is False
+
+
+@pytest.mark.parametrize("invalid_variant", [{"bad": 1}, ["bad"], True])
+def test_strict_dual_asr_rejects_non_string_variants(
+    invalid_variant: object,
+) -> None:
+    row = _ready(
+        "invalid-variant",
+        transcript_variants_json=json.dumps(
+            {
+                "mode": "mono_or_fallback",
+                "primary_provider": "mlx",
+                "secondary_provider": "gigaam",
+                "full": {
+                    "variant_a": invalid_variant,
+                    "variant_b": "GigaAM full",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    result = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("invalid-variant"),
+        capture_entries=[_capture("invalid-variant")],
+        ready_rows=[row],
+        now=NOW,
+    )
+
+    assert result["ready_without_dual_asr_or_explicit_exception"] == 1
+    assert result["closure_ok"] is False
+
+
 @pytest.mark.parametrize(
     "exception",
     [
         True,
         {"approved": True, "reason": "", "approved_by": "owner"},
         {"approved": True, "reason": "synthetic", "approved_by": "owner"},
+        {
+            "approved": True,
+            "reason": {"bad": 1},
+            "approved_by": "owner",
+            "approved_at": "2026-08-11T08:00:00+00:00",
+        },
+        {
+            "approved": True,
+            "reason": "synthetic",
+            "approved_by": ["bad"],
+            "approved_at": "2026-08-11T08:00:00+00:00",
+        },
+        {
+            "approved": True,
+            "reason": "synthetic",
+            "approved_by": "owner",
+            "approved_at": {"bad": 1},
+        },
     ],
 )
 def test_dual_asr_exception_requires_audit_fields(exception: object) -> None:

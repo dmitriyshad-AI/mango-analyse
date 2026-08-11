@@ -56,6 +56,19 @@ def _stereo_payload(
 
 
 class ParallelPipelineClaimsTest(unittest.TestCase):
+    def test_secondary_backfill_rejects_non_text_primary_variant(self) -> None:
+        state = TranscribeService.secondary_backfill_state_from_payload(
+            {
+                "mode": "mono_or_fallback",
+                "primary_provider": "mlx",
+                "secondary_provider": "gigaam",
+                "full": {"variant_a": {"bad": 1}, "variant_b": ""},
+            },
+            secondary_provider="gigaam",
+        )
+
+        self.assertEqual(state, "not_needed")
+
     def test_transcribe_claims_are_disjoint(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_parallel_tr_claims_") as td:
             db_path = Path(td) / "claims.db"

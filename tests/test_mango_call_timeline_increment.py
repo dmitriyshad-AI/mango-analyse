@@ -343,6 +343,7 @@ def test_service_ready_predicate_keeps_quarantine_out_of_timeline(
     package_db = tmp_path / "strict-ready.sqlite"
     variants = json.dumps(
         {
+            "mode": "mono_or_fallback",
             "primary_provider": "mlx",
             "secondary_provider": "gigaam",
             "full": {

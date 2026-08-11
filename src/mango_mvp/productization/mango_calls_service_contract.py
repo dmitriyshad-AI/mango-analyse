@@ -800,19 +800,29 @@ def _json_object(value: Any) -> Mapping[str, Any]:
 
 
 def has_dual_asr_or_exception(
-    row: Mapping[str, Any], *, now: Optional[datetime] = None
+    row: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
 ) -> bool:
     variants = _json_object(row.get("transcript_variants_json"))
     exception = variants.get("dual_asr_exception")
     if isinstance(exception, Mapping):
-        try:
-            approved_at = parse_aware_datetime(exception.get("approved_at"))
-        except (TypeError, ValueError):
+        approved_at_raw = exception.get("approved_at")
+        if isinstance(approved_at_raw, str):
+            try:
+                approved_at = _parse_strict_aware_datetime(approved_at_raw)
+            except (TypeError, ValueError):
+                approved_at = None
+        else:
             approved_at = None
+        reason = exception.get("reason")
+        approved_by = exception.get("approved_by")
         if (
             exception.get("approved") is True
-            and str(exception.get("reason") or "").strip()
-            and str(exception.get("approved_by") or "").strip()
+            and isinstance(reason, str)
+            and reason.strip()
+            and isinstance(approved_by, str)
+            and approved_by.strip()
             and approved_at is not None
             and approved_at <= (now or datetime.now(timezone.utc)).astimezone(
                 timezone.utc
@@ -824,28 +834,40 @@ def has_dual_asr_or_exception(
         and variants.get("secondary_provider") == "gigaam"
     ):
         return False
-    blocks = [
-        value
-        for key in ("manager", "client", "full")
-        if isinstance((value := variants.get(key)), Mapping)
-    ]
-    paired = 0
-    for block in blocks:
-        has_primary = bool(str(block.get("variant_a") or "").strip())
-        has_secondary = bool(str(block.get("variant_b") or "").strip())
-        # A variant from one channel must never prove the other channel/model.
-        if has_primary != has_secondary:
+    mode = str(variants.get("mode") or "").strip()
+    if mode == "stereo":
+        required_keys = ("manager", "client")
+    elif mode == "mono_or_fallback":
+        required_keys = ("full",)
+    else:
+        required_keys = None
+    if required_keys is None:
+        return False
+    for key in required_keys:
+        block = variants.get(key)
+        if not isinstance(block, Mapping):
             return False
-        paired += int(has_primary and has_secondary)
-    return paired > 0
+        if not (
+            isinstance(block.get("variant_a"), str)
+            and block["variant_a"].strip()
+            and isinstance(block.get("variant_b"), str)
+            and block["variant_b"].strip()
+        ):
+            return False
+    return True
 
 
 def ready_row_is_complete(
-    row: Mapping[str, Any], *, now: Optional[datetime] = None
+    row: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
 ) -> bool:
     return bool(
         str(row.get("transcription_status") or "") == "done"
-        and has_dual_asr_or_exception(row, now=now)
+        and has_dual_asr_or_exception(
+            row,
+            now=now,
+        )
         and str(row.get("resolve_status") or "") in {"done", "skipped"}
         and str(row.get("analysis_status") or "") == "done"
         and _json_object(row.get("analysis_json"))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import plistlib
@@ -9,6 +10,7 @@ import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -33,12 +35,14 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     module_probe_command,
     missing_capture_recovery_events,
     new_calls_run_id,
+    normalize_unambiguous_legacy_asr_topologies,
     prepare_ingest_inputs,
     prepare_codex_home,
     process_lease,
     pipeline_stages,
     publish_ready_db,
     publish_ready_db_if_changed,
+    read_fully_ready_call_ids,
     read_json,
     read_known_processed_ids,
     run_capture,
@@ -66,6 +70,7 @@ from mango_mvp.productization.ready_publication import (
     inspect_ready_publication,
     recover_ready_generation,
 )
+from mango_mvp.productization.owner_only_io import read_stable_regular_bytes
 
 
 def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_staging.sqlite") -> CallsTwoProcessesConfig:
@@ -2623,6 +2628,162 @@ def test_codex_runtime_does_not_copy_desktop_mcp_config(tmp_path: Path, monkeypa
     assert (target / "auth.json").is_file()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL control")
+def test_strict_codex_home_atomically_replaces_existing_auth_acl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    source = home / ".codex"
+    source.mkdir(parents=True)
+    source_auth = source / "auth.json"
+    source_auth.write_text('{"auth":"fresh"}', encoding="utf-8")
+    source_auth.chmod(0o600)
+    target = home / ".mango_local" / "codex-runtime"
+    target.mkdir(parents=True, mode=0o700)
+    target.chmod(0o700)
+    stale_auth = target / "auth.json"
+    stale_auth.write_text('{"auth":"stale"}', encoding="utf-8")
+    stale_auth.chmod(0o600)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(stale_auth)],
+        check=True,
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    prepared = prepare_codex_home(target, strict=True)
+
+    assert prepared == target.resolve()
+    assert read_stable_regular_bytes(
+        stale_auth,
+        label="test_isolated_auth",
+        owner_only_mode=0o600,
+    ) == b'{"auth":"fresh"}'
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL control")
+def test_strict_codex_home_rejects_extended_acl_on_runtime_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    target = home / ".mango_local" / "codex-runtime"
+    target.mkdir(parents=True, mode=0o700)
+    target.chmod(0o700)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(target)],
+        check=True,
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    with pytest.raises(RuntimeError, match="extended_acl"):
+        prepare_codex_home(target, strict=True)
+
+
+def test_codex_home_revokes_stale_auth_when_source_auth_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    target = tmp_path / "runtime"
+    target.mkdir(mode=0o700)
+    stale_auth = target / "auth.json"
+    stale_auth.write_text('{"auth":"revoked"}', encoding="utf-8")
+    stale_auth.chmod(0o600)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    prepare_codex_home(target, strict=False)
+
+    assert not stale_auth.exists()
+
+
+def test_codex_home_rejects_dangling_optional_source_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    target = tmp_path / "runtime"
+    target.mkdir(mode=0o700)
+    stale_installation = target / "installation_id"
+    stale_installation.symlink_to(target / "future-installation-id")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    with pytest.raises(RuntimeError, match="unsafe_or_missing"):
+        prepare_codex_home(target, strict=False)
+
+    assert os.path.lexists(stale_installation)
+
+
+def test_codex_home_recovers_valid_atomic_auth_temp_after_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    target = home / ".mango_local" / "runtime"
+    target.mkdir(parents=True, mode=0o700)
+    target.chmod(0o700)
+    residue = target / ".auth.json.crash123.tmp"
+    residue.write_text('{"auth":"interrupted"}', encoding="utf-8")
+    residue.chmod(0o600)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    prepare_codex_home(target, strict=True)
+
+    assert not residue.exists()
+    assert not (target / "auth.json").exists()
+
+
+def test_codex_home_rejects_cloud_target_even_without_strict_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    source = home / ".codex"
+    source.mkdir(parents=True)
+    auth = source / "auth.json"
+    auth.write_text('{"auth":"synthetic"}', encoding="utf-8")
+    auth.chmod(0o600)
+    target = home / "Yandex.Disk" / "runtime"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    with pytest.raises(RuntimeError, match="outside cloud"):
+        prepare_codex_home(target, strict=False)
+
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "cloud_parts",
+    [
+        ("Yandex.Disk", "codex"),
+        ("Library", "CloudStorage", "GoogleDrive-test"),
+    ],
+)
+def test_strict_codex_home_rejects_auth_source_inside_cloud_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloud_parts: tuple[str, ...],
+) -> None:
+    home = tmp_path / "home"
+    cloud_source = home.joinpath(*cloud_parts)
+    cloud_source.mkdir(parents=True)
+    auth = cloud_source / "auth.json"
+    auth.write_text('{"auth":"synthetic"}', encoding="utf-8")
+    auth.chmod(0o600)
+    (home / ".codex").symlink_to(cloud_source, target_is_directory=True)
+    target = home / ".mango_local" / "runtime"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    with pytest.raises(RuntimeError, match="outside cloud"):
+        prepare_codex_home(target, strict=True)
+
+    assert not (target / "auth.json").exists()
+
+
 def test_codex_wrapper_disables_desktop_tools(tmp_path: Path) -> None:
     captured = tmp_path / "args.txt"
     fake = tmp_path / "fake-codex"
@@ -2669,6 +2830,12 @@ def create_ready_call_db(path: Path) -> None:
                 pipeline_claimed_at TEXT,
                 analysis_worker_id TEXT,
                 analysis_claimed_at TEXT,
+                resolve_attempts INTEGER DEFAULT 0,
+                analyze_attempts INTEGER DEFAULT 0,
+                next_retry_at TEXT,
+                resolve_json TEXT,
+                resolve_quality_score REAL,
+                last_error TEXT,
                 amocrm_contact_id TEXT,
                 amocrm_lead_id TEXT
             )
@@ -2696,6 +2863,7 @@ def create_ready_call_db(path: Path) -> None:
                 "done",
                 json.dumps(
                     {
+                        "mode": "mono_or_fallback",
                         "primary_provider": "mlx",
                         "secondary_provider": "gigaam",
                         "full": {
@@ -2720,6 +2888,543 @@ def create_ready_call_db(path: Path) -> None:
             "quick_check": "ok",
         },
     )
+
+
+def test_legacy_asr_without_mode_is_not_skipped_as_fully_ready(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    for database in (config.working_db, config.ready_db):
+        create_ready_call_db(database)
+        with sqlite3.connect(database) as connection:
+            raw = connection.execute(
+                "SELECT transcript_variants_json FROM call_records WHERE id=1"
+            ).fetchone()[0]
+            payload = json.loads(raw)
+            payload.pop("mode")
+            connection.execute(
+                "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+                (json.dumps(payload, ensure_ascii=False),),
+            )
+
+    assert read_fully_ready_call_ids(config) == set()
+
+
+def test_legacy_asr_mode_is_normalized_once_and_republished_after_crash_gap(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        legacy_raw = json.dumps(payload, ensure_ascii=False)
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, pipeline_stage='',
+                   next_retry_at='2099-01-01T00:00:00+00:00',
+                   resolve_json='{"old":true}', resolve_quality_score=99,
+                   last_error='old synthetic error'
+             WHERE id=1
+            """,
+            (legacy_raw,),
+        )
+
+    # Establish a sealed legacy generation, then model a crash after the
+    # working-DB normalization but before ready publication.
+    publish_ready_db(config, {"total": 1})
+    first = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert first == {
+        "normalized": 1,
+        "downstream_invalidated": 1,
+        "state_normalized": 0,
+        "blocked": 0,
+        "blocked_reasons": {},
+    }
+    with sqlite3.connect(config.working_db) as connection:
+        normalized_raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+    normalized = json.loads(normalized_raw)
+    assert normalized["mode"] == "mono_or_fallback"
+    assert normalized["legacy_topology_normalization"] == {
+        "method": "complete_shape_xor_reset_downstream_v1",
+        "source_json_sha256": hashlib.sha256(
+            legacy_raw.encode("utf-8")
+        ).hexdigest(),
+    }
+    with sqlite3.connect(config.working_db) as connection:
+        statuses = connection.execute(
+            """
+            SELECT resolve_status, analysis_status,
+                   resolve_attempts, analyze_attempts, pipeline_stage,
+                   next_retry_at, resolve_json, resolve_quality_score,
+                   analysis_json, last_error
+              FROM call_records
+             WHERE id=1
+            """
+        ).fetchone()
+    assert statuses == (
+        "pending",
+        "pending",
+        0,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    assert call_db_has_open_work(config.working_db) is True
+
+    # Synthetic stand-in for the separately authorized future Resolve/Analyze
+    # stages.  No model or network call occurs in this test.
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status='done', analysis_status='done',
+                   analysis_json=?
+             WHERE id=1
+            """,
+            (
+                json.dumps(
+                    {
+                        "call_type": "sales_call",
+                        "history_summary": "Повторный синтетический анализ.",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+
+    recovered = publish_ready_db_if_changed(
+        config,
+        {"total": 1},
+        changed=False,
+    )
+    repeated = publish_ready_db_if_changed(
+        config,
+        {"total": 1},
+        changed=False,
+    )
+
+    assert recovered["reused"] is False
+    assert repeated["reused"] is True
+    assert normalize_unambiguous_legacy_asr_topologies(config.working_db)[
+        "normalized"
+    ] == 0
+    assert read_fully_ready_call_ids(config) == {"provider-1"}
+    first_process_b = run_process_b(config)
+    second_process_b = run_process_b(config)
+    with sqlite3.connect(f"file:{config.timeline_db}?mode=ro", uri=True) as connection:
+        timeline_call_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                  FROM timeline_events
+                 WHERE event_type='mango_call'
+                """
+            ).fetchone()[0]
+        )
+    assert first_process_b["status"] == "ok"
+    assert second_process_b["status"] == "ok"
+    assert timeline_call_count == 1
+
+
+def test_ambiguous_legacy_asr_blocks_process_a_without_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        payload["manager"] = {
+            "variant_a": "manager Whisper",
+            "variant_b": "manager GigaAM",
+        }
+        payload["client"] = {
+            "variant_a": "client Whisper",
+            "variant_b": "client GigaAM",
+        }
+        ambiguous_raw = json.dumps(payload, ensure_ascii=False)
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (ambiguous_raw,),
+        )
+    create_empty_capture_manifest(config)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    commands: list[list[str]] = []
+
+    def command_runner(
+        command: list[str], _env: Mapping[str, str], _cwd: Path
+    ) -> dict[str, object]:
+        commands.append(command)
+        return {"rc": 0, "command": "unexpected"}
+
+    report = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=command_runner,
+    )
+
+    assert report["status"] == "partial"
+    assert report["stop_reason"] == "legacy_asr_topology_blocked"
+    assert report["counters"]["metadata"]["legacy_topology_blocked"] == 1
+    assert report["counters"]["metadata"]["legacy_topology_blocked_reasons"] == {
+        "ambiguous_or_incomplete_topology": 1
+    }
+    assert commands == []
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0] == ambiguous_raw
+
+
+def test_empty_legacy_analysis_blocks_normalization(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        legacy_raw = json.dumps(payload, ensure_ascii=False)
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, analysis_json='{}'
+             WHERE id=1
+            """,
+            (legacy_raw,),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result == {
+        "normalized": 0,
+        "downstream_invalidated": 0,
+        "state_normalized": 0,
+        "blocked": 1,
+        "blocked_reasons": {"terminal_payload_invalid": 1},
+    }
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0] == legacy_raw
+
+
+@pytest.mark.parametrize("mode", ["mono_or_fallback", "stereo"])
+def test_explicit_incomplete_asr_topology_is_blocked(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload["mode"] = mode
+        payload.pop("full", None)
+        if mode == "stereo":
+            payload["manager"] = {"variant_a": "manager Whisper"}
+        invalid_raw = json.dumps(payload, ensure_ascii=False)
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (invalid_raw,),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {"strict_asr_topology_invalid": 1}
+    assert call_db_has_open_work(config.working_db) is False
+
+
+def test_terminal_analysis_waiting_for_second_asr_is_blocked(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload["full"]["variant_b"] = ""
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["blocked"] == 1
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {
+        "secondary_asr_after_downstream_terminal": 1
+    }
+    assert call_db_has_open_work(config.working_db) is False
+
+
+def test_pending_downstream_waiting_for_second_asr_remains_open(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload["full"]["variant_b"] = ""
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, resolve_status='pending',
+                   analysis_status='pending'
+             WHERE id=1
+            """,
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["blocked"] == 0
+    assert result["normalized"] == 0
+    assert call_db_has_open_work(config.working_db) is True
+
+
+def test_valid_dual_asr_exception_is_not_blocked_by_provider(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    payload = {
+        "mode": "mono_or_fallback",
+        "primary_provider": "approved_external_provider",
+        "dual_asr_exception": {
+            "approved": True,
+            "reason": "synthetic audited exception",
+            "approved_by": "owner",
+            "approved_at": "2026-07-01T00:00:00+00:00",
+        },
+    }
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["blocked"] == 0
+    assert result["normalized"] == 0
+
+
+@pytest.mark.parametrize("use_exception", [False, True])
+def test_explicit_ready_asr_with_empty_analysis_is_blocked(
+    tmp_path: Path,
+    use_exception: bool,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        if use_exception:
+            payload = {
+                "dual_asr_exception": {
+                    "approved": True,
+                    "reason": "synthetic audited exception",
+                    "approved_by": "owner",
+                    "approved_at": "2026-07-01T00:00:00+00:00",
+                }
+            }
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, analysis_json='{}'
+             WHERE id=1
+            """,
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {"terminal_payload_invalid": 1}
+
+
+@pytest.mark.parametrize(
+    ("base_mode", "opposite_key", "opposite_value"),
+    [
+        ("mono", "manager", "corrupt legacy shape"),
+        ("stereo", "full", []),
+    ],
+)
+def test_legacy_topology_rejects_malformed_opposite_shape(
+    tmp_path: Path,
+    base_mode: str,
+    opposite_key: str,
+    opposite_value: object,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        if base_mode == "stereo":
+            payload.pop("full")
+            payload["manager"] = {
+                "variant_a": "manager Whisper",
+                "variant_b": "manager GigaAM",
+            }
+            payload["client"] = {
+                "variant_a": "client Whisper",
+                "variant_b": "client GigaAM",
+            }
+        payload[opposite_key] = opposite_value
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {
+        "ambiguous_or_incomplete_topology": 1
+    }
+
+
+def test_legacy_topology_requires_exact_provider_names(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        payload["primary_provider"] = " mlx "
+        payload["secondary_provider"] = "gigaam "
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {"provider_mismatch": 1}
+
+
+def test_legacy_topology_with_orphan_whitespace_lease_is_blocked(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, pipeline_worker_id=' '
+             WHERE id=1
+            """,
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {"non_terminal_or_leased": 1}
+
+
+def test_legacy_topology_rejects_partial_opposite_shape(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        payload["manager"] = {"variant_a": "partial manager"}
+        connection.execute(
+            "UPDATE call_records SET transcript_variants_json=? WHERE id=1",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {
+        "ambiguous_or_incomplete_topology": 1
+    }
+
+
+def test_empty_dead_letter_state_is_canonicalized_before_legacy_mode(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.pop("mode")
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, dead_letter_stage=''
+             WHERE id=1
+            """,
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["state_normalized"] == 1
+    assert result["normalized"] == 1
+    with sqlite3.connect(config.working_db) as connection:
+        dead_letter, normalized_raw = connection.execute(
+            """
+            SELECT dead_letter_stage, transcript_variants_json
+              FROM call_records
+             WHERE id=1
+            """
+        ).fetchone()
+    assert dead_letter is None
+    assert json.loads(normalized_raw)["mode"] == "mono_or_fallback"
 
 
 def test_process_b_returns_locked_instead_of_traceback(tmp_path: Path) -> None:
@@ -3640,7 +4345,6 @@ def test_call_db_open_work_excludes_future_retry_and_exhausted_attempts(tmp_path
     create_ready_call_db(config.working_db)
     with sqlite3.connect(config.working_db) as con:
         con.execute("ALTER TABLE call_records ADD COLUMN transcribe_attempts INTEGER")
-        con.execute("ALTER TABLE call_records ADD COLUMN next_retry_at TEXT")
         con.execute(
             "UPDATE call_records SET transcription_status='failed', transcribe_attempts=3, "
             "next_retry_at='2099-01-01T00:00:00+00:00'"
@@ -3661,7 +4365,7 @@ def test_call_db_open_work_includes_stale_analyze_claim(tmp_path: Path) -> None:
     assert call_db_has_open_work(config.working_db) is True
 
 
-def test_call_db_open_work_includes_secondary_asr_retry(tmp_path: Path) -> None:
+def test_call_db_open_work_excludes_terminal_secondary_asr_retry(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     create_ready_call_db(config.working_db)
     payload = {
@@ -3676,7 +4380,7 @@ def test_call_db_open_work_includes_secondary_asr_retry(tmp_path: Path) -> None:
             (json.dumps(payload, ensure_ascii=False),),
         )
 
-    assert call_db_has_open_work(config.working_db) is True
+    assert call_db_has_open_work(config.working_db) is False
 
 
 def test_missing_downloaded_capture_is_returned_for_recovery(tmp_path: Path) -> None:

@@ -8,7 +8,6 @@ import json
 import os
 import platform
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -31,6 +30,10 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     read_stable_regular_bytes,
     stage_capacity_report,
     validate_runtime_fingerprint,
+)
+from mango_mvp.productization.owner_only_io import (  # noqa: E402
+    path_has_cloud_marker,
+    validate_owner_only_directory,
 )
 from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     CallsTwoProcessesConfig,
@@ -65,37 +68,36 @@ def physical_memory_bytes() -> int:
 
 
 def inspect_codex_home(path: Path) -> Mapping[str, Any]:
-    resolved = path.expanduser().resolve(strict=False)
-    cloud = any(
-        marker in part.casefold()
-        for part in resolved.parts
-        for marker in ("yandex.disk", "icloud", "mobile documents", "dropbox", "onedrive")
-    )
+    candidate = path.expanduser()
+    try:
+        resolved = validate_owner_only_directory(
+            candidate,
+            label="probe_codex_home",
+            owner_only_mode=0o700,
+        )
+        root_private = True
+    except RuntimeError:
+        resolved = candidate.resolve(strict=False)
+        root_private = False
+    cloud = path_has_cloud_marker(resolved)
     under_repo = resolved == ROOT.resolve() or ROOT.resolve() in resolved.parents
     under_owner_local = (Path.home() / ".mango_local").resolve(strict=False) in resolved.parents
     unknown: list[str] = []
     unsafe_modes: list[str] = []
-    if path.is_dir() and not path.is_symlink():
-        for entry in path.iterdir():
+    if candidate.is_dir() and not candidate.is_symlink():
+        for entry in candidate.iterdir():
             if entry.name not in CODEX_HOME_ALLOWLIST:
                 unknown.append(entry.name)
             try:
-                mode = stat.S_IMODE(entry.lstat().st_mode)
-            except OSError:
+                read_stable_regular_bytes(
+                    entry,
+                    label=f"probe_codex_{entry.name.replace('.', '_')}",
+                    owner_only_mode=0o600,
+                )
+            except (OSError, RuntimeError):
                 unsafe_modes.append(entry.name)
-                continue
-            if entry.is_dir() or entry.is_symlink() or mode != 0o600:
-                unsafe_modes.append(entry.name)
-    try:
-        root_mode = stat.S_IMODE(path.lstat().st_mode)
-        owner_ok = path.lstat().st_uid == os.getuid()
-    except OSError:
-        root_mode, owner_ok = 0, False
     ok = bool(
-        path.is_dir()
-        and not path.is_symlink()
-        and root_mode == 0o700
-        and owner_ok
+        root_private
         and under_owner_local
         and not cloud
         and not under_repo
@@ -105,7 +107,7 @@ def inspect_codex_home(path: Path) -> Mapping[str, Any]:
     return {
         "ok": ok,
         "path": str(resolved),
-        "owner_only_0700": root_mode == 0o700 and owner_ok,
+        "owner_only_0700": root_private,
         "under_owner_local": under_owner_local,
         "outside_cloud": not cloud,
         "outside_repo": not under_repo,

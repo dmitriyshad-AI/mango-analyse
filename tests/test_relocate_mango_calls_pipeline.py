@@ -154,6 +154,7 @@ def _write_sqlite(path: Path, source_files: list[str], *, journal_mode: str, old
             variants = (
                 json.dumps(
                     {
+                        "mode": "stereo",
                         "call_topology": "simple_two_party",
                         "role_mapping": {
                             "confirmed": True,

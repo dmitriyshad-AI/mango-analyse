@@ -26,6 +26,7 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     current_git_sha,
     git_worktree_is_clean,
 )
+from mango_mvp.productization.owner_only_io import path_has_cloud_marker  # noqa: E402
 
 SCHEMA = "mango_calls_two_processes_v1"
 DB_NAME = "mango_calls_ready.sqlite"
@@ -36,7 +37,7 @@ RESTORE_CONFIRMATION = "RESTORE_MANGO_CALLS_REMOTE_ROLLBACK"
 
 def path_has_forbidden_part(path: Path) -> bool:
     parts = {part.casefold() for part in path.parts}
-    return "stable_runtime" in parts or any("yandex.disk" in part for part in parts)
+    return "stable_runtime" in parts or path_has_cloud_marker(path)
 
 
 def assert_no_symlink_components(path: Path) -> None:

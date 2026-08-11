@@ -117,6 +117,7 @@ def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", sta
                 "pending" if pending else "done",
                 "MANAGER:\nЗдравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.\nCLIENT:\nДобрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
                 json.dumps({
+                    "mode": "stereo",
                     "primary_provider": "mlx",
                     "secondary_provider": "gigaam",
                     "dialogue_lines": dialogue,
@@ -1715,6 +1716,7 @@ def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pyte
                 con.execute(
                         "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
                         (f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец", json.dumps({
+                            "mode": "stereo",
                             "primary_provider": "mlx",
                             "secondary_provider": "gigaam",
                             "dialogue_lines": lines,

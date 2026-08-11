@@ -37,6 +37,11 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     validate_quarantine_items_payload,
     validate_ready_manifest_payload,
 )
+from mango_mvp.productization.owner_only_io import (  # noqa: E402
+    CLOUD_PATH_MARKERS,
+    path_has_cloud_marker,
+    read_stable_regular_bytes_with_path,
+)
 from mango_mvp.productization.ready_publication import (  # noqa: E402
     ready_publication_lock,
     recover_ready_generation,
@@ -90,15 +95,7 @@ ROP_HEADERS = ("Комментарий РОПа", "Решение РОПа")
 MANAGED_HEADERS = HEADERS[: -len(ROP_HEADERS)]
 REVIEW_HEADERS = MANAGED_HEADERS
 SUMMARY_HEADERS = ("Показатель", "Значение")
-FORBIDDEN_LOCAL_PATH_MARKERS = (
-    "yandex.disk",
-    "yandexdisk",
-    "cloudstorage",
-    "mobile documents",
-    "dropbox",
-    "onedrive",
-    "google drive",
-)
+FORBIDDEN_LOCAL_PATH_MARKERS = CLOUD_PATH_MARKERS
 FORBIDDEN_FIELD_RE = re.compile(
     r"(?:transcript|dialogue|расшифровк|sqlite|analysis_json|resolve_json|source_file)",
     re.IGNORECASE,
@@ -1571,19 +1568,14 @@ def publication_lock(path: Path) -> Iterable[None]:
 def validate_credentials(path: Path) -> Mapping[str, Any]:
     candidate = path.expanduser().absolute()
     try:
-        raw = read_stable_regular_bytes(
+        raw, resolved = read_stable_regular_bytes_with_path(
             candidate,
             label="google_credentials",
             owner_only_mode=0o600,
         )
     except RuntimeError as exc:
         raise RuntimeError("Google credentials must be owner-only 0600") from exc
-    resolved = candidate.resolve()
-    if resolved == ROOT or ROOT in resolved.parents or any(
-        marker in part.casefold()
-        for part in resolved.parts
-        for marker in ("yandex.disk", "icloud", "mobile documents", "dropbox", "onedrive")
-    ):
+    if resolved == ROOT or ROOT in resolved.parents or path_has_cloud_marker(resolved):
         raise RuntimeError("Google credentials must stay outside repository and cloud folders")
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, Mapping) or not str(payload.get("client_email") or "").strip():

@@ -401,7 +401,10 @@ class TranscribeService:
             block = payload.get(slot)
             if not isinstance(block, dict):
                 return False
-            return bool(str(block.get("variant_a") or "").strip())
+            primary_text = block.get("variant_a")
+            return bool(
+                isinstance(primary_text, str) and primary_text.strip()
+            )
 
         def _slot_missing(slot: str) -> bool:
             if not _slot_has_primary(slot):
@@ -409,10 +412,14 @@ class TranscribeService:
             block = payload.get(slot)
             if not isinstance(block, dict):
                 return False
-            secondary_text = str(block.get("variant_b") or "").strip()
             if not secondary_matches:
                 return True
-            return not bool(secondary_text)
+            secondary_text = block.get("variant_b")
+            if secondary_text is None:
+                return True
+            if not isinstance(secondary_text, str):
+                return False
+            return not bool(secondary_text.strip())
 
         needs_backfill = False
         if mode == "stereo":

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.productization import owner_only_io
 from mango_mvp.productization.mango_calls_service_contract import (
     STAGE10_SCHEMA,
     approved_runtime_fingerprint,
@@ -226,6 +227,101 @@ def publish(gateway: Gateway, rows: list[dict[str, object]], **kwargs: object) -
             **kwargs,
         )
     )
+
+
+def test_credentials_policy_uses_path_of_exact_opened_inode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cloud = tmp_path / "Yandex.Disk" / "credentials.json"
+    cloud.parent.mkdir()
+    cloud.write_text(json.dumps({"client_email": "cloud@example.test"}), encoding="utf-8")
+    cloud.chmod(0o600)
+    local = tmp_path / "local.json"
+    local.write_text(json.dumps({"client_email": "local@example.test"}), encoding="utf-8")
+    local.chmod(0o600)
+    original = publisher.read_stable_regular_bytes_with_path
+
+    def swap_after_read(path: Path, **kwargs: object) -> tuple[bytes, Path]:
+        raw, opened_path = original(path, **kwargs)
+        path.unlink()
+        path.symlink_to(local)
+        return raw, opened_path
+
+    monkeypatch.setattr(
+        publisher,
+        "read_stable_regular_bytes_with_path",
+        swap_after_read,
+    )
+
+    with pytest.raises(RuntimeError, match="outside repository and cloud"):
+        publisher.validate_credentials(cloud)
+
+
+def test_credentials_reject_hardlink_with_cloud_alias(tmp_path: Path) -> None:
+    local = tmp_path / "local" / "credentials.json"
+    local.parent.mkdir()
+    local.write_text(json.dumps({"client_email": "linked@example.test"}), encoding="utf-8")
+    local.chmod(0o600)
+    cloud = tmp_path / "Yandex.Disk" / "credentials.json"
+    cloud.parent.mkdir()
+    cloud.hardlink_to(local)
+
+    with pytest.raises(RuntimeError, match="owner-only 0600"):
+        publisher.validate_credentials(local)
+
+
+def test_credentials_reject_parent_move_during_descriptor_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    credentials = local_root / "credentials.json"
+    credentials.write_text(
+        json.dumps({"client_email": "moved@example.test"}),
+        encoding="utf-8",
+    )
+    credentials.chmod(0o600)
+    cloud_root = tmp_path / "Yandex.Disk"
+    cloud_root.mkdir()
+    moved_root = cloud_root / "local"
+    original_read = owner_only_io.os.read
+    swapped = False
+
+    def move_parent_then_read(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        if not swapped:
+            local_root.rename(moved_root)
+            local_root.symlink_to(moved_root, target_is_directory=True)
+            swapped = True
+        return original_read(descriptor, size)
+
+    monkeypatch.setattr(owner_only_io.os, "read", move_parent_then_read)
+
+    with pytest.raises(RuntimeError, match="owner-only 0600"):
+        publisher.validate_credentials(credentials)
+
+    assert swapped is True
+
+
+def test_credentials_reject_macos_cloudstorage_path(tmp_path: Path) -> None:
+    credentials = (
+        tmp_path
+        / "Library"
+        / "CloudStorage"
+        / "GoogleDrive-test"
+        / "credentials.json"
+    )
+    credentials.parent.mkdir(parents=True)
+    credentials.write_text(
+        json.dumps({"client_email": "cloud@example.test"}),
+        encoding="utf-8",
+    )
+    credentials.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="outside repository and cloud"):
+        publisher.validate_credentials(credentials)
 
 
 def test_three_header_based_upserts_preserve_rop_sort_and_unknown_column() -> None:
@@ -450,6 +546,7 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
                 json.dumps(analysis, ensure_ascii=False),
                 json.dumps(
                     {
+                        "mode": "stereo",
                         "primary_provider": "mlx",
                         "secondary_provider": "gigaam",
                         "manager": {

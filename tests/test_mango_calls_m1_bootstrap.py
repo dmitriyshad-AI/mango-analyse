@@ -5,10 +5,13 @@ import importlib.util
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -403,6 +406,33 @@ def test_ephemeral_codex_cycle_is_checked_for_persistent_residue(
     rejected = probe.inspect_codex_home(runtime_home)
     assert rejected["ok"] is False
     assert rejected["persistent_session_or_history"] is True
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL control")
+def test_codex_home_probe_rejects_extended_acl_on_auth(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    home = tmp_path / "home"
+    runtime_home = home / ".mango_local" / "codex-runtime"
+    runtime_home.mkdir(parents=True, mode=0o700)
+    runtime_home.chmod(0o700)
+    auth = runtime_home / "auth.json"
+    auth.write_text('{"synthetic":true}', encoding="utf-8")
+    auth.chmod(0o600)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(auth)],
+        check=True,
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    rejected = probe.inspect_codex_home(runtime_home)
+
+    assert rejected["ok"] is False
+    assert rejected["owner_only_0700"] is True
+    assert rejected["unsafe_files"] == ["auth.json"]
 
 
 def test_duplicate_or_blank_env_values_are_not_accepted() -> None:

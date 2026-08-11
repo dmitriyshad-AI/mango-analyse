@@ -94,6 +94,129 @@ def create_empty_capture_manifest(config: CallsTwoProcessesConfig) -> None:
     CaptureManifestStore(config.capture_manifest).ensure_exists()
 
 
+def with_dual_enumeration(
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    """Upgrade a compact synthetic strict fixture to the dual API contract."""
+
+    result = json.loads(json.dumps(evidence))
+    source = result["mango_enumeration_source"]
+    assert isinstance(source, dict)
+    original_intervals = list(source["covered_intervals"])
+    rolling = [
+        dict(interval)
+        for interval in original_intervals
+        if interval.get("scope") == "rolling_authority"
+    ]
+    auxiliary = [
+        dict(interval)
+        for interval in original_intervals
+        if interval.get("scope") == "recovery_auxiliary"
+    ]
+    call_keys = list(result.get("call_keys") or [])
+    calls_by_day = {
+        key: list(value)
+        for key, value in dict(result.get("calls_by_moscow_day") or {}).items()
+    }
+    raw_rows = sum(int(interval.get("rows") or 0) for interval in rolling)
+    multiset = sorted(call_keys)
+    while len(multiset) < raw_rows:
+        multiset.append(f"__synthetic_unmapped_row_{len(multiset)}")
+    multiset.sort()
+    chunks = [
+        {
+            "since": interval["since"],
+            "until": interval["until"],
+            "result_complete": True,
+            "rows": int(interval.get("rows") or 0),
+        }
+        for interval in rolling
+    ]
+
+    def digest(value: object) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    pass_payload = {
+        "rolling_since": source["rolling_since"],
+        "until": source["until"],
+        "requests": len(chunks),
+        "raw_rows": raw_rows,
+        "chunks": chunks,
+        "call_key_multiset": multiset,
+        "call_key_multiset_sha256": digest(multiset),
+        "raw_rows_sha256": digest({"synthetic_rows": multiset}),
+        "call_keys": call_keys,
+        "normalized_unique_count": len(call_keys),
+        "call_keys_sha256": digest(call_keys),
+        "calls_by_moscow_day": calls_by_day,
+        "calls_by_moscow_day_sha256": digest(calls_by_day),
+        "event_digest_sha256": digest(
+            {"call_keys": call_keys, "calls_by_day": calls_by_day}
+        ),
+    }
+    comparison = {
+        "raw_rows_equal": True,
+        "call_key_multiset_equal": True,
+        "call_key_multiset_sha256_equal": True,
+        "raw_rows_sha256_equal": True,
+        "normalized_unique_count_equal": True,
+        "call_keys_equal": True,
+        "call_keys_sha256_equal": True,
+        "calls_by_moscow_day_equal": True,
+        "calls_by_moscow_day_sha256_equal": True,
+        "event_digest_sha256_equal": True,
+        "chunk_geometry_equal": True,
+    }
+    proof = {
+        "schema_version": "mango_exact_dual_enumeration_v1",
+        "normalization_version": "mango_rows_call_day_v1",
+        "tenant_id": "foton",
+        "base_url": calls_runtime.DEFAULT_MANGO_BASE_URL,
+        "fields_sha256": digest(calls_runtime.DEFAULT_STATS_FIELDS),
+        "rolling_since": source["rolling_since"],
+        "until": source["until"],
+        "passes_required": 2,
+        "passes_completed": 2,
+        "passes": [
+            {"pass_id": "primary", **pass_payload},
+            {"pass_id": "verification", **pass_payload},
+        ],
+        "comparison": comparison,
+        "enumeration_consistency_ok": True,
+        "mismatch_reason": "",
+    }
+    source["covered_intervals"] = [
+        *(
+            {**interval, "authority_pass": 1}
+            for interval in rolling
+        ),
+        *(
+            {**interval, "authority_pass": 2}
+            for interval in rolling
+        ),
+        *auxiliary,
+    ]
+    source["requests"] = len(source["covered_intervals"])
+    source["enumeration_consistency_ok"] = True
+    source["dual_enumeration"] = proof
+    auxiliary_rows = sum(
+        int(interval.get("rows") or 0) for interval in auxiliary
+    )
+    result["enumeration_consistency_ok"] = True
+    result["api_requests"] = source["requests"]
+    result["api_authoritative_rows_total"] = raw_rows * 2
+    result["api_auxiliary_rows_total"] = auxiliary_rows
+    result["api_rows_total"] = raw_rows * 2 + auxiliary_rows
+    return result
+
+
 def create_legacy_transfer_cursor(
     config: CallsTwoProcessesConfig,
     *,
@@ -2195,7 +2318,7 @@ def test_ready_publication_same_sha_rollback_restores_reusable_metadata(
     }
 
     def evidence(zero_proofs: int) -> dict[str, object]:
-        return {
+        return with_dual_enumeration({
             "mango_enumeration_complete": True,
             "mango_enumeration_source": source,
             "call_keys": [],
@@ -2209,7 +2332,7 @@ def test_ready_publication_same_sha_rollback_restores_reusable_metadata(
             "api_events_total": 0,
             "manifest_end_offset": 0,
             "manifest_snapshot_sha256": snapshot["sha256"],
-        }
+        })
 
     first_evidence = evidence(2)
     publish_ready_db(
@@ -2448,9 +2571,15 @@ def test_ready_manifest_rebuilds_when_only_enumeration_evidence_advances(
     }
 
     def evidence(zero_proofs: int) -> dict[str, object]:
-        return {
+        local_source = json.loads(json.dumps(source))
+        if zero_proofs == 0:
+            local_source["until"] = "2026-08-08T12:00:00+00:00"
+            local_source["covered_intervals"][0]["until"] = (
+                "2026-08-08T12:00:00+00:00"
+            )
+        return with_dual_enumeration({
             "mango_enumeration_complete": True,
-            "mango_enumeration_source": source,
+            "mango_enumeration_source": local_source,
             "call_keys": [],
             "calls_by_moscow_day": {day: []},
             "independent_zero_enumerations_by_day": {day: zero_proofs},
@@ -2460,12 +2589,12 @@ def test_ready_manifest_rebuilds_when_only_enumeration_evidence_advances(
             "api_events_total": 0,
             "manifest_end_offset": 0,
             "manifest_snapshot_sha256": snapshot["sha256"],
-        }
+        })
 
     first = publish_ready_db(
         config,
         {"total": 0},
-        capture_evidence=evidence(1),
+        capture_evidence=evidence(0),
         manifest_end_offset=0,
     )
     second = publish_ready_db_if_changed(
@@ -2578,7 +2707,7 @@ def test_green_ready_manifest_rebuilds_only_for_semantic_enumeration_change(
         zero_proofs: Mapping[str, int],
         **telemetry: object,
     ) -> dict[str, object]:
-        return {
+        return with_dual_enumeration({
             "mango_enumeration_complete": True,
             "mango_enumeration_source": enumeration_source,
             "call_keys": [],
@@ -2591,7 +2720,7 @@ def test_green_ready_manifest_rebuilds_only_for_semantic_enumeration_change(
             "manifest_end_offset": 0,
             "manifest_snapshot_sha256": snapshot["sha256"],
             **telemetry,
-        }
+        })
 
     first = publish_ready_db(
         config,
@@ -2725,7 +2854,7 @@ def test_strict_capture_floors_midday_catch_up_to_moscow_midnight(
     )
     assert capture["independent_zero_enumerations_by_day"][
         "2026-08-05"
-    ] == 1
+    ] == 2
     calls_runtime.capture_enumeration_exact_sha256(
         capture,
         expected_source_mode="strict_service",
@@ -2738,6 +2867,661 @@ def test_strict_capture_floors_midday_catch_up_to_moscow_midnight(
             tzinfo=timezone.utc,
         ),
     )
+
+
+def test_automatic_strict_capture_window_uses_settled_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 8, 11, 12, 30, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(calls_runtime, "datetime", FixedDateTime)
+    strict = replace(
+        config_for(tmp_path),
+        strict_ready_provenance=True,
+        recording_set_stabilization_minutes=15,
+    )
+
+    start, end = calls_runtime.resolve_capture_window(
+        strict,
+        since=None,
+        until=None,
+    )
+
+    assert end == fixed_now - timedelta(minutes=15)
+    assert start == end - timedelta(hours=strict.first_lookback_hours)
+
+
+def test_explicit_capture_until_is_not_shifted_by_stabilization(
+    tmp_path: Path,
+) -> None:
+    strict = replace(
+        config_for(tmp_path),
+        strict_ready_provenance=True,
+        recording_set_stabilization_minutes=15,
+    )
+    explicit = "2026-08-11T12:30:00+00:00"
+
+    _start, end = calls_runtime.resolve_capture_window(
+        strict,
+        since="2026-08-11T11:30:00+00:00",
+        until=explicit,
+    )
+
+    assert end == datetime(2026, 8, 11, 12, 30, tzinfo=timezone.utc)
+
+
+def test_strict_capture_rejects_future_explicit_until_before_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 8, 11, 12, 30, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(calls_runtime, "datetime", FixedDateTime)
+    strict = replace(config_for(tmp_path), strict_ready_provenance=True)
+
+    with pytest.raises(ValueError, match="cannot be in the future"):
+        calls_runtime.resolve_capture_window(
+            strict,
+            since="2026-08-11T11:30:00+00:00",
+            until="2099-01-01T00:00:00+00:00",
+        )
+
+
+def test_process_a_rejects_future_explicit_until_before_capture_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strict = replace(
+        config_for(tmp_path),
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    attempts: list[bool] = []
+
+    report = run_process_a(
+        strict,
+        since="2026-08-11T11:30:00+00:00",
+        until="2099-01-01T00:00:00+00:00",
+        capture_runner=lambda *_args: (
+            attempts.append(True) or {"status": "failed"}
+        ),
+        command_runner=lambda *_args: (
+            attempts.append(True) or {"rc": 0}
+        ),
+    )
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "capture_enumeration_evidence_invalid"
+    assert attempts == []
+
+
+def _dual_capture_row(
+    call_id: str,
+    *,
+    minute: int = 0,
+    phone: str = "+70000000000",
+) -> dict[str, object]:
+    return {
+        "call_id": call_id,
+        "started_at": f"2026-08-11T10:{minute:02d}:00+00:00",
+        "ended_at": f"2026-08-11T10:{minute + 1:02d}:00+00:00",
+        "direction": "inbound",
+        "client_phone": phone,
+        "manager_ref": "101",
+        "recording_ref": f"recording-{call_id}",
+    }
+
+
+def test_non_strict_duplicate_rows_keep_legacy_last_row_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=24)
+    first = {
+        **_dual_capture_row("call-a", phone="+70000000000"),
+        "recording_ref": "recording-z",
+    }
+    second = {
+        **_dual_capture_row("call-a", phone="+71111111111"),
+        "recording_ref": "recording-a",
+    }
+
+    class LegacyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[Mapping[str, object]]:
+            return [first, second]
+
+    class Downloader:
+        def __init__(self, **_: object) -> None:
+            pass
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0}
+
+    staged: list[TelephonyCallEvent] = []
+
+    def stage(*, events: Sequence[TelephonyCallEvent], **_: object) -> Summary:
+        staged.extend(events)
+        return Summary()
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", LegacyClient)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", Downloader)
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 10, 21, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 21, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "ok"
+    assert len(staged) == 1
+    assert staged[0].client_phone == "+71111111111"
+    assert staged[0].recording_refs == ("recording-z", "recording-a")
+
+
+def _run_synthetic_dual_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    primary_rows: Sequence[Mapping[str, object]],
+    verification_rows: Sequence[Mapping[str, object]],
+    verification_error: bool = False,
+) -> tuple[Mapping[str, object], list[TelephonyCallEvent], CallsTwoProcessesConfig]:
+    config = replace(
+        config_for(tmp_path),
+        strict_ready_provenance=True,
+        expected_code_sha="a" * 40,
+        pending_recording_retry_hours=24,
+        api_window_hours=24,
+    )
+    constructed = 0
+
+    class DualClient:
+        def __init__(self, **_: object) -> None:
+            nonlocal constructed
+            self.pass_index = constructed
+            constructed += 1
+
+        def poll_call_history(self, **_: object) -> list[Mapping[str, object]]:
+            if self.pass_index == 1 and verification_error:
+                raise TimeoutError("synthetic second pass timeout")
+            rows = primary_rows if self.pass_index == 0 else verification_rows
+            return [dict(row) for row in rows]
+
+    class Downloader:
+        def __init__(self, **_: object) -> None:
+            pass
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0}
+
+    staged: list[TelephonyCallEvent] = []
+
+    def stage(*, events: Sequence[TelephonyCallEvent], **_: object) -> Summary:
+        staged.extend(events)
+        return Summary()
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", DualClient)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", Downloader)
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 10, 21, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 21, tzinfo=timezone.utc),
+    )
+    return report, staged, config
+
+
+def test_strict_dual_enumeration_accepts_reordered_identical_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row_a = _dual_capture_row("call-a")
+    row_b = _dual_capture_row("call-b", minute=2)
+
+    report, staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row_a, row_b],
+        verification_rows=[row_b, row_a],
+    )
+    assert report["status"] == "ok"
+    assert report["enumeration_consistency_ok"] is True
+    assert report["api_requests"] == 2
+    assert report["api_authoritative_rows_total"] == 4
+    assert [event.provider_call_id for event in staged] == ["call-a", "call-b"]
+    assert report["independent_zero_enumerations_by_day"] == {
+        "2026-08-11": 0
+    }
+    calls_runtime.capture_enumeration_exact_sha256(
+        report,
+        expected_source_mode="strict_service",
+        expected_until=datetime(2026, 8, 11, 21, tzinfo=timezone.utc),
+        expected_rolling_since=datetime(
+            2026, 8, 10, 21, tzinfo=timezone.utc
+        ),
+    )
+
+
+def test_strict_dual_duplicate_recordings_are_unioned_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first = {**_dual_capture_row("call-a"), "recording_ref": "recording-z"}
+    second = {**_dual_capture_row("call-a"), "recording_ref": "recording-a"}
+
+    report, staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[first, second],
+        verification_rows=[second, first],
+    )
+
+    assert report["status"] == "ok"
+    assert len(staged) == 1
+    assert staged[0].recording_refs == ("recording-a", "recording-z")
+
+
+def test_strict_conflicting_duplicates_fail_before_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first = _dual_capture_row("call-a")
+    conflicting = _dual_capture_row("call-a", phone="+71111111111")
+
+    report, staged, config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[first, conflicting],
+        verification_rows=[first, conflicting],
+    )
+
+    assert report["reason"] == "primary_mango_enumeration_invalid"
+    assert staged == []
+    assert not config.capture_manifest.exists()
+
+
+@pytest.mark.parametrize(
+    ("primary_rows", "verification_rows"),
+    (
+        (
+            [_dual_capture_row("call-a"), _dual_capture_row("call-a"), _dual_capture_row("call-b", minute=2)],
+            [_dual_capture_row("call-a"), _dual_capture_row("call-b", minute=2), _dual_capture_row("call-b", minute=2)],
+        ),
+        (
+            [_dual_capture_row("call-a")],
+            [_dual_capture_row("call-a", phone="+71111111111")],
+        ),
+        (
+            [],
+            [_dual_capture_row("call-a")],
+        ),
+    ),
+)
+def test_strict_dual_enumeration_mismatch_is_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    primary_rows: Sequence[Mapping[str, object]],
+    verification_rows: Sequence[Mapping[str, object]],
+) -> None:
+    report, staged, config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=primary_rows,
+        verification_rows=verification_rows,
+    )
+
+    assert report["status"] == "failed"
+    assert report["reason"] == "independent_mango_enumeration_mismatch"
+    assert report["mango_enumeration_complete"] is False
+    assert staged == []
+    assert not config.capture_manifest.exists()
+    assert not config.cursor_path.exists()
+
+
+def test_strict_second_enumeration_error_is_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _dual_capture_row("call-a")
+    report, staged, config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row],
+        verification_rows=[row],
+        verification_error=True,
+    )
+
+    assert report == {
+        "status": "failed",
+        "reason": "verification_mango_enumeration_failed",
+        "mango_enumeration_complete": False,
+        "enumeration_consistency_ok": False,
+        "api_requests": 1,
+        "api_rows_total": 1,
+    }
+    assert staged == []
+    assert not config.capture_manifest.exists()
+    assert not config.cursor_path.exists()
+
+
+def test_strict_mismatch_preserves_existing_cursor_and_manifest_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _dual_capture_row("call-a")
+    first, _staged, config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row],
+        verification_rows=[row],
+    )
+    since = datetime(2026, 8, 10, 21, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 11, 21, tzinfo=timezone.utc)
+    certified = calls_runtime.certify_capture_window(
+        config,
+        first,
+        requested_since=since,
+        requested_until=until,
+        enumeration_evidence_sha256=(
+            calls_runtime.capture_enumeration_exact_sha256(first)
+        ),
+    )
+    calls_runtime.write_cursor(config.cursor_path, until, certified)
+    cursor_before = config.cursor_path.read_bytes()
+    manifest_before = config.capture_manifest.read_bytes()
+
+    second, staged, _same_config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row],
+        verification_rows=[],
+    )
+
+    assert second["status"] == "failed"
+    assert staged == []
+    assert config.cursor_path.read_bytes() == cursor_before
+    assert config.capture_manifest.read_bytes() == manifest_before
+
+
+def test_strict_empty_full_day_gets_two_same_run_zero_proofs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report, staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[],
+        verification_rows=[],
+    )
+
+    assert report["status"] == "ok"
+    assert report["api_requests"] == 2
+    assert report["independent_zero_enumerations_by_day"] == {
+        "2026-08-11": 2
+    }
+    assert staged == []
+
+
+def test_strict_auxiliary_recovery_is_polled_once_and_excluded_from_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+    )
+
+    config = replace(
+        config_for(tmp_path),
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+        api_window_hours=24,
+    )
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at="2025-01-01T10:05:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:old-call",
+            provider_call_id="old-call",
+            recording_id="recording-old-call",
+            started_at="2025-01-01T10:00:00+00:00",
+            ended_at="2025-01-01T10:05:00+00:00",
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="failed",
+            error="synthetic retry",
+        )
+    )
+    current_row = _dual_capture_row("current-call")
+    old_row = {
+        **_dual_capture_row("old-call"),
+        "started_at": "2025-01-01T10:00:00+00:00",
+        "ended_at": "2025-01-01T10:05:00+00:00",
+    }
+    constructed = 0
+
+    class Client:
+        def __init__(self, **_: object) -> None:
+            nonlocal constructed
+            self.pass_index = constructed
+            constructed += 1
+
+        def poll_call_history(
+            self, *, since: datetime, **_: object
+        ) -> list[Mapping[str, object]]:
+            if since.year == 2025:
+                assert self.pass_index == 0
+                return [old_row]
+            return [current_row]
+
+    class Downloader:
+        def __init__(self, **_: object) -> None:
+            pass
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0}
+
+    staged: list[str] = []
+
+    def stage(*, events: Sequence[TelephonyCallEvent], **_: object) -> Summary:
+        staged.extend(event.provider_call_id for event in events)
+        return Summary()
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", Client)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", Downloader)
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 10, 21, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 21, tzinfo=timezone.utc),
+    )
+
+    source = report["mango_enumeration_source"]
+    proof = source["dual_enumeration"]
+    assert report["status"] == "ok"
+    assert report["api_requests"] == 3
+    assert report["api_authoritative_rows_total"] == 2
+    assert report["api_auxiliary_rows_total"] == 1
+    assert report["call_keys"] == ["current-call"]
+    assert [item["call_keys"] for item in proof["passes"]] == [
+        ["current-call"],
+        ["current-call"],
+    ]
+    assert set(staged) == {"current-call", "old-call"}
+    auxiliary = [
+        interval
+        for interval in source["covered_intervals"]
+        if interval["scope"] == "recovery_auxiliary"
+    ]
+    assert len(auxiliary) == 1
+    assert "authority_pass" not in auxiliary[0]
+    assert datetime.fromisoformat(auxiliary[0]["until"]) <= datetime.fromisoformat(
+        source["rolling_since"]
+    )
+    calls_runtime.capture_enumeration_exact_sha256(report)
+
+
+def test_strict_dual_proof_and_interval_tampering_fail_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _dual_capture_row("call-a")
+    report, _staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row],
+        verification_rows=[row],
+    )
+    changed_digest = json.loads(json.dumps(report))
+    changed_digest["mango_enumeration_source"]["dual_enumeration"][
+        "passes"
+    ][1]["raw_rows_sha256"] = "f" * 64
+    digest_errors = calls_runtime.validate_capture_enumeration_evidence(
+        changed_digest
+    )
+    assert "strict_dual_enumeration_comparison_invalid" in digest_errors
+    assert "strict_dual_enumeration_consistency_mismatch" in digest_errors
+
+    changed_geometry = json.loads(json.dumps(report))
+    second_interval = next(
+        interval
+        for interval in changed_geometry["mango_enumeration_source"][
+            "covered_intervals"
+        ]
+        if interval.get("authority_pass") == 2
+    )
+    second_interval["since"] = "2026-08-10T22:00:00+00:00"
+    geometry_errors = calls_runtime.validate_capture_enumeration_evidence(
+        changed_geometry
+    )
+    assert "strict_enumeration_rolling_geometry_invalid" in geometry_errors
+    assert "strict_enumeration_pass_chunks_mismatch" in geometry_errors
+
+
+def test_v1_single_pass_certificate_is_anchor_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _dual_capture_row("call-a")
+    report, _staged, base_config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row],
+        verification_rows=[row],
+    )
+    config = replace(base_config, expected_code_sha="a" * 40)
+    requested_since = datetime(2026, 8, 10, 21, tzinfo=timezone.utc)
+    requested_until = datetime(2026, 8, 11, 21, tzinfo=timezone.utc)
+    exact_sha = calls_runtime.capture_enumeration_exact_sha256(report)
+    certified = calls_runtime.certify_capture_window(
+        config,
+        report,
+        requested_since=requested_since,
+        requested_until=requested_until,
+        enumeration_evidence_sha256=exact_sha,
+    )
+    legacy = json.loads(json.dumps(certified))
+    legacy["until"] = requested_until.isoformat()
+    legacy.pop("enumeration_consistency_ok", None)
+    legacy.pop("api_auxiliary_rows_total", None)
+    source = legacy["mango_enumeration_source"]
+    source.pop("dual_enumeration", None)
+    source.pop("enumeration_consistency_ok", None)
+    source["covered_intervals"] = [
+        {
+            key: value
+            for key, value in interval.items()
+            if key != "authority_pass"
+        }
+        for interval in source["covered_intervals"]
+        if interval.get("authority_pass") == 1
+    ]
+    source["requests"] = len(source["covered_intervals"])
+    legacy["api_requests"] = source["requests"]
+    legacy["api_rows_total"] = 1
+    legacy["api_authoritative_rows_total"] = 1
+    certificate = dict(legacy["capture_window_certificate"])
+    certificate["schema_version"] = (
+        calls_runtime.LEGACY_CAPTURE_WINDOW_CERTIFICATE_SCHEMA
+    )
+    certificate["enumeration_evidence_sha256"] = (
+        calls_runtime.capture_enumeration_legacy_exact_sha256(legacy)
+    )
+    certificate_body = {
+        key: value
+        for key, value in certificate.items()
+        if key != "certificate_sha256"
+    }
+    certificate["certificate_sha256"] = hashlib.sha256(
+        json.dumps(
+            certificate_body,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    legacy["capture_window_certificate"] = certificate
+
+    with pytest.raises(RuntimeError, match="certificate is invalid"):
+        calls_runtime.verified_capture_window(config, legacy)
+    assert calls_runtime.verified_capture_window(
+        config,
+        legacy,
+        allow_pre_dual_anchor=True,
+    )[1] == requested_until
+    with pytest.raises(RuntimeError, match="strict_dual_enumeration_missing"):
+        calls_runtime.capture_enumeration_exact_sha256(legacy)
 
 
 def test_enumeration_digest_rejects_noncanonical_colliding_day_key(
@@ -2773,7 +3557,7 @@ def test_enumeration_digest_rejects_noncanonical_colliding_day_key(
             }
         ],
     }
-    clean = {
+    clean = with_dual_enumeration({
         "mango_enumeration_complete": True,
         "mango_enumeration_source": source,
         "call_keys": [],
@@ -2785,7 +3569,7 @@ def test_enumeration_digest_rejects_noncanonical_colliding_day_key(
         "api_events_total": 0,
         "manifest_end_offset": 0,
         "manifest_snapshot_sha256": snapshot["sha256"],
-    }
+    })
     publish_ready_db(
         config,
         {"total": 0},
@@ -3123,7 +3907,7 @@ def test_pipeline_rejects_shortened_cursor_after_exact_capture_validation(
     )
     requested_since = "2026-08-07T21:00:00+00:00"
     requested_until = "2026-08-09T21:00:00+00:00"
-    complete = {
+    complete = with_dual_enumeration({
         "status": "ok",
         "mango_enumeration_complete": True,
         "mango_enumeration_source": {
@@ -3157,7 +3941,7 @@ def test_pipeline_rejects_shortened_cursor_after_exact_capture_validation(
         "api_events_total": 0,
         "manifest_end_offset": 0,
         "manifest_snapshot_sha256": snapshot["sha256"],
-    }
+    })
     captured = run_capture(
         config,
         since=requested_since,
@@ -3440,11 +4224,11 @@ def test_legacy_transfer_cursor_migrates_without_inheriting_zero_and_resumes(
     assert migrated["status"] == "ok"
     cursor = dict(read_json(config.cursor_path))
     assert cursor["independent_zero_enumerations_by_day"] == {
-        "2026-08-08": 1,
-        "2026-08-09": 1,
+        "2026-08-08": 2,
+        "2026-08-09": 2,
     }
     assert cursor["capture_window_certificate"]["schema_version"] == (
-        "mango_capture_window_certificate_v1"
+        "mango_capture_window_certificate_v2"
     )
     assert calls_runtime.verified_capture_window(config, cursor)[1] == (
         datetime(2026, 8, 9, 21, tzinfo=timezone.utc)
@@ -3492,7 +4276,10 @@ def test_legacy_transfer_cursor_migrates_without_inheriting_zero_and_resumes(
     ]
     split_intervals["mango_enumeration_source"]["requests"] += 1
     split_intervals["api_requests"] += 1
-    with pytest.raises(RuntimeError, match="certificate evidence changed"):
+    with pytest.raises(
+        RuntimeError,
+        match="pass_chunks_mismatch|certificate evidence changed",
+    ):
         calls_runtime.verified_capture_window(config, split_intervals)
     missing_cursor_until = json.loads(json.dumps(cursor))
     missing_cursor_until.pop("until")
@@ -4035,7 +4822,7 @@ def test_ready_manifest_with_pending_call_is_never_time_frozen_by_reuse(
         config.capture_manifest,
         end_offset=manifest_end_offset,
     )
-    evidence = {
+    evidence = with_dual_enumeration({
         "mango_enumeration_complete": True,
         "mango_enumeration_source": {
             "mode": "strict_service",
@@ -4065,7 +4852,7 @@ def test_ready_manifest_with_pending_call_is_never_time_frozen_by_reuse(
         "api_events_total": 1,
         "manifest_end_offset": manifest_end_offset,
         "manifest_snapshot_sha256": snapshot["sha256"],
-    }
+    })
     first = publish_ready_db(
         config,
         {"total": 1},
@@ -4170,7 +4957,7 @@ def test_empty_runtime_persists_zero_proofs_and_reuses_closed_generation(
             "codex_network_ok": False,
         },
     )
-    zero_proofs = iter((1, 2, 2))
+    zero_proofs = iter((2, 2, 2))
     commands: list[list[str]] = []
 
     def command_runner(
@@ -4189,42 +4976,44 @@ def test_empty_runtime_persists_zero_proofs_and_reuses_closed_generation(
             runtime_config.capture_manifest,
             end_offset=0,
         )
-        return {
-            "status": "ok",
-            "downloaded": 0,
-            "failed": 0,
-            "mango_enumeration_complete": True,
-            "mango_enumeration_source": {
-                "mode": "strict_service",
-                "since": since.isoformat(),
-                "rolling_since": since.isoformat(),
-                "until": until.isoformat(),
-                "cursor": "not_applicable_stats_request_result",
-                "requests": 1,
-                "pages": None,
-                "pagination": "not_applicable_stats_request_result",
-                "covered_intervals": [
-                    {
-                        "since": since.isoformat(),
-                        "until": until.isoformat(),
-                        "result_complete": True,
-                "rows": 0,
-                "scope": "rolling_authority",
+        return with_dual_enumeration(
+            {
+                "status": "ok",
+                "downloaded": 0,
+                "failed": 0,
+                "mango_enumeration_complete": True,
+                "mango_enumeration_source": {
+                    "mode": "strict_service",
+                    "since": since.isoformat(),
+                    "rolling_since": since.isoformat(),
+                    "until": until.isoformat(),
+                    "cursor": "not_applicable_stats_request_result",
+                    "requests": 1,
+                    "pages": None,
+                    "pagination": "not_applicable_stats_request_result",
+                    "covered_intervals": [
+                        {
+                            "since": since.isoformat(),
+                            "until": until.isoformat(),
+                            "result_complete": True,
+                            "rows": 0,
+                            "scope": "rolling_authority",
+                        }
+                    ],
+                },
+                "call_keys": [],
+                "calls_by_moscow_day": {"2026-08-08": []},
+                "independent_zero_enumerations_by_day": {
+                    "2026-08-08": next(zero_proofs)
+                },
+                "api_requests": 1,
+                "api_rows_total": 0,
+                "api_authoritative_rows_total": 0,
+                "api_events_total": 0,
+                "manifest_end_offset": 0,
+                "manifest_snapshot_sha256": snapshot["sha256"],
             }
-                ],
-            },
-            "call_keys": [],
-            "calls_by_moscow_day": {"2026-08-08": []},
-            "independent_zero_enumerations_by_day": {
-                "2026-08-08": next(zero_proofs)
-            },
-            "api_requests": 1,
-            "api_rows_total": 0,
-            "api_authoritative_rows_total": 0,
-            "api_events_total": 0,
-            "manifest_end_offset": 0,
-            "manifest_snapshot_sha256": snapshot["sha256"],
-        }
+        )
 
     kwargs = {
         "since": "2026-08-07T21:00:00+00:00",
@@ -4238,13 +5027,14 @@ def test_empty_runtime_persists_zero_proofs_and_reuses_closed_generation(
     repeated = run_process_a(config, command_runner=command_runner, **kwargs)
 
     assert config.working_db.is_file()
-    assert first["status"] == "partial"
-    assert first["counters"]["drop"]["closure_ok"] is False
+    assert first["status"] == "ok"
+    assert first["counters"]["drop"]["closure_ok"] is True
+    assert first["counters"]["drop"]["reused"] is False
     assert first["counters"]["drop"]["enumeration_evidence_sha256"] == (
         calls_runtime.capture_enumeration_evidence_sha256(first_cursor)
     )
     assert second["status"] == "ok"
-    assert second["counters"]["drop"]["reused"] is False
+    assert second["counters"]["drop"]["reused"] is True
     assert second["counters"]["drop"]["closure_ok"] is True
     assert second["counters"]["drop"]["enumeration_evidence_sha256"] == (
         calls_runtime.capture_enumeration_evidence_sha256(second_cursor)

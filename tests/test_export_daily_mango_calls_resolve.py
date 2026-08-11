@@ -10,6 +10,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import dual_strict_source
 from openpyxl import Workbook, load_workbook
 
 from scripts import export_daily_mango_calls_resolve as exporter
@@ -207,6 +209,12 @@ def _seal_ready(
         ],
         "catch_up": False,
     }
+    synthetic_call_keys = [f"mango-{index + 1}" for index in range(mango_count)]
+    source = dual_strict_source(
+        source,
+        call_keys=synthetic_call_keys,
+        calls_by_day={day: synthetic_call_keys},
+    )
     verdict = {
         "schema_version": STAGE10_SCHEMA,
         "day": day,

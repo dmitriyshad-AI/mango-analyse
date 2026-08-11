@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from mango_mvp.productization.capture_staging import atomic_write_private_json
+from mango_mvp.productization.mango_office_client import DEFAULT_STATS_FIELDS
 from mango_mvp.productization.owner_only_io import (
     read_stable_regular_bytes,
     stable_regular_file_evidence,
@@ -21,6 +22,8 @@ from mango_mvp.productization.owner_only_io import (
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 READY_MANIFEST_SCHEMA = "mango_calls_ready_v2"
+DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v1"
+DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v1"
 CUTOVER_MANIFEST_SCHEMA = "mango_calls_cutover_v2"
 PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA = (
     "mango_calls_previous_host_shutdown_snapshot_v1"
@@ -152,6 +155,289 @@ SENSITIVE_ALERT_RE = re.compile(
     r"|(?:token|secret|api[_-]?key|authorization)\s*[:=]",
     re.IGNORECASE,
 )
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
+
+
+def _dual_source_proof_is_green(source: Any) -> bool:
+    if not isinstance(source, Mapping):
+        return False
+    proof = source.get("dual_enumeration")
+    if not isinstance(proof, Mapping):
+        return False
+    passes = proof.get("passes")
+    comparison = proof.get("comparison")
+    required_comparisons = {
+        "raw_rows_equal",
+        "call_key_multiset_equal",
+        "call_key_multiset_sha256_equal",
+        "raw_rows_sha256_equal",
+        "normalized_unique_count_equal",
+        "call_keys_equal",
+        "call_keys_sha256_equal",
+        "calls_by_moscow_day_equal",
+        "calls_by_moscow_day_sha256_equal",
+        "event_digest_sha256_equal",
+        "chunk_geometry_equal",
+    }
+    if not (
+        proof.get("schema_version") == DUAL_ENUMERATION_SCHEMA
+        and proof.get("normalization_version")
+        == DUAL_ENUMERATION_NORMALIZATION
+        and proof.get("passes_required") == 2
+        and proof.get("passes_completed") == 2
+        and isinstance(passes, Sequence)
+        and not isinstance(passes, (str, bytes))
+        and len(passes) == 2
+        and [
+            item.get("pass_id") if isinstance(item, Mapping) else None
+            for item in passes
+        ]
+        == ["primary", "verification"]
+        and isinstance(comparison, Mapping)
+        and set(comparison) == required_comparisons
+        and all(comparison.get(key) is True for key in required_comparisons)
+        and proof.get("enumeration_consistency_ok") is True
+        and source.get("enumeration_consistency_ok") is True
+        and proof.get("mismatch_reason") == ""
+        and str(proof.get("tenant_id") or "").strip()
+        and str(proof.get("base_url") or "").strip()
+        and proof.get("fields_sha256")
+        == _canonical_json_sha256(DEFAULT_STATS_FIELDS)
+    ):
+        return False
+    try:
+        rolling_since = _parse_strict_aware_datetime(source.get("rolling_since"))
+        until = _parse_strict_aware_datetime(source.get("until"))
+        if (
+            rolling_since >= until
+            or _parse_strict_aware_datetime(proof.get("rolling_since"))
+            != rolling_since
+            or _parse_strict_aware_datetime(proof.get("until")) != until
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    pass_facts: list[dict[str, Any]] = []
+    pass_chunks: dict[int, list[Mapping[str, Any]]] = {}
+    for pass_number, payload in enumerate(passes, start=1):
+        if not isinstance(payload, Mapping):
+            return False
+        try:
+            if (
+                _parse_strict_aware_datetime(payload.get("rolling_since"))
+                != rolling_since
+                or _parse_strict_aware_datetime(payload.get("until")) != until
+            ):
+                return False
+        except (TypeError, ValueError):
+            return False
+        requests = payload.get("requests")
+        raw_rows = payload.get("raw_rows")
+        chunks = payload.get("chunks")
+        if (
+            isinstance(requests, bool)
+            or not isinstance(requests, int)
+            or requests <= 0
+            or isinstance(raw_rows, bool)
+            or not isinstance(raw_rows, int)
+            or raw_rows < 0
+            or not isinstance(chunks, Sequence)
+            or isinstance(chunks, (str, bytes))
+            or len(chunks) != requests
+        ):
+            return False
+        canonical_chunks: list[Mapping[str, Any]] = []
+        chunk_cursor = rolling_since
+        chunk_rows_total = 0
+        for chunk in chunks:
+            if not isinstance(chunk, Mapping):
+                return False
+            rows = chunk.get("rows")
+            if (
+                isinstance(rows, bool)
+                or not isinstance(rows, int)
+                or rows < 0
+                or chunk.get("result_complete") is not True
+            ):
+                return False
+            try:
+                chunk_since = _parse_strict_aware_datetime(chunk.get("since"))
+                chunk_until = _parse_strict_aware_datetime(chunk.get("until"))
+            except (TypeError, ValueError):
+                return False
+            if chunk_since != chunk_cursor or chunk_since >= chunk_until:
+                return False
+            chunk_cursor = chunk_until
+            chunk_rows_total += rows
+            canonical_chunks.append(
+                {
+                    "since": chunk.get("since"),
+                    "until": chunk.get("until"),
+                    "result_complete": True,
+                    "rows": rows,
+                }
+            )
+        if chunk_cursor != until or chunk_rows_total != raw_rows:
+            return False
+
+        multiset = payload.get("call_key_multiset")
+        call_keys = payload.get("call_keys")
+        calls_by_day = payload.get("calls_by_moscow_day")
+        if (
+            not isinstance(multiset, Sequence)
+            or isinstance(multiset, (str, bytes))
+            or not isinstance(call_keys, Sequence)
+            or isinstance(call_keys, (str, bytes))
+            or not isinstance(calls_by_day, Mapping)
+        ):
+            return False
+        canonical_multiset = list(multiset)
+        canonical_keys = list(call_keys)
+        if (
+            any(
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                for value in (*canonical_multiset, *canonical_keys)
+            )
+            or canonical_multiset != sorted(canonical_multiset)
+            or len(canonical_multiset) != raw_rows
+            or canonical_keys != sorted(set(canonical_keys))
+            or sorted(set(canonical_multiset)) != canonical_keys
+            or payload.get("normalized_unique_count") != len(canonical_keys)
+            or payload.get("call_key_multiset_sha256")
+            != _canonical_json_sha256(canonical_multiset)
+            or payload.get("call_keys_sha256")
+            != _canonical_json_sha256(canonical_keys)
+            or not _is_sha256(payload.get("raw_rows_sha256"))
+            or not _is_sha256(payload.get("event_digest_sha256"))
+        ):
+            return False
+        canonical_days: dict[str, list[str]] = {}
+        for raw_day, raw_values in calls_by_day.items():
+            try:
+                day_key = date.fromisoformat(str(raw_day)).isoformat()
+            except ValueError:
+                return False
+            if (
+                raw_day != day_key
+                or not isinstance(raw_values, Sequence)
+                or isinstance(raw_values, (str, bytes))
+            ):
+                return False
+            values = list(raw_values)
+            if values != sorted(set(values)):
+                return False
+            canonical_days[day_key] = values
+        flattened = [value for values in canonical_days.values() for value in values]
+        if (
+            sorted(flattened) != canonical_keys
+            or len(flattened) != len(set(flattened))
+            or payload.get("calls_by_moscow_day_sha256")
+            != _canonical_json_sha256(
+                {key: canonical_days[key] for key in sorted(canonical_days)}
+            )
+        ):
+            return False
+        facts = {
+            key: payload.get(key)
+            for key in (
+                "raw_rows",
+                "call_key_multiset",
+                "call_key_multiset_sha256",
+                "raw_rows_sha256",
+                "normalized_unique_count",
+                "call_keys",
+                "call_keys_sha256",
+                "calls_by_moscow_day",
+                "calls_by_moscow_day_sha256",
+                "event_digest_sha256",
+            )
+        }
+        facts["chunks"] = canonical_chunks
+        pass_facts.append(facts)
+        pass_chunks[pass_number] = canonical_chunks
+
+    computed_comparison = {
+        f"{field}_equal": pass_facts[0][field] == pass_facts[1][field]
+        for field in (
+            "raw_rows",
+            "call_key_multiset",
+            "call_key_multiset_sha256",
+            "raw_rows_sha256",
+            "normalized_unique_count",
+            "call_keys",
+            "call_keys_sha256",
+            "calls_by_moscow_day",
+            "calls_by_moscow_day_sha256",
+            "event_digest_sha256",
+        )
+    }
+    computed_comparison["chunk_geometry_equal"] = (
+        pass_facts[0]["chunks"] == pass_facts[1]["chunks"]
+    )
+    if dict(comparison) != computed_comparison or not all(
+        computed_comparison.values()
+    ):
+        return False
+
+    intervals = source.get("covered_intervals")
+    requests = source.get("requests")
+    if (
+        not isinstance(intervals, Sequence)
+        or isinstance(intervals, (str, bytes))
+        or isinstance(requests, bool)
+        or not isinstance(requests, int)
+        or len(intervals) != requests
+    ):
+        return False
+    observed: dict[int, list[Mapping[str, Any]]] = {1: [], 2: []}
+    for interval in intervals:
+        if not isinstance(interval, Mapping):
+            return False
+        scope = interval.get("scope")
+        if scope == "rolling_authority":
+            authority_pass = interval.get("authority_pass")
+            if authority_pass not in {1, 2} or isinstance(authority_pass, bool):
+                return False
+            observed[authority_pass].append(
+                {
+                    "since": interval.get("since"),
+                    "until": interval.get("until"),
+                    "result_complete": interval.get("result_complete"),
+                    "rows": interval.get("rows"),
+                }
+            )
+        elif scope == "recovery_auxiliary":
+            if "authority_pass" in interval:
+                return False
+            try:
+                if (
+                    _parse_strict_aware_datetime(interval.get("until"))
+                    > rolling_since
+                ):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        else:
+            return False
+    return observed == pass_chunks
 
 
 def parse_aware_datetime(value: Any) -> datetime:
@@ -896,7 +1182,9 @@ def enumeration_source_covers_day(
     if mode != "strict_service":
         return False
     if (
-        source.get("cursor") != "not_applicable_stats_request_result"
+        not _dual_source_proof_is_green(source)
+        or source.get("enumeration_consistency_ok") is not True
+        or source.get("cursor") != "not_applicable_stats_request_result"
         or source.get("pagination") != "not_applicable_stats_request_result"
         or "pages" not in source
         or source.get("pages") is not None
@@ -1042,6 +1330,11 @@ def validate_capture_enumeration_evidence(
     if source_mode != "strict_service":
         return sorted(set(errors))
 
+    if any(
+        values != sorted(set(values)) for values in normalized_calls.values()
+    ):
+        errors.append("strict_calls_by_moscow_day_not_canonical")
+
     if enumeration.get("mango_enumeration_complete") is not True:
         errors.append("strict_enumeration_not_complete")
     if not isinstance(calls_by_day, Mapping):
@@ -1107,11 +1400,336 @@ def validate_capture_enumeration_evidence(
         except (TypeError, ValueError):
             errors.append("strict_expected_until_invalid")
 
+    dual_pass_chunks: dict[int, list[Mapping[str, Any]]] = {}
+    dual_proof = source.get("dual_enumeration")
+    if source.get("enumeration_consistency_ok") is not True:
+        errors.append("strict_dual_enumeration_consistency_not_proven")
+    if not isinstance(dual_proof, Mapping):
+        errors.append("strict_dual_enumeration_missing")
+    else:
+        if dual_proof.get("schema_version") != DUAL_ENUMERATION_SCHEMA:
+            errors.append("strict_dual_enumeration_schema_invalid")
+        if (
+            dual_proof.get("normalization_version")
+            != DUAL_ENUMERATION_NORMALIZATION
+        ):
+            errors.append("strict_dual_enumeration_normalization_invalid")
+        if not str(dual_proof.get("tenant_id") or "").strip():
+            errors.append("strict_dual_enumeration_tenant_missing")
+        if not str(dual_proof.get("base_url") or "").strip():
+            errors.append("strict_dual_enumeration_base_url_missing")
+        if dual_proof.get("fields_sha256") != _canonical_json_sha256(
+            DEFAULT_STATS_FIELDS
+        ):
+            errors.append("strict_dual_enumeration_fields_digest_invalid")
+        if (
+            dual_proof.get("passes_required") != 2
+            or dual_proof.get("passes_completed") != 2
+        ):
+            errors.append("strict_dual_enumeration_pass_count_invalid")
+        try:
+            proof_since = _parse_strict_aware_datetime(
+                dual_proof.get("rolling_since")
+            )
+            proof_until = _parse_strict_aware_datetime(dual_proof.get("until"))
+            if proof_since != rolling_since or proof_until != source_until:
+                errors.append("strict_dual_enumeration_window_mismatch")
+        except (TypeError, ValueError):
+            errors.append("strict_dual_enumeration_window_invalid")
+
+        raw_passes = dual_proof.get("passes")
+        passes = (
+            list(raw_passes)
+            if isinstance(raw_passes, Sequence)
+            and not isinstance(raw_passes, (str, bytes))
+            else []
+        )
+        if len(passes) != 2:
+            errors.append("strict_dual_enumeration_passes_invalid")
+        pass_facts: list[Mapping[str, Any]] = []
+        for index, pass_payload in enumerate(passes[:2], start=1):
+            if not isinstance(pass_payload, Mapping):
+                errors.append("strict_dual_enumeration_pass_invalid")
+                continue
+            expected_pass_id = "primary" if index == 1 else "verification"
+            if pass_payload.get("pass_id") != expected_pass_id:
+                errors.append("strict_dual_enumeration_pass_identity_invalid")
+            try:
+                pass_since = _parse_strict_aware_datetime(
+                    pass_payload.get("rolling_since")
+                )
+                pass_until = _parse_strict_aware_datetime(
+                    pass_payload.get("until")
+                )
+                if pass_since != rolling_since or pass_until != source_until:
+                    errors.append("strict_dual_enumeration_pass_window_mismatch")
+            except (TypeError, ValueError):
+                errors.append("strict_dual_enumeration_pass_window_invalid")
+
+            raw_requests = pass_payload.get("requests")
+            raw_rows = pass_payload.get("raw_rows")
+            if (
+                isinstance(raw_requests, bool)
+                or not isinstance(raw_requests, int)
+                or raw_requests <= 0
+            ):
+                errors.append("strict_dual_enumeration_requests_invalid")
+                raw_requests = None
+            if (
+                isinstance(raw_rows, bool)
+                or not isinstance(raw_rows, int)
+                or raw_rows < 0
+            ):
+                errors.append("strict_dual_enumeration_rows_invalid")
+                raw_rows = None
+
+            raw_chunks = pass_payload.get("chunks")
+            chunks = (
+                list(raw_chunks)
+                if isinstance(raw_chunks, Sequence)
+                and not isinstance(raw_chunks, (str, bytes))
+                else []
+            )
+            if not chunks or (
+                raw_requests is not None and len(chunks) != raw_requests
+            ):
+                errors.append("strict_dual_enumeration_chunks_invalid")
+            parsed_chunks: list[tuple[datetime, datetime, int]] = []
+            canonical_chunks: list[Mapping[str, Any]] = []
+            for chunk in chunks:
+                if not isinstance(chunk, Mapping):
+                    errors.append("strict_dual_enumeration_chunk_invalid")
+                    continue
+                chunk_rows = chunk.get("rows")
+                if (
+                    isinstance(chunk_rows, bool)
+                    or not isinstance(chunk_rows, int)
+                    or chunk_rows < 0
+                    or chunk.get("result_complete") is not True
+                ):
+                    errors.append("strict_dual_enumeration_chunk_invalid")
+                    continue
+                try:
+                    chunk_since = _parse_strict_aware_datetime(
+                        chunk.get("since")
+                    )
+                    chunk_until = _parse_strict_aware_datetime(
+                        chunk.get("until")
+                    )
+                    if chunk_since >= chunk_until:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    errors.append("strict_dual_enumeration_chunk_window_invalid")
+                    continue
+                parsed_chunks.append((chunk_since, chunk_until, chunk_rows))
+                canonical_chunks.append(
+                    {
+                        "since": chunk.get("since"),
+                        "until": chunk.get("until"),
+                        "result_complete": True,
+                        "rows": chunk_rows,
+                    }
+                )
+            if rolling_since is not None and source_until is not None:
+                chunk_cursor = rolling_since
+                for chunk_since, chunk_until, _rows in parsed_chunks:
+                    if chunk_since != chunk_cursor:
+                        errors.append(
+                            "strict_dual_enumeration_chunk_geometry_invalid"
+                        )
+                    chunk_cursor = chunk_until
+                if chunk_cursor != source_until:
+                    errors.append(
+                        "strict_dual_enumeration_chunk_geometry_invalid"
+                    )
+            if raw_rows is not None and sum(
+                item[2] for item in parsed_chunks
+            ) != raw_rows:
+                errors.append("strict_dual_enumeration_chunk_rows_mismatch")
+            dual_pass_chunks[index] = canonical_chunks
+
+            raw_multiset = pass_payload.get("call_key_multiset")
+            multiset = (
+                list(raw_multiset)
+                if isinstance(raw_multiset, Sequence)
+                and not isinstance(raw_multiset, (str, bytes))
+                else []
+            )
+            if (
+                any(
+                    not isinstance(value, str)
+                    or not value
+                    or value != value.strip()
+                    for value in multiset
+                )
+                or multiset != sorted(multiset)
+            ):
+                errors.append("strict_dual_enumeration_multiset_invalid")
+            if raw_rows is not None and len(multiset) != raw_rows:
+                errors.append("strict_dual_enumeration_multiset_rows_mismatch")
+            if pass_payload.get(
+                "call_key_multiset_sha256"
+            ) != _canonical_json_sha256(multiset):
+                errors.append("strict_dual_enumeration_multiset_digest_mismatch")
+            if not _is_sha256(pass_payload.get("raw_rows_sha256")):
+                errors.append("strict_dual_enumeration_raw_rows_digest_invalid")
+
+            raw_keys = pass_payload.get("call_keys")
+            pass_keys = (
+                list(raw_keys)
+                if isinstance(raw_keys, Sequence)
+                and not isinstance(raw_keys, (str, bytes))
+                else []
+            )
+            if (
+                any(
+                    not isinstance(value, str)
+                    or not value
+                    or value != value.strip()
+                    for value in pass_keys
+                )
+                or pass_keys != sorted(set(pass_keys))
+            ):
+                errors.append("strict_dual_enumeration_call_keys_invalid")
+            if sorted(set(multiset)) != pass_keys:
+                errors.append("strict_dual_enumeration_call_keys_mismatch")
+            if pass_payload.get("normalized_unique_count") != len(pass_keys):
+                errors.append("strict_dual_enumeration_unique_count_mismatch")
+            if pass_payload.get("call_keys_sha256") != _canonical_json_sha256(
+                pass_keys
+            ):
+                errors.append("strict_dual_enumeration_call_keys_digest_mismatch")
+
+            raw_by_day = pass_payload.get("calls_by_moscow_day")
+            pass_by_day: dict[str, list[str]] = {}
+            if not isinstance(raw_by_day, Mapping):
+                errors.append("strict_dual_enumeration_days_invalid")
+            else:
+                for raw_day, raw_day_keys in raw_by_day.items():
+                    try:
+                        day_key = date.fromisoformat(str(raw_day)).isoformat()
+                    except ValueError:
+                        day_key = ""
+                    if raw_day != day_key or not isinstance(
+                        raw_day_keys, Sequence
+                    ) or isinstance(raw_day_keys, (str, bytes)):
+                        errors.append("strict_dual_enumeration_days_invalid")
+                        continue
+                    day_keys = list(raw_day_keys)
+                    if (
+                        any(
+                            not isinstance(value, str)
+                            or not value
+                            or value != value.strip()
+                            for value in day_keys
+                        )
+                        or day_keys != sorted(set(day_keys))
+                    ):
+                        errors.append("strict_dual_enumeration_day_keys_invalid")
+                    pass_by_day[day_key] = day_keys
+            flattened_pass_days = [
+                value for values in pass_by_day.values() for value in values
+            ]
+            if sorted(flattened_pass_days) != pass_keys or len(
+                flattened_pass_days
+            ) != len(set(flattened_pass_days)):
+                errors.append("strict_dual_enumeration_days_mismatch")
+            canonical_by_day = {
+                key: pass_by_day[key] for key in sorted(pass_by_day)
+            }
+            if pass_payload.get(
+                "calls_by_moscow_day_sha256"
+            ) != _canonical_json_sha256(canonical_by_day):
+                errors.append("strict_dual_enumeration_days_digest_mismatch")
+            if not _is_sha256(pass_payload.get("event_digest_sha256")):
+                errors.append("strict_dual_enumeration_event_digest_invalid")
+            pass_facts.append(
+                {
+                    "raw_rows": raw_rows,
+                    "call_key_multiset": multiset,
+                    "call_key_multiset_sha256": pass_payload.get(
+                        "call_key_multiset_sha256"
+                    ),
+                    "raw_rows_sha256": pass_payload.get("raw_rows_sha256"),
+                    "normalized_unique_count": pass_payload.get(
+                        "normalized_unique_count"
+                    ),
+                    "call_keys": pass_keys,
+                    "call_keys_sha256": pass_payload.get("call_keys_sha256"),
+                    "calls_by_moscow_day": canonical_by_day,
+                    "calls_by_moscow_day_sha256": pass_payload.get(
+                        "calls_by_moscow_day_sha256"
+                    ),
+                    "event_digest_sha256": pass_payload.get(
+                        "event_digest_sha256"
+                    ),
+                    "chunks": canonical_chunks,
+                }
+            )
+
+        comparison_fields = (
+            "raw_rows",
+            "call_key_multiset",
+            "call_key_multiset_sha256",
+            "raw_rows_sha256",
+            "normalized_unique_count",
+            "call_keys",
+            "call_keys_sha256",
+            "calls_by_moscow_day",
+            "calls_by_moscow_day_sha256",
+            "event_digest_sha256",
+        )
+        computed_comparison: dict[str, bool] = {}
+        if len(pass_facts) == 2:
+            computed_comparison = {
+                f"{field}_equal": pass_facts[0].get(field)
+                == pass_facts[1].get(field)
+                for field in comparison_fields
+            }
+            computed_comparison["chunk_geometry_equal"] = pass_facts[0].get(
+                "chunks"
+            ) == pass_facts[1].get("chunks")
+            if pass_facts[0].get("call_keys") != sorted(
+                set(value for values in normalized_calls.values() for value in values)
+            ):
+                errors.append("strict_dual_enumeration_top_call_keys_mismatch")
+            if pass_facts[0].get("calls_by_moscow_day") != {
+                key: normalized_calls[key] for key in sorted(normalized_calls)
+            }:
+                errors.append("strict_dual_enumeration_top_days_mismatch")
+        comparison = dual_proof.get("comparison")
+        if not isinstance(comparison, Mapping) or dict(
+            comparison
+        ) != computed_comparison:
+            errors.append("strict_dual_enumeration_comparison_invalid")
+        comparison_green = bool(
+            computed_comparison and all(computed_comparison.values())
+        )
+        if (
+            dual_proof.get("enumeration_consistency_ok") is not comparison_green
+            or source.get("enumeration_consistency_ok") is not comparison_green
+        ):
+            errors.append("strict_dual_enumeration_consistency_mismatch")
+        expected_mismatch = "" if comparison_green else ",".join(
+            sorted(
+                key.removesuffix("_equal")
+                for key, value in computed_comparison.items()
+                if value is not True
+            )
+        )
+        if dual_proof.get("mismatch_reason") != expected_mismatch:
+            errors.append("strict_dual_enumeration_reason_mismatch")
+
     interval_rows_total = 0
     authoritative_rows_total = 0
+    auxiliary_rows_total = 0
     interval_days: set[date] = set()
     parsed_intervals: list[tuple[datetime, datetime]] = []
     rolling_intervals: list[tuple[datetime, datetime]] = []
+    authoritative_intervals_by_pass: dict[
+        int, list[Mapping[str, Any]]
+    ] = {1: [], 2: []}
+    auxiliary_intervals: list[tuple[datetime, datetime]] = []
     for interval in intervals:
         if not isinstance(interval, Mapping):
             errors.append("strict_enumeration_interval_not_object")
@@ -1130,6 +1748,28 @@ def validate_capture_enumeration_evidence(
             and not isinstance(rows, bool)
         ):
             authoritative_rows_total += rows
+            authority_pass = interval.get("authority_pass")
+            if authority_pass not in {1, 2} or isinstance(
+                authority_pass, bool
+            ):
+                errors.append("strict_enumeration_authority_pass_invalid")
+            else:
+                authoritative_intervals_by_pass[authority_pass].append(
+                    {
+                        "since": interval.get("since"),
+                        "until": interval.get("until"),
+                        "result_complete": interval.get("result_complete"),
+                        "rows": rows,
+                    }
+                )
+        elif (
+            scope == "recovery_auxiliary"
+            and isinstance(rows, int)
+            and not isinstance(rows, bool)
+        ):
+            auxiliary_rows_total += rows
+            if "authority_pass" in interval:
+                errors.append("strict_enumeration_auxiliary_has_authority_pass")
         if interval.get("result_complete") is not True:
             errors.append("strict_enumeration_interval_incomplete")
         try:
@@ -1144,6 +1784,20 @@ def validate_capture_enumeration_evidence(
             parsed_intervals.append((interval_since, interval_until))
             if scope == "rolling_authority":
                 rolling_intervals.append((interval_since, interval_until))
+                if rolling_since is not None and (
+                    interval_since < rolling_since
+                    or source_until is None
+                    or interval_until > source_until
+                ):
+                    errors.append(
+                        "strict_enumeration_authority_interval_outside_rolling_window"
+                    )
+            elif scope == "recovery_auxiliary":
+                auxiliary_intervals.append((interval_since, interval_until))
+                if rolling_since is None or interval_until > rolling_since:
+                    errors.append(
+                        "strict_enumeration_auxiliary_overlaps_rolling_window"
+                    )
             first_day = interval_since.astimezone(MOSCOW).date()
             last_day = (interval_until - timedelta(microseconds=1)).astimezone(
                 MOSCOW
@@ -1161,29 +1815,43 @@ def validate_capture_enumeration_evidence(
         if min(start for start, _end in parsed_intervals) != source_since:
             errors.append("strict_enumeration_source_start_mismatch")
     if rolling_since is not None and source_until is not None:
-        coverage_cursor = rolling_since
-        for interval_since, interval_until in sorted(rolling_intervals):
-            if interval_until <= coverage_cursor:
-                continue
-            if interval_since > coverage_cursor:
-                errors.append("strict_enumeration_rolling_coverage_gap")
-                break
-            coverage_cursor = max(coverage_cursor, interval_until)
-            if coverage_cursor >= source_until:
-                break
-        if coverage_cursor < source_until:
-            errors.append("strict_enumeration_rolling_coverage_incomplete")
+        for authority_pass in (1, 2):
+            coverage_cursor = rolling_since
+            for interval in authoritative_intervals_by_pass[authority_pass]:
+                try:
+                    interval_since = _parse_strict_aware_datetime(
+                        interval.get("since")
+                    )
+                    interval_until = _parse_strict_aware_datetime(
+                        interval.get("until")
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if interval_since != coverage_cursor:
+                    errors.append("strict_enumeration_rolling_geometry_invalid")
+                coverage_cursor = interval_until
+            if coverage_cursor != source_until:
+                errors.append("strict_enumeration_rolling_coverage_incomplete")
+            if authoritative_intervals_by_pass[authority_pass] != dual_pass_chunks.get(
+                authority_pass, []
+            ):
+                errors.append("strict_enumeration_pass_chunks_mismatch")
+    for index, (start, end) in enumerate(sorted(auxiliary_intervals)):
+        if index and start < sorted(auxiliary_intervals)[index - 1][1]:
+            errors.append("strict_enumeration_auxiliary_overlap")
 
     api_requests = enumeration.get("api_requests")
     api_rows_total = enumeration.get("api_rows_total")
     api_authoritative_rows_total = enumeration.get(
         "api_authoritative_rows_total"
     )
+    api_auxiliary_rows_total = enumeration.get("api_auxiliary_rows_total")
     api_events_total = enumeration.get("api_events_total")
     for label, value in (
         ("api_requests", api_requests),
         ("api_rows_total", api_rows_total),
         ("api_authoritative_rows_total", api_authoritative_rows_total),
+        ("api_auxiliary_rows_total", api_auxiliary_rows_total),
         ("api_events_total", api_events_total),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1199,9 +1867,16 @@ def validate_capture_enumeration_evidence(
     ):
         if api_authoritative_rows_total != authoritative_rows_total:
             errors.append("strict_api_authoritative_row_count_mismatch")
+    if isinstance(api_auxiliary_rows_total, int) and not isinstance(
+        api_auxiliary_rows_total, bool
+    ):
+        if api_auxiliary_rows_total != auxiliary_rows_total:
+            errors.append("strict_api_auxiliary_row_count_mismatch")
 
     flattened = [value for values in normalized_calls.values() for value in values]
     unique_calls = sorted(set(flattened))
+    if len(flattened) != len(unique_calls):
+        errors.append("strict_call_key_repeated_across_days")
     raw_call_keys = enumeration.get("call_keys")
     if not isinstance(raw_call_keys, Sequence) or isinstance(
         raw_call_keys, (str, bytes)
@@ -1247,7 +1922,7 @@ def validate_capture_enumeration_evidence(
             errors.append("strict_nonempty_day_has_zero_proof")
         elif not calls and day_key in {
             day.isoformat() for day in fully_covered_days
-        } and proof_count not in {1, 2}:
+        } and proof_count != 2:
             errors.append("strict_full_empty_day_zero_proof_missing")
 
     return sorted(set(errors))
@@ -1578,6 +2253,8 @@ def validate_ready_manifest_payload(
                 and source.get("mode") == "strict_service"
             ):
                 errors.append("mango_enumeration_source_not_strict")
+            elif not _dual_source_proof_is_green(source):
+                errors.append("mango_dual_enumeration_not_proven")
             intervals = source.get("covered_intervals") if isinstance(source, Mapping) else None
             if not isinstance(intervals, Sequence) or isinstance(intervals, (str, bytes)) or not intervals:
                 errors.append("mango_covered_intervals_missing")

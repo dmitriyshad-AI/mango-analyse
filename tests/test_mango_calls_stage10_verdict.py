@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import dual_strict_source, dualize_strict_enumeration
+
 from mango_mvp.productization.mango_calls_service_contract import (
     CALLS_PROCESS_MATCHER_VERSION,
     CUTOVER_MANIFEST_SCHEMA,
@@ -104,10 +106,10 @@ def _ready(call_key: str, **extra: object) -> dict[str, object]:
 
 def _enumeration(*keys: str, complete: bool = True, zero_proofs: int = 0) -> dict[str, object]:
     unique_keys = sorted(set(keys))
-    return {
+    return dualize_strict_enumeration({
         "mango_enumeration_complete": complete,
         "call_keys": unique_keys,
-        "calls_by_moscow_day": {DAY.isoformat(): list(keys)} if keys else {},
+        "calls_by_moscow_day": {DAY.isoformat(): sorted(keys)} if keys else {},
         "independent_zero_enumerations_by_day": {
             DAY.isoformat(): 0 if keys else zero_proofs
         },
@@ -134,7 +136,7 @@ def _enumeration(*keys: str, complete: bool = True, zero_proofs: int = 0) -> dic
                 }
             ],
         },
-    }
+    })
 
 
 def test_pending_day_is_consistent_but_not_closed() -> None:
@@ -699,7 +701,11 @@ def test_partial_current_day_can_be_consistent_but_never_closed() -> None:
                 "scope": "rolling_authority",
             }
         ]
-    enumeration["mango_enumeration_source"] = source
+    enumeration["mango_enumeration_source"] = dual_strict_source(
+        source,
+        call_keys=["partial-day"],
+        calls_by_day={DAY.isoformat(): ["partial-day"]},
+    )
     result = build_stage10_verdict(
         day=DAY,
         enumeration=enumeration,
@@ -1008,6 +1014,11 @@ def test_required_day_can_be_green_while_another_day_keeps_generation_red() -> N
             "scope": "rolling_authority",
         }
     ]
+    red["mango_enumeration_source"] = dual_strict_source(
+        red_source,
+        call_keys=["complete", "missing"],
+        calls_by_day={old_day.isoformat(): ["complete", "missing"]},
+    )
     manifest = _strict_ready_manifest_for(green)
     manifest.update(consistency_ok=False, closure_ok=False)
     manifest["moscow_dates"] = [old_day.isoformat(), DAY.isoformat()]

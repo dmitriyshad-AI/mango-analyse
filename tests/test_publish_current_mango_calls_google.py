@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import dual_strict_source
+
 from mango_mvp.productization import owner_only_io
 from mango_mvp.productization.mango_calls_service_contract import (
     STAGE10_SCHEMA,
@@ -605,6 +607,11 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
             }
         ],
     }
+    enumeration_source = dual_strict_source(
+        enumeration_source,
+        call_keys=["call-1"],
+        calls_by_day={"2026-08-11": ["call-1"]},
+    )
     verdict["mango_enumeration_source"] = enumeration_source
     manifest = {
         "schema_version": "mango_calls_ready_v2",
@@ -1036,6 +1043,7 @@ def test_current_plan_uses_green_target_day_even_when_older_day_is_red(
     red_source = red["mango_enumeration_source"]
     red_source.update(
         since="2026-08-09T21:00:00+00:00",
+        rolling_since="2026-08-09T21:00:00+00:00",
         until="2026-08-10T21:00:00+00:00",
     )
     red_source["covered_intervals"] = [
@@ -1045,6 +1053,11 @@ def test_current_plan_uses_green_target_day_even_when_older_day_is_red(
             "result_complete": True,
         }
     ]
+    red["mango_enumeration_source"] = dual_strict_source(
+        red_source,
+        call_keys=["call-1", "missing-call"],
+        calls_by_day={"2026-08-10": ["call-1", "missing-call"]},
+    )
     manifest.update(consistency_ok=False, closure_ok=False)
     manifest["moscow_dates"] = ["2026-08-10", "2026-08-11"]
     manifest["daily_verdicts"] = {

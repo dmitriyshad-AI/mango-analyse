@@ -83,6 +83,7 @@ from mango_mvp.productization.owner_only_io import (
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 from mango_mvp.productization.mango_office_client import (
     DEFAULT_MANGO_BASE_URL,
+    DEFAULT_STATS_FIELDS,
     MangoOfficeClient,
     MangoOfficeCredentials,
 )
@@ -98,7 +99,10 @@ from mango_mvp.services.transcribe import TranscribeService
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
-CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v1"
+LEGACY_CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v1"
+CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v2"
+DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v1"
+DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v1"
 SEQUENTIAL_PIPELINE_STAGES = (
     "transcribe",
     "backfill-second-asr",
@@ -701,7 +705,7 @@ def run_capture(
                     window_since=window_since,
                     window_until=window_until,
                 )
-            except RuntimeError:
+            except (RuntimeError, ValueError):
                 return finalize_report(
                     config,
                     run_id,
@@ -753,7 +757,7 @@ def run_capture(
                     requested_until=window_until,
                     enumeration_evidence_sha256=enumeration_evidence_sha256,
                 )
-            except RuntimeError:
+            except (RuntimeError, ValueError):
                 return finalize_report(
                     config,
                     run_id,
@@ -1086,7 +1090,7 @@ def run_process_a(
                         window_until=window_until,
                     )
                 )
-            except RuntimeError:
+            except (RuntimeError, ValueError):
                 return finalize_report(
                     config,
                     run_id,
@@ -1883,6 +1887,242 @@ def pid_exists(pid: int) -> bool:
     return True
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _mango_event_scalar_identity(event: TelephonyCallEvent) -> Mapping[str, Any]:
+    recording_fields = {
+        "recording_ref",
+        "recording_id",
+        "record_id",
+        "records",
+        "recording_url",
+        "record_url",
+        "recording_link",
+    }
+    return {
+        "event_key": event.event_key,
+        "provider_call_id": event.provider_call_id,
+        "started_at": event.started_at.astimezone(timezone.utc).isoformat(),
+        "ended_at": (
+            event.ended_at.astimezone(timezone.utc).isoformat()
+            if event.ended_at is not None
+            else None
+        ),
+        "direction": event.direction.value,
+        "client_phone": event.client_phone,
+        "manager_ref": event.manager_ref,
+        "raw_non_recording_payload": {
+            str(key): value
+            for key, value in event.raw_payload.items()
+            if str(key) not in recording_fields
+        },
+    }
+
+
+def normalize_mango_enumeration_rows(
+    mapper: MangoOfficePayloadMapper,
+    tenant: TenantRef,
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, TelephonyCallEvent], tuple[str, ...], str]:
+    """Normalize one API pass deterministically and reject scalar conflicts."""
+
+    groups: dict[str, list[TelephonyCallEvent]] = {}
+    raw_call_keys: list[str] = []
+    canonical_rows: list[str] = []
+    for row in rows:
+        event = mapper.from_payload(tenant=tenant, payload=row)
+        groups.setdefault(event.event_key, []).append(event)
+        raw_call_keys.append(event.provider_call_id)
+        canonical_rows.append(
+            json.dumps(
+                dict(row),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
+    normalized: dict[str, TelephonyCallEvent] = {}
+    for event_key, group in groups.items():
+        identities = {
+            json.dumps(
+                _mango_event_scalar_identity(event),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            for event in group
+        }
+        if len(identities) != 1:
+            raise RuntimeError(
+                "Mango enumeration contains conflicting duplicate call rows"
+            )
+        refs = sorted(
+            {
+                recording_id
+                for event in group
+                for recording_id in event_recording_ids(event)
+            }
+        )
+        urls = sorted(
+            {
+                str(event.recording_url).strip()
+                for event in group
+                if str(event.recording_url or "").strip()
+            }
+        )
+        selected = min(
+            group,
+            key=lambda event: json.dumps(
+                dict(event.raw_payload),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ),
+        )
+        normalized[event_key] = replace(
+            selected,
+            recording_ref=refs[0] if refs else None,
+            recording_refs=tuple(refs),
+            recording_url=urls[0] if urls else None,
+        )
+    return (
+        normalized,
+        tuple(sorted(raw_call_keys)),
+        _canonical_json_sha256(sorted(canonical_rows)),
+    )
+
+
+def mango_enumeration_pass_proof(
+    *,
+    pass_id: str,
+    rows: Sequence[Mapping[str, Any]],
+    intervals: Sequence[Mapping[str, Any]],
+    events_by_key: Mapping[str, TelephonyCallEvent],
+    call_key_multiset: Sequence[str],
+    raw_rows_sha256: str,
+    rolling_since: datetime,
+    until: datetime,
+) -> Mapping[str, Any]:
+    call_keys = sorted(
+        event.provider_call_id for event in events_by_key.values()
+    )
+    calls_by_day: dict[str, list[str]] = {}
+    event_projection: list[Mapping[str, Any]] = []
+    for event in events_by_key.values():
+        day_key = event.started_at.astimezone(
+            ZoneInfo("Europe/Moscow")
+        ).date().isoformat()
+        calls_by_day.setdefault(day_key, []).append(event.provider_call_id)
+        event_projection.append(
+            {
+                **dict(_mango_event_scalar_identity(event)),
+                "recording_ids": sorted(event_recording_ids(event)),
+                "recording_url": event.recording_url,
+            }
+        )
+    for values in calls_by_day.values():
+        values[:] = sorted(values)
+    chunks = [
+        {
+            "since": interval.get("since"),
+            "until": interval.get("until"),
+            "result_complete": interval.get("result_complete"),
+            "rows": interval.get("rows"),
+        }
+        for interval in intervals
+    ]
+    return {
+        "pass_id": pass_id,
+        "rolling_since": rolling_since.astimezone(timezone.utc).isoformat(),
+        "until": until.astimezone(timezone.utc).isoformat(),
+        "requests": len(chunks),
+        "raw_rows": len(rows),
+        "chunks": chunks,
+        "call_key_multiset": list(call_key_multiset),
+        "call_key_multiset_sha256": _canonical_json_sha256(
+            list(call_key_multiset)
+        ),
+        "raw_rows_sha256": raw_rows_sha256,
+        "call_keys": call_keys,
+        "normalized_unique_count": len(call_keys),
+        "call_keys_sha256": _canonical_json_sha256(call_keys),
+        "calls_by_moscow_day": {
+            key: calls_by_day[key] for key in sorted(calls_by_day)
+        },
+        "calls_by_moscow_day_sha256": _canonical_json_sha256(
+            {key: calls_by_day[key] for key in sorted(calls_by_day)}
+        ),
+        "event_digest_sha256": _canonical_json_sha256(
+            sorted(
+                event_projection,
+                key=lambda item: str(item.get("event_key") or ""),
+            )
+        ),
+    }
+
+
+def build_dual_enumeration_proof(
+    config: CallsTwoProcessesConfig,
+    *,
+    rolling_since: datetime,
+    until: datetime,
+    primary: Mapping[str, Any],
+    verification: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    comparison_fields = (
+        "raw_rows",
+        "call_key_multiset",
+        "call_key_multiset_sha256",
+        "raw_rows_sha256",
+        "normalized_unique_count",
+        "call_keys",
+        "call_keys_sha256",
+        "calls_by_moscow_day",
+        "calls_by_moscow_day_sha256",
+        "event_digest_sha256",
+    )
+    comparison = {
+        f"{field}_equal": primary.get(field) == verification.get(field)
+        for field in comparison_fields
+    }
+    comparison["chunk_geometry_equal"] = primary.get(
+        "chunks"
+    ) == verification.get("chunks")
+    matched = all(comparison.values())
+    mismatches = sorted(
+        key.removesuffix("_equal")
+        for key, value in comparison.items()
+        if value is not True
+    )
+    return {
+        "schema_version": DUAL_ENUMERATION_SCHEMA,
+        "normalization_version": DUAL_ENUMERATION_NORMALIZATION,
+        "tenant_id": config.tenant_id,
+        "base_url": config.base_url,
+        "fields_sha256": _canonical_json_sha256(DEFAULT_STATS_FIELDS),
+        "rolling_since": rolling_since.astimezone(timezone.utc).isoformat(),
+        "until": until.astimezone(timezone.utc).isoformat(),
+        "passes_required": 2,
+        "passes_completed": 2,
+        "passes": [dict(primary), dict(verification)],
+        "comparison": comparison,
+        "enumeration_consistency_ok": matched,
+        "mismatch_reason": "" if matched else ",".join(mismatches),
+    }
+
+
 def capture_mango_window(
     config: CallsTwoProcessesConfig,
     since: datetime,
@@ -1909,14 +2149,31 @@ def capture_mango_window(
             zero_evidence_cursor: Mapping[str, Any] = {}
         else:
             if previous_cursor:
-                verified_capture_window(config, previous_cursor)
+                verified_capture_window(
+                    config,
+                    previous_cursor,
+                    allow_pre_dual_anchor=True,
+                )
             zero_evidence_cursor = previous_cursor
     else:
         previous_cursor = read_json(config.cursor_path)
         previous_cursor_sha256 = None
         zero_evidence_cursor = previous_cursor
     credentials = MangoOfficeCredentials(api_key=api_key, api_salt=api_salt)
-    client = MangoOfficeClient(credentials=credentials, base_url=config.base_url, timeout_sec=60)
+    primary_client = MangoOfficeClient(
+        credentials=credentials,
+        base_url=config.base_url,
+        timeout_sec=60,
+    )
+    verification_client = (
+        MangoOfficeClient(
+            credentials=credentials,
+            base_url=config.base_url,
+            timeout_sec=60,
+        )
+        if config.strict_ready_provenance
+        else primary_client
+    )
     downloader = MangoRecordingDownloader(
         credentials=credentials,
         base_url=config.base_url,
@@ -1933,8 +2190,9 @@ def capture_mango_window(
     manifest_store = CaptureManifestStore(config.capture_manifest)
     if not os.path.lexists(config.capture_manifest) and capture_runtime_has_prior_state(config):
         raise RuntimeError("capture manifest is missing for an existing runtime")
-    manifest_store.ensure_exists()
-    manifest_store.recover_incomplete_tail()
+    if not config.strict_ready_provenance:
+        manifest_store.ensure_exists()
+        manifest_store.recover_incomplete_tail()
     latest_manifest = manifest_store.latest_by_event_key()
     pending_entries = [
         entry
@@ -1974,7 +2232,7 @@ def capture_mango_window(
         since=since,
         until=until,
     )
-    poll_windows = [(base_window_start, until)]
+    retry_windows: list[tuple[datetime, datetime]] = []
     for entry in {
         entry.event_key: entry for entry in (*pending_entries, *recent_entries)
     }.values():
@@ -1983,7 +2241,7 @@ def capture_mango_window(
         retry_start = started - overlap
         retry_end = min(ended + overlap, until)
         if retry_start < retry_end:
-            poll_windows.append((retry_start, retry_end))
+            retry_windows.append((retry_start, retry_end))
     for entry in due_expired_unknown:
         retry_start, retry_end = moscow_day_bounds_utc(
             parse_datetime(entry.started_at)
@@ -1992,58 +2250,275 @@ def capture_mango_window(
         )
         retry_end = min(retry_end, until)
         if retry_start < retry_end:
-            poll_windows.append((retry_start, retry_end))
-    merged_windows: list[tuple[datetime, datetime]] = []
-    for start, end in sorted(poll_windows):
-        if merged_windows and start <= merged_windows[-1][1]:
-            merged_windows[-1] = (merged_windows[-1][0], max(end, merged_windows[-1][1]))
-        else:
-            merged_windows.append((start, end))
-    api_requests = 0
-    covered_intervals: list[Mapping[str, Any]] = []
-    for window_start, window_end in merged_windows:
-        chunk_start = window_start
-        while chunk_start < window_end:
-            chunk_end = min(window_end, chunk_start + timedelta(hours=config.api_window_hours))
-            if chunk_start < base_window_start < chunk_end:
-                chunk_end = base_window_start
-            scope = (
-                "rolling_authority"
-                if chunk_start >= base_window_start
-                else "recovery_auxiliary"
-            )
-            chunk_rows = client.poll_call_history(
-                since=chunk_start, until=chunk_end
-            )
-            scoped_rows.extend((row, scope) for row in chunk_rows)
-            api_requests += 1
-            covered_intervals.append(
-                {
+            retry_windows.append((retry_start, retry_end))
+
+    def merge_windows(
+        windows: Sequence[tuple[datetime, datetime]],
+    ) -> list[tuple[datetime, datetime]]:
+        merged: list[tuple[datetime, datetime]] = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        return merged
+
+    def poll_exact_windows(
+        client: MangoOfficeClient,
+        windows: Sequence[tuple[datetime, datetime]],
+        *,
+        scope: str,
+        authority_pass: Optional[int] = None,
+    ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+        rows: list[Mapping[str, Any]] = []
+        intervals: list[Mapping[str, Any]] = []
+        for window_start, window_end in windows:
+            chunk_start = window_start
+            while chunk_start < window_end:
+                chunk_end = min(
+                    window_end,
+                    chunk_start + timedelta(hours=config.api_window_hours),
+                )
+                chunk_rows = client.poll_call_history(
+                    since=chunk_start,
+                    until=chunk_end,
+                )
+                rows.extend(chunk_rows)
+                interval: dict[str, Any] = {
                     "since": chunk_start.isoformat(),
                     "until": chunk_end.isoformat(),
                     "result_complete": True,
                     "rows": len(chunk_rows),
                     "scope": scope,
                 }
+                if authority_pass is not None:
+                    interval["authority_pass"] = authority_pass
+                intervals.append(interval)
+                chunk_start = chunk_end
+        return rows, intervals
+
+    dual_enumeration: Optional[Mapping[str, Any]] = None
+    covered_intervals: list[Mapping[str, Any]] = []
+    auxiliary_rows: list[Mapping[str, Any]] = []
+    enumeration_start = base_window_start
+    if config.strict_ready_provenance:
+        # The two authoritative passes are intentionally independent API
+        # requests over one immutable rolling window.  Recovery is clipped
+        # before that window, polled only once, and can never affect the
+        # completeness proof.
+        rolling_windows = [(base_window_start, until)]
+        auxiliary_windows = merge_windows(
+            [
+                (start, min(end, base_window_start))
+                for start, end in retry_windows
+                if start < base_window_start
+                and start < min(end, base_window_start)
+            ]
+        )
+        if auxiliary_windows:
+            enumeration_start = min(
+                base_window_start,
+                min(start for start, _end in auxiliary_windows),
             )
-            chunk_start = chunk_end
+        try:
+            primary_rows, primary_intervals = poll_exact_windows(
+                primary_client,
+                rolling_windows,
+                scope="rolling_authority",
+                authority_pass=1,
+            )
+        except (OSError, RuntimeError, TimeoutError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "primary_mango_enumeration_failed",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+            }
+        try:
+            (
+                primary_events,
+                primary_call_key_multiset,
+                primary_raw_rows_sha256,
+            ) = normalize_mango_enumeration_rows(
+                mapper,
+                tenant,
+                primary_rows,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "primary_mango_enumeration_invalid",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+            }
+        try:
+            verification_rows, verification_intervals = poll_exact_windows(
+                verification_client,
+                rolling_windows,
+                scope="rolling_authority",
+                authority_pass=2,
+            )
+        except (OSError, RuntimeError, TimeoutError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "verification_mango_enumeration_failed",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+                "api_requests": len(primary_intervals),
+                "api_rows_total": len(primary_rows),
+            }
+        try:
+            (
+                verification_events,
+                verification_call_key_multiset,
+                verification_raw_rows_sha256,
+            ) = normalize_mango_enumeration_rows(
+                mapper,
+                tenant,
+                verification_rows,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "verification_mango_enumeration_invalid",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+            }
+        primary_proof = mango_enumeration_pass_proof(
+            pass_id="primary",
+            rows=primary_rows,
+            intervals=primary_intervals,
+            events_by_key=primary_events,
+            call_key_multiset=primary_call_key_multiset,
+            raw_rows_sha256=primary_raw_rows_sha256,
+            rolling_since=base_window_start,
+            until=until,
+        )
+        verification_proof = mango_enumeration_pass_proof(
+            pass_id="verification",
+            rows=verification_rows,
+            intervals=verification_intervals,
+            events_by_key=verification_events,
+            call_key_multiset=verification_call_key_multiset,
+            raw_rows_sha256=verification_raw_rows_sha256,
+            rolling_since=base_window_start,
+            until=until,
+        )
+        dual_enumeration = build_dual_enumeration_proof(
+            config,
+            rolling_since=base_window_start,
+            until=until,
+            primary=primary_proof,
+            verification=verification_proof,
+        )
+        if dual_enumeration.get("enumeration_consistency_ok") is not True:
+            return {
+                "status": "failed",
+                "reason": "independent_mango_enumeration_mismatch",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+                "dual_enumeration": dual_enumeration,
+                "api_requests": len(primary_intervals)
+                + len(verification_intervals),
+                "api_rows_total": len(primary_rows)
+                + len(verification_rows),
+            }
+        try:
+            auxiliary_rows, auxiliary_intervals = poll_exact_windows(
+                primary_client,
+                auxiliary_windows,
+                scope="recovery_auxiliary",
+            )
+        except (OSError, RuntimeError, TimeoutError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "auxiliary_mango_enumeration_failed",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+                "dual_enumeration": dual_enumeration,
+            }
+        try:
+            auxiliary_events, _aux_multiset, _aux_rows_sha = (
+                normalize_mango_enumeration_rows(
+                    mapper,
+                    tenant,
+                    auxiliary_rows,
+                )
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "auxiliary_mango_enumeration_invalid",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+                "dual_enumeration": dual_enumeration,
+            }
+        unique_events = dict(primary_events)
+        for event_key, event in auxiliary_events.items():
+            unique_events.setdefault(event_key, event)
+        authoritative_event_keys = set(primary_events)
+        scoped_rows.extend((row, "rolling_authority") for row in primary_rows)
+        scoped_rows.extend((row, "rolling_authority") for row in verification_rows)
+        scoped_rows.extend((row, "recovery_auxiliary") for row in auxiliary_rows)
+        covered_intervals = [
+            *primary_intervals,
+            *verification_intervals,
+            *auxiliary_intervals,
+        ]
+    else:
+        merged_windows = merge_windows(
+            [(base_window_start, until), *retry_windows]
+        )
+        enumeration_start = min(start for start, _end in merged_windows)
+        for window_start, window_end in merged_windows:
+            chunk_start = window_start
+            while chunk_start < window_end:
+                chunk_end = min(
+                    window_end,
+                    chunk_start + timedelta(hours=config.api_window_hours),
+                )
+                if chunk_start < base_window_start < chunk_end:
+                    chunk_end = base_window_start
+                scope = (
+                    "rolling_authority"
+                    if chunk_start >= base_window_start
+                    else "recovery_auxiliary"
+                )
+                rows, intervals = poll_exact_windows(
+                    primary_client,
+                    [(chunk_start, chunk_end)],
+                    scope=scope,
+                )
+                scoped_rows.extend((row, scope) for row in rows)
+                covered_intervals.extend(intervals)
+                chunk_start = chunk_end
+        unique_events = {}
+        authoritative_event_keys: set[str] = set()
+        for row, scope in scoped_rows:
+            event = mapper.from_payload(tenant=tenant, payload=row)
+            prior = unique_events.get(event.event_key)
+            if prior is not None:
+                refs = merge_recording_ids(
+                    event_recording_ids(prior),
+                    event_recording_ids(event),
+                )
+                event = replace(
+                    event,
+                    recording_ref=refs[0] if refs else None,
+                    recording_refs=refs,
+                )
+            unique_events[event.event_key] = event
+            if scope == "rolling_authority":
+                authoritative_event_keys.add(event.event_key)
+    api_requests = len(covered_intervals)
     if config.strict_ready_provenance:
         _current_cursor, current_cursor_sha256 = read_capture_cursor_snapshot(
             config.cursor_path
         )
         if current_cursor_sha256 != previous_cursor_sha256:
             raise RuntimeError("capture cursor changed during Mango enumeration")
-    unique_events: dict[str, Any] = {}
-    authoritative_event_keys: set[str] = set()
-    for row, scope in scoped_rows:
-        event = mapper.from_payload(tenant=tenant, payload=row)
-        prior = unique_events.get(event.event_key)
-        if prior is not None:
-            refs = merge_recording_ids(event_recording_ids(prior), event_recording_ids(event))
-            event = replace(event, recording_ref=refs[0] if refs else None, recording_refs=refs)
-        unique_events[event.event_key] = event
-        if scope == "rolling_authority":
-            authoritative_event_keys.add(event.event_key)
+        manifest_store.ensure_exists()
+        manifest_store.recover_incomplete_tail()
     # Only events observed in the current Mango responses are authoritative
     # enumeration evidence.  Local recovery entries are still staged below,
     # but must not be allowed to expand or fabricate the API balance.
@@ -2195,7 +2670,6 @@ def capture_mango_window(
     zero_proofs: dict[str, int] = {
         key: 0 for key in calls_by_moscow_day
     }
-    enumeration_start = min(start for start, _end in merged_windows)
     covered_days: set[date] = set()
     for start, end in ((base_window_start, until),):
         day_cursor = start.astimezone(ZoneInfo("Europe/Moscow")).date()
@@ -2209,11 +2683,12 @@ def capture_mango_window(
             day_cursor += timedelta(days=1)
     for covered_day in sorted(covered_days):
         key = covered_day.isoformat()
-        zero_proofs[key] = min(
-            2,
+        zero_proofs[key] = (
             0
             if calls_by_moscow_day.get(key)
-            else positive_int(previous_zero.get(key)) + 1
+            else 2
+            if config.strict_ready_provenance
+            else min(2, positive_int(previous_zero.get(key)) + 1)
         )
     manifest_end_offset = config.capture_manifest.stat().st_size
     sealed_capture = capture_manifest_snapshot(
@@ -2228,6 +2703,11 @@ def capture_mango_window(
         "catch_up": catch_up,
         "sla_mode": "catch_up" if catch_up else "live",
         "mango_enumeration_complete": True,
+        "enumeration_consistency_ok": (
+            dual_enumeration.get("enumeration_consistency_ok")
+            if isinstance(dual_enumeration, Mapping)
+            else None
+        ),
         "mango_enumeration_source": {
             "mode": (
                 "strict_service"
@@ -2243,6 +2723,16 @@ def capture_mango_window(
             "requests": api_requests,
             "covered_intervals": covered_intervals,
             "catch_up": catch_up,
+            "enumeration_consistency_ok": (
+                dual_enumeration.get("enumeration_consistency_ok")
+                if isinstance(dual_enumeration, Mapping)
+                else None
+            ),
+            **(
+                {"dual_enumeration": dict(dual_enumeration)}
+                if isinstance(dual_enumeration, Mapping)
+                else {}
+            ),
         },
         "call_keys": sorted(
             {event.provider_call_id for event in enumerated_events}
@@ -3491,13 +3981,30 @@ def resolve_capture_window(
     since: Optional[str],
     until: Optional[str],
 ) -> tuple[datetime, datetime]:
-    end = parse_datetime(until) if until else datetime.now(timezone.utc)
+    current = datetime.now(timezone.utc)
+    if until:
+        end = parse_datetime(until)
+        if config.strict_ready_provenance and end > current:
+            raise ValueError("strict capture until cannot be in the future")
+    else:
+        end = current
+        if config.strict_ready_provenance:
+            # A scheduled dual pass must query a settled boundary.  Otherwise
+            # a call or recording that appears between the two full API passes
+            # causes perpetual safe-but-unproductive mismatches under load.
+            end -= timedelta(
+                minutes=config.recording_set_stabilization_minutes
+            )
     if since:
         start = parse_datetime(since)
     else:
         cursor = read_json(config.cursor_path)
         if config.strict_ready_provenance and cursor:
-            verified_capture_window(config, cursor)
+            verified_capture_window(
+                config,
+                cursor,
+                allow_pre_dual_anchor=True,
+            )
         raw = optional_text(cursor.get("until")) or config.bootstrap_since
         if raw:
             start = parse_datetime(raw) - timedelta(minutes=config.poll_overlap_minutes)
@@ -3589,7 +4096,11 @@ def config_for_capture_window(
         return config
     if "capture_window_certificate" in cursor:
         _prior_since, prior_until, _prior_rolling_since = (
-            verified_capture_window(config, cursor)
+            verified_capture_window(
+                config,
+                cursor,
+                allow_pre_dual_anchor=True,
+            )
         )
         if (
             window_until < prior_until
@@ -4516,6 +5027,24 @@ def capture_enumeration_evidence_sha256(
         ),
         "source_mode": source.get("mode"),
         "catch_up": source.get("catch_up"),
+        "dual_enumeration_contract": (
+            {
+                "schema_version": source["dual_enumeration"].get(
+                    "schema_version"
+                ),
+                "normalization_version": source["dual_enumeration"].get(
+                    "normalization_version"
+                ),
+                "passes_required": source["dual_enumeration"].get(
+                    "passes_required"
+                ),
+                "enumeration_consistency_ok": source[
+                    "dual_enumeration"
+                ].get("enumeration_consistency_ok"),
+            }
+            if isinstance(source.get("dual_enumeration"), Mapping)
+            else None
+        ),
         "days": days,
         "call_keys_fallback": (
             None
@@ -4545,6 +5074,77 @@ def capture_enumeration_evidence_sha256(
         separators=(",", ":"),
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def capture_enumeration_legacy_exact_sha256(
+    evidence: Mapping[str, Any],
+) -> str:
+    """Reproduce the v1 certificate projection for one migration capture.
+
+    This is never accepted by workers or ready publication.  It exists only
+    so an already certified single-pass cursor can anchor the next dual API
+    capture without silently discarding its continuity boundary.
+    """
+
+    source = evidence.get("mango_enumeration_source")
+    source = source if isinstance(source, Mapping) else {}
+    raw_intervals = source.get("covered_intervals")
+    intervals = raw_intervals if isinstance(raw_intervals, Sequence) else ()
+    calls_by_day = evidence.get("calls_by_moscow_day")
+    zero_by_day = evidence.get("independent_zero_enumerations_by_day")
+    projected = {
+        "mango_enumeration_complete": evidence.get(
+            "mango_enumeration_complete"
+        ),
+        "mango_enumeration_source": {
+            key: source.get(key)
+            for key in (
+                "mode",
+                "since",
+                "rolling_since",
+                "until",
+                "cursor",
+                "pages",
+                "pagination",
+                "requests",
+                "catch_up",
+            )
+        }
+        | {
+            "covered_intervals": [
+                {
+                    key: interval.get(key)
+                    for key in (
+                        "since",
+                        "until",
+                        "result_complete",
+                        "rows",
+                        "scope",
+                    )
+                }
+                for interval in intervals
+                if isinstance(interval, Mapping)
+            ]
+        },
+        "call_keys": list(evidence.get("call_keys") or ()),
+        "calls_by_moscow_day": {
+            key: list(calls_by_day[key]) for key in sorted(calls_by_day)
+        }
+        if isinstance(calls_by_day, Mapping)
+        else None,
+        "independent_zero_enumerations_by_day": {
+            key: zero_by_day[key] for key in sorted(zero_by_day)
+        }
+        if isinstance(zero_by_day, Mapping)
+        else None,
+        "api_requests": evidence.get("api_requests"),
+        "api_rows_total": evidence.get("api_rows_total"),
+        "api_authoritative_rows_total": evidence.get(
+            "api_authoritative_rows_total"
+        ),
+        "api_events_total": evidence.get("api_events_total"),
+    }
+    return _canonical_json_sha256(projected)
 
 
 def capture_enumeration_exact_sha256(
@@ -4595,6 +5195,8 @@ def capture_enumeration_exact_sha256(
                 "pagination",
                 "requests",
                 "catch_up",
+                "enumeration_consistency_ok",
+                "dual_enumeration",
             )
         }
         | {
@@ -4607,6 +5209,7 @@ def capture_enumeration_exact_sha256(
                         "result_complete",
                         "rows",
                         "scope",
+                        "authority_pass",
                     )
                 }
                 for interval in intervals
@@ -4629,6 +5232,9 @@ def capture_enumeration_exact_sha256(
         "api_rows_total": evidence.get("api_rows_total"),
         "api_authoritative_rows_total": evidence.get(
             "api_authoritative_rows_total"
+        ),
+        "api_auxiliary_rows_total": evidence.get(
+            "api_auxiliary_rows_total"
         ),
         "api_events_total": evidence.get("api_events_total"),
     }
@@ -4653,6 +5259,20 @@ def certify_capture_window(
 
     if not config.strict_ready_provenance:
         return dict(capture)
+    source = capture.get("mango_enumeration_source")
+    dual_proof = (
+        source.get("dual_enumeration")
+        if isinstance(source, Mapping)
+        else None
+    )
+    if not (
+        isinstance(dual_proof, Mapping)
+        and dual_proof.get("tenant_id") == config.tenant_id
+        and dual_proof.get("base_url") == config.base_url
+        and dual_proof.get("fields_sha256")
+        == _canonical_json_sha256(DEFAULT_STATS_FIELDS)
+    ):
+        raise RuntimeError("capture dual enumeration identity is invalid")
     expected_rolling_since = capture_rolling_window_start(
         config,
         since=requested_since,
@@ -4689,6 +5309,8 @@ def certify_capture_window(
 def verified_capture_window(
     config: CallsTwoProcessesConfig,
     capture: Mapping[str, Any],
+    *,
+    allow_pre_dual_anchor: bool = False,
 ) -> tuple[datetime, datetime, datetime]:
     """Verify and return the request window sealed by ``run_capture``."""
 
@@ -4709,9 +5331,20 @@ def verified_capture_window(
     expected_certificate_sha256 = hashlib.sha256(
         serialized.encode("utf-8")
     ).hexdigest()
+    certificate_schema = certificate.get("schema_version")
+    legacy_anchor = bool(
+        certificate_schema == LEGACY_CAPTURE_WINDOW_CERTIFICATE_SCHEMA
+        and allow_pre_dual_anchor
+    )
     if (
-        certificate.get("schema_version")
-        != CAPTURE_WINDOW_CERTIFICATE_SCHEMA
+        certificate_schema not in {
+            CAPTURE_WINDOW_CERTIFICATE_SCHEMA,
+            *(
+                (LEGACY_CAPTURE_WINDOW_CERTIFICATE_SCHEMA,)
+                if allow_pre_dual_anchor
+                else ()
+            ),
+        }
         or certificate.get("certificate_sha256")
         != expected_certificate_sha256
         or certificate.get("pending_recording_retry_hours")
@@ -4779,12 +5412,73 @@ def verified_capture_window(
     cursor_until = capture.get("until")
     if cursor_until is None or parse_datetime(str(cursor_until)) != requested_until:
         raise RuntimeError("capture cursor until differs from its certificate")
-    evidence_sha256 = capture_enumeration_exact_sha256(
-        capture,
-        expected_source_mode="strict_service",
-        expected_until=requested_until,
-        expected_rolling_since=expected_rolling_since,
-    )
+    if legacy_anchor:
+        source = capture.get("mango_enumeration_source")
+        intervals = (
+            source.get("covered_intervals")
+            if isinstance(source, Mapping)
+            else None
+        )
+        if (
+            capture.get("mango_enumeration_complete") is not True
+            or not isinstance(source, Mapping)
+            or source.get("mode") != "strict_service"
+            or parse_datetime(str(source.get("rolling_since") or ""))
+            != expected_rolling_since
+            or parse_datetime(str(source.get("until") or ""))
+            != requested_until
+            or not isinstance(intervals, Sequence)
+            or isinstance(intervals, (str, bytes))
+            or not intervals
+        ):
+            raise RuntimeError("legacy capture anchor evidence is invalid")
+        coverage_cursor = expected_rolling_since
+        try:
+            for interval in sorted(
+                (
+                    item
+                    for item in intervals
+                    if isinstance(item, Mapping)
+                    and item.get("scope") == "rolling_authority"
+                    and item.get("result_complete") is True
+                ),
+                key=lambda item: parse_datetime(str(item.get("since") or "")),
+            ):
+                interval_since = parse_datetime(
+                    str(interval.get("since") or "")
+                )
+                interval_until = parse_datetime(
+                    str(interval.get("until") or "")
+                )
+                if interval_since > coverage_cursor:
+                    raise RuntimeError
+                coverage_cursor = max(coverage_cursor, interval_until)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError("legacy capture anchor coverage is invalid") from exc
+        if coverage_cursor < requested_until:
+            raise RuntimeError("legacy capture anchor coverage is incomplete")
+        evidence_sha256 = capture_enumeration_legacy_exact_sha256(capture)
+    else:
+        source = capture.get("mango_enumeration_source")
+        dual_proof = (
+            source.get("dual_enumeration")
+            if isinstance(source, Mapping)
+            else None
+        )
+        if not (
+            isinstance(dual_proof, Mapping)
+            and dual_proof.get("tenant_id") == certificate.get("tenant_id")
+            and dual_proof.get("base_url") == certificate.get("base_url")
+            and dual_proof.get("fields_sha256")
+            == _canonical_json_sha256(DEFAULT_STATS_FIELDS)
+        ):
+            raise RuntimeError("capture window certificate API identity changed")
+        evidence_sha256 = capture_enumeration_exact_sha256(
+            capture,
+            expected_source_mode="strict_service",
+            expected_until=requested_until,
+            expected_rolling_since=expected_rolling_since,
+        )
     if certificate.get("enumeration_evidence_sha256") != evidence_sha256:
         raise RuntimeError("capture window certificate evidence changed")
     return requested_since, requested_until, expected_rolling_since
@@ -5737,6 +6431,9 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "mango_enumeration_complete": capture.get(
                 "mango_enumeration_complete"
             ),
+            "enumeration_consistency_ok": capture.get(
+                "enumeration_consistency_ok"
+            ),
             "mango_enumeration_source": capture.get(
                 "mango_enumeration_source"
             ),
@@ -5748,6 +6445,9 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "api_rows_total": capture.get("api_rows_total"),
             "api_authoritative_rows_total": capture.get(
                 "api_authoritative_rows_total"
+            ),
+            "api_auxiliary_rows_total": capture.get(
+                "api_auxiliary_rows_total"
             ),
             "api_events_total": capture.get("api_events_total"),
             "independent_zero_enumerations_by_day": capture.get(

@@ -1,3 +1,5 @@
+> DONE 2026-08-11 13:54 | ветка codex/m1-calls-service-fast-value-20260811 | codex
+
 > TAKE 2026-08-11 03:08 | ветка codex/m1-calls-service-fast-value-20260811 | codex
 
 Ветка: codex/m1-calls-service-fast-value-20260811
@@ -684,3 +686,28 @@ SLA подтвердить замером на 10 реальных звонка�
   отдельно;
 - что не проверено на реальных данных;
 - точные команды следующего ручного шага, но не запускать их без разрешения.
+
+## Результат синтетической Phase A — 2026-08-11
+
+Кодовый SHA:
+`1cea3d8dd00c70f9e50d258b59babe4d9de4388d`.
+
+Статус: **GO для синтетической Phase A; STOP для runtime/cutover**.
+
+- обязательный профиль: `657 passed`, `34 warnings`;
+- preflight: `OK`;
+- Graphify exact SHA: `7140` узлов, `28600` связей, reproducible;
+- Codex architect/business/cleaner/optimizer: GO;
+- Claude Opus/Fable/Sonnet xhigh: GO, P0/P1 нет;
+- реальный Mango API, ASR, Resolve/Analyze, launchd, cutover и внешние записи не
+  запускались;
+- последний обработанный звонок и cursor старого Mac не доказаны;
+- fresh shutdown snapshot старого Mac и связанный `source_cursor_sha256`
+  отсутствуют, поэтому защита от двойной работы ещё не подтверждена фактом;
+- исторические аудио и реальные базы не переносились.
+
+Audit pack:
+`audits/_inbox/m1_calls_fast_service_phase_a_20260811/`.
+
+`formal_pass=true`, `semantic_pass=true`, `business_pass=true`,
+`data_pass=synthetic_only`, `runtime_pass=false`.

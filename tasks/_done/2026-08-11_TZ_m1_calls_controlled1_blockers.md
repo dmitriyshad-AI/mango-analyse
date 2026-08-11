@@ -1,3 +1,5 @@
+> DONE 2026-08-12 02:27 | ветка codex/m1-calls-real-service-final-20260812 | codex
+
 > TAKE 2026-08-11 15:04 | ветка codex/m1-calls-service-fast-value-20260811 | codex
 
 Ветка: codex/m1-calls-service-fast-value-20260811

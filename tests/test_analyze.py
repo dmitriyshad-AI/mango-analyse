@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from argparse import Namespace
@@ -67,6 +68,151 @@ class AnalyzeServiceTest(unittest.TestCase):
                 self.assertEqual(len(claimed_rows), 4)
                 self.assertEqual(sum(1 for row in claimed_rows if row.analysis_worker_id == "w1"), 2)
                 self.assertEqual(sum(1 for row in claimed_rows if row.analysis_worker_id == "w2"), 2)
+
+    def test_claim_batch_never_skips_missing_resolve_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_analyze_resolve_gate_") as td:
+            db_path = Path(td) / "claim.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            with sqlite3.connect(db_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE call_records (
+                        id INTEGER PRIMARY KEY,
+                        transcription_status TEXT,
+                        resolve_status TEXT,
+                        dead_letter_stage TEXT,
+                        analysis_status TEXT,
+                        analyze_attempts INTEGER DEFAULT 0,
+                        next_retry_at TEXT,
+                        analysis_worker_id TEXT,
+                        analysis_claimed_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO call_records (
+                        id, transcription_status, resolve_status,
+                        analysis_status, analyze_attempts
+                    ) VALUES (1, 'done', NULL, 'pending', 0)
+                    """
+                )
+            session_factory = build_session_factory(settings)
+
+            service = AnalyzeService(settings)
+            with session_factory() as session:
+                claimed = service._claim_batch(
+                    session,
+                    limit=1,
+                    worker_id="must-not-claim",
+                )
+
+            self.assertEqual(claimed, [])
+            with sqlite3.connect(db_path) as connection:
+                state = connection.execute(
+                    "SELECT resolve_status, analysis_status FROM call_records"
+                ).fetchone()
+            self.assertEqual(state, (None, "pending"))
+
+    def test_claim_batch_never_crosses_live_pipeline_lease(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_analyze_pipeline_gate_") as td:
+            db_path = Path(td) / "claim.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file=str(Path(td) / "call.mp3"),
+                        source_filename="call.mp3",
+                        transcription_status="done",
+                        resolve_status="done",
+                        analysis_status="pending",
+                        pipeline_stage="resolve",
+                        pipeline_worker_id="live-worker",
+                        pipeline_claimed_at=datetime.now(timezone.utc),
+                        transcript_text="synthetic dialogue",
+                    )
+                )
+                session.commit()
+
+            service = AnalyzeService(settings)
+            with session_factory() as session:
+                claimed = service._claim_batch(
+                    session,
+                    limit=1,
+                    worker_id="must-not-claim",
+                )
+
+            self.assertEqual(claimed, [])
+            with session_factory() as session:
+                row = session.query(CallRecord).one()
+                self.assertEqual(row.analysis_status, "pending")
+                self.assertEqual(row.pipeline_worker_id, "live-worker")
+
+    def test_claim_batch_recovers_stale_or_blank_orphan_pipeline_lease(
+        self,
+    ) -> None:
+        cases = (
+            ("resolve", "old-worker", "2020-01-01T00:00:00+00:00"),
+            ("transcribe", "old-worker", "2020-01-01T00:00:00+00:00"),
+            ("", "", ""),
+            (" \t", " \n", None),
+            (None, "old-worker", "2020-01-01T00:00:00+00:00"),
+        )
+        for index, (stage, worker, claimed_at) in enumerate(cases):
+            with self.subTest(index=index):
+                with tempfile.TemporaryDirectory(
+                    prefix="mango_analyze_orphan_lease_"
+                ) as td:
+                    db_path = Path(td) / "claim.db"
+                    settings = replace(
+                        make_settings(),
+                        database_url=f"sqlite:///{db_path}",
+                    )
+                    init_db(settings)
+                    session_factory = build_session_factory(settings)
+                    with session_factory() as session:
+                        session.add(
+                            CallRecord(
+                                source_file=str(Path(td) / "call.mp3"),
+                                source_filename="call.mp3",
+                                transcription_status="done",
+                                resolve_status="done",
+                                analysis_status="pending",
+                                transcript_text="synthetic dialogue",
+                            )
+                        )
+                        session.commit()
+                    with sqlite3.connect(db_path) as connection:
+                        connection.execute(
+                            """
+                            UPDATE call_records
+                               SET pipeline_stage=?, pipeline_worker_id=?,
+                                   pipeline_claimed_at=?
+                            """,
+                            (stage, worker, claimed_at),
+                        )
+
+                    service = AnalyzeService(settings)
+                    with session_factory() as session:
+                        claimed = service._claim_batch(
+                            session,
+                            limit=1,
+                            worker_id="new-worker",
+                        )
+
+                    self.assertEqual(claimed, [1])
+                    with sqlite3.connect(db_path) as connection:
+                        state = connection.execute(
+                            """
+                            SELECT pipeline_stage, pipeline_worker_id,
+                                   pipeline_claimed_at, analysis_status
+                              FROM call_records
+                            """
+                        ).fetchone()
+                    self.assertEqual(state, (None, None, None, "in_progress"))
 
     def test_claim_batch_releases_stale_in_progress_rows(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_analyze_stale_") as td:
@@ -872,6 +1018,86 @@ class ResetAnalysisCliTest(unittest.TestCase):
                 self.assertIsNone(rows[0].analysis_json)
                 self.assertIsNone(rows[0].last_error)
                 self.assertEqual(rows[1].analysis_status, "done")
+
+    def test_reset_analysis_does_not_treat_legacy_null_resolve_as_terminal(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_reset_analysis_legacy_") as td:
+            db_path = Path(td) / "reset.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file=str(Path(td) / "a.mp3"),
+                        source_filename="a.mp3",
+                        transcription_status="done",
+                        resolve_status="done",
+                        analysis_status="done",
+                        analysis_json=json.dumps(
+                            {"history_summary": "must remain"},
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                session.commit()
+            with sqlite3.connect(db_path) as connection:
+                create_sql = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='call_records'"
+                ).fetchone()[0]
+                connection.execute("ALTER TABLE call_records RENAME TO legacy_source")
+                connection.execute(
+                    create_sql.replace(
+                        "resolve_status VARCHAR(16) NOT NULL",
+                        "resolve_status VARCHAR(16)",
+                    )
+                )
+                columns = [
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(call_records)")
+                ]
+                selected = [
+                    "NULL" if column == "resolve_status" else column
+                    for column in columns
+                ]
+                connection.execute(
+                    f"INSERT INTO call_records ({','.join(columns)}) "
+                    f"SELECT {','.join(selected)} FROM legacy_source"
+                )
+                connection.execute("DROP TABLE legacy_source")
+
+            args = Namespace(
+                limit=100,
+                statuses="done",
+                only_terminal_resolve=True,
+                only_analysis_dead_letter=True,
+                clear_json=True,
+                clear_error=True,
+            )
+            with patch("mango_mvp.cli.get_settings", return_value=settings):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    rc = cmd_reset_analysis(args)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out.getvalue())["updated"], 0)
+            with sqlite3.connect(db_path) as connection:
+                state = connection.execute(
+                    "SELECT resolve_status, analysis_status, analysis_json "
+                    "FROM call_records"
+                ).fetchone()
+            self.assertEqual(
+                state,
+                (
+                    None,
+                    "done",
+                    json.dumps(
+                        {"history_summary": "must remain"},
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
 
     def test_reset_analysis_clears_in_progress_claim_fields(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_reset_analysis_claim_") as td:

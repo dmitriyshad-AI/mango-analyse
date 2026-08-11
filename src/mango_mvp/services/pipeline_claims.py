@@ -86,5 +86,39 @@ def release_stale_pipeline_claims(session: Session, settings: Settings, now: dat
         ).rowcount
         or 0
     )
+    # Older/interrupted runtimes may leave lease columns behind after the
+    # corresponding stage status has already advanced.  Once such an orphan
+    # is stale, no stage-specific recovery query above can own it, so clear
+    # only the lease metadata and preserve all completed stage results.
+    total += int(
+        session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET pipeline_stage = NULL,
+                       pipeline_worker_id = NULL,
+                       pipeline_claimed_at = NULL,
+                       updated_at = :now
+                 WHERE (
+                        pipeline_stage IS NOT NULL
+                        OR pipeline_worker_id IS NOT NULL
+                        OR pipeline_claimed_at IS NOT NULL
+                   )
+                   AND (
+                        pipeline_claimed_at IS NULL
+                        OR pipeline_claimed_at <= :cutoff
+                   )
+                   AND COALESCE(NOT (
+                        (pipeline_stage = 'transcribe'
+                         AND transcription_status = 'in_progress')
+                        OR (pipeline_stage = 'resolve'
+                            AND resolve_status = 'in_progress')
+                        OR pipeline_stage = 'backfill-second-asr'
+                   ), 1)
+                """
+            ),
+            {"now": current, "cutoff": cutoff},
+        ).rowcount
+        or 0
+    )
     return total
-

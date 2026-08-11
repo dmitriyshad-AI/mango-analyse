@@ -23,6 +23,7 @@ from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
 from mango_mvp.quality.non_conversation import detect_non_conversation_signals
 from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.utils.codex_cli import append_codex_service_tier
 from mango_mvp.utils.filename_repair import repair_manager_name
 
@@ -344,6 +345,7 @@ class AnalyzeService:
             return []
         now = self._utc_now()
         max_attempts = max(1, self._settings.analyze_max_attempts)
+        release_stale_pipeline_claims(session, self._settings, now)
         self._release_stale_claims(session, now)
         session.execute(
             text(
@@ -357,11 +359,14 @@ class AnalyzeService:
                     SELECT id
                       FROM call_records
                      WHERE transcription_status = 'done'
-                       AND (resolve_status IN ('done', 'skipped') OR resolve_status IS NULL)
+                       AND resolve_status IN ('done', 'skipped')
                        AND dead_letter_stage IS NULL
                        AND analysis_status IN ('pending', 'failed')
                        AND analyze_attempts < :max_attempts
                        AND (next_retry_at IS NULL OR next_retry_at <= :now)
+                       AND pipeline_stage IS NULL
+                       AND pipeline_worker_id IS NULL
+                       AND pipeline_claimed_at IS NULL
                      ORDER BY id ASC
                      LIMIT :limit
                  )

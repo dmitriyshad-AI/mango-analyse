@@ -778,9 +778,7 @@ def cmd_reset_analysis(args) -> int:
     with session_factory() as session:
         query = select(CallRecord).where(CallRecord.transcription_status == "done")
         if args.only_terminal_resolve:
-            query = query.where(
-                or_(CallRecord.resolve_status.in_(["done", "skipped"]), CallRecord.resolve_status.is_(None))
-            )
+            query = query.where(CallRecord.resolve_status.in_(["done", "skipped"]))
         if args.only_analysis_dead_letter:
             query = query.where(
                 or_(CallRecord.dead_letter_stage.is_(None), CallRecord.dead_letter_stage == "analyze")

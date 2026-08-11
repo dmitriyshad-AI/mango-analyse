@@ -2028,7 +2028,7 @@ def prepare_ingest_inputs(
     expected_manifest_sha256: Optional[str] = None,
 ) -> Mapping[str, Any]:
     config.working_audio_dir.mkdir(parents=True, exist_ok=True)
-    legacy_topology = normalize_unambiguous_legacy_asr_topologies(
+    legacy_topology = normalize_recoverable_legacy_call_states(
         config.working_db
     )
     rows: list[dict[str, str]] = []
@@ -2147,23 +2147,32 @@ def prepare_ingest_inputs(
             "downstream_invalidated"
         ],
         "legacy_state_normalized": legacy_topology["state_normalized"],
+        "legacy_dead_letter_state_normalized": legacy_topology[
+            "dead_letter_state_normalized"
+        ],
+        "legacy_resolve_state_normalized": legacy_topology[
+            "resolve_state_normalized"
+        ],
         "legacy_topology_blocked": legacy_topology["blocked"],
         "legacy_topology_blocked_reasons": legacy_topology["blocked_reasons"],
     }
 
 
-def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]:
-    """Add a missing ASR mode only when the stored topology proves it exactly.
+def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
+    """Repair only legacy states whose stored evidence proves one exact outcome.
 
-    This is deliberately narrower than a compatibility fallback.  Ambiguous or
-    non-terminal rows remain byte-for-byte unchanged and become an explicit
-    Process A blocker instead of being skipped forever or sent downstream.
+    The two supported repairs are a missing ASR mode on an otherwise terminal
+    row and a missing Resolve state on a row with proven dual ASR.  Expired
+    leases may be reclaimed; live or ambiguous states remain unchanged and
+    become an explicit Process A blocker instead of being sent downstream.
     """
 
     result: dict[str, Any] = {
         "normalized": 0,
         "downstream_invalidated": 0,
         "state_normalized": 0,
+        "dead_letter_state_normalized": 0,
+        "resolve_state_normalized": 0,
         "blocked": 0,
         "blocked_reasons": {},
     }
@@ -2221,7 +2230,7 @@ def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]
         ):
             return True
         return bool(
-            resolve_status in {None, "done", "skipped"}
+            resolve_status in {"done", "skipped"}
             and row.get("analysis_status") in {"pending", "failed"}
             and int(row.get("analyze_attempts") or 0)
             < max(1, int(os.getenv("ANALYZE_MAX_ATTEMPTS", "3")))
@@ -2231,6 +2240,16 @@ def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]
         result["blocked"] += 1
         reasons = result["blocked_reasons"]
         reasons[reason] = reasons.get(reason, 0) + 1
+
+    def lease_is_expired(value: Any, env_name: str) -> bool:
+        if not value:
+            return True
+        try:
+            claimed_at = parse_datetime(str(value))
+        except (TypeError, ValueError):
+            return False
+        timeout = max(60, int(os.getenv(env_name, "1800")))
+        return claimed_at <= datetime.now(timezone.utc) - timedelta(seconds=timeout)
 
     with sqlite3.connect(path, timeout=30) as con:
         con.row_factory = sqlite3.Row
@@ -2258,18 +2277,15 @@ def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]
                AND TRIM(dead_letter_stage)=''
             """
         )
-        result["state_normalized"] = int(canonicalized.rowcount or 0)
-        call_id_counts = {
-            str(row[0]).strip(): int(row[1])
-            for row in con.execute(
-                """
-                SELECT TRIM(source_call_id), COUNT(*)
-                  FROM call_records
-                 WHERE TRIM(COALESCE(source_call_id, ''))!=''
-                 GROUP BY TRIM(source_call_id)
-                """
-            )
-        }
+        result["dead_letter_state_normalized"] = int(canonicalized.rowcount or 0)
+        result["state_normalized"] = result["dead_letter_state_normalized"]
+        call_id_counts: dict[str, int] = {}
+        for count_row in con.execute("SELECT source_call_id FROM call_records"):
+            normalized_call_id = str(count_row[0] or "").strip()
+            if normalized_call_id:
+                call_id_counts[normalized_call_id] = (
+                    call_id_counts.get(normalized_call_id, 0) + 1
+                )
         rows = con.execute(
             """
             SELECT id, source_call_id, transcription_status,
@@ -2318,6 +2334,117 @@ def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]
             if isinstance(payload, Mapping):
                 mode = str(payload.get("mode") or "").strip()
                 if has_dual_asr_or_exception(row):
+                    raw_resolve_status = row.get("resolve_status")
+                    resolve_status = str(raw_resolve_status or "").strip()
+                    if not resolve_status:
+                        call_id = str(row.get("source_call_id") or "").strip()
+                        if not call_id or call_id_counts.get(call_id) != 1:
+                            add_block("non_unique_source_call_id")
+                            continue
+                        analysis_status = row.get("analysis_status")
+                        pipeline_leased = any(
+                            row.get(field)
+                            for field in (
+                                "pipeline_stage",
+                                "pipeline_worker_id",
+                                "pipeline_claimed_at",
+                            )
+                        )
+                        analysis_leased = bool(
+                            analysis_status == "in_progress"
+                            or row.get("analysis_worker_id")
+                            or row.get("analysis_claimed_at")
+                        )
+                        pipeline_lease_expired = bool(
+                            pipeline_leased
+                            and lease_is_expired(
+                                row.get("pipeline_claimed_at"),
+                                "PIPELINE_LEASE_TIMEOUT_SEC",
+                            )
+                        )
+                        analysis_lease_expired = bool(
+                            analysis_leased
+                            and lease_is_expired(
+                                row.get("analysis_claimed_at"),
+                                "ANALYZE_LEASE_TIMEOUT_SEC",
+                            )
+                        )
+                        if analysis_status not in {
+                            "pending",
+                            "failed",
+                            "in_progress",
+                        } or (pipeline_leased and not pipeline_lease_expired) or (
+                            analysis_leased and not analysis_lease_expired
+                        ):
+                            add_block("resolve_state_missing_or_leased")
+                            continue
+                        candidate = {
+                            **row,
+                            "resolve_status": "pending",
+                            "analysis_status": "pending",
+                            "resolve_attempts": 0,
+                            "analyze_attempts": 0,
+                            "pipeline_stage": None,
+                            "pipeline_worker_id": None,
+                            "pipeline_claimed_at": None,
+                            "analysis_worker_id": None,
+                            "analysis_claimed_at": None,
+                            "next_retry_at": None,
+                            "resolve_json": None,
+                            "resolve_quality_score": None,
+                            "analysis_json": None,
+                            "last_error": None,
+                        }
+                        if not (
+                            has_dual_asr_or_exception(candidate)
+                            and downstream_is_recoverable(candidate)
+                            and not ready_row_is_complete(candidate)
+                        ):
+                            add_block("resolve_state_normalization_failed")
+                            continue
+                        updated = con.execute(
+                            """
+                            UPDATE call_records
+                               SET resolve_status='pending',
+                                   analysis_status='pending',
+                                   resolve_attempts=0,
+                                   analyze_attempts=0,
+                                   pipeline_stage=NULL,
+                                   pipeline_worker_id=NULL,
+                                   pipeline_claimed_at=NULL,
+                                   analysis_worker_id=NULL,
+                                   analysis_claimed_at=NULL,
+                                   next_retry_at=NULL,
+                                   resolve_json=NULL,
+                                   resolve_quality_score=NULL,
+                                   analysis_json=NULL,
+                                   last_error=NULL
+                             WHERE id=?
+                               AND (
+                                    (resolve_status IS NULL AND ? IS NULL)
+                                    OR resolve_status=?
+                               )
+                               AND analysis_status IN ('pending', 'failed', 'in_progress')
+                            """,
+                            (row["id"], raw_resolve_status, raw_resolve_status),
+                        )
+                        if int(updated.rowcount or 0) != 1:
+                            add_block("resolve_state_changed_concurrently")
+                            continue
+                        result["state_normalized"] += 1
+                        result["resolve_state_normalized"] += 1
+                        if row.get("resolve_quality_score") is not None or any(
+                            row.get(field)
+                            for field in (
+                                "resolve_json",
+                                "analysis_json",
+                                "last_error",
+                            )
+                        ) or int(row.get("resolve_attempts") or 0) or int(
+                            row.get("analyze_attempts") or 0
+                        ):
+                            result["downstream_invalidated"] += 1
+                        continue
                     if downstream_is_recoverable(row):
                         continue
                     add_block("terminal_payload_invalid")
@@ -2477,6 +2604,10 @@ def normalize_unambiguous_legacy_asr_topologies(path: Path) -> Mapping[str, Any]
     return result
 
 
+# Kept for callers outside this module while the more accurate name rolls out.
+normalize_unambiguous_legacy_asr_topologies = normalize_recoverable_legacy_call_states
+
+
 def read_ingested_call_ids(path: Path) -> set[str]:
     if not path.is_file():
         return set()
@@ -2594,7 +2725,7 @@ def call_db_has_open_work(path: Path) -> bool:
             resolve = row.get("resolve_status")
             if transcription == "done" and resolve in {"pending", "failed"} and retry_due and int(row.get("resolve_attempts") or 0) < limits["resolve"]:
                 return True
-            if transcription == "done" and resolve in {None, "done", "skipped"} and row.get("analysis_status") in {"pending", "failed"} and retry_due and int(row.get("analyze_attempts") or 0) < limits["analyze"]:
+            if transcription == "done" and resolve in {"done", "skipped"} and row.get("analysis_status") in {"pending", "failed"} and retry_due and int(row.get("analyze_attempts") or 0) < limits["analyze"]:
                 return True
         return False
 

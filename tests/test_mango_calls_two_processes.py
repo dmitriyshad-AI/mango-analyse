@@ -2943,6 +2943,8 @@ def test_legacy_asr_mode_is_normalized_once_and_republished_after_crash_gap(
         "normalized": 1,
         "downstream_invalidated": 1,
         "state_normalized": 0,
+        "dead_letter_state_normalized": 0,
+        "resolve_state_normalized": 0,
         "blocked": 0,
         "blocked_reasons": {},
     }
@@ -3038,6 +3040,235 @@ def test_legacy_asr_mode_is_normalized_once_and_republished_after_crash_gap(
     assert timeline_call_count == 1
 
 
+@pytest.mark.parametrize("missing_status", [None, "", "\t", "\n", "\u00a0"])
+def test_dual_asr_missing_resolve_state_is_normalized_before_analyze(
+    tmp_path: Path,
+    missing_status: str | None,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status=?, analysis_status='pending',
+                   resolve_attempts=1, analyze_attempts=2,
+                   next_retry_at='2099-01-01T00:00:00+00:00',
+                   resolve_json='{"stale":true}', analysis_json='{"stale":true}',
+                   last_error='stale synthetic error'
+             WHERE id=1
+            """,
+            (missing_status,),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+    repeated = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result == {
+        "normalized": 0,
+        "downstream_invalidated": 1,
+        "state_normalized": 1,
+        "dead_letter_state_normalized": 0,
+        "resolve_state_normalized": 1,
+        "blocked": 0,
+        "blocked_reasons": {},
+    }
+    assert repeated == {
+        "normalized": 0,
+        "downstream_invalidated": 0,
+        "state_normalized": 0,
+        "dead_letter_state_normalized": 0,
+        "resolve_state_normalized": 0,
+        "blocked": 0,
+        "blocked_reasons": {},
+    }
+    with sqlite3.connect(config.working_db) as connection:
+        state = connection.execute(
+            """
+            SELECT resolve_status, analysis_status, resolve_attempts,
+                   analyze_attempts, next_retry_at, resolve_json,
+                   analysis_json, last_error
+              FROM call_records
+             WHERE id=1
+            """
+        ).fetchone()
+    assert state == ("pending", "pending", 0, 0, None, None, None, None)
+    assert call_db_has_open_work(config.working_db) is True
+
+
+def test_missing_resolve_state_counts_zero_quality_as_invalidated(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status=NULL, analysis_status='pending',
+                   resolve_attempts=0, analyze_attempts=0,
+                   resolve_json=NULL, resolve_quality_score=0,
+                   analysis_json=NULL, last_error=NULL
+             WHERE id=1
+            """
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["state_normalized"] == 1
+    assert result["downstream_invalidated"] == 1
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute(
+            "SELECT resolve_quality_score FROM call_records WHERE id=1"
+        ).fetchone()[0] is None
+
+
+def test_missing_resolve_state_without_downstream_payload_is_not_invalidated(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status=NULL, analysis_status='pending',
+                   resolve_attempts=0, analyze_attempts=0,
+                   resolve_json=NULL, resolve_quality_score=NULL,
+                   analysis_json=NULL, last_error=NULL
+             WHERE id=1
+            """
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["state_normalized"] == 1
+    assert result["resolve_state_normalized"] == 1
+    assert result["downstream_invalidated"] == 0
+
+
+@pytest.mark.parametrize("lease_kind", ["pipeline", "analysis"])
+def test_missing_resolve_state_recovers_expired_lease_once(
+    tmp_path: Path,
+    lease_kind: str,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    assignments = {
+        "pipeline": (
+            "resolve_status=NULL, analysis_status='pending', "
+            "pipeline_stage='resolve', pipeline_worker_id='old-worker', "
+            "pipeline_claimed_at='2020-01-01T00:00:00+00:00'"
+        ),
+        "analysis": (
+            "resolve_status=NULL, analysis_status='in_progress', "
+            "analysis_worker_id='old-worker', "
+            "analysis_claimed_at='2020-01-01T00:00:00+00:00'"
+        ),
+    }
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            f"UPDATE call_records SET {assignments[lease_kind]} WHERE id=1"
+        )
+
+    first = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+    repeated = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert first["state_normalized"] == 1
+    assert first["blocked"] == 0
+    assert repeated["state_normalized"] == 0
+    assert repeated["blocked"] == 0
+    with sqlite3.connect(config.working_db) as connection:
+        state = connection.execute(
+            """
+            SELECT resolve_status, analysis_status, pipeline_stage,
+                   pipeline_worker_id, pipeline_claimed_at,
+                   analysis_worker_id, analysis_claimed_at
+              FROM call_records
+             WHERE id=1
+            """
+        ).fetchone()
+    assert state == ("pending", "pending", None, None, None, None, None)
+
+
+@pytest.mark.parametrize("lease_kind", ["pipeline", "analysis"])
+def test_missing_resolve_state_preserves_live_lease_and_blocks(
+    tmp_path: Path,
+    lease_kind: str,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    claimed_at = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(config.working_db) as connection:
+        if lease_kind == "pipeline":
+            connection.execute(
+                """
+                UPDATE call_records
+                   SET resolve_status=NULL, analysis_status='pending',
+                       pipeline_stage='resolve', pipeline_worker_id='live-worker',
+                       pipeline_claimed_at=?
+                 WHERE id=1
+                """,
+                (claimed_at,),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE call_records
+                   SET resolve_status=NULL, analysis_status='in_progress',
+                       analysis_worker_id='live-worker', analysis_claimed_at=?
+                 WHERE id=1
+                """,
+                (claimed_at,),
+            )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["state_normalized"] == 0
+    assert result["blocked_reasons"] == {"resolve_state_missing_or_leased": 1}
+    with sqlite3.connect(config.working_db) as connection:
+        resolve_status = connection.execute(
+            "SELECT resolve_status FROM call_records WHERE id=1"
+        ).fetchone()[0]
+    assert resolve_status is None
+
+
+@pytest.mark.parametrize(
+    "second_call_id",
+    ["provider-1", "\tprovider-1", "provider-1\n", "provider-1\u00a0"],
+)
+def test_missing_resolve_state_rejects_normalized_duplicate_call_id(
+    tmp_path: Path,
+    second_call_id: str,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        columns = [
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(call_records)")
+        ]
+        selected = ["2" if column == "id" else column for column in columns]
+        connection.execute(
+            f"INSERT INTO call_records ({','.join(columns)}) "
+            f"SELECT {','.join(selected)} FROM call_records WHERE id=1"
+        )
+        connection.execute(
+            "UPDATE call_records SET source_call_id=? WHERE id=2",
+            (second_call_id,),
+        )
+        connection.execute("UPDATE call_records SET resolve_status=NULL")
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["state_normalized"] == 0
+    assert result["blocked_reasons"] == {"non_unique_source_call_id": 2}
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM call_records WHERE resolve_status IS NULL"
+        ).fetchone()[0] == 2
+
+
 def test_ambiguous_legacy_asr_blocks_process_a_without_workers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3120,6 +3351,8 @@ def test_empty_legacy_analysis_blocks_normalization(tmp_path: Path) -> None:
         "normalized": 0,
         "downstream_invalidated": 0,
         "state_normalized": 0,
+        "dead_letter_state_normalized": 0,
+        "resolve_state_normalized": 0,
         "blocked": 1,
         "blocked_reasons": {"terminal_payload_invalid": 1},
     }
@@ -3414,6 +3647,8 @@ def test_empty_dead_letter_state_is_canonicalized_before_legacy_mode(
     result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
 
     assert result["state_normalized"] == 1
+    assert result["dead_letter_state_normalized"] == 1
+    assert result["resolve_state_normalized"] == 0
     assert result["normalized"] == 1
     with sqlite3.connect(config.working_db) as connection:
         dead_letter, normalized_raw = connection.execute(

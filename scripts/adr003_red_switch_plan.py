@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 
 OLD_READING_CLASSES = "sense_seats,slots_gsf,off_topic,intent_actions,live_status_read"
-OLD_APPLY_CLASSES = "live_status_read/conversation_intent_plan"
 
 
 @dataclass(frozen=True)
@@ -23,7 +22,6 @@ class RedSwitch:
     default_file: str
     default_symbol: str
     reading_remove: tuple[str, ...] = ()
-    apply_remove: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
@@ -37,18 +35,11 @@ class RedSwitch:
                 + ", ".join(self.reading_remove)
                 + "."
             )
-        if self.apply_remove:
-            patch_steps.append(
-                "Remove apply classes from PILOT_PROFILE_DEFAULT_APPLY_CLASSES: "
-                + ", ".join(self.apply_remove)
-                + "."
-            )
         return {
             "key": self.key,
             "env_disable": env_disable,
             "old_profile_overlay": {
                 "TELEGRAM_SEMANTIC_READING_CLASSES": OLD_READING_CLASSES,
-                "TELEGRAM_READING_APPLY_CLASSES": OLD_APPLY_CLASSES,
             },
             "one_commit_patch_steps": patch_steps,
             "validation": [
@@ -110,30 +101,6 @@ SWITCHES: dict[str, RedSwitch] = {
         env="TELEGRAM_P0_LATCH_AUTORELEASE_V2",
         default_file="src/mango_mvp/channels/dialogue_memory.py",
         default_symbol="MEMORY_PROFILE_DEFAULT_ON_FLAGS",
-    ),
-    "route_templates": RedSwitch(
-        key="route_templates",
-        env="TELEGRAM_SEMANTIC_READING_CLASSES/TELEGRAM_READING_APPLY_CLASSES",
-        default_file="src/mango_mvp/channels/subscription_llm_parts/semantic_reading.py",
-        default_symbol="PILOT_PROFILE_DEFAULT_READING_CLASSES/PILOT_PROFILE_DEFAULT_APPLY_CLASSES",
-        reading_remove=("route_templates",),
-        apply_remove=("route_templates/autonomy_matrix",),
-    ),
-    "reask_read": RedSwitch(
-        key="reask_read",
-        env="TELEGRAM_SEMANTIC_READING_CLASSES/TELEGRAM_READING_APPLY_CLASSES",
-        default_file="src/mango_mvp/channels/subscription_llm_parts/semantic_reading.py",
-        default_symbol="PILOT_PROFILE_DEFAULT_READING_CLASSES/PILOT_PROFILE_DEFAULT_APPLY_CLASSES",
-        reading_remove=("reask_read",),
-        apply_remove=("reask_read/final_text",),
-    ),
-    "roles_read": RedSwitch(
-        key="roles_read",
-        env="TELEGRAM_SEMANTIC_READING_CLASSES/TELEGRAM_READING_APPLY_CLASSES",
-        default_file="src/mango_mvp/channels/subscription_llm_parts/semantic_reading.py",
-        default_symbol="PILOT_PROFILE_DEFAULT_READING_CLASSES/PILOT_PROFILE_DEFAULT_APPLY_CLASSES",
-        reading_remove=("roles_read",),
-        apply_remove=("roles_read/refund_tax",),
     ),
 }
 

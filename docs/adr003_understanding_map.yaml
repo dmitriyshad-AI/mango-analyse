@@ -1,42 +1,43 @@
 schema_version: adr003_understanding_map_v1_2026_07_31
 source:
-  base_repo_head: 8cfe4c8918ba436decf55da1ead74fbcdf8f531e
+  base_repo_head: 81105c085b4f18c365e47a985501590301654d75
   integrated_patch_heads: []
+  working_tree_task: 2026-08-11_TZ_REMOVE_UNREACHABLE_SEMANTIC_OBSERVERS.md
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
-  snapshot_rows: 735
-  snapshot_sha256: c4ec37052cd3535033c1c2806c1cf2f36b500bdccbe3f6b1ac9c4604a0d67960
+  snapshot_rows: 701
+  snapshot_sha256: 05be9ab19bd57bde44dd67edbf4123b4348966b999c60e182d20579e4763660f
   denominator: all_snapshot_rows
   node_kind_counts:
-    marker_helper_call: 117
-    regex_call: 339
+    marker_helper_call: 113
+    regex_call: 313
     string_contains: 148
-    text_table: 131
+    text_table: 127
   regex_symbol_counts:
     re.compile: 140
     re.findall: 11
     re.fullmatch: 2
     re.match: 5
-    re.search: 155
-    re.split: 4
+    re.search: 130
+    re.split: 3
     re.sub: 22
-  text_table_rows: 131
-  text_table_literal_strings: 1260
+  text_table_rows: 127
+  text_table_literal_strings: 1253
   text_table_cyrillic_strings: 755
   text_tables_ge8_cyrillic: 29
   cyrillic_elements_in_ge8_tables: 656
-  marker_helper_budget_ceiling: 159
-  marker_helper_actual_snapshot_rows: 117
+  marker_helper_budget_ceiling: 155
+  marker_helper_actual_snapshot_rows: 113
   scope: D1 assigns only bucket 2 and bucket 3; bucket 1 and bucket 4 remain for the parallel owner.
   machine_text_table_rule: AST assignments whose uppercase name contains one of TEXT_TABLE_NAME_PARTS
   literal_left_membership_rule: literal string on the left of in/not in; canonical scope additionally requires a text-like
     comparator name
-  literal_left_membership_total: 297
+  literal_left_membership_total: 290
   literal_left_membership_in_canonical_text_scope: 148
-  literal_left_membership_outside_canonical_text_scope: 149
+  literal_left_membership_outside_canonical_text_scope: 142
 classification_counts:
-  2_verification: 272
+  2_verification: 262
   3_format_hygiene: 27
-  unassigned_for_parallel_owner: 436
+  unassigned_for_parallel_owner: 412
 classes:
   p0_safety_aggregation_floor:
     bucket: 2_verification
@@ -1370,7 +1371,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 80
+  lineno: 58
   col_offset: 18
   node_kind: regex_call
   symbol: re.compile
@@ -1381,7 +1382,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 82
+  lineno: 60
   col_offset: 19
   node_kind: regex_call
   symbol: re.compile
@@ -1392,7 +1393,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 443
+  lineno: 417
   col_offset: 21
   node_kind: regex_call
   symbol: re.compile
@@ -1403,7 +1404,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 479
+  lineno: 453
   col_offset: 0
   node_kind: text_table
   symbol: HIGH_RISK_MARKERS
@@ -1414,7 +1415,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 491
+  lineno: 465
   col_offset: 29
   node_kind: regex_call
   symbol: re.compile
@@ -1425,7 +1426,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 497
+  lineno: 471
   col_offset: 28
   node_kind: regex_call
   symbol: re.compile
@@ -1436,7 +1437,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 507
+  lineno: 481
   col_offset: 31
   node_kind: regex_call
   symbol: re.compile
@@ -1447,7 +1448,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 517
+  lineno: 491
   col_offset: 26
   node_kind: regex_call
   symbol: re.compile
@@ -1458,7 +1459,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 524
+  lineno: 498
   col_offset: 24
   node_kind: regex_call
   symbol: re.compile
@@ -1469,7 +1470,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 530
+  lineno: 504
   col_offset: 23
   node_kind: regex_call
   symbol: re.compile
@@ -1480,7 +1481,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 535
+  lineno: 509
   col_offset: 0
   node_kind: text_table
   symbol: BRAND_FORBIDDEN_TERMS
@@ -1491,7 +1492,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 540
+  lineno: 514
   col_offset: 0
   node_kind: text_table
   symbol: BRAND_OUTPUT_MARKERS
@@ -1502,7 +1503,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 545
+  lineno: 519
   col_offset: 20
   node_kind: regex_call
   symbol: re.compile
@@ -1513,7 +1514,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 547
+  lineno: 521
   col_offset: 31
   node_kind: regex_call
   symbol: re.compile
@@ -1524,7 +1525,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 556
+  lineno: 530
   col_offset: 0
   node_kind: text_table
   symbol: UNSUPPORTED_PROMISE_PATTERNS
@@ -1535,7 +1536,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 557
+  lineno: 531
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
@@ -1546,7 +1547,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 558
+  lineno: 532
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
@@ -1557,7 +1558,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 560
+  lineno: 534
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
@@ -1568,128 +1569,18 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 561
+  lineno: 535
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
   display_symbol: re.compile
   content_hash_kind: pattern_sha256
   content_sha256: 5facc89f168f01e1bd7815ea7c147cc792e61f0250bc5cdcbd5398fbed489ee1
-- row_id: adr003:2483f0de556b725012e2e000
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 937
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: c5946ee708da4ae977bbe340f24139ad68a18be061bb3c81c323c806ad4f8267
-- row_id: adr003:df792bd0f31fbbfab2010e3a
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 939
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: c5946ee708da4ae977bbe340f24139ad68a18be061bb3c81c323c806ad4f8267
-- row_id: adr003:e54e8873e6e6e4995a64df1a
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 941
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 138b2589b59e2ed384e22ec3124c8a92b06f61ae9caca0f838c9e1bb4c90ef68
-- row_id: adr003:aef7b44a0723f9eb7ff7ad8a
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 948
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 54321279cc8718efe373d3f8f22af0130351507a7a2778317ffe1e79a4fe769f
-- row_id: adr003:1cd40f90452b435e63692bc1
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 950
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 969565042ac4cb932f1170e5f74e4956fddc3d81cbfb3cf76be63443b136e140
-- row_id: adr003:f031fa304857b94fb0a8fa10
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 957
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 0f69499e35f5ad0528992871e41c2dad15e4665a03d4919286d80d1a879d518a
-- row_id: adr003:4f13e26e7b76a6ceb9a2f9ae
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 959
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 969565042ac4cb932f1170e5f74e4956fddc3d81cbfb3cf76be63443b136e140
-- row_id: adr003:bb9a529b2de127154f74cc52
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 963
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: c308e4c51dee36138fd9986d24caca54a9ddfaaf082650579a7744df231116c3
-- row_id: adr003:e5090854cada8cfa2b8530fd
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 967
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 0f69499e35f5ad0528992871e41c2dad15e4665a03d4919286d80d1a879d518a
-- row_id: adr003:407556c4f6a3d912d7ed3bc6
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 1111
-  col_offset: 11
-  node_kind: marker_helper_call
-  symbol: has_any_marker
-  display_symbol: has_any_marker
-  content_hash_kind: args_sha256
-  content_sha256: 09c50b5c512c15308ddd60d88e229d14f202972fb651d3e1dabb3716ad642512
 - row_id: adr003:4c021cb522380f83a439389f
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 1740
+  lineno: 1025
   col_offset: 21
   node_kind: regex_call
   symbol: re.search
@@ -1700,7 +1591,7 @@ rows:
   bucket: 2_verification
   class: brand_money_promise_floor
   path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 1741
+  lineno: 1026
   col_offset: 20
   node_kind: regex_call
   symbol: re.search
@@ -1711,7 +1602,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 465
+  lineno: 443
   col_offset: 0
   node_kind: text_table
   symbol: _MANAGER_CONTACT_PROMISE_PATTERNS
@@ -1722,7 +1613,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 466
+  lineno: 444
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
@@ -1733,7 +1624,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 467
+  lineno: 445
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
@@ -1744,7 +1635,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 468
+  lineno: 446
   col_offset: 4
   node_kind: regex_call
   symbol: re.compile
@@ -1755,7 +1646,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 518
+  lineno: 496
   col_offset: 0
   node_kind: text_table
   symbol: PRESALE_SOURCE_ID_TOKEN_PATTERN
@@ -1766,7 +1657,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 529
+  lineno: 507
   col_offset: 0
   node_kind: text_table
   symbol: PRESALE_SOURCE_ID_PHRASE_RE
@@ -1777,7 +1668,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 529
+  lineno: 507
   col_offset: 30
   node_kind: regex_call
   symbol: re.compile
@@ -1788,7 +1679,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 536
+  lineno: 514
   col_offset: 0
   node_kind: text_table
   symbol: PRESALE_SOURCE_ID_TOKEN_RE
@@ -1799,7 +1690,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 536
+  lineno: 514
   col_offset: 29
   node_kind: regex_call
   symbol: re.compile
@@ -1810,7 +1701,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 542
+  lineno: 520
   col_offset: 23
   node_kind: regex_call
   symbol: re.compile
@@ -1821,7 +1712,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 548
+  lineno: 526
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -1832,7 +1723,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 554
+  lineno: 532
   col_offset: 32
   node_kind: regex_call
   symbol: re.compile
@@ -1843,7 +1734,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 562
+  lineno: 540
   col_offset: 26
   node_kind: regex_call
   symbol: re.compile
@@ -1854,7 +1745,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 571
+  lineno: 549
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -1865,7 +1756,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 574
+  lineno: 552
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -1876,7 +1767,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 580
+  lineno: 558
   col_offset: 41
   node_kind: regex_call
   symbol: re.compile
@@ -1887,7 +1778,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 588
+  lineno: 566
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -1898,7 +1789,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 591
+  lineno: 569
   col_offset: 46
   node_kind: regex_call
   symbol: re.compile
@@ -1909,7 +1800,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 597
+  lineno: 575
   col_offset: 37
   node_kind: regex_call
   symbol: re.compile
@@ -1920,7 +1811,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 600
+  lineno: 578
   col_offset: 0
   node_kind: text_table
   symbol: OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE
@@ -1931,7 +1822,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 600
+  lineno: 578
   col_offset: 38
   node_kind: regex_call
   symbol: re.compile
@@ -1942,7 +1833,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 606
+  lineno: 584
   col_offset: 22
   node_kind: regex_call
   symbol: re.compile
@@ -1953,7 +1844,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 613
+  lineno: 591
   col_offset: 0
   node_kind: text_table
   symbol: MANAGER_ACTION_PROMISE_ACTOR_RE
@@ -1964,7 +1855,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 613
+  lineno: 591
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -1975,7 +1866,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 616
+  lineno: 594
   col_offset: 0
   node_kind: text_table
   symbol: MANAGER_ACTION_PROMISE_ACTION_RE
@@ -1986,7 +1877,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 616
+  lineno: 594
   col_offset: 35
   node_kind: regex_call
   symbol: re.compile
@@ -1997,7 +1888,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 622
+  lineno: 600
   col_offset: 0
   node_kind: text_table
   symbol: MANAGER_ACTION_PROMISE_DEADLINE_RE
@@ -2008,7 +1899,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 622
+  lineno: 600
   col_offset: 37
   node_kind: regex_call
   symbol: re.compile
@@ -2019,7 +1910,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 630
+  lineno: 608
   col_offset: 28
   node_kind: regex_call
   symbol: re.compile
@@ -2030,7 +1921,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 696
+  lineno: 674
   col_offset: 23
   node_kind: regex_call
   symbol: re.compile
@@ -2041,7 +1932,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 713
+  lineno: 691
   col_offset: 25
   node_kind: regex_call
   symbol: re.compile
@@ -2052,7 +1943,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 726
+  lineno: 704
   col_offset: 30
   node_kind: regex_call
   symbol: re.compile
@@ -2063,7 +1954,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 734
+  lineno: 712
   col_offset: 0
   node_kind: text_table
   symbol: CONTENT_DELIVERY_ACTION_RE
@@ -2074,7 +1965,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 734
+  lineno: 712
   col_offset: 29
   node_kind: regex_call
   symbol: re.compile
@@ -2085,7 +1976,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 748
+  lineno: 726
   col_offset: 35
   node_kind: regex_call
   symbol: re.compile
@@ -2096,7 +1987,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 771
+  lineno: 749
   col_offset: 0
   node_kind: text_table
   symbol: NEXT_STEP_SOFT_ACTION_RE_FRAGMENT
@@ -2107,7 +1998,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 775
+  lineno: 753
   col_offset: 42
   node_kind: regex_call
   symbol: re.compile
@@ -2118,7 +2009,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 786
+  lineno: 764
   col_offset: 30
   node_kind: regex_call
   symbol: re.compile
@@ -2129,7 +2020,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 805
+  lineno: 783
   col_offset: 36
   node_kind: regex_call
   symbol: re.compile
@@ -2140,7 +2031,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 817
+  lineno: 795
   col_offset: 43
   node_kind: regex_call
   symbol: re.compile
@@ -2151,7 +2042,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 836
+  lineno: 814
   col_offset: 7
   node_kind: string_contains
   symbol: In
@@ -2162,7 +2053,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 836
+  lineno: 814
   col_offset: 39
   node_kind: string_contains
   symbol: In
@@ -2173,7 +2064,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 836
+  lineno: 814
   col_offset: 71
   node_kind: string_contains
   symbol: In
@@ -2184,7 +2075,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 836
+  lineno: 814
   col_offset: 96
   node_kind: string_contains
   symbol: In
@@ -2195,7 +2086,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 838
+  lineno: 816
   col_offset: 7
   node_kind: string_contains
   symbol: In
@@ -2206,7 +2097,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 838
+  lineno: 816
   col_offset: 30
   node_kind: string_contains
   symbol: In
@@ -2217,7 +2108,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 840
+  lineno: 818
   col_offset: 7
   node_kind: string_contains
   symbol: In
@@ -2228,7 +2119,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 840
+  lineno: 818
   col_offset: 33
   node_kind: string_contains
   symbol: In
@@ -2239,7 +2130,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 840
+  lineno: 818
   col_offset: 60
   node_kind: string_contains
   symbol: In
@@ -2250,7 +2141,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1188
+  lineno: 1166
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -2261,7 +2152,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1262
+  lineno: 1240
   col_offset: 19
   node_kind: regex_call
   symbol: re.compile
@@ -2272,7 +2163,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1268
+  lineno: 1246
   col_offset: 15
   node_kind: regex_call
   symbol: re.compile
@@ -2283,7 +2174,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1678
+  lineno: 1656
   col_offset: 11
   node_kind: regex_call
   symbol: re.search
@@ -2294,7 +2185,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1775
+  lineno: 1753
   col_offset: 23
   node_kind: regex_call
   symbol: re.compile
@@ -2305,7 +2196,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1778
+  lineno: 1756
   col_offset: 0
   node_kind: text_table
   symbol: _CLIENT_NAME_MARKER_RE
@@ -2316,7 +2207,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1778
+  lineno: 1756
   col_offset: 25
   node_kind: regex_call
   symbol: re.compile
@@ -2327,7 +2218,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1785
+  lineno: 1763
   col_offset: 0
   node_kind: text_table
   symbol: _CLIENT_SELF_NAME_MARKER_RE
@@ -2338,7 +2229,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1785
+  lineno: 1763
   col_offset: 30
   node_kind: regex_call
   symbol: re.compile
@@ -2349,7 +2240,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1845
+  lineno: 1823
   col_offset: 30
   node_kind: regex_call
   symbol: re.compile
@@ -2360,7 +2251,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1911
+  lineno: 1889
   col_offset: 16
   node_kind: regex_call
   symbol: re.sub
@@ -2371,7 +2262,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1951
+  lineno: 1929
   col_offset: 26
   node_kind: regex_call
   symbol: re.compile
@@ -2382,7 +2273,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1954
+  lineno: 1932
   col_offset: 32
   node_kind: regex_call
   symbol: re.compile
@@ -2393,7 +2284,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1957
+  lineno: 1935
   col_offset: 27
   node_kind: regex_call
   symbol: re.compile
@@ -2404,7 +2295,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2048
+  lineno: 2026
   col_offset: 50
   node_kind: regex_call
   symbol: re.match
@@ -2415,7 +2306,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2074
+  lineno: 2052
   col_offset: 32
   node_kind: regex_call
   symbol: re.compile
@@ -2426,7 +2317,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2111
+  lineno: 2089
   col_offset: 54
   node_kind: regex_call
   symbol: re.match
@@ -2437,7 +2328,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2212
+  lineno: 2190
   col_offset: 16
   node_kind: regex_call
   symbol: re.search
@@ -2448,7 +2339,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2230
+  lineno: 2208
   col_offset: 7
   node_kind: regex_call
   symbol: re.search
@@ -2459,7 +2350,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2281
+  lineno: 2259
   col_offset: 7
   node_kind: regex_call
   symbol: re.fullmatch
@@ -2470,7 +2361,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2283
+  lineno: 2261
   col_offset: 11
   node_kind: regex_call
   symbol: re.search
@@ -2481,7 +2372,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2447
+  lineno: 2425
   col_offset: 20
   node_kind: regex_call
   symbol: re.split
@@ -2492,7 +2383,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2486
+  lineno: 2464
   col_offset: 20
   node_kind: regex_call
   symbol: re.split
@@ -2503,7 +2394,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2606
+  lineno: 2584
   col_offset: 13
   node_kind: regex_call
   symbol: re.sub
@@ -2514,7 +2405,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2609
+  lineno: 2587
   col_offset: 15
   node_kind: regex_call
   symbol: re.sub
@@ -2525,7 +2416,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2709
+  lineno: 2687
   col_offset: 26
   node_kind: regex_call
   symbol: re.search
@@ -2536,7 +2427,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2710
+  lineno: 2688
   col_offset: 18
   node_kind: regex_call
   symbol: re.findall
@@ -2547,7 +2438,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2725
+  lineno: 2703
   col_offset: 7
   node_kind: string_contains
   symbol: In
@@ -2558,7 +2449,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2786
+  lineno: 2764
   col_offset: 23
   node_kind: marker_helper_call
   symbol: has_any_marker
@@ -2569,7 +2460,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2787
+  lineno: 2765
   col_offset: 27
   node_kind: marker_helper_call
   symbol: has_any_marker
@@ -2580,7 +2471,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2907
+  lineno: 2885
   col_offset: 16
   node_kind: regex_call
   symbol: re.search
@@ -2591,7 +2482,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3189
+  lineno: 3167
   col_offset: 27
   node_kind: regex_call
   symbol: re.compile
@@ -2602,7 +2493,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3196
+  lineno: 3174
   col_offset: 34
   node_kind: regex_call
   symbol: re.compile
@@ -2613,7 +2504,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3206
+  lineno: 3184
   col_offset: 36
   node_kind: regex_call
   symbol: re.compile
@@ -2624,7 +2515,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3224
+  lineno: 3202
   col_offset: 26
   node_kind: regex_call
   symbol: re.compile
@@ -2635,7 +2526,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3307
+  lineno: 3285
   col_offset: 11
   node_kind: regex_call
   symbol: re.match
@@ -2646,7 +2537,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3418
+  lineno: 3396
   col_offset: 7
   node_kind: string_contains
   symbol: NotIn
@@ -2657,7 +2548,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3418
+  lineno: 3396
   col_offset: 41
   node_kind: string_contains
   symbol: NotIn
@@ -2668,7 +2559,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3420
+  lineno: 3398
   col_offset: 15
   node_kind: regex_call
   symbol: re.search
@@ -2679,7 +2570,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4003
+  lineno: 3981
   col_offset: 8
   node_kind: regex_call
   symbol: re.search
@@ -2690,7 +2581,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4016
+  lineno: 3994
   col_offset: 7
   node_kind: regex_call
   symbol: re.search
@@ -2701,7 +2592,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4022
+  lineno: 4000
   col_offset: 16
   node_kind: regex_call
   symbol: re.search
@@ -2712,7 +2603,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4028
+  lineno: 4006
   col_offset: 8
   node_kind: regex_call
   symbol: re.search
@@ -2723,7 +2614,7 @@ rows:
   bucket: 2_verification
   class: output_claim_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4035
+  lineno: 4013
   col_offset: 20
   node_kind: regex_call
   symbol: re.search
@@ -2734,7 +2625,7 @@ rows:
   bucket: 3_format_hygiene
   class: output_format_hygiene
   path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4066
+  lineno: 4044
   col_offset: 11
   node_kind: regex_call
   symbol: re.sub
@@ -2745,7 +2636,7 @@ rows:
   bucket: 2_verification
   class: semantic_frame_pii_floor
   path: src/mango_mvp/channels/subscription_llm_parts/provider.py
-  lineno: 1298
+  lineno: 1277
   col_offset: 29
   node_kind: regex_call
   symbol: re.compile

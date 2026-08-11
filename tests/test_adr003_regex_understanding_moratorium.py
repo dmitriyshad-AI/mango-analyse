@@ -98,7 +98,7 @@ CHANNEL_MARKER_HELPER_BUDGET: dict[str, int] = {
     "src/mango_mvp/channels/held_state.py": 2,
     "src/mango_mvp/channels/new_lead_funnel.py": 31,
     "src/mango_mvp/channels/semantic_roles.py": 41,
-    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 6,
+    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 2,
     "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 6,
     "src/mango_mvp/channels/text_signals.py": 1,
 }
@@ -773,8 +773,8 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
 def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
     rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
-    assert len(rows) == 735
-    assert len({row["row_id"] for row in rows}) == 735
+    assert len(rows) == 701
+    assert len({row["row_id"] for row in rows}) == 701
     assert {row["node_kind"] for row in rows} == {
         "marker_helper_call",
         "regex_call",
@@ -808,9 +808,10 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
     mapped = _understanding_map_rows()
 
     source = payload["source"]
-    assert source["base_repo_head"] == "8cfe4c8918ba436decf55da1ead74fbcdf8f531e"
+    assert source["base_repo_head"] == "81105c085b4f18c365e47a985501590301654d75"
     assert source["integrated_patch_heads"] == []
-    assert source["snapshot_rows"] == len(snapshot_rows) == 735
+    assert source["working_tree_task"] == "2026-08-11_TZ_REMOVE_UNREACHABLE_SEMANTIC_OBSERVERS.md"
+    assert source["snapshot_rows"] == len(snapshot_rows) == 701
     assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
     assert source["node_kind_counts"] == {
         kind: sum(row["node_kind"] == kind for row in snapshot_rows)
@@ -832,18 +833,18 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
     assert source["cyrillic_elements_in_ge8_tables"] == sum(
         row["cyrillic_string_count"] for row in text_tables if row["cyrillic_string_count"] >= 8
     )
-    assert source["marker_helper_budget_ceiling"] == sum(CHANNEL_MARKER_HELPER_BUDGET.values()) == 159
+    assert source["marker_helper_budget_ceiling"] == sum(CHANNEL_MARKER_HELPER_BUDGET.values()) == 155
     assert source["marker_helper_actual_snapshot_rows"] == sum(
         row["node_kind"] == "marker_helper_call" for row in snapshot_rows
     )
     membership_rows = _literal_left_membership_snapshot(UNDERSTANDING_MAP_PATH.parents[1])
-    assert source["literal_left_membership_total"] == len(membership_rows) == 297
+    assert source["literal_left_membership_total"] == len(membership_rows) == 290
     assert source["literal_left_membership_in_canonical_text_scope"] == sum(
         row["in_canonical_text_scope"] for row in membership_rows
     ) == 148
     assert source["literal_left_membership_outside_canonical_text_scope"] == sum(
         not row["in_canonical_text_scope"] for row in membership_rows
-    ) == 149
+    ) == 142
 
     assert set(mapped) <= set(snapshot_by_id)
     assert {row["bucket"] for row in mapped.values()} == {"2_verification", "3_format_hygiene"}

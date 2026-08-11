@@ -82,13 +82,11 @@ from mango_mvp.channels.subscription_llm import (
     _claim_supported_by_facts,
     _fresh_fact_texts,
     _p0_text_with_antirepeat,
-    _verified_informational_answer,
     contains_bot_identity_disclosure,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
     find_unsupported_numeric_promises,
     find_unsupported_followup_deadline_claims,
-    find_redundant_questions_for_known_context,
     build_codex_exec_env,
     _normalize_direct_path_payload,
     _build_direct_path_prompt,
@@ -666,15 +664,6 @@ def test_high_risk_theme_forces_manager_only() -> None:
     assert result.route == "manager_only"
     assert "high_risk_manager_only" in result.safety_flags
     assert any("Высокорисковая" in item for item in result.manager_checklist)
-
-
-def test_find_redundant_questions_ignores_unknown_fields() -> None:
-    repeated = find_redundant_questions_for_known_context(
-        "Напишите класс ребёнка и предмет.",
-        context={"active_brand": "foton"},
-    )
-
-    assert repeated == ()
 
 
 def test_trial_fragment_answer_does_not_promise_bot_will_send_link() -> None:
@@ -1898,52 +1887,6 @@ def test_volna_peresborki_semantic_coverage_negative_controls_block_real_fabrica
     )
     for claim, facts in cases:
         assert not _claim_supported_by_facts(claim, facts), claim
-
-
-def test_verified_informational_answer_keeps_conservative_fact_match() -> None:
-    facts = {
-        "discount.second_subject": (
-            "Фотон: для второго и последующих очных предметов одного ребёнка скидка составляет 20 процентов."
-        )
-    }
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="На второй предмет действует скидка 20%.",
-        message_type="question",
-        topic_id="theme:005_discounts",
-        metadata=_a2_pipeline_metadata(
-            question="Есть скидка на второй предмет?",
-            facts=facts,
-            recovery_candidate="",
-        ),
-    )
-
-    assert not _verified_informational_answer(
-        result,
-        client_message="Есть скидка на второй предмет?",
-        context={"active_brand": "foton"},
-    )
-
-
-def test_verified_informational_answer_rejects_non_numeric_fabrication() -> None:
-    facts = {"platform.webinars": "УНПК: онлайн-вебинары проходят на платформе МТС Линк."}
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Онлайн-занятия проходят в Zoom.",
-        message_type="question",
-        topic_id="theme:014_format",
-        metadata=_a2_pipeline_metadata(
-            question="Где проходят онлайн-занятия?",
-            facts=facts,
-            recovery_candidate="",
-        ),
-    )
-
-    assert not _verified_informational_answer(
-        result,
-        client_message="Где проходят онлайн-занятия?",
-        context={"active_brand": "unpk"},
-    )
 
 
 def test_volna_peresborki_operational_guard_uses_retrieved_fact_metadata_semantically() -> None:

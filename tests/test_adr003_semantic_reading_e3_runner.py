@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_adr003_semantic_reading_e3_paired.sh"
 FINAL_PACHKA_RUNNER = ROOT / "scripts" / "run_adr003_final_pachka_pair.sh"
 VALIDATOR = ROOT / "scripts" / "validate_adr003_e3_leg.py"
+RED_SWITCH_PLAN = ROOT / "scripts" / "adr003_red_switch_plan.py"
+RED_SWITCH_RUNBOOK = ROOT / "docs" / "ADR003_RED_SWITCH_RUNBOOK_20260707.md"
 
 
 def _runner_text() -> str:
@@ -36,11 +38,29 @@ def test_adr003_final_pachka_runner_shell_syntax() -> None:
     subprocess.run(["bash", "-n", str(FINAL_PACHKA_RUNNER)], check=True)
 
 
+def test_adr003_red_switch_runbook_only_names_supported_keys() -> None:
+    supported = set(
+        subprocess.run(
+            ["python3", str(RED_SWITCH_PLAN), "--list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    command_prefix = "python3 scripts/adr003_red_switch_plan.py "
+    documented = {
+        line.removeprefix(command_prefix)
+        for line in RED_SWITCH_RUNBOOK.read_text(encoding="utf-8").splitlines()
+        if line.startswith(command_prefix) and not line.endswith(" --list")
+    }
+
+    assert documented <= supported
+
+
 def test_adr003_final_pachka_runner_emulates_old_profile_in_b_leg() -> None:
     text = _final_pachka_runner_text()
 
     assert 'OLD_READING_CLASSES="sense_seats,slots_gsf,off_topic,intent_actions,live_status_read"' in text
-    assert 'OLD_APPLY_CLASSES="live_status_read/conversation_intent_plan"' in text
     for flag in (
         "TELEGRAM_FACT_SELECT_FRAME",
         "TELEGRAM_TONE_CLOSE_FRAME_VETO",
@@ -55,7 +75,6 @@ def test_adr003_final_pachka_runner_emulates_old_profile_in_b_leg() -> None:
     b_run_section = text[text.index("run_b_leg()") : text.index("run_report()", text.index("run_b_leg()"))]
     assert "--allow-non-pilot-profile" in b_run_section
     assert 'TELEGRAM_SEMANTIC_READING_CLASSES="$OLD_READING_CLASSES"' in text
-    assert 'TELEGRAM_READING_APPLY_CLASSES="$OLD_APPLY_CLASSES"' in text
     assert '"$flag=0"' in text
     assert '--forbid-trace-class "$TARGET_READING_CLASSES"' in text
 
@@ -66,9 +85,11 @@ def test_adr003_final_pachka_runner_uses_current_profile_in_on_leg() -> None:
     on_run_section = text[text.index("run_on_leg()") : text.index("run_b_leg()", text.index("run_on_leg()"))]
 
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in on_section
-    assert "-u TELEGRAM_READING_APPLY_CLASSES" in on_section
     assert '"current HEAD pilot profile as-is; no manual env for target flags"' in text
     assert '--require-trace-class "$TARGET_READING_CLASSES"' in text
+    assert 'TARGET_READING_CLASSES="fact_select_read"' in text
+    assert "reask_read" not in text
+    assert "roles_read" not in text
     assert 'RUN_ORDER="${RUN_ORDER:-ON_FIRST}"' in text
     assert "--allow-non-pilot-profile" not in on_run_section
 
@@ -110,21 +131,6 @@ def test_adr003_e3_runner_can_append_target_reading_class_on_top_of_profile_defa
     assert 'READING_CLASSES="${READING_CLASSES},${target_reading_class}"' in text
     assert '"TARGET_READING_CLASSES": target_reading_classes' in text
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
-
-
-def test_adr003_e3_runner_supports_target_class_list_and_on_apply_only() -> None:
-    text = _runner_text()
-    baseline_section = text[text.index("== B:") : text.index("validate_leg B 0", text.index("== B:"))]
-    on_section = text[text.index("== ON:") : text.index("validate_leg ON 1", text.index("== ON:"))]
-
-    assert 'TARGET_APPLY_CLASSES="${TARGET_APPLY_CLASSES:-}"' in text
-    assert 'BASE_APPLY_CLASSES="${READING_APPLY_CLASSES:-$PROFILE_APPLY_CLASSES}"' in text
-    assert 'APPLY_CLASSES="$(merge_csv "$BASE_APPLY_CLASSES" "$TARGET_APPLY_CLASSES")"' in text
-    assert "-u TELEGRAM_READING_APPLY_CLASSES" in text
-    assert "TELEGRAM_READING_APPLY_CLASSES=" not in baseline_section
-    assert 'TELEGRAM_READING_APPLY_CLASSES="$APPLY_CLASSES"' in on_section
-    assert "target_apply_classes=$TARGET_APPLY_CLASSES" in text
-    assert "apply_classes=$APPLY_CLASSES" in text
 
 
 def test_adr003_e3_runner_supports_on_first_order() -> None:

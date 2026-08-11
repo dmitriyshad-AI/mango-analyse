@@ -126,7 +126,10 @@ deal-action, keyword-reask и tone-close слои; P0, fact, identity и output 
 - Живость: plan участвует в `required_fact_keys`, `fact_scope`, `answer_topics`
   и prompt; итоговый маршрут после модели он больше не переопределяет.
 - Тип: `mixed`.
-- Replacement-кандидат: частично уже заменяется SemanticReading/SemanticFrame (`slots_gsf`, `intent_actions`; `route_templates` остаётся отдельным apply-кандидатом). Нужна поузловая резка, не массовое удаление.
+- Replacement-кандидат: частично уже заменяется SemanticReading/SemanticFrame
+  (`slots_gsf`, `intent_actions`). Невызываемый `route_templates` apply-класс и весь
+  пассивный apply-реестр удалены 2026-08-11; сам pre-model план остаётся
+  до связанного read-only replay.
 
 ### 7. Semantic roles
 
@@ -192,16 +195,16 @@ reask и tone-close были невызванными или повторно р
 - Тип: `final floor`.
 - Что делать: не считать "пониманием клиента" и не удалять в рамках regex-lasanьya. Это финальные safety floors: они не должны становиться шире, но и не должны исчезать без отдельного safety replacement.
 
-## Dead-on-direct-path / frozen-monolith-only
+## Исторические dead-on-direct-path точки
 
-Эти точки не получили trace в локальной диагностике и находятся за direct-path return:
+Таблица фиксирует исходный аудит. Удалённые узлы не должны возвращаться:
 
 | Точка | Код | Доказательство | Статус |
 |---|---|---|---|
 | `rewrite_quality/rewriter` | удалённый `answer_quality_rewriter.py` | trace report: 0 records; владелец отказался от legacy fallback | `removed_in_refactoring_package_2` |
 | `post_semantics/humanity` | `post_layers.py:4533+`, вызов `provider.py:1060` | trace report: 0 records; direct-path return at `provider.py:989` | `dead_on_direct_path/frozen_monolith_only` |
-| `route_templates/redundant_guard` | `policy_routing.py:4005-4065`, вызовы старого хвоста `provider.py:1039` и `provider.py:1057` | trace report: 0 records; direct-path return at `provider.py:989` | `dead_on_direct_path/frozen_monolith_only` |
-| `rules_engine.py` dispatcher path | `rules_engine.py:175-222`, `policy_routing.py:1123-1225`, `policy_routing.py:1519-1623` | not called in `provider.py:962-989` direct-path branch; appears in monolith/dispatcher imports and old branch | `not_direct_path_live / dispatcher_or_monolith` |
+| `route_templates/redundant_guard` | удалён из `policy_routing.py` вместе с reask/roles observers | production callers: 0; фасадные импорты и self-tests удалены 2026-08-11 | `removed_in_cleanup_wave_2` |
+| `rules_engine.py` dispatcher path | модуль отсутствует в актуальном дереве | сырой поиск по актуальному HEAD | `removed` |
 
 Важно: "dead-on-direct-path" не значит "можно удалить сейчас". Это значит, что эти точки не надо включать в ближайший apply-mode для живого Telegram direct-path. Их удаление или перенос - отдельная уборка старого монолита.
 
@@ -209,7 +212,7 @@ reask и tone-close были невызванными или повторно р
 
 - Срез 1 (`sense_seats`, `slots_gsf`, `off_topic`) уже прошел отдельные замеры/регрейды и вошел в профильный default через прежние решения. Это не означает полного удаления всех regex, а только закрытие конкретных классов.
 - `intent_actions` после регрейда пары 1a и `да №5` входит в профильный default; legacy output-ветка live_availability удалена, входной `conversation_intent_plan.py` не тронут.
-- `route_templates/autonomy_matrix` показал высокий agreement в локальной диагностике и является кандидатом на следующий узкий эксперимент/замер, но не на включение без B/ON приемки.
+- `route_templates/autonomy_matrix` и невызванные reask/roles observers физически удалены; возвращать их как regex-fallback нельзя.
 
 ## Что нельзя утверждать
 
@@ -218,19 +221,11 @@ reask и tone-close были невызванными или повторно р
 - Нельзя считать отсутствие trace у dead-on-direct-path точек доказательством, что код безопасно удалить из репозитория. Это только доказательство, что он не часть текущего live direct-path.
 - Нельзя удалять P0/floor/preblock по общей логике "модель понимает лучше": это другой класс риска.
 
-## Рекомендованный пересчет Пакета-2
+## Следующий порядок
 
-1. Зафиксировать `rewrite_quality`, `post_semantics`, `route_templates/redundant_guard` как `dead_on_direct_path/frozen_monolith_only` в манифесте Пакета-2.
-2. Не строить будущий apply-switch для срезов 3-4 до отдельного решения: либо перенос trace в реально живую ветку, либо уборка старого монолита.
-3. Следующий экспериментальный кандидат для будущего apply-switch: только `route_templates/autonomy_matrix`, с fail-closed условиями:
-   - есть inline SemanticFrame/SemanticReading;
-   - confidence >= согласованного порога;
-   - нет P0/high-risk/floor flags;
-   - нет live-status/availability missing fact;
-   - нет unknown brand;
-   - legacy считается в тени, и при конфликте на P0/money/live-status выигрывает более осторожное решение.
-4. Перед любым включением apply или удалением legacy построить B/ON пару на живом direct-path и raw-регрейд.
-5. Отдельно спланировать будущие живые точки:
+1. Не строить новые apply-switch для удалённых наблюдателей.
+2. До удаления pre-model `conversation_intent_plan` нужен связанный read-only Wappi replay, потому что план участвует в выборе фактов и prompt.
+3. Отдельно разбирать только реально живые точки:
    - tone close detect;
    - direct keyword fallback reask;
    - reliable answerer/sense seats floor;
@@ -250,7 +245,7 @@ reask и tone-close были невызванными или повторно р
 Принятые правки аудиторов:
 
 - После `да №5` старое аудиторское ограничение про explicit-only снято: `intent_actions` теперь profile-default; новые target-классы всё ещё добавляются только явным env.
-- `rewrite_quality`, `post_semantics`, `route_templates/redundant_guard` помечены как `dead_on_direct_path/frozen_monolith_only`, а не как кандидаты на apply.
+- `route_templates/redundant_guard` и его замкнутые reask/roles helper удалены после проверки нулевых production callers.
 - Bot-safe memory step guard вынесен отдельной live safety-точкой.
 - Identity/prompt-injection и final output guards не считаются закрытыми срезом `off_topic`.
 - Semantic roles, dialogue memory и text hygiene описаны как набор разных helper/floor-механизмов, а не как один удаляемый regex.
@@ -259,4 +254,6 @@ reask и tone-close были невызванными или повторно р
 
 Нет, мы не полностью разобрали regex-лазанью.
 
-Мы сделали важный шаг: перестали путать живые regex-точки с мертвым старым монолитом. Теперь резать нужно не "все, где есть regex", а только реально исполняемые direct-path точки, по одной, с замером и сохранением safety-floor.
+Мы удалили ещё 34 записи смыслового inventory и 738 строк рабочего кода. Остались
+действующие pre-model выбор фактов/память и детерминированные safety-floor; их
+нельзя смешивать с уже удалёнными post-model классификаторами.

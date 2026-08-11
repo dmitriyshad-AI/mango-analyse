@@ -7,14 +7,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 
 SEMANTIC_READING_CLASSES_ENV = "TELEGRAM_SEMANTIC_READING_CLASSES"
-READING_APPLY_CLASSES_ENV = "TELEGRAM_READING_APPLY_CLASSES"
 PILOT_PROFILE_DEFAULT_READING_CLASSES = (
-    "sense_seats,slots_gsf,off_topic,intent_actions,live_status_read,"
-    "fact_select_read,route_templates,reask_read,roles_read"
-)
-PILOT_PROFILE_DEFAULT_APPLY_CLASSES = (
-    "live_status_read/conversation_intent_plan,"
-    "route_templates/autonomy_matrix,reask_read/final_text,roles_read/refund_tax"
+    "sense_seats,slots_gsf,live_status_read,fact_select_read"
 )
 SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
 SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
@@ -23,24 +17,9 @@ SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"
 ALLOWED_SEMANTIC_READING_CLASSES = frozenset(
     {
         "sense_seats",
-        "off_topic",
         "slots_gsf",
-        "intent_actions",
-        "route_templates",
-        "rewrite_quality",
-        "post_semantics",
         "live_status_read",
-        "reask_read",
-        "roles_read",
         "fact_select_read",
-    }
-)
-ALLOWED_READING_APPLY_CLASSES = frozenset(
-    {
-        "route_templates/autonomy_matrix",
-        "live_status_read/conversation_intent_plan",
-        "reask_read/final_text",
-        "roles_read/refund_tax",
     }
 )
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})
@@ -74,8 +53,6 @@ def _context_value(context: Optional[Mapping[str, Any]], key: str, default: Any 
         return os.getenv(key, default)
     if key == SEMANTIC_READING_CLASSES_ENV and _pilot_profile_default_reading_classes_enabled(context):
         return PILOT_PROFILE_DEFAULT_READING_CLASSES
-    if key == READING_APPLY_CLASSES_ENV and _pilot_profile_default_reading_classes_enabled(context):
-        return PILOT_PROFILE_DEFAULT_APPLY_CLASSES
     return default
 
 
@@ -103,16 +80,6 @@ def enabled_classes(context: Optional[Mapping[str, Any]] = None) -> frozenset[st
 
 def reading_class_enabled(context: Optional[Mapping[str, Any]], name: str) -> bool:
     return str(name or "").strip().casefold() in enabled_classes(context)
-
-
-def apply_classes(context: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
-    return _csv_values(_context_value(context, READING_APPLY_CLASSES_ENV, "")) & ALLOWED_READING_APPLY_CLASSES
-
-
-def reading_apply_class_enabled(context: Optional[Mapping[str, Any]], name: str) -> bool:
-    normalized = str(name or "").strip().casefold()
-    base_class = normalized.split("/", 1)[0]
-    return base_class in enabled_classes(context) and normalized in apply_classes(context)
 
 
 def _clamp01(value: Any) -> float:

@@ -11,7 +11,6 @@ from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.draft_prompt_builder import IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES, safe_schedule_template, should_force_manager_only
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
 from mango_mvp.channels.output_verification_floor import (
-    AUTONOMY_SCOPE_PRECISION_ENV,
     is_near_repeat,
     parse_contract as parse_dialogue_contract,
     verify_output as verify_dialogue_contract_output,
@@ -25,34 +24,17 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     SAFE_FALLBACK_DRAFT_TEXT,
     SubscriptionDraftResult,
 )
-from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
-    SemanticReading,
-    append_reading_trace_record,
-    off_topic_reading_decision,
-    reading_apply_class_enabled,
-    reading_class_enabled,
-    semantic_reading_trace_record,
-    semantic_frame_from_metadata,
-    semantic_reading_transition_metadata,
-)
 from mango_mvp.channels.subscription_llm_parts.support import (
-    INTENT_MODEL_LED_ENV,
     MEMORY_PROVENANCE_ENV,
     PRESALE_PII_MEMORY_ENV,
     _active_brand,
     _append_fact_texts,
     _claim_supported_by_facts,
     _client_clean_fact_text,
-    _direct_path_fact_value,
     _direct_path_template_fact_text,
-    _direct_path_template_from_fact,
-    _explicit_truthy_setting,
-    _fact_match_anchors,
     _fresh_fact_texts,
     _has_dialogue_contract_retrieved_facts,
-    _intent_model_led_enabled,
     _normalize_fact_match_text,
-    _pilot_profile_default_on_flag_enabled,
     _p0_model_led_enabled,
     _prose_model_led_enabled,
     _presale_prompt_child_name_value,
@@ -71,11 +53,7 @@ PH2_OBJECTION_ENV = "TELEGRAM_PH2_OBJECTION"
 
 PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 
-PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
-INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
 
-INTENT_MODEL_LED_TARGETS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix"})
-INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"off_topic", "other"})
 
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 
@@ -435,10 +413,6 @@ MISSING_GENERAL_HELPFUL_TEXT = (
     "подготовиться к экзамену или олимпиаде. По этим данным менеджер предложит подходящий следующий шаг."
 )
 
-KNOWN_CONTEXT_REPAIR_TEXT = (
-    "Да, вижу данные из переписки — повторно присылать их не нужно. "
-    "Отвечу по сути, а детали, которые требуют проверки по группе или месту, передам менеджеру."
-)
 
 PROMOCODE_DRAFT_RE = re.compile(r"\b(?:LVSH-VEB20|LVSH-KF-10|ABRAMOV|VAGIN)\b", re.I)
 
@@ -595,11 +569,6 @@ _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS = {
 
 
 
-def _float_value(value: object) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 
@@ -623,21 +592,6 @@ def _float_value(value: object) -> float:
 
 
 
-def _metadata_with_self_route_deferral_cleared(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    merged = dict(metadata)
-    pipeline = (
-        dict(merged.get("dialogue_contract_pipeline"))
-        if isinstance(merged.get("dialogue_contract_pipeline"), Mapping)
-        else {}
-    )
-    if pipeline:
-        pipeline["is_manager_deferral"] = False
-        pipeline["reason_class"] = ""
-        pipeline["reason_evidence"] = {}
-        merged["dialogue_contract_pipeline"] = pipeline
-    merged["is_manager_deferral"] = False
-    merged["reason_class"] = ""
-    return merged
 
 def _metadata_with_guarded_original_text(
     metadata: Mapping[str, Any],
@@ -661,63 +615,13 @@ def _metadata_with_guarded_original_text(
 
 
 
-def _unpk_moscow_address_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
-    return _direct_path_template_from_fact(
-        active_brand="unpk",
-        fact_key="locations_unpk.addresses.1.address",
-        literal_text=ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
-        neutral_fallback="Адрес московской площадки УНПК лучше уточнит менеджер по выбранному формату.",
-        context=context,
-        render=lambda text: (
-            f"Здравствуйте! Регулярные занятия в Москве проходят по адресу {_direct_path_fact_value(text)}. "
-            "Если хотите, подскажу ближайшие группы."
-        ),
-    )
 
 
 
-def _autonomy_scope_precision_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    explicit = _explicit_truthy_setting(
-        context,
-        AUTONOMY_SCOPE_PRECISION_ENV,
-        aliases=("autonomy_scope_precision", "autonomy_scope_precision_enabled"),
-    )
-    if explicit is not None:
-        return bool(explicit)
-    return _pilot_profile_default_on_flag_enabled(
-        context,
-        AUTONOMY_SCOPE_PRECISION_ENV,
-        aliases=("autonomy_scope_precision", "autonomy_scope_precision_enabled"),
-    )
 
 
-def _asks_unpk_regular_moscow_route(text: str) -> bool:
-    value = str(text or "").casefold().replace("ё", "е")
-    asks_route = bool(
-        re.search(
-            r"как\s+(?:доехать|добраться|попасть|пройти|проехать)|доехать|добраться|проезд|маршрут",
-            value,
-            re.I,
-        )
-    )
-    mentions_regular_moscow = bool(re.search(r"моск|заняти|площадк|очн|регулярн|обычн|адрес", value, re.I))
-    mentions_camp = bool(re.search(r"лвш|менделеев|лагер|camp|летн|трансфер|выездн", value, re.I))
-    return asks_route and mentions_regular_moscow and not mentions_camp
 
 
-def _autonomy_scope_precision_repaired_address_text(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> str:
-    if not _autonomy_scope_precision_enabled(context) or _active_brand(context) != "unpk":
-        return ""
-    if not _asks_unpk_regular_moscow_route(client_message):
-        return ""
-    if not re.search(r"лвш|менделеев|льяловск|красный\s+воин", str(result.draft_text or "").casefold().replace("ё", "е"), re.I):
-        return ""
-    return _unpk_moscow_address_template_from_kb(context)
 
 
 
@@ -809,21 +713,6 @@ def _context_with_dialogue_contract_retrieved_facts(
     merged.update(merged_payload)
     return merged
 
-_GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {
-    "cross_brand_safe_template_applied",
-    "cross_brand_client_text_blocked",
-    "brand_separation_guarded",
-    "result_guarantee_safe_template_applied",
-    "admission_guarantee_safe_template_applied",
-    "unsupported_promise_detected",
-    "zero_collect_legal_guarded",
-    "zero_collect_refund_guarded",
-    "complaint_apology_guarded",
-    "payment_dispute_manager_only",
-    "high_risk_manager_only",
-    "rules_engine_olympiad_grade_outside_9_11",
-}
-
 def _pipeline_fact_texts(result: SubscriptionDraftResult) -> dict[str, str]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
@@ -853,118 +742,13 @@ def _pipeline_contract(
         fact_key_catalog=tuple(fact_keys),
     )
 
-def _verified_informational_answer(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str,
-    context: Optional[Mapping[str, Any]],
-    template_name: str = "",
-) -> bool:
-    if result.route == "manager_only" or is_high_risk_result(result):
-        return False
-    if set(detect_high_risk_input_markers(client_message, context=context)):
-        return False
-    flags = set(result.safety_flags)
-    if flags.intersection(_GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
-        return False
-    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
-    if any(bool(metadata.get(flag)) for flag in _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
-        return False
-    fact_texts = _pipeline_fact_texts(result)
-    if not fact_texts:
-        return False
-    if not _claim_supported_by_facts(result.draft_text, tuple(fact_texts.values())):
-        return False
-    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
-    if contract.is_p0:
-        return False
-    findings = verify_dialogue_contract_output(
-        result.draft_text,
-        facts=fact_texts,
-        active_brand=_active_brand(context),
-        contract=contract,
-        client_message=client_message,
-        context=context,
-        previous_bot_texts=_humanity_previous_bot_texts(context),
-    )
-    if findings:
-        return False
-    if template_name in {"matkap", "tax"} and not _strict_informational_yield_ok(
-        result,
-        template_name=template_name,
-        client_message=client_message,
-        context=context,
-        fact_texts=fact_texts,
-    ):
-        return False
-    return True
 
-def _strict_informational_yield_ok(
-    result: SubscriptionDraftResult,
-    *,
-    template_name: str,
-    client_message: str,
-    context: Optional[Mapping[str, Any]],
-    fact_texts: Mapping[str, str],
-) -> bool:
-    draft_text = str(result.draft_text or "")
-    facts_blob = " ".join(str(value or "") for value in fact_texts.values())
-    if _informational_yield_has_unbacked_concrete_anchors(draft_text, facts_blob=facts_blob):
-        return False
-    if _mentions_unbacked_children_rule(draft_text, facts_blob=facts_blob):
-        return False
-    if template_name == "tax" and _asks_non_tax_document_or_contract(client_message, context=context) and _answers_tax_deduction_scope(draft_text):
-        return False
-    if template_name == "matkap" and _asks_non_matkap_document_or_contract(client_message, context=context) and _answers_matkap_scope(draft_text):
-        return False
-    return True
 
-def _informational_yield_has_unbacked_concrete_anchors(draft_text: str, *, facts_blob: str) -> bool:
-    draft_anchors = _fact_match_anchors(draft_text)
-    if not draft_anchors:
-        return False
-    fact_anchors = _fact_match_anchors(facts_blob)
-    allowed_prefixes = ("number:", "date:", "condition:", "unit:")
-    unbacked = {
-        anchor
-        for anchor in draft_anchors - fact_anchors
-        if anchor.startswith(allowed_prefixes)
-    }
-    return bool(unbacked)
 
-def _mentions_unbacked_children_rule(draft_text: str, *, facts_blob: str) -> bool:
-    draft = str(draft_text or "").casefold().replace("ё", "е")
-    if not re.search(r"\b(?:двое|двух|два|2)\s+(?:дет|реб)", draft, re.I):
-        return False
-    if re.search(r"\b(?:двое|двух|два|2)\s+(?:дет|реб)", str(facts_blob or "").casefold().replace("ё", "е"), re.I):
-        return False
-    return bool(re.search(r"скид|вычет|возврат|сумм|правил|действ", draft, re.I))
 
-def _asks_non_tax_document_or_contract(client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> bool:
-    plan = _conversation_intent_plan(context)
-    if str(plan.get("primary_intent") or "") == "tax":
-        return False
-    text = str(client_message or "").casefold().replace("ё", "е")
-    if re.search(r"налог|вычет|фнс|ндфл|кнд|лиценз|справк", text, re.I):
-        return False
-    return bool(re.search(r"договор|оферт|оригинал|документ|акт|заявлен|подпис", text, re.I))
 
-def _asks_non_matkap_document_or_contract(client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> bool:
-    plan = _conversation_intent_plan(context)
-    if str(plan.get("primary_intent") or "") == "matkap":
-        return False
-    text = str(client_message or "").casefold().replace("ё", "е")
-    if re.search(r"маткап|материнск|сфр|сертификат", text, re.I):
-        return False
-    return bool(re.search(r"договор|оферт|оригинал|документ|акт|заявлен|подпис", text, re.I))
 
-def _answers_tax_deduction_scope(draft_text: str) -> bool:
-    text = str(draft_text or "").casefold().replace("ё", "е")
-    return bool(re.search(r"налог|вычет|фнс|ндфл|кнд|13\s*%|14\s*300|110\s*000", text, re.I))
 
-def _answers_matkap_scope(draft_text: str) -> bool:
-    text = str(draft_text or "").casefold().replace("ё", "е")
-    return bool(re.search(r"маткап|материнск|сфр|сертификат", text, re.I))
 
 def find_unsupported_numeric_promises(
     draft_text: str,
@@ -1044,100 +828,10 @@ def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> Subscri
         metadata=metadata,
     )
 
-def _fix1b_has_paid_operation_context(result: SubscriptionDraftResult) -> bool:
-    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
-    direct_p0 = metadata.get("direct_path_model_p0")
-    if isinstance(direct_p0, Mapping) and str(direct_p0.get("p0_kind") or "") == "paid_operation_context":
-        return True
-    return "direct_path_model_p0_paid_operation_context" in set(result.safety_flags)
 
 
-def _is_verified_client_safe_template(draft_text: str) -> bool:
-    normalized = " ".join(str(draft_text or "").split())
-    if not normalized:
-        return False
-    verified_templates = {
-        ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
-        ADDRESS_UNPK_SAFE_TEXT,
-        ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
-        CONTACT_FOTON_SAFE_TEXT,
-        CONTACT_UNPK_SAFE_TEXT,
-        FOTON_INSTALLMENT_SAFE_TEXT,
-        FOTON_CAMP_INSTALLMENT_SAFE_TEXT,
-        FOTON_DOLYAMI_SAFE_TEXT,
-        FOTON_SECOND_SUBJECT_DISCOUNT_TEXT,
-        UNPK_SECOND_SUBJECT_DISCOUNT_TEXT,
-        UNPK_MONTHLY_SEMESTER_DISCOUNT_TEXT,
-        UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
-        MULTICHILD_DISCOUNT_TEXT,
-        DISCOUNT_STACKING_SAFE_TEXT,
-        MATKAP_FEDERAL_TIMING_SAFE_TEXT,
-        MATKAP_REGIONAL_SAFE_TEXT,
-        MATKAP_SFR_REVIEW_SAFE_TEXT,
-        TAX_AMOUNT_SAFE_TEXT,
-        TAX_LICENSE_SAFE_TEXT,
-        TAX_FNS_REVIEW_SAFE_TEXT,
-        TAX_ONLINE_FORM_SAFE_TEXT,
-        FOTON_LVSH_PRICE_SAFE_TEXT,
-        UNPK_LVSH_PRICE_SAFE_TEXT,
-        UNPK_LVSH_LIVING_TRANSFER_SAFE_TEXT,
-        UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
-        UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT,
-        UNPK_LVSH_GRADE_11_SAFE_TEXT,
-        UNPK_CAMP_OVERVIEW_SAFE_TEXT,
-        UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT,
-        FOTON_CAMP_OVERVIEW_SAFE_TEXT,
-        FOTON_LVSH_DATES_SAFE_TEXT,
-        UNPK_LVSH_DATES_SAFE_TEXT,
-        UNPK_LVSH_SEATS_SAFE_TEXT,
-        FOTON_ONLINE_TRIAL_SAFE_TEXT,
-        UNPK_TRIAL_SAFE_TEXT,
-    }
-    return normalized in {" ".join(template.split()) for template in verified_templates}
 
-def _result_has_live_status_missing_fact(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> bool:
-    client_text = str(client_message or "").casefold()
-    if not _asks_live_status_or_booking_question(client_text):
-        return False
-    model_live = _intent_model_led_decision(result, context=context, target="live_availability")
-    if model_live is False and not _asks_explicit_live_availability_question(client_text):
-        return False
-    missing_text = " ".join(str(item or "") for item in result.missing_facts).casefold()
-    return has_any_marker(
-        missing_text,
-        (
-            "availability",
-            "налич",
-            "мест",
-            "групп",
-            "смен",
-            "брон",
-        ),
-    )
 
-def _asks_live_status_or_booking_question(text: str) -> bool:
-    normalized = str(text or "").casefold().replace("ё", "е")
-    if has_any_marker(normalized, ("про оплат", "условия оплат", "не про мест", "не о мест", "не места")) and has_any_marker(
-        normalized, ("оплат", "рассроч", "долями", "частями", "помесяч", "семестр")
-    ):
-        return False
-    return has_any_marker(
-        normalized,
-        (
-            "мест",
-            "налич",
-            "брон",
-            "заброни",
-            "оформить место",
-            "проверки мест",
-            "проверить места",
-        )
-    )
 
 
 def _asks_explicit_live_availability_question(text: str) -> bool:
@@ -1157,47 +851,10 @@ def _asks_explicit_live_availability_question(text: str) -> bool:
     return any(re.search(pattern, normalized) for pattern in patterns)
 
 
-def _direct_path_model_intent_signal(result: SubscriptionDraftResult) -> Mapping[str, Any]:
-    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
-    signal = metadata.get("direct_path_model_intent")
-    return signal if isinstance(signal, Mapping) else {}
 
 
-def _direct_path_model_intent_primary(signal: Mapping[str, Any]) -> str:
-    primary = str(signal.get("primary_intent") or "").strip().casefold().replace("-", "_").replace(" ", "_")
-    if primary in {"availability", "live_status", "seats", "seat_availability", "booking"}:
-        primary = "live_availability"
-    if primary in {"location", "venue", "place"}:
-        primary = "address"
-    if primary in {"price_lock", "current_terms", "fix_price"}:
-        primary = "price_fix"
-    if primary in {"out_of_scope", "offtopic", "not_related", "irrelevant"}:
-        primary = "off_topic"
-    if primary in {"general", "none", "unknown", "not_target"}:
-        primary = "other"
-    return primary if primary in INTENT_MODEL_LED_ALLOWED else ""
 
 
-def _intent_model_led_decision(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]],
-    target: str,
-) -> Optional[bool]:
-    if not _intent_model_led_enabled(context):
-        return None
-    primary = _direct_path_model_intent_primary(_direct_path_model_intent_signal(result))
-    if not primary:
-        return None
-    if primary == "off_topic":
-        return None
-    if primary == target:
-        return True
-    if target in INTENT_MODEL_LED_TARGETS and primary in INTENT_MODEL_LED_ALLOWED:
-        if _float_value(_direct_path_model_intent_signal(result).get("confidence")) < INTENT_MODEL_LED_CONFIDENCE_THRESHOLD:
-            return None
-        return False
-    return None
 
 
 
@@ -1256,401 +913,29 @@ def _conversation_intent_plan(context: Optional[Mapping[str, Any]]) -> Mapping[s
     plan = context.get("conversation_intent_plan")
     return plan if isinstance(plan, Mapping) else {}
 
-def _compact_conversation_intent_plan_for_metadata(plan: Mapping[str, Any]) -> Mapping[str, Any]:
-    keys = (
-        "schema_version",
-        "active_brand",
-        "primary_intent",
-        "topic_id",
-        "direct_question",
-        "topic_switch_decision",
-        "product_family",
-        "product_scope",
-        "answer_policy",
-        "route_bias",
-        "required_fact_keys",
-        "fact_scope",
-        "blocked_neighbor_scopes",
-        "topic_roles",
-        "payment_method",
-        "payment_source",
-        "refund_frame",
-        "enrollment_vs_recording",
-        "transfer_sense",
-        "answer_topics",
-        "forbidden_pairs",
-        "template_allowed",
-        "next_step_hint",
-        "model_led_enabled",
-        "model_led_applied",
-        "model_led_original_primary_intent",
-        "model_led_keyword_prefilter",
-        "model_led_primary_intent",
-        "model_led_signal",
-    )
-    return {key: plan[key] for key in keys if key in plan}
-
-def apply_known_context_redundant_question_guard(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    """Catch drafts that ask again for data already known from safe context."""
-
-    repeated = find_redundant_questions_for_known_context(result.draft_text, context=context)
-    if not repeated:
-        return result
-    flags = tuple(
-        dict.fromkeys(
-            [
-                *result.safety_flags,
-                "asked_known_data_again",
-                "human_tone_review_required",
-            ]
-        )
-    )
-    checklist = tuple(
-        dict.fromkeys(
-            [
-                *result.manager_checklist,
-                "Черновик просит данные, которые уже есть в контексте клиента: проверить и не отправлять как есть.",
-            ]
-        )
-    )
-    metadata = {
-        **dict(result.metadata),
-        "asked_known_data_again_fields": list(repeated),
-    }
-    route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
-    guarded = replace(
-        result,
-        route=route,
-        safety_flags=flags,
-        manager_checklist=checklist,
-        context_warnings=tuple(dict.fromkeys([*result.context_warnings, "asked_known_data_again"])),
-        metadata=metadata,
-    )
-    if not reading_class_enabled(context, "route_templates"):
-        return guarded
-    reading = SemanticReading.from_result(result, context=context)
-    record = semantic_reading_trace_record(
-        reading_class="route_templates",
-        enabled=True,
-        status="applied",
-        decision="legacy_more_conservative",
-        reason="known_context_redundant_question_guard",
-        source=reading.source if reading is not None else "",
-        confidence=reading.frame_confidence if reading is not None else 0.0,
-        changed_fields=("route",) if route != result.route else (),
-        conflicts=("reask_known_slots",),
-        metadata=semantic_reading_transition_metadata(
-            stage="redundant_guard",
-            draft_before=result.draft_text,
-            draft_after=guarded.draft_text,
-            text_replacement=False,
-            legacy_decision="annotate_reask_known_slots",
-            frame_decision=reading.requested_action if reading is not None else "",
-            chosen="legacy_more_conservative",
-            extra={"repeated_fields": list(repeated)},
-        ),
-    )
-    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
 
 
-def apply_reask_read_trace(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    if not reading_class_enabled(context, "reask_read"):
-        return result
-    repeated = find_redundant_questions_for_known_context(result.draft_text, context=context)
-    apply_enabled = reading_apply_class_enabled(context, "reask_read/final_text")
-    guarded = result
-    changed_fields: list[str] = []
-    if repeated and apply_enabled:
-        guarded = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
-        if guarded.route != result.route:
-            changed_fields.append("route")
-        if guarded.draft_text != result.draft_text:
-            changed_fields.append("draft_text")
-        if guarded.safety_flags != result.safety_flags:
-            changed_fields.append("safety_flags")
-        if guarded.manager_checklist != result.manager_checklist:
-            changed_fields.append("manager_checklist")
-    known = known_context_fields(context)
-    hidden_slots = _semantic_hidden_slot_names(context)
-    do_not_reask = _do_not_reask_slot_names_from_context(context)
-    record = semantic_reading_trace_record(
-        reading_class="reask_read",
-        enabled=True,
-        status="applied" if changed_fields else ("would_flag" if repeated else "shadow_only"),
-        decision="known_slot_reask_applied" if changed_fields else ("known_slot_reask" if repeated else "no_reask_detected"),
-        reason="direct_path_final_text_reask_observer",
-        source="deterministic_observer",
-        confidence=1.0,
-        changed_fields=tuple(changed_fields),
-        conflicts=("known_slot_reask",) if repeated else (),
-        metadata={
-            "stage": "direct_path_final_text",
-            "apply_enabled": apply_enabled,
-            "repeated_slot_keys": list(repeated),
-            "known_slot_keys": sorted(key for key in known if key in {"grade", "subject", "format", "active_brand"}),
-            "do_not_reask_slots": sorted(do_not_reask),
-            "semantic_hidden_slot_names": sorted(hidden_slots),
-            "hidden_slots_are_client_confirmed": False,
-        },
-    )
-    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
 
 
-def apply_roles_read_trace(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    if not reading_class_enabled(context, "roles_read"):
-        return result
-    plan = _conversation_intent_plan(context)
-    frame = semantic_frame_from_metadata(result.metadata)
-    apply_enabled = reading_apply_class_enabled(context, "roles_read/refund_tax")
-    guarded = result
-    changed_fields: list[str] = []
-    if apply_enabled and _roles_read_tax_non_refund_plan(plan) and _roles_read_refund_false_positive_result(result):
-        guarded = _roles_read_tax_non_refund_result(result)
-        if guarded.route != result.route:
-            changed_fields.append("route")
-        if guarded.topic_id != result.topic_id:
-            changed_fields.append("topic_id")
-        if guarded.draft_text != result.draft_text:
-            changed_fields.append("draft_text")
-        if guarded.safety_flags != result.safety_flags:
-            changed_fields.append("safety_flags")
-        if guarded.manager_checklist != result.manager_checklist:
-            changed_fields.append("manager_checklist")
-    record = semantic_reading_trace_record(
-        reading_class="roles_read",
-        enabled=True,
-        status="applied" if changed_fields else "shadow_only",
-        decision="tax_non_refund_template" if changed_fields else "roles_observed",
-        reason="direct_path_final_roles_observer",
-        source=str(frame.get("source") or "context"),
-        confidence=frame.get("confidence", 0.0) if frame else 0.0,
-        changed_fields=tuple(changed_fields),
-        conflicts=("tax_vs_refund",) if changed_fields else (),
-        metadata={
-            "stage": "direct_path_final_roles",
-            "apply_enabled": apply_enabled,
-            "final_route": result.route,
-            "final_topic_id": result.topic_id,
-            "plan_primary_intent": str(plan.get("primary_intent") or ""),
-            "plan_topic_id": str(plan.get("topic_id") or ""),
-            "payment_source": str(plan.get("payment_source") or ""),
-            "refund_frame": str(plan.get("refund_frame") or ""),
-            "enrollment_vs_recording": str(plan.get("enrollment_vs_recording") or ""),
-            "transfer_sense": str(plan.get("transfer_sense") or ""),
-            "frame_requested_action": str(frame.get("requested_action") or ""),
-            "frame_payment_readiness": str(frame.get("payment_readiness") or ""),
-            "frame_risk_class": str(frame.get("risk_class") or ""),
-        },
-    )
-    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
 
 
-def _roles_read_tax_non_refund_plan(plan: Mapping[str, Any]) -> bool:
-    return (
-        str(plan.get("primary_intent") or "").strip() == "tax"
-        and str(plan.get("payment_source") or "").strip() == "tax_deduction"
-        and str(plan.get("refund_frame") or "") == "none"
-    )
 
 
-def _roles_read_refund_false_positive_result(result: SubscriptionDraftResult) -> bool:
-    return (
-        result.topic_id == "theme:009_refund"
-        or bool(_roles_read_refund_related_safety_flags(result.safety_flags))
-    )
 
 
-def _roles_read_refund_related_safety_flags(flags: Sequence[str]) -> tuple[str, ...]:
-    refund_related_flags = {
-        "zero_collect_refund_guarded",
-        "presale_refund_policy_manager_check",
-        "presale_refund_policy_non_p0",
-    }
-    return tuple(flag for flag in flags if str(flag or "") in refund_related_flags)
 
 
-def _roles_read_tax_non_refund_result(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
-    # The frame owns the customer-facing meaning, but legacy/P0 floors still own
-    # route hardening. A false "refund" text becomes a tax text; manager_only
-    # stays manager_only when an upstream safety floor already required review.
-    flags = tuple(dict.fromkeys([*result.safety_flags, "tax_deduction_safe_template_applied"]))
-    return replace(
-        result,
-        topic_id="theme:008_tax_deduction",
-        draft_text=TAX_DEDUCTION_PROCESS_SAFE_TEXT,
-        safety_flags=flags,
-        metadata={**dict(result.metadata), "roles_read_tax_non_refund_repaired": True},
-    )
 
 
-def _semantic_hidden_slot_names(context: Optional[Mapping[str, Any]]) -> set[str]:
-    if not isinstance(context, Mapping):
-        return set()
-    result: set[str] = set()
-    for container in (context, context.get("dialogue_memory_view")):
-        if not isinstance(container, Mapping):
-            continue
-        slots = container.get("semantic_reading_slots")
-        if isinstance(slots, Mapping):
-            result.update(str(key or "").strip() for key in slots if str(key or "").strip())
-    return result
 
 
-def _do_not_reask_slot_names_from_context(context: Optional[Mapping[str, Any]]) -> set[str]:
-    if not isinstance(context, Mapping):
-        return set()
-    result: set[str] = set()
-    for container in (
-        context,
-        context.get("conversation_intent_plan"),
-        context.get("planner_intent"),
-        context.get("answer_contract"),
-        context.get("dialogue_memory_view"),
-    ):
-        if not isinstance(container, Mapping):
-            continue
-        raw = container.get("do_not_reask_slots") or container.get("do_not_ask_again")
-        if isinstance(raw, str):
-            value = raw.strip()
-            if value:
-                result.add(value)
-        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
-            result.update(str(item or "").strip() for item in raw if str(item or "").strip())
-    return result
 
 
-def _known_context_repair_text(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-    repeated: Sequence[str] = (),
-) -> str:
-    """Replace a repeated-data question with a useful answer that keeps known context."""
-
-    known = known_context_fields(context)
-    grade = str(known.get("grade") or "").strip()
-    subject = str(known.get("subject") or "").strip()
-    context_bits = []
-    if grade:
-        context_bits.append(f"{grade} класс")
-    if subject:
-        context_bits.append(subject)
-    prefix = f"Поняла: {', '.join(context_bits)}. " if context_bits else "Поняла, продолжу с учётом уже сказанного. "
-
-    draft = " ".join(str(result.draft_text or "").split())
-    cleaned_draft = _remove_repeated_known_data_questions(draft, repeated=repeated)
-    if cleaned_draft and len(cleaned_draft) >= 90:
-        return cleaned_draft
-
-    topic = str(result.topic_id or "")
-    if topic in {"theme:026_camp_general", "theme:027_camp_living_conditions", "theme:028_transport_logistics"}:
-        active_brand = _active_brand(context)
-        text = prefix
-        current = str(client_message or "").casefold().replace("ё", "е")
-        if active_brand == "foton":
-            if "онлайн" in current:
-                return (
-                    text
-                    + "По онлайн-формату летней смены нужно проверить актуальную возможность. "
-                    "Из подтверждённого у Фотона есть выездная школа в Менделеево и городская летняя школа в Москве; "
-                    "менеджер подберёт вариант под ваш класс и цель."
-                )
-            return (
-                text
-                + "У Фотона есть выездная школа в Менделеево и городская летняя школа в Москве. "
-                "Менеджер проверит подходящую смену и наличие мест под ваш класс."
-            )
-        if active_brand == "unpk":
-            return (
-                text
-                + "По УНПК есть летние смены и ЛВШ Менделеево; менеджер проверит подходящую смену "
-                "и наличие мест под ваш класс."
-            )
-
-    if draft and len(draft) >= 90 and not any(field in repeated for field in ("grade", "subject", "student_name", "parent_name")):
-        return draft
-    return KNOWN_CONTEXT_REPAIR_TEXT
-
-def _remove_repeated_known_data_questions(text: str, *, repeated: Sequence[str]) -> str:
-    value = str(text or "").strip()
-    if not value or not repeated:
-        return value
-    sentence_parts = re.split(r"(?<=[.!?])\s+", value)
-    cleaned: list[str] = []
-    for sentence in sentence_parts:
-        lowered = sentence.casefold().replace("ё", "е")
-        drop = False
-        if "grade" in repeated and re.search(r"(напишите|подскажите|уточните)[^.!?\n]{0,70}класс", lowered):
-            drop = True
-        if "subject" in repeated and re.search(r"(напишите|подскажите|уточните)[^.!?\n]{0,70}предмет", lowered):
-            drop = True
-        if "student_name" in repeated and re.search(r"(напишите|подскажите|уточните)[^.!?\n]{0,70}(имя|фио)", lowered):
-            drop = True
-        if "parent_name" in repeated and re.search(r"(ваше\s+имя|как\s+вас\s+зовут|фио\s+родител)", lowered):
-            drop = True
-        if "phone" in repeated and re.search(r"(телефон|номер\s+телефона|контактн\w+\s+номер)", lowered):
-            drop = True
-        if not drop:
-            cleaned.append(sentence)
-    result = " ".join(part.strip() for part in cleaned if part.strip())
-    return result or value
-
-def find_redundant_questions_for_known_context(
-    draft_text: str,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-) -> tuple[str, ...]:
-    known = known_context_fields(context)
-    if not known:
-        return ()
-    text = str(draft_text or "").casefold().replace("ё", "е")
-    repeated: list[str] = []
-    if (
-        known.get("student_name")
-        and re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text)
-        and not _legitimate_enrollment_student_name_request(text, context=context)
-    ):
-        repeated.append("student_name")
-    if known.get("parent_name") and re.search(r"(ваше\s+имя|как\s+вас\s+зовут|фио\s+родител)", text):
-        repeated.append("parent_name")
-    if known.get("phone") and re.search(r"(телефон|номер\s+телефона|контактн\w+\s+номер)", text):
-        repeated.append("phone")
-    if known.get("grade") and re.search(r"(какой\s+класс|класс\s+реб[её]нк|напишите[^.!?\n]{0,40}класс|подскажите[^.!?\n]{0,40}класс)", text):
-        repeated.append("grade")
-    if known.get("subject") and re.search(r"(какой\s+предмет|предмет[^.!?\n]{0,30}интерес|напишите[^.!?\n]{0,40}предмет|подскажите[^.!?\n]{0,40}предмет)", text):
-        repeated.append("subject")
-    if known.get("format") and re.search(r"(онлайн\s+или\s+очн|очно\s+или\s+онлайн|какой\s+формат|формат[^.!?\n]{0,30}удоб)", text):
-        repeated.append("format")
-    if known.get("active_brand") and re.search(r"(фотон\s+или\s+унпк|какой\s+центр|какой\s+учебн\w+\s+центр)", text):
-        repeated.append("active_brand")
-    return tuple(dict.fromkeys(repeated))
 
 
-def _legitimate_enrollment_student_name_request(text: str, *, context: Optional[Mapping[str, Any]]) -> bool:
-    plan = _conversation_intent_plan(context)
-    primary_intent = str(plan.get("primary_intent") or "").strip()
-    topic_id = str(plan.get("topic_id") or "").strip()
-    enrollment_vs_recording = str(plan.get("enrollment_vs_recording") or "").strip()
-    if enrollment_vs_recording == "recording":
-        return False
-    if enrollment_vs_recording == "enroll" or primary_intent in {"enroll", "enrollment"} or topic_id == "theme:020_enrollment":
-        return True
-    return False
+
+
+
 
 def apply_unstated_subject_guard(
     result: SubscriptionDraftResult,

@@ -6,7 +6,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "fbf690c7a526a2dcf75c0a45cd1bac1e4dd7fb424f5724556cf314ca08b12a42",
     "args_preview": "(\"адрес\", \"сретенк\", \"скорняжн\", \"москва\", \"метро\", \"где находит\")",
-    "lineno": 2786,
+    "lineno": 2764,
     "col_offset": 23,
     "row_id": "adr003:0544334a40679153ea5b076b"
   },
@@ -17,7 +17,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "cf0d29b048b2c05a7bccd8654ad6567f7ff3cbbe2df020725e033410a0c50fb0",
     "args_preview": "(\"адрес\", \"сретенк\", \"скорняжн\", \"москва\", \"метро\", \"чистые пруды\")",
-    "lineno": 2787,
+    "lineno": 2765,
     "col_offset": 27,
     "row_id": "adr003:3b0fda15bab60e26ab334dd1"
   },
@@ -435,7 +435,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "2fc8ce0f1049d96df824ec71f649f90d5be83cc4b0b44ba660bc91830a841bc4",
     "args_preview": "(\"не про мест\", \"не о мест\", \"не места\")",
-    "lineno": 1145,
+    "lineno": 839,
     "col_offset": 25,
     "row_id": "adr003:95baac853fe9d18a8af21bc6"
   },
@@ -517,17 +517,6 @@
     "row_id": "adr003:4cd4e26d8c693482194718d9"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_live_status_or_booking_question",
-    "node_kind": "marker_helper_call",
-    "symbol": "has_any_marker",
-    "args_sha256": "9f2ad6ea14fb10268fbccc11e28a1af70a6a188bbc9ea37b6c83b15400e284b9",
-    "args_preview": "(\"оплат\", \"рассроч\", \"долями\", \"частями\", \"помесяч\", \"семестр\")",
-    "lineno": 1125,
-    "col_offset": 153,
-    "row_id": "adr003:d0feebaee5ff01da9a492e45"
-  },
-  {
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_is_payment_terms_question",
     "node_kind": "marker_helper_call",
@@ -556,7 +545,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "631e9824a28ec98329b67623496fdd0549771161222042d8cd0fce712dc4fd7b",
     "args_preview": "(\"очно\", \"офлайн\")",
-    "lineno": 4082,
+    "lineno": 4060,
     "col_offset": 37,
     "row_id": "adr003:afe47f9d4028dce77085f38f"
   },
@@ -658,17 +647,6 @@
     "lineno": 453,
     "col_offset": 44,
     "row_id": "adr003:a9f9403fae7ababbef68b3cb"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_live_status_or_booking_question",
-    "node_kind": "marker_helper_call",
-    "symbol": "has_any_marker",
-    "args_sha256": "b591cb02e7aa3276fa68c495ae658506899b7fd5a2a624bd726be93831c7d5f6",
-    "args_preview": "(\"про оплат\", \"условия оплат\", \"не про мест\", \"не о мест\", \"не места\")",
-    "lineno": 1125,
-    "col_offset": 7,
-    "row_id": "adr003:b7e1b23537938fcc0a914cea"
   },
   {
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
@@ -787,7 +765,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "aaf05c2082d6238e85a6996f00e2d3fb22fbfa88b3b4005a1a536b4c55e7a5ea",
     "args_preview": "(\"стоим\", \"цена\", \"цену\", \"прайс\", \"руб\", \"почем\", \"почём\")",
-    "lineno": 4183,
+    "lineno": 4161,
     "col_offset": 56,
     "row_id": "adr003:8b2b324205cda29c03f60552"
   },
@@ -933,28 +911,6 @@
     "lineno": 176,
     "col_offset": 30,
     "row_id": "adr003:b06c9b168e7b8a4e58e9dc5d"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_result_has_live_status_missing_fact",
-    "node_kind": "marker_helper_call",
-    "symbol": "has_any_marker",
-    "args_sha256": "09c50b5c512c15308ddd60d88e229d14f202972fb651d3e1dabb3716ad642512",
-    "args_preview": "(\n            \"availability\",\n            \"налич\",\n            \"мест\",\n            \"групп\",\n            \"смен\",\n            \"брон\",\n        )",
-    "lineno": 1111,
-    "col_offset": 11,
-    "row_id": "adr003:407556c4f6a3d912d7ed3bc6"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_live_status_or_booking_question",
-    "node_kind": "marker_helper_call",
-    "symbol": "has_any_marker",
-    "args_sha256": "edf2ce437b0759050853c64fb645350ba401a274f4f0c51bb4aed986ffd5c626",
-    "args_preview": "(\n            \"мест\",\n            \"налич\",\n            \"брон\",\n            \"заброни\",\n            \"оформить место\",\n            \"проверки мест\",\n            \"проверить места\",\n        )",
-    "lineno": 1129,
-    "col_offset": 11,
-    "row_id": "adr003:b7573a210b573c6b2a23ac05"
   },
   {
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
@@ -1128,7 +1084,7 @@
     "symbol": "has_marker",
     "args_sha256": "2ee9e615eb08fef587d8f5b40eba573ba0988e3e1903a747d8c58dd4facf7ae3",
     "args_preview": "\"или\"",
-    "lineno": 4082,
+    "lineno": 4060,
     "col_offset": 93,
     "row_id": "adr003:86875486e9e7557e10e81a57"
   },
@@ -1260,7 +1216,7 @@
     "symbol": "has_marker",
     "args_sha256": "71140739c6b136ef6dd73bce96c2681fe4f0f125a0011c50913c262e440a3ef1",
     "args_preview": "\"процент\"",
-    "lineno": 4183,
+    "lineno": 4161,
     "col_offset": 7,
     "row_id": "adr003:bbe50536dd1340da8e3c292a"
   },
@@ -1412,7 +1368,7 @@
     "value_preview": "frozenset({\"live_availability\", \"schedule\", \"address\", \"camp\", \"price_fix\", \"off_topic\", \"other\"})",
     "literal_string_count": 7,
     "cyrillic_string_count": 0,
-    "lineno": 1184,
+    "lineno": 1163,
     "col_offset": 0,
     "row_id": "adr003:0a1c5936825ef07941fdd128"
   },
@@ -1625,6 +1581,19 @@
     "row_id": "adr003:73754392aefb1c39386c7d50"
   },
   {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
+    "node_kind": "text_table",
+    "symbol": "SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION",
+    "value_sha256": "470ca1926f6d514548e29a9db2f009e9098c6990c92eec1f9e9f3bf5b5bb0c07",
+    "value_preview": "\"semantic_frame_manager_action_gate_v1_2026_07_01\"",
+    "literal_string_count": 1,
+    "cyrillic_string_count": 0,
+    "lineno": 1581,
+    "col_offset": 0,
+    "row_id": "adr003:23dc3075a26b52951b057773"
+  },
+  {
     "path": "src/mango_mvp/channels/actions.py",
     "qualname": "<module>",
     "node_kind": "text_table",
@@ -1654,25 +1623,12 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
     "qualname": "<module>",
     "node_kind": "text_table",
-    "symbol": "SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION",
-    "value_sha256": "470ca1926f6d514548e29a9db2f009e9098c6990c92eec1f9e9f3bf5b5bb0c07",
-    "value_preview": "\"semantic_frame_manager_action_gate_v1_2026_07_01\"",
-    "literal_string_count": 1,
-    "cyrillic_string_count": 0,
-    "lineno": 1602,
-    "col_offset": 0,
-    "row_id": "adr003:23dc3075a26b52951b057773"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
     "symbol": "_SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE",
     "value_sha256": "1e9d7c27c8bbc8ddf0055c93e064a62fa995d177fee28cc8fa949bc8a4db06f4",
     "value_preview": "0.8",
     "literal_string_count": 0,
     "cyrillic_string_count": 0,
-    "lineno": 1627,
+    "lineno": 1606,
     "col_offset": 0,
     "row_id": "adr003:84bc611e6cd64705f32dfdec"
   },
@@ -1685,7 +1641,7 @@
     "value_preview": "{\"closing\", \"post_payment\", \"support\"}",
     "literal_string_count": 3,
     "cyrillic_string_count": 0,
-    "lineno": 1628,
+    "lineno": 1607,
     "col_offset": 0,
     "row_id": "adr003:93e0fd5c2a36c39b671572af"
   },
@@ -1698,7 +1654,7 @@
     "value_preview": "{\"paid\", \"dispute\"}",
     "literal_string_count": 2,
     "cyrillic_string_count": 0,
-    "lineno": 1629,
+    "lineno": 1608,
     "col_offset": 0,
     "row_id": "adr003:64e979843e63dc607fc5e0e8"
   },
@@ -1893,9 +1849,22 @@
     "value_preview": "{\n    \"theme:001_pricing\",\n    \"theme:005_discounts\",\n    \"theme:006_installment\",\n    \"theme:007_matkap_payment\",\n    \"theme:008_tax_deduction\",\n    \"theme:011_contract\",\n    \"theme:012_certificates\",\n    \"theme:013_schedule\",\n    \"theme:0",
     "literal_string_count": 23,
     "cyrillic_string_count": 0,
-    "lineno": 447,
+    "lineno": 421,
     "col_offset": 0,
     "row_id": "adr003:a67013724368d421805f629e"
+  },
+  {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "<module>",
+    "node_kind": "text_table",
+    "symbol": "SCOPE_FACT_GUARD_ENV",
+    "value_sha256": "56c3c17646fb54c7a7bae3c3a5f2803b5b71f081528f089887b170d8fca7c31e",
+    "value_preview": "\"TELEGRAM_SCOPE_FACT_GUARD\"",
+    "literal_string_count": 1,
+    "cyrillic_string_count": 0,
+    "lineno": 48,
+    "col_offset": 0,
+    "row_id": "adr003:13b3745bb2f9a0ec747fde42"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -1919,7 +1888,7 @@
     "value_preview": "r\"[a-z][a-z0-9]*(?:_[a-z0-9]+)*_facts_\\d{4}_\\d{2}_\\d{2}(?:[._][a-z0-9]+)*\"\n    r\"|source_coverage_audit_\\d{4}_\\d{2}_\\d{2}(?:[._][a-z0-9]+)*\"\n    r\"|prices_regular_\\d{4}_\\d{2}(?:[._][a-z0-9]+)*\"\n    r\"|customer:[a-f0-9]{16,}\"\n    r\"|timeline",
     "literal_string_count": 1,
     "cyrillic_string_count": 0,
-    "lineno": 518,
+    "lineno": 496,
     "col_offset": 0,
     "row_id": "adr003:aff9925b7eae884afeed394b"
   },
@@ -1932,7 +1901,7 @@
     "value_preview": "re.compile(\n    rf\"(?<![\\w/.-])(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\w/.-])\",\n    re.I,\n)",
     "literal_string_count": 2,
     "cyrillic_string_count": 0,
-    "lineno": 536,
+    "lineno": 514,
     "col_offset": 0,
     "row_id": "adr003:7ee94ed89a4f281b5c928839"
   },
@@ -1940,66 +1909,14 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "<module>",
     "node_kind": "text_table",
-    "symbol": "SCOPE_FACT_GUARD_ENV",
-    "value_sha256": "56c3c17646fb54c7a7bae3c3a5f2803b5b71f081528f089887b170d8fca7c31e",
-    "value_preview": "\"TELEGRAM_SCOPE_FACT_GUARD\"",
+    "symbol": "UNKNOWN_TOPIC_FALLBACK_ID",
+    "value_sha256": "729690f1afec2173c5816e0bdf33fd85ab0b33e418cb902dc6a67b18541dbcd7",
+    "value_preview": "\"service:S2_unclear\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 0,
-    "lineno": 66,
+    "lineno": 71,
     "col_offset": 0,
-    "row_id": "adr003:13b3745bb2f9a0ec747fde42"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "PLANNER_INTENT_CONFIDENCE_THRESHOLD",
-    "value_sha256": "209c9aa4529a257f1aded8c64911e7195a2ab83dc5bc866084185e327c44af09",
-    "value_preview": "0.72",
-    "literal_string_count": 0,
-    "cyrillic_string_count": 0,
-    "lineno": 74,
-    "col_offset": 0,
-    "row_id": "adr003:12d5c8956fb5da629c124d61"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "INTENT_MODEL_LED_CONFIDENCE_THRESHOLD",
-    "value_sha256": "209c9aa4529a257f1aded8c64911e7195a2ab83dc5bc866084185e327c44af09",
-    "value_preview": "0.72",
-    "literal_string_count": 0,
-    "cyrillic_string_count": 0,
-    "lineno": 75,
-    "col_offset": 0,
-    "row_id": "adr003:480717b308ac81166e3ef955"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "INTENT_MODEL_LED_TARGETS",
-    "value_sha256": "876dc2533791b0528c292b5bf533c12b1c3e63ea97929b702dad5b64e52b07b5",
-    "value_preview": "frozenset({\"live_availability\", \"schedule\", \"address\", \"camp\", \"price_fix\"})",
-    "literal_string_count": 5,
-    "cyrillic_string_count": 0,
-    "lineno": 77,
-    "col_offset": 0,
-    "row_id": "adr003:f61b295d2b1f7777b7165057"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "INTENT_MODEL_LED_ALLOWED",
-    "value_sha256": "964e42905e67c196a8e7ec8af99bd7327160121da412bb5d9ef2bac35ad31279",
-    "value_preview": "INTENT_MODEL_LED_TARGETS | frozenset({\"off_topic\", \"other\"})",
-    "literal_string_count": 2,
-    "cyrillic_string_count": 0,
-    "lineno": 78,
-    "col_offset": 0,
-    "row_id": "adr003:a79c3a5b8ad69474357ed2d5"
+    "row_id": "adr003:c3f43495e0a86cafac8c181f"
   },
   {
     "path": "src/mango_mvp/channels/fact_scope_spec.py",
@@ -2039,19 +1956,6 @@
     "lineno": 87,
     "col_offset": 0,
     "row_id": "adr003:683164ac64dfdad1d634f8ea"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "UNKNOWN_TOPIC_FALLBACK_ID",
-    "value_sha256": "729690f1afec2173c5816e0bdf33fd85ab0b33e418cb902dc6a67b18541dbcd7",
-    "value_preview": "\"service:S2_unclear\"",
-    "literal_string_count": 1,
-    "cyrillic_string_count": 0,
-    "lineno": 93,
-    "col_offset": 0,
-    "row_id": "adr003:c3f43495e0a86cafac8c181f"
   },
   {
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
@@ -2166,7 +2070,7 @@
     "value_preview": "re.compile(\n    r\"(?i:(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|\"\n    r\"ученик(?:а)?|ученица|фио|зовут|имя))\\s*[:—-]?\\s*\"\n    r\"(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 1778,
+    "lineno": 1756,
     "col_offset": 0,
     "row_id": "adr003:f62e52965f722e55ac6377ca"
   },
@@ -2179,7 +2083,7 @@
     "value_preview": "re.compile(\n    r\"(?i:(?:\\bя\\b|меня|мама|папа|родител[ья]))\\s*[:—-]?\\s*\"\n    r\"(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ][а-яё]{2,}){0,1})\",\n)",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 1785,
+    "lineno": 1763,
     "col_offset": 0,
     "row_id": "adr003:b9216d2ad5fba68480eb7fcf"
   },
@@ -2244,7 +2148,7 @@
     "value_preview": "\"Менеджер свяжется, подскажет актуальную программу и поможет подобрать замену прежнему формату.\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 355,
+    "lineno": 333,
     "col_offset": 0,
     "row_id": "adr003:a0e9f73300f4cd2c9efd3cc3"
   },
@@ -2257,7 +2161,7 @@
     "value_preview": "\"Я помогаю с вопросами об обучении в Фотоне. По другим темам не сориентирую, но могу помочь подобрать курс, формат, расписание или следующий шаг.\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 373,
+    "lineno": 351,
     "col_offset": 0,
     "row_id": "adr003:1114e4a799a2861938e136cd"
   },
@@ -2270,7 +2174,7 @@
     "value_preview": "\"Я помогаю с вопросами об обучении в УНПК МФТИ. По другим темам не сориентирую, но могу помочь подобрать курс, формат, расписание или следующий шаг.\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 375,
+    "lineno": 353,
     "col_offset": 0,
     "row_id": "adr003:f149bd0cd1de2714d9fe1c5b"
   },
@@ -2283,7 +2187,7 @@
     "value_preview": "\"Я помогаю с вопросами об обучении. По другим темам не сориентирую, но могу помочь подобрать курс, формат, расписание или следующий шаг.\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 377,
+    "lineno": 355,
     "col_offset": 0,
     "row_id": "adr003:ee2048a3d6f1a01150bda298"
   },
@@ -2296,7 +2200,7 @@
     "value_preview": "re.compile(\n    rf\"(?<![\\w/.-])(?:по\\s+факту|факт|источник|source|source_id|fact_id)\\s+\"\n    rf\"(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\w/.-])\\s*[:;,.—-]?\\s*\",\n    re.I,\n)",
     "literal_string_count": 2,
     "cyrillic_string_count": 1,
-    "lineno": 529,
+    "lineno": 507,
     "col_offset": 0,
     "row_id": "adr003:4f94c1c64653d36b7449c6e9"
   },
@@ -2309,7 +2213,7 @@
     "value_preview": "re.compile(\n    r\"\\bздравствующ\\w*(?:\\s+момент)?[,.!:;—-]*\\s*|\\bникакого\\s+спешки\\b\",\n    re.I,\n)",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 600,
+    "lineno": 578,
     "col_offset": 0,
     "row_id": "adr003:2d782311381da3d6dffc9c05"
   },
@@ -2322,7 +2226,7 @@
     "value_preview": "re.compile(r\"\\b(?:менеджер|сотрудник|специалист|куратор)\\b\", re.I)",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 613,
+    "lineno": 591,
     "col_offset": 0,
     "row_id": "adr003:93ab4ef239c65c1ba45ea3fd"
   },
@@ -2335,7 +2239,7 @@
     "value_preview": "re.compile(\n    r\"\\b(?:свяж(?:ется|утся)|позвон(?:ит|ят)|напиш(?:ет|ут)|ответ(?:ит|ят)|верн[её]тся|провер(?:ит|ят)|уточн(?:ит|ят))\\b\",\n    re.I,\n)",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 616,
+    "lineno": 594,
     "col_offset": 0,
     "row_id": "adr003:4c7510fe76d211766240ffac"
   },
@@ -2348,7 +2252,7 @@
     "value_preview": "re.compile(\n    r\"\\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\\s+обеда|\"\n    r\"в\\s+течение\\s+\\d+\\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|\"\n    r\"до\\s+\\d{1,2}(?::\\d{2})?|к\\s+\\d{1,2}(?::\\d{2})?)\\b\",\n    re.I,\n)",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 622,
+    "lineno": 600,
     "col_offset": 0,
     "row_id": "adr003:ef4d3cfe3ea175eee5ad234b"
   },
@@ -2361,7 +2265,7 @@
     "value_preview": "re.compile(\n    r\"\\b(?:я\\s+)?(?:пришл[юеё]м?|отправл[юеё]м?|дам|скин[уe]|подготовл[юеё]м?)\\b\"\n    r\"[^.!?\\n]{0,120}?\"\n    r\"\\b(?:фрагмент|ссылк\\w*|запис[ьи]\\w*|доступ)\\b\",\n    re.I,\n)",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 734,
+    "lineno": 712,
     "col_offset": 0,
     "row_id": "adr003:5e18cca57fbd9d36b94cb00a"
   },
@@ -2374,7 +2278,7 @@
     "value_preview": "r\"(?:уточн\\w*|указ\\w*|спрос\\w*|узна\\w*|выясн\\w*|поня\\w*|\"\n    r\"подтверд\\w*|подбер\\w*|подобр\\w*|провер\\w*|напиш\\w*|сообщ\\w*)\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 1,
-    "lineno": 771,
+    "lineno": 749,
     "col_offset": 0,
     "row_id": "adr003:1a4672e130f45a15f289ff7f"
   },
@@ -2444,6 +2348,19 @@
     "row_id": "adr003:1e3df5863c13e21935b0c5d2"
   },
   {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "<module>",
+    "node_kind": "text_table",
+    "symbol": "BRAND_FORBIDDEN_TERMS",
+    "value_sha256": "fc42745e49da97a93b6ea72f8f4627f9ce9374ee6c06bf7857c9fbaf3bc90f80",
+    "value_preview": "{\n    \"foton\": (\"унпк\", \"унпк мфти\", \"ано дпо\", \"ноу унпк\", \"kmipt.ru\"),\n    \"unpk\": (\"фотон\", \"цдпо\", \"црдо\", \"cdpofoton\", \"т-банк\", \"долями\", \"рассрочка через банк\", \"через банк\"),\n}",
+    "literal_string_count": 15,
+    "cyrillic_string_count": 11,
+    "lineno": 509,
+    "col_offset": 0,
+    "row_id": "adr003:c9bed3cd48657ad07e752122"
+  },
+  {
     "path": "src/mango_mvp/channels/actions.py",
     "qualname": "<module>",
     "node_kind": "text_table",
@@ -2455,19 +2372,6 @@
     "lineno": 51,
     "col_offset": 0,
     "row_id": "adr003:b7aec1cef8b722c332e98722"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "BRAND_FORBIDDEN_TERMS",
-    "value_sha256": "fc42745e49da97a93b6ea72f8f4627f9ce9374ee6c06bf7857c9fbaf3bc90f80",
-    "value_preview": "{\n    \"foton\": (\"унпк\", \"унпк мфти\", \"ано дпо\", \"ноу унпк\", \"kmipt.ru\"),\n    \"unpk\": (\"фотон\", \"цдпо\", \"црдо\", \"cdpofoton\", \"т-банк\", \"долями\", \"рассрочка через банк\", \"через банк\"),\n}",
-    "literal_string_count": 15,
-    "cyrillic_string_count": 11,
-    "lineno": 535,
-    "col_offset": 0,
-    "row_id": "adr003:c9bed3cd48657ad07e752122"
   },
   {
     "path": "src/mango_mvp/channels/semantic_roles.py",
@@ -2587,19 +2491,6 @@
     "row_id": "adr003:14febeb6dff1a52ff55897ed"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "SUBJECT_GUARD_MARKERS",
-    "value_sha256": "7e55eaa1222d0c1e763998f210a4efbd3e5af911362c296abb218d8a729c4ef3",
-    "value_preview": "{\n    \"математика\": (\"математ\",),\n    \"физика\": (\"физик\",),\n    \"информатика\": (\"информат\",),\n    \"программирование\": (\"программирован\",),\n    \"русский язык\": (\"русск\",),\n    \"английский язык\": (\"англий\",),\n    \"химия\": (\"хим\",),\n    \"биоло",
-    "literal_string_count": 16,
-    "cyrillic_string_count": 16,
-    "lineno": 1698,
-    "col_offset": 0,
-    "row_id": "adr003:3ae2fbbd8ef1ef29d3c11cf7"
-  },
-  {
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "<module>",
     "node_kind": "text_table",
@@ -2611,6 +2502,19 @@
     "lineno": 22,
     "col_offset": 0,
     "row_id": "adr003:a065ef62ccdb398402360500"
+  },
+  {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "<module>",
+    "node_kind": "text_table",
+    "symbol": "SUBJECT_GUARD_MARKERS",
+    "value_sha256": "7e55eaa1222d0c1e763998f210a4efbd3e5af911362c296abb218d8a729c4ef3",
+    "value_preview": "{\n    \"математика\": (\"математ\",),\n    \"физика\": (\"физик\",),\n    \"информатика\": (\"информат\",),\n    \"программирование\": (\"программирован\",),\n    \"русский язык\": (\"русск\",),\n    \"английский язык\": (\"англий\",),\n    \"химия\": (\"хим\",),\n    \"биоло",
+    "literal_string_count": 16,
+    "cyrillic_string_count": 16,
+    "lineno": 983,
+    "col_offset": 0,
+    "row_id": "adr003:3ae2fbbd8ef1ef29d3c11cf7"
   },
   {
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -2699,7 +2603,7 @@
     "value_preview": "(\n    re.compile(r\"\\b(?:менеджер\\w*|сотрудник\\w*)\\b[^.!?\\n]{0,80}\\b(?:верн[её]тся|свяжется|подключится|ответит)\\b\", re.I),\n    re.compile(r\"\\b(?:верн[её]тся|свяжется|подключится|ответит)\\b[^.!?\\n]{0,80}\\b(?:менеджер\\w*|сотрудник\\w*)\\b\", re.",
     "literal_string_count": 3,
     "cyrillic_string_count": 3,
-    "lineno": 465,
+    "lineno": 443,
     "col_offset": 0,
     "row_id": "adr003:06c51ad7a6a35bf2ddf4f05a"
   },
@@ -2764,7 +2668,7 @@
     "value_preview": "(\n    re.compile(r\"\\b\\d{1,3}(?:[,.]\\d{1,2})?\\s*(?:%|процент\\w*)\", re.I),\n    re.compile(r\"\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:руб(?:\\.|лей|ля|ль)?|₽|р\\.)\", re.I),\n    _N_POINTS_PROMISE_CONTEXT_RE,\n    re.compile(r\"\\b\\d+\\s*(?:к|тыс\\.?|тысяч)\\b\", re.I",
     "literal_string_count": 4,
     "cyrillic_string_count": 4,
-    "lineno": 556,
+    "lineno": 530,
     "col_offset": 0,
     "row_id": "adr003:fa0ac738b89e6ad398dc24a8"
   },
@@ -2829,7 +2733,7 @@
     "value_preview": "(\n    \"refund\",\n    \"legal\",\n    \"negative\",\n    \"возврат\",\n    \"суд\",\n    \"иск\",\n    \"претензи\",\n    \"роспотребнадзор\",\n    \"жалоб\",\n)",
     "literal_string_count": 9,
     "cyrillic_string_count": 6,
-    "lineno": 479,
+    "lineno": 453,
     "col_offset": 0,
     "row_id": "adr003:f888befd4c921542c43a31c6"
   },
@@ -2842,7 +2746,7 @@
     "value_preview": "{\n    \"foton\": (\"фотон\", \"foton\", \"цдпо\", \"црдо\", \"cdpofoton\"),\n    \"unpk\": (\"унпк\", \"унпк мфти\", \"unpk\", \"мфти\", \"kmipt\"),\n}",
     "literal_string_count": 12,
     "cyrillic_string_count": 6,
-    "lineno": 540,
+    "lineno": 514,
     "col_offset": 0,
     "row_id": "adr003:9d49b68350c06c363fc172df"
   },
@@ -3233,7 +3137,7 @@
     "pattern_sha256": "7d9bfba5c375f02ee99a38273a0dcdbbbb7a99f8d461ef47f74ea116c6f8f855",
     "flags": "\"\" | re.I",
     "pattern_preview": "^\\s*клиент\\s+(?:спрашивает|уточняет|интересуется|хочет\\s+понять|просит\\s+уточнить)\\s*(?:,|:|—|-)?\\s*",
-    "lineno": 4066,
+    "lineno": 4044,
     "col_offset": 11,
     "row_id": "adr003:6059a65b88b798b763af143b"
   },
@@ -3249,19 +3153,6 @@
     "lineno": 1397,
     "col_offset": 11,
     "row_id": "adr003:8491309624fe5688eb09fae6"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_mentions_unbacked_children_rule",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "c5946ee708da4ae977bbe340f24139ad68a18be061bb3c81c323c806ad4f8267",
-    "flags": "draft",
-    "pattern_preview": "\\b(?:двое|двух|два|2)\\s+(?:дет|реб)",
-    "lineno": 937,
-    "col_offset": 11,
-    "row_id": "adr003:2483f0de556b725012e2e000"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -3298,7 +3189,7 @@
     "pattern_sha256": "87e6c53237aec99f08517049f5c33a02d2f014045fd84768c72ee7f0658f0d0d",
     "flags": "normalized",
     "pattern_preview": "\\bсколько\\b[^.!?\\n]{0,80}\\b(?:стоит|стоим|руб|₽)",
-    "lineno": 4187,
+    "lineno": 4165,
     "col_offset": 11,
     "row_id": "adr003:22c878b06b1534f10a67b1e7"
   },
@@ -3311,7 +3202,7 @@
     "pattern_sha256": "8c8789b6eea58f4fab3eb0f369a7cde25e7efbd52bc0d69c9a9b8bd6ba70b581",
     "flags": "normalized",
     "pattern_preview": "\\bсколько\\b[^.!?\\n]{0,80}\\b(?:выходит|плат[её]ж|в\\s+месяц|за\\s+месяц)",
-    "lineno": 4188,
+    "lineno": 4166,
     "col_offset": 11,
     "row_id": "adr003:e320e2be30a72add24b3efbe"
   },
@@ -3350,7 +3241,7 @@
     "pattern_sha256": "1c4509ee1e537360259a4ade32dfd8d0630f2e9451347424b8741a568353f5ff",
     "flags": "raw | re.I | re.M",
     "pattern_preview": "^\\s*(?:[A-CА-В]\\)|[A-CА-В]\\.)\\s+",
-    "lineno": 1678,
+    "lineno": 1656,
     "col_offset": 11,
     "row_id": "adr003:f03ebd2791257618cb6587c7"
   },
@@ -3381,19 +3272,6 @@
     "row_id": "adr003:b4d1aabefe4307ad09320184"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_autonomy_scope_precision_repaired_address_text",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "48acb4281348dea9cf06795778ed0f589e2e9a3dc67bf72c12fa74e522649ea4",
-    "flags": "str(result.draft_text or \"\").casefold().replace(\"ё\", \"е\")",
-    "pattern_preview": "лвш|менделеев|льяловск|красный\\s+воин",
-    "lineno": 718,
-    "col_offset": 11,
-    "row_id": "adr003:4d435e78bd0588510c2811ce"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_append_client_dialogue_texts",
     "node_kind": "regex_call",
@@ -3402,7 +3280,7 @@
     "pattern_sha256": "19b6339d21b18526fba431ebc909495d2c4bc6896ccfbea7ed9fbead8f60feed",
     "flags": "stripped",
     "pattern_preview": "^(?:клиент|client|user|пользователь|родитель)\\s*[:：-]",
-    "lineno": 3307,
+    "lineno": 3285,
     "col_offset": 11,
     "row_id": "adr003:e977f74f224346763598d060"
   },
@@ -3506,7 +3384,7 @@
     "pattern_sha256": "d343762e06eff874f79487b4ce4dc9d2b38f3116d516b8f67b2f659ead3831ac",
     "flags": "value | re.I",
     "pattern_preview": "[а-яёa-z]",
-    "lineno": 2283,
+    "lineno": 2261,
     "col_offset": 11,
     "row_id": "adr003:c9ce982cd9de808004c2b4a0"
   },
@@ -3656,7 +3534,7 @@
     "symbol": "In",
     "expression_sha256": "e0f0998b69a356c9e94731d56c9d6f2992f87fe1c9e6992cd430612115ad09bd",
     "expression_preview": "\"очно\" in value",
-    "lineno": 4083,
+    "lineno": 4061,
     "col_offset": 12,
     "row_id": "adr003:f06a7b22b1d008d89375868a"
   },
@@ -3739,19 +3617,6 @@
     "row_id": "adr003:874975f0e59edab467e8cd44"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "7315d28d84f3491509257ff6253b62e66523634092d7fb638de9fb0caaf9c11b",
-    "flags": "text",
-    "pattern_preview": "(фио|имя|как\\s+зовут)[^.!?\\n]{0,80}(реб[её]нк|ученик)",
-    "lineno": 1625,
-    "col_offset": 12,
-    "row_id": "adr003:9191a86d6fc79c9683cd42d3"
-  },
-  {
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "extract_grade",
     "node_kind": "regex_call",
@@ -3825,7 +3690,7 @@
     "pattern_sha256": "9881a01c48b565e78a2e3a339bdb219e80da9faf43fd0593a2d8cf3298006407",
     "flags": "value",
     "pattern_preview": "\\b(?P<grade>[1-9]|1[01])\\s*(?:класс|кл\\.?)\\b",
-    "lineno": 1820,
+    "lineno": 1105,
     "col_offset": 12,
     "row_id": "adr003:c242de436cbe9064cc242245"
   },
@@ -3875,7 +3740,7 @@
     "pattern_sha256": "b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f",
     "flags": "\"\"",
     "pattern_preview": "\\D+",
-    "lineno": 2606,
+    "lineno": 2584,
     "col_offset": 13,
     "row_id": "adr003:f3091f1f2abd14c6aa0f5dbb"
   },
@@ -4005,7 +3870,7 @@
     "pattern_sha256": "a5dcdc67dd83c518d7766309babbf255c628d105f7013524da789261696e9415",
     "flags": "",
     "pattern_preview": "[🌀-🫿☀-➿🤀-🧿🩰-🫿]",
-    "lineno": 1268,
+    "lineno": 1246,
     "col_offset": 15,
     "row_id": "adr003:445f40a1d1de51df6f98890b"
   },
@@ -4031,22 +3896,9 @@
     "pattern_sha256": "b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f",
     "flags": "\"\"",
     "pattern_preview": "\\D+",
-    "lineno": 2609,
+    "lineno": 2587,
     "col_offset": 15,
     "row_id": "adr003:67b504af23a1b9927cfcc13d"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_explicit_live_availability_question",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
-    "flags": "normalized",
-    "pattern_preview": "pattern",
-    "lineno": 1157,
-    "col_offset": 15,
-    "row_id": "adr003:9d91a677af9d202172244ecf"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py",
@@ -4070,7 +3922,7 @@
     "pattern_sha256": "997adf8dc4956151630f2590b678be8caa6d7a7e18fd1055ed378dc351649a1f",
     "flags": "normalized",
     "pattern_preview": "\\b(?:верн\\w*|возврат\\w*|деньг\\w*|компенс\\w*|руб(?:\\.|л)|₽|\\d{3,})\\b",
-    "lineno": 3420,
+    "lineno": 3398,
     "col_offset": 15,
     "row_id": "adr003:c6d7cb54c605b4ee5cd12315"
   },
@@ -4099,6 +3951,19 @@
     "lineno": 565,
     "col_offset": 15,
     "row_id": "adr003:6e696ee5a76bd68ea0e87983"
+  },
+  {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_asks_explicit_live_availability_question",
+    "node_kind": "regex_call",
+    "symbol": "re.search",
+    "target": "",
+    "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
+    "flags": "normalized",
+    "pattern_preview": "pattern",
+    "lineno": 851,
+    "col_offset": 15,
+    "row_id": "adr003:9d91a677af9d202172244ecf"
   },
   {
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
@@ -4166,19 +4031,6 @@
     "row_id": "adr003:daf646e3cd0766e75ac12444"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_mentions_unbacked_children_rule",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "138b2589b59e2ed384e22ec3124c8a92b06f61ae9caca0f838c9e1bb4c90ef68",
-    "flags": "draft",
-    "pattern_preview": "скид|вычет|возврат|сумм|правил|действ",
-    "lineno": 941,
-    "col_offset": 16,
-    "row_id": "adr003:e54e8873e6e6e4995a64df1a"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_semantic_diagnosis_plain_deferral_text",
     "node_kind": "regex_call",
@@ -4187,7 +4039,7 @@
     "pattern_sha256": "b978065658ecbb2f743c571b5be35cfb0095ad6b760c29f0d856578017e910ad",
     "flags": "low",
     "pattern_preview": "передам|верн[её]тся|ответственн|менеджер|сотрудник|сверит|проверит",
-    "lineno": 4022,
+    "lineno": 4000,
     "col_offset": 16,
     "row_id": "adr003:c1f638641977ce87cbea432d"
   },
@@ -4200,7 +4052,7 @@
     "pattern_sha256": "f5005982fbc29d3169d9896d00401ba5691250d05287e7aa96203984ae21c08b",
     "flags": "lowered_text | re.I",
     "pattern_preview": "rf\"(?<!\\w){pattern}(?!\\w)\"",
-    "lineno": 2907,
+    "lineno": 2885,
     "col_offset": 16,
     "row_id": "adr003:0583f84f0be1c21b5180f60b"
   },
@@ -4265,7 +4117,7 @@
     "pattern_sha256": "54b3f7cd1d5f0c4eab09075888e3ed03bcfebef9b9304e0425c1b0a8524d1134",
     "flags": "replacement | re.I",
     "pattern_preview": "_flexible_name_pattern(name)",
-    "lineno": 1911,
+    "lineno": 1889,
     "col_offset": 16,
     "row_id": "adr003:9f28bb2f9a29de6d2d625f83"
   },
@@ -4291,7 +4143,7 @@
     "pattern_sha256": "54b3f7cd1d5f0c4eab09075888e3ed03bcfebef9b9304e0425c1b0a8524d1134",
     "flags": "str(text or \"\") | re.I",
     "pattern_preview": "_flexible_name_pattern(name)",
-    "lineno": 2212,
+    "lineno": 2190,
     "col_offset": 16,
     "row_id": "adr003:91bcdb9a20041b913ece993b"
   },
@@ -4307,58 +4159,6 @@
     "lineno": 602,
     "col_offset": 16,
     "row_id": "adr003:e9bbd4c9c799639d62884732"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_non_tax_document_or_contract",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "969565042ac4cb932f1170e5f74e4956fddc3d81cbfb3cf76be63443b136e140",
-    "flags": "text",
-    "pattern_preview": "договор|оферт|оригинал|документ|акт|заявлен|подпис",
-    "lineno": 950,
-    "col_offset": 16,
-    "row_id": "adr003:1cd40f90452b435e63692bc1"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_non_matkap_document_or_contract",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "969565042ac4cb932f1170e5f74e4956fddc3d81cbfb3cf76be63443b136e140",
-    "flags": "text",
-    "pattern_preview": "договор|оферт|оригинал|документ|акт|заявлен|подпис",
-    "lineno": 959,
-    "col_offset": 16,
-    "row_id": "adr003:4f13e26e7b76a6ceb9a2f9ae"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_answers_tax_deduction_scope",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "c308e4c51dee36138fd9986d24caca54a9ddfaaf082650579a7744df231116c3",
-    "flags": "text",
-    "pattern_preview": "налог|вычет|фнс|ндфл|кнд|13\\s*%|14\\s*300|110\\s*000",
-    "lineno": 963,
-    "col_offset": 16,
-    "row_id": "adr003:bb9a529b2de127154f74cc52"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_answers_matkap_scope",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "0f69499e35f5ad0528992871e41c2dad15e4665a03d4919286d80d1a879d518a",
-    "flags": "text",
-    "pattern_preview": "маткап|материнск|сфр|сертификат",
-    "lineno": 967,
-    "col_offset": 16,
-    "row_id": "adr003:e5090854cada8cfa2b8530fd"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -4549,7 +4349,7 @@
     "pattern_sha256": "1e4b5237ec109ceb5677f28846838833cf853e6c99edc883ac8752eeb990de17",
     "flags": "re.I",
     "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:₽|руб(?:\\.|лей|ля|ль)?)",
-    "lineno": 80,
+    "lineno": 58,
     "col_offset": 18,
     "row_id": "adr003:4ba51b778d5241a5cf99320d"
   },
@@ -4588,7 +4388,7 @@
     "pattern_sha256": "c1cd989ae717aa4179786e1f5285d2a984dd44a947ee54fc83090e476b6aa935",
     "flags": "span",
     "pattern_preview": "\\d+(?:[.,]\\d+)?",
-    "lineno": 2710,
+    "lineno": 2688,
     "col_offset": 18,
     "row_id": "adr003:d784b04682de9ac84c7f0042"
   },
@@ -4625,7 +4425,7 @@
     "pattern_sha256": "09ae9c1df0529989a28c98cf36816dbc81d6add858bba022d90d4b1b955bad55",
     "flags": "re.I",
     "pattern_preview": "я\\s+(?:вас\\s+)?записал|вы\\s+записаны|запись\\s+оформлена|оформил\\s+запись|записал\\s+на\\s+курс",
-    "lineno": 1262,
+    "lineno": 1240,
     "col_offset": 19,
     "row_id": "adr003:70acad8f75a0e04f18ff1758"
   },
@@ -4643,6 +4443,19 @@
     "row_id": "adr003:131f9a3cff42731fddf36068"
   },
   {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "<module>",
+    "node_kind": "regex_call",
+    "symbol": "re.compile",
+    "target": "CONCRETE_FACT_RE",
+    "pattern_sha256": "aa723dc2ca1dfade0409af178d03601c96092cb7d0f46edf00ce6783789a96fb",
+    "flags": "re.I",
+    "pattern_preview": "(\\b\\d{1,3}(?:[ \\u00a0]\\d{3})*\\s*(?:₽|руб(?:\\.|лей|ля|ль)?|%)|\\b\\d{1,2}\\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)|\\b\\d{1,2}",
+    "lineno": 60,
+    "col_offset": 19,
+    "row_id": "adr003:0eb17137fff9eeb7895c8a7d"
+  },
+  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py",
     "qualname": "<module>",
     "node_kind": "regex_call",
@@ -4654,19 +4467,6 @@
     "lineno": 77,
     "col_offset": 19,
     "row_id": "adr003:52ccb6e7935e6793a2e657e7"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
-    "node_kind": "regex_call",
-    "symbol": "re.compile",
-    "target": "CONCRETE_FACT_RE",
-    "pattern_sha256": "aa723dc2ca1dfade0409af178d03601c96092cb7d0f46edf00ce6783789a96fb",
-    "flags": "re.I",
-    "pattern_preview": "(\\b\\d{1,3}(?:[ \\u00a0]\\d{3})*\\s*(?:₽|руб(?:\\.|лей|ля|ль)?|%)|\\b\\d{1,2}\\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)|\\b\\d{1,2}",
-    "lineno": 82,
-    "col_offset": 19,
-    "row_id": "adr003:0eb17137fff9eeb7895c8a7d"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py",
@@ -4716,7 +4516,7 @@
     "pattern_sha256": "1910dc38e12ea9a3d2924268588f969a4aee113546e69004c0671be184ee32a0",
     "flags": "low",
     "pattern_preview": "\\b(?:unpk|унпк)\\b|kmipt",
-    "lineno": 1741,
+    "lineno": 1026,
     "col_offset": 20,
     "row_id": "adr003:4ce0bcab9b22582f86d7297b"
   },
@@ -4729,7 +4529,7 @@
     "pattern_sha256": "45b6b7d0f3fa8c83f668a7e850cc9db1ee9e7e5c4b7134de09ec0ebcc28fe788",
     "flags": "re.I",
     "pattern_preview": "\\b\\d{1,3}\\+?\\s*балл\\w*",
-    "lineno": 545,
+    "lineno": 519,
     "col_offset": 20,
     "row_id": "adr003:9bb38d5da23840b0f48cfbd2"
   },
@@ -4742,7 +4542,7 @@
     "pattern_sha256": "5791e78c2701f2d37fc80386d23119994646041a8202df885cc6c0accaaded61",
     "flags": "str(text or \"\")",
     "pattern_preview": "(?<=[.?!])\\s+|\\n+",
-    "lineno": 2447,
+    "lineno": 2425,
     "col_offset": 20,
     "row_id": "adr003:a22f8c8296fb8436fe2f787e"
   },
@@ -4755,7 +4555,7 @@
     "pattern_sha256": "5791e78c2701f2d37fc80386d23119994646041a8202df885cc6c0accaaded61",
     "flags": "str(text or \"\")",
     "pattern_preview": "(?<=[.?!])\\s+|\\n+",
-    "lineno": 2486,
+    "lineno": 2464,
     "col_offset": 20,
     "row_id": "adr003:68e00f75ee237f412cfb4139"
   },
@@ -4794,7 +4594,7 @@
     "pattern_sha256": "1ec64f8ef448e5d18a58cbffe9bfd704042d181dc5ed4f07993e10960f47b350",
     "flags": "value",
     "pattern_preview": "менеджер|преподавател|педагог|куратор|пробн",
-    "lineno": 4035,
+    "lineno": 4013,
     "col_offset": 20,
     "row_id": "adr003:70303cee0421d21367ba7658"
   },
@@ -4820,7 +4620,7 @@
     "pattern_sha256": "367074dd0e070ef0c1bb0684ac26660492230d560517eb9da1e58be00deb2510",
     "flags": "low",
     "pattern_preview": "\\b(?:foton|фотон)\\b|cdpofoton|цдпо|црдо",
-    "lineno": 1740,
+    "lineno": 1025,
     "col_offset": 21,
     "row_id": "adr003:4c021cb522380f83a439389f"
   },
@@ -4859,22 +4659,9 @@
     "pattern_sha256": "f3f6f777afb60a87f76ea1b444485608de2c19d1648fe267e7fb597450cb86b8",
     "flags": "re.I",
     "pattern_preview": "\\b(?:LVSH-VEB20|LVSH-KF-10|ABRAMOV|VAGIN)\\b",
-    "lineno": 443,
+    "lineno": 417,
     "col_offset": 21,
     "row_id": "adr003:d7b8bda454c829cef4a36762"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_remove_repeated_known_data_questions",
-    "node_kind": "regex_call",
-    "symbol": "re.split",
-    "target": "sentence_parts",
-    "pattern_sha256": "a24b6a17324cdd2916f2e2494a7d84e6975c237199e0fb433de989a991750ed3",
-    "flags": "value",
-    "pattern_preview": "(?<=[.!?])\\s+",
-    "lineno": 1593,
-    "col_offset": 21,
-    "row_id": "adr003:7099e045133efd74077aa5b7"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -4907,7 +4694,7 @@
     "pattern_sha256": "d858f60d6eb1ceed7fee412f2811ca122624b22dde97313469614e3871199802",
     "flags": "re.I",
     "pattern_preview": "^\\s*(?:здравствуйте[!.]?\\s*|да,\\s*(?:сориентирую|подскажу|понимаю|конечно)[,!.]?\\s*|понимаю[,.]?\\s*|спасибо(?:\\s+за\\s+сообщение|\\s+за\\s+вопрос)?[,.]?\\s*)",
-    "lineno": 606,
+    "lineno": 584,
     "col_offset": 22,
     "row_id": "adr003:5880ccea2a659ff87e5bddac"
   },
@@ -4933,7 +4720,7 @@
     "pattern_sha256": "637dd0242534a74889090eb1062056e55d3ac090ff6c90d279d5653130a4de15",
     "flags": "",
     "pattern_preview": "\\b[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{2,}){1,2}\\b",
-    "lineno": 1775,
+    "lineno": 1753,
     "col_offset": 23,
     "row_id": "adr003:7d89070b222d148e43499444"
   },
@@ -4959,7 +4746,7 @@
     "pattern_sha256": "7c7cb4c2895ada2355c9331e0008e96f7927ab4e8464e55d6b59f9937afb65c3",
     "flags": "re.I",
     "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:руб|₽|р\\.|%)|\\bрассрочк\\w*\\s+доступн|\\bскидк\\w*\\s+\\d",
-    "lineno": 530,
+    "lineno": 504,
     "col_offset": 23,
     "row_id": "adr003:8796b19f5c367303be071ad9"
   },
@@ -4972,7 +4759,7 @@
     "pattern_sha256": "32a0d382a8702ef7f8ed1f89a3c8d09cc6f54248e2eb1d98b8e8635a8213767a",
     "flags": "re.I",
     "pattern_preview": "\\[(?:[^\\]\\n]{0,80})?(?:вставить|указать|подставить|TODO|проверенн\\w+\\s+ссылк|актуальн\\w+\\s+ссылк)(?:[^\\]\\n]{0,120})?\\]",
-    "lineno": 542,
+    "lineno": 520,
     "col_offset": 23,
     "row_id": "adr003:78e6cf5a423c881eedb04a7d"
   },
@@ -4985,7 +4772,7 @@
     "pattern_sha256": "6cfe047f03c5372d099c40bc0ebfed3d8646c74b78a37049f93f5666934f8cc2",
     "flags": "re.I",
     "pattern_preview": "(?:\\b(?:менеджер|ответственн\\w+\\s+сотрудник|сотрудник|специалист|мы|я)\\b[^.!?\\n]{0,120}?\\b(?:свяж\\w*|ответ\\w*|напиш\\w*|перезвон\\w*|верн\\w*)\\b[^.!?\\n]{0,120}?\\b(",
-    "lineno": 696,
+    "lineno": 674,
     "col_offset": 23,
     "row_id": "adr003:4d8627b91b5ffcc252d3ce00"
   },
@@ -5100,7 +4887,7 @@
     "pattern_sha256": "e81c90a31beca83de2e327743b539df683312f7a9e3aa9f25b13e3c1230a73b5",
     "flags": "re.I",
     "pattern_preview": "\\b(?:после\\s+1\\s+(?:июля|августа)|после\\s+0?1[./-]0?7(?:[./-]\\d{2,4})?|в\\s+август\\w*|августовск\\w+|после\\s+повышени\\w*|с\\s+сентябр\\w*|будущ\\w+\\s+цен\\w*|цена\\s+в",
-    "lineno": 524,
+    "lineno": 498,
     "col_offset": 24,
     "row_id": "adr003:05e3278469254332a5b1c1a9"
   },
@@ -5137,7 +4924,7 @@
     "pattern_sha256": "8599eaf5c90613abbe30c9b953b3aee173904e668386519f0a412440fa49447e",
     "flags": "",
     "pattern_preview": "(?i:(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя))\\s*[:",
-    "lineno": 1778,
+    "lineno": 1756,
     "col_offset": 25,
     "row_id": "adr003:c80561a2142f71a3aba39e79"
   },
@@ -5163,7 +4950,7 @@
     "pattern_sha256": "2e669c283512db6e6aa651db66e9954cebe7397223e723536840f0d566192d78",
     "flags": "re.I",
     "pattern_preview": "\\b(?:чаще|обычно|как\\s+правило|скорее\\s+всего|часто)\\b[^.!?\\n]{0,120}?\\b(?:выходн\\w*|суббот\\w*|воскресень\\w*|вечер\\w*|будн\\w*)\\b|\\b(?:есть|подбираем|подбер[её]м",
-    "lineno": 713,
+    "lineno": 691,
     "col_offset": 25,
     "row_id": "adr003:b2ec47492a2c417dab51af96"
   },
@@ -5179,19 +4966,6 @@
     "lineno": 607,
     "col_offset": 25,
     "row_id": "adr003:acde548f6a3fce3bd51d0566"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_unpk_regular_moscow_route",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "4687939b35c39b08157783b19dffed460254b36754e13a87010e740a8ce27181",
-    "flags": "value",
-    "pattern_preview": "лвш|менделеев|лагер|camp|летн|трансфер|выездн",
-    "lineno": 704,
-    "col_offset": 25,
-    "row_id": "adr003:5cdb50061d4928d0b5c4f363"
   },
   {
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -5239,7 +5013,7 @@
     "pattern_sha256": "bfae1f5e661ffb2ad9ee6c4ccc16f74cc1f61508665c1ab8dbf3700ea1afd200",
     "flags": "re.I",
     "pattern_preview": "(?:name|имя|фио|fio|parent|mother|father|мам|пап|родител|client)",
-    "lineno": 1951,
+    "lineno": 1929,
     "col_offset": 26,
     "row_id": "adr003:82b318062dd6701060abf9fe"
   },
@@ -5252,7 +5026,7 @@
     "pattern_sha256": "b16570f8f49a8ae35d765eec0a73e885650fdabc3a4b508fc024c4f4aa939ec8",
     "flags": "re.I",
     "pattern_preview": "r\"(?P<sentence>[^.?!\\n]{0,120}(?:\"\n    r\"следующ(?:ий|им)\\s+шаг(?:ом)?\\s*(?:[—:-]|\\b(?:будет|это)\\b)\\s*\"\n    r\"|лучше\\s+начать\\s+с\\s+\"\n    rf\"|дальше\\s+(?:нужно",
-    "lineno": 3224,
+    "lineno": 3202,
     "col_offset": 26,
     "row_id": "adr003:217259208ab2907b284d0935"
   },
@@ -5265,7 +5039,7 @@
     "pattern_sha256": "c5425e27a722a4a6ad488033ebe63647eeb7d5b4e857618a78b53f50f2c2ee00",
     "flags": "re.I",
     "pattern_preview": "оплат[ауы]\\s+(?:отмечен|прошл|поступил|зачислен|получен)|плат[её]ж\\s+(?:прош[её]л|получен|зачислен)|вижу,\\s*что\\s+оплат|оплата\\s+есть|мы\\s+получили\\s+оплат",
-    "lineno": 517,
+    "lineno": 491,
     "col_offset": 26,
     "row_id": "adr003:e45a4d51827aadbbe07d65b3"
   },
@@ -5278,7 +5052,7 @@
     "pattern_sha256": "7ef40bc82e79879cd97f133f2e15618510d2cb731966e6da11e1f6133109b5b9",
     "flags": "re.I",
     "pattern_preview": "(?:(?:этого|этой\\s+информации|такого|таких\\s+данных)?\\s*нет\\s+в\\s+подтвержд[её]нных\\s+фактах|в\\s+фактах\\s+нет\\s+подтверждени[яе]|не\\s+подтвержд[её]н[оа]?\\s+факт",
-    "lineno": 562,
+    "lineno": 540,
     "col_offset": 26,
     "row_id": "adr003:ade1ff234a1f581cd6fec7d1"
   },
@@ -5291,7 +5065,7 @@
     "pattern_sha256": "88d1979dba8c6fcdb8a53fb10c3696845f796ab21bfa5f9ecb60725c53573099",
     "flags": "span | re.I",
     "pattern_preview": "%|процент",
-    "lineno": 2709,
+    "lineno": 2687,
     "col_offset": 26,
     "row_id": "adr003:f4bd618f1e64b05e2b6a69d2"
   },
@@ -5382,7 +5156,7 @@
     "pattern_sha256": "dadcc12e39ab5e27a05c700fd2816de6f86342c3e362e404dc8ff32246cfc381",
     "flags": "re.I",
     "pattern_preview": "(?:phone|телефон|contact|контакт)",
-    "lineno": 1957,
+    "lineno": 1935,
     "col_offset": 27,
     "row_id": "adr003:08ce2ee54f684c0999aad23a"
   },
@@ -5395,7 +5169,7 @@
     "pattern_sha256": "d027e591584d0d366ad433c95abfdbaf44019ad06c995e1dc0c6fb47a038ab6f",
     "flags": "re.I",
     "pattern_preview": "(?:\\+?\\d[\\d\\s().-]{6,}\\d|[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}|\\b(?:мой|моя|наш|наш[аи]|указал[аи]?|пишу|оставляю)\\b[^.?!\\n]{0,80}\\b(?:телефон|номер|почт[ауеы",
-    "lineno": 3189,
+    "lineno": 3167,
     "col_offset": 27,
     "row_id": "adr003:02c0d7cd9a80b58df526a0fe"
   },
@@ -5471,7 +5245,7 @@
     "pattern_sha256": "13a6bf6be2a779c6c22c05cc2ee561138826608d07eaef8dfee032994d3e5979",
     "flags": "re.I",
     "pattern_preview": "гарантир\\w*[^.!?\\n]{0,80}(?:балл|егэ|огэ|результат|сдаст)|(?:сдаст|балл\\w*|результат)[^.!?\\n]{0,80}гарантир\\w*|точно[^.!?\\n]{0,60}сдаст[^.!?\\n]{0,60}(?:егэ|огэ|",
-    "lineno": 497,
+    "lineno": 471,
     "col_offset": 28,
     "row_id": "adr003:0eb6576edc3bfcfc3beff9d3"
   },
@@ -5484,7 +5258,7 @@
     "pattern_sha256": "041523711ed377671a0cf2448c55b0cb98c1d9b574e0742895256fc1c6a8bec1",
     "flags": "re.I",
     "pattern_preview": "\\b\\d[\\d\\s\\u00a0]*(?:[.,]\\d+)?\\s*(?:₽|руб(?:\\.|лей|ля|ль)?|р\\.)(?=$|[\\s,.;:!?])|\\b(?:\\d+(?:[.,]\\d+)?\\s*/\\s*)*\\d+(?:[.,]\\d+)?\\s*(?:%|процент(?:ов|а)?)(?=$|[\\s,.;:",
-    "lineno": 630,
+    "lineno": 608,
     "col_offset": 28,
     "row_id": "adr003:ea856b28e30bf19b9eded49b"
   },
@@ -5532,7 +5306,7 @@
     "pattern_sha256": "72743bc877d98e776af3a81d539028be9034772b2f93e6492b0aca2dbb093b48",
     "flags": "",
     "pattern_preview": "(?<!\\d)\\d{5,}(?!\\d)",
-    "lineno": 1298,
+    "lineno": 1277,
     "col_offset": 29,
     "row_id": "adr003:fe78ee134a95da67e4af4d43"
   },
@@ -5597,7 +5371,7 @@
     "pattern_sha256": "dc434ade20377c99bf16d248f1c700f1128c3d2327d36852225257a50b4cc9a5",
     "flags": "re.I",
     "pattern_preview": "сколько\\s+сто|стоимост|цен[ауеы]?|прайс|расписан|когда|дат[аы]|лагер|л[вгз]ш|курс|заняти|онлайн|очно|смен[аы]|математик|физик|информатик",
-    "lineno": 491,
+    "lineno": 465,
     "col_offset": 29,
     "row_id": "adr003:09105c47826e7d44a787abd1"
   },
@@ -5610,7 +5384,7 @@
     "pattern_sha256": "6230792bedea5b7418a63e96e50730895a99a034bc7b96a8c3a3afe3a6f1bc6a",
     "flags": "re.I",
     "pattern_preview": "rf\"(?<![\\w/.-])(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\w/.-])\"",
-    "lineno": 536,
+    "lineno": 514,
     "col_offset": 29,
     "row_id": "adr003:4f9226e12b41131b6d22f585"
   },
@@ -5636,7 +5410,7 @@
     "pattern_sha256": "7f65733a6e2cf424322a2163837b632fa42c2330b8086e68d0fdfdea504f6824",
     "flags": "re.I",
     "pattern_preview": "\\b(?:я\\s+)?(?:пришл[юеё]м?|отправл[юеё]м?|дам|скин[уe]|подготовл[юеё]м?)\\b[^.!?\\n]{0,120}?\\b(?:фрагмент|ссылк\\w*|запис[ьи]\\w*|доступ)\\b",
-    "lineno": 734,
+    "lineno": 712,
     "col_offset": 29,
     "row_id": "adr003:a09fe3e446e24fd2fae6e355"
   },
@@ -5673,7 +5447,7 @@
     "symbol": "In",
     "expression_sha256": "fc3af0eaba5f3cf7bc21652c51f6e210742482be7dbc8cf2e3c45483cb6f1750",
     "expression_preview": "\"возврат\" in lowered",
-    "lineno": 838,
+    "lineno": 816,
     "col_offset": 30,
     "row_id": "adr003:5de9e90b6993f2a21b8b130c"
   },
@@ -5719,7 +5493,7 @@
     "pattern_sha256": "325794fb99f3309f9ac4e8a610f45a1c72c94c4d77e921fca2c2410a0b892e3f",
     "flags": "",
     "pattern_preview": "(?i:(?:\\bя\\b|меня|мама|папа|родител[ья]))\\s*[:—-]?\\s*(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ][а-яё]{2,}){0,1})",
-    "lineno": 1785,
+    "lineno": 1763,
     "col_offset": 30,
     "row_id": "adr003:e51ad38dcaa29f1dc52d9ce2"
   },
@@ -5758,7 +5532,7 @@
     "pattern_sha256": "ed142582fbcda289269bc4493a63ae8bdd375ee4ca33b9db82c399f0622a2aee",
     "flags": "re.I",
     "pattern_preview": "\\b(?:принял[аи]?|записал[аи]?|передам|менеджер|свяжется|контакт|телефон|номер|заявк[ауи])\\b",
-    "lineno": 1845,
+    "lineno": 1823,
     "col_offset": 30,
     "row_id": "adr003:3a833b1b4efef667b7444a61"
   },
@@ -5784,7 +5558,7 @@
     "pattern_sha256": "58bf0c00fc65fcdd017aba7495d9b07a0e0283db57168cc7346da5079b9e3e26",
     "flags": "re.I",
     "pattern_preview": "rf\"(?<![\\w/.-])(?:по\\s+факту|факт|источник|source|source_id|fact_id)\\s+\"\n    rf\"(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\w/.-])\\s*[:;,.—-]?\\s*\"",
-    "lineno": 529,
+    "lineno": 507,
     "col_offset": 30,
     "row_id": "adr003:88e889bfa0261180298f28e1"
   },
@@ -5797,7 +5571,7 @@
     "pattern_sha256": "9c7cf8fd9b69a1b50d405618605ccb9a94abbb201b6be5185075ab8eaef74f82",
     "flags": "re.I",
     "pattern_preview": "\\b(?:приезж\\w*|подъезж\\w*|приход\\w*|жд[её]м\\s+вас|можете\\s+прийти|можно\\s+прийти)\\b[^.!?\\n]{0,140}?\\b(?:познаком\\w*|посмотр\\w*|оформ\\w*|запис\\w*|встреч\\w*|на\\s+",
-    "lineno": 726,
+    "lineno": 704,
     "col_offset": 30,
     "row_id": "adr003:ac5b93d3357470cf05711513"
   },
@@ -5810,7 +5584,7 @@
     "pattern_sha256": "2a779f6975b4fca64af91b41f54af88c9143355bafe330dc4aa0e38d4e687055",
     "flags": "re.I",
     "pattern_preview": "(?:\\b(?:верн(?:[её]м|у)|возврат(?:им|у)|оформ(?:им|лю)\\s+возврат|перевед(?:[её]м|у)|компенсир(?:уем|ую))\\b[^.!?\\n]{0,100}?\\b(?:деньг\\w*|оплат\\w*|плат[её]ж\\w*|ср",
-    "lineno": 786,
+    "lineno": 764,
     "col_offset": 30,
     "row_id": "adr003:342cd0b804bd84f6029f5e88"
   },
@@ -5826,32 +5600,6 @@
     "lineno": 99,
     "col_offset": 30,
     "row_id": "adr003:20630e10be44402d90600c3a"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "4c86d8ac2a93cf6a89442d7dfdc54c7f25a72cf48e5d7a96900ea0e4e6cd04bc",
-    "flags": "text",
-    "pattern_preview": "(телефон|номер\\s+телефона|контактн\\w+\\s+номер)",
-    "lineno": 1631,
-    "col_offset": 30,
-    "row_id": "adr003:205e0bd27b1cd06e53fc4c69"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "7ce3d1ea498c4f9b50bd32af55c11e1df4f1e867f5c594f448cf556751b81c57",
-    "flags": "text",
-    "pattern_preview": "(какой\\s+класс|класс\\s+реб[её]нк|напишите[^.!?\\n]{0,40}класс|подскажите[^.!?\\n]{0,40}класс)",
-    "lineno": 1633,
-    "col_offset": 30,
-    "row_id": "adr003:7e0fb982198e822dd7c9442d"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -5875,7 +5623,7 @@
     "pattern_sha256": "0dd107a46f023cb508154b5b26dcc3febb92ced6b4bfd1026089b54967734e6d",
     "flags": "re.I",
     "pattern_preview": "гарантир\\w*[^.!?\\n]{0,80}(?:поступ\\w*|пройд[её]?\\w*)|поступ\\w*[^.!?\\n]{0,80}гарантир\\w*|пройд[её]?\\w*[^.!?\\n]{0,80}гарантир\\w*|точно[^.!?\\n]{0,60}поступ\\w*|точн",
-    "lineno": 507,
+    "lineno": 481,
     "col_offset": 31,
     "row_id": "adr003:470b12b26d1869c3d8ea00a2"
   },
@@ -5888,7 +5636,7 @@
     "pattern_sha256": "d33d4eb340da8cd661133e3a6015519445bc0b48913cdb82fa38dd84aa89a794",
     "flags": "re.I",
     "pattern_preview": "(?:гарантир\\w*|обеща\\w*|получит\\w*|получите|набрать|набер[её]т\\w*|набер[её]те|сдаст\\w*|сдадите|поступит\\w*|ваш\\w*\\s+реб[её]н\\w*|ученик\\w*)[^.!?\\n]{0,80}\\b\\d{1,3",
-    "lineno": 547,
+    "lineno": 521,
     "col_offset": 31,
     "row_id": "adr003:4d53bca425ad4d6494d3939c"
   },
@@ -5904,19 +5652,6 @@
     "lineno": 1081,
     "col_offset": 31,
     "row_id": "adr003:df87d5b71bfea06c2576b480"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "aae8ab5a6d915ed3559af101cc45b1789dd5325171ba4c0e1072e580397ea872",
-    "flags": "text",
-    "pattern_preview": "(онлайн\\s+или\\s+очн|очно\\s+или\\s+онлайн|какой\\s+формат|формат[^.!?\\n]{0,30}удоб)",
-    "lineno": 1637,
-    "col_offset": 31,
-    "row_id": "adr003:b0ecdb5a053be5ddcbaaca40"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -5966,7 +5701,7 @@
     "pattern_sha256": "393920deed7d56735837834ea829d17b5929e22f8e0deb79fc2ec0e0a04ec0d9",
     "flags": "",
     "pattern_preview": "(?:(?i:спасибо,|здравствуйте,|добрый\\s+(?:день|вечер),|доброе\\s+утро,|записал[аи]?|запишем|передайте|по\\s+сыну|по\\s+дочери|для|сын[ау]?|доч(?:ь|ку|ери)?|реб[её]",
-    "lineno": 2074,
+    "lineno": 2052,
     "col_offset": 32,
     "row_id": "adr003:462c06aacef09f3dce2d893e"
   },
@@ -5992,7 +5727,7 @@
     "pattern_sha256": "dab3fcf7d53c84c3c3d22571a6fd8261ecedf87f3976bb0468a0ba8a7851b361",
     "flags": "re.I",
     "pattern_preview": "(?:child|student|реб[её]н|ученик|доч|сын)",
-    "lineno": 1954,
+    "lineno": 1932,
     "col_offset": 32,
     "row_id": "adr003:29e8159cdb6317c7b75215be"
   },
@@ -6005,22 +5740,9 @@
     "pattern_sha256": "4ba41bb3188baee408556a18c895de9196339602fcc00eeaba7c1f81e0425884",
     "flags": "re.I",
     "pattern_preview": "(?:изуча\\w+\\s+задач\\w+|созда\\w+\\s+план|что\\s+вижу\\s*:|вопрос\\s+к\\s+тебе\\s*:|прежде\\s+чем\\s+дать\\s+черновик|проблема\\s+с\\s+данными|инструкци\\w+\\s+шаг\\w+\\s+требу\\",
-    "lineno": 554,
+    "lineno": 532,
     "col_offset": 32,
     "row_id": "adr003:59bfd7a822c7d24ab81ef201"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "eeb2bb138381fc83818132b48a5ac9c54e001dc2f331d06464f44f5b8e04e8cf",
-    "flags": "text",
-    "pattern_preview": "(какой\\s+предмет|предмет[^.!?\\n]{0,30}интерес|напишите[^.!?\\n]{0,40}предмет|подскажите[^.!?\\n]{0,40}предмет)",
-    "lineno": 1635,
-    "col_offset": 32,
-    "row_id": "adr003:4e178cc6d8ef2c39ed73af35"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -6040,7 +5762,7 @@
     "symbol": "In",
     "expression_sha256": "392edfbec238797be05b88fb6d743343138d3a519bede8429434c97fbb49cee8",
     "expression_preview": "\"жалоб\" in lowered",
-    "lineno": 840,
+    "lineno": 818,
     "col_offset": 33,
     "row_id": "adr003:ce4ca9973a762af3bf11e8c1"
   },
@@ -6127,7 +5849,7 @@
     "pattern_sha256": "bb864d7742a54f34ad12ccb10282a9f37ae33eac731e02beed6ac3139757b4ca",
     "flags": "re.I",
     "pattern_preview": "\\s*\\[(?:\\s*данные\\s+у\\s+менеджера\\s*|\\.{3}|…)\\]\\s*",
-    "lineno": 1188,
+    "lineno": 1166,
     "col_offset": 34,
     "row_id": "adr003:fa9b158031479797085495f2"
   },
@@ -6153,7 +5875,7 @@
     "pattern_sha256": "2eb63bc0fedff55d4cb3936d61398cf0243087bff1f22531ce66f176a95812bc",
     "flags": "re.I",
     "pattern_preview": "(?:\\b(?:клиент|родител[ьяюем]?|мам[аы]?|пап[аы]?|заявител[ьяюем]?|контакт\\s+клиент[а-яё]*)\\b[^.?!\\n]{0,120}(?:\\+?\\d[\\d\\s().-]{6,}\\d|[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+",
-    "lineno": 3196,
+    "lineno": 3174,
     "col_offset": 34,
     "row_id": "adr003:a0e8d57eddd8e56b8e46de3b"
   },
@@ -6166,7 +5888,7 @@
     "pattern_sha256": "c72dc326a3958753cfec2e0bd1569747a7e54d543470b7dcd498ae597588d8e2",
     "flags": "re.I",
     "pattern_preview": "(?:^|\\n)\\s*(?:черновик|ответ|сообщение)\\s+клиенту\\s*:\\s*|(?:^|\\n)\\s*клиенту\\s*:\\s*",
-    "lineno": 548,
+    "lineno": 526,
     "col_offset": 34,
     "row_id": "adr003:df3d40e89abc8708ecfc0945"
   },
@@ -6179,7 +5901,7 @@
     "pattern_sha256": "1c4509ee1e537360259a4ade32dfd8d0630f2e9451347424b8741a568353f5ff",
     "flags": "re.I",
     "pattern_preview": "^\\s*(?:[A-CА-В]\\)|[A-CА-В]\\.)\\s+",
-    "lineno": 571,
+    "lineno": 549,
     "col_offset": 34,
     "row_id": "adr003:1d12f89b2290b3777136a0f0"
   },
@@ -6192,7 +5914,7 @@
     "pattern_sha256": "2b3688b3d0e3139f1aa891c0a9386c02adad1d8150f4e85be7a2ab3eed72c61e",
     "flags": "re.I",
     "pattern_preview": "\\bуточнен\\w+\\s+по\\s+текущей\\s+теме\\s*\\.\\s*тема\\s*:\\s*[^.?!\\n]*(?:[.?!]|$)",
-    "lineno": 574,
+    "lineno": 552,
     "col_offset": 34,
     "row_id": "adr003:e79df0d9f34deff66107edcd"
   },
@@ -6205,7 +5927,7 @@
     "pattern_sha256": "3755ceca4132f7f5429b62a340dbe8ead70469a2efaede8bfe3e5431914a5652",
     "flags": "re.I",
     "pattern_preview": "\\[/?manager\\]\\s*",
-    "lineno": 588,
+    "lineno": 566,
     "col_offset": 34,
     "row_id": "adr003:0a0a0adf6b3d5457b952bbf5"
   },
@@ -6218,7 +5940,7 @@
     "pattern_sha256": "4a912c16e9663be4acb54aa370dfef9223c1121565587def02fe4092daac924c",
     "flags": "re.I",
     "pattern_preview": "\\b(?:менеджер|сотрудник|специалист|куратор)\\b",
-    "lineno": 613,
+    "lineno": 591,
     "col_offset": 34,
     "row_id": "adr003:e48b2a9e75261feb93391758"
   },
@@ -6229,7 +5951,7 @@
     "symbol": "In",
     "expression_sha256": "a89e64fc88d1df9132dc9ab1d96d9d260365497fb2085901ee7256324e585ba5",
     "expression_preview": "'\"dialog_summary\"' in prompt_text",
-    "lineno": 1059,
+    "lineno": 1038,
     "col_offset": 35,
     "row_id": "adr003:446e1bc80a66b033e3fc48f0"
   },
@@ -6256,32 +5978,6 @@
     "lineno": 4433,
     "col_offset": 35,
     "row_id": "adr003:6d8d0f97623a45f3cd683b5d"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_remove_repeated_known_data_questions",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "bb7d4c752e9a1b4a09934537c6f10e3a3d28a34a7ca6e942b991a9814996553b",
-    "flags": "lowered",
-    "pattern_preview": "(напишите|подскажите|уточните)[^.!?\\n]{0,70}класс",
-    "lineno": 1598,
-    "col_offset": 35,
-    "row_id": "adr003:4421b36b229d9d444b13ba52"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_remove_repeated_known_data_questions",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "4c86d8ac2a93cf6a89442d7dfdc54c7f25a72cf48e5d7a96900ea0e4e6cd04bc",
-    "flags": "lowered",
-    "pattern_preview": "(телефон|номер\\s+телефона|контактн\\w+\\s+номер)",
-    "lineno": 1606,
-    "col_offset": 35,
-    "row_id": "adr003:8277b67bdc0da35a46b54cfa"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -6331,7 +6027,7 @@
     "pattern_sha256": "1fff418013b7e59e9451cc39de1541c906f1dfb2a61e0155161c22a0046e69f1",
     "flags": "re.I",
     "pattern_preview": "\\b(?:свяж(?:ется|утся)|позвон(?:ит|ят)|напиш(?:ет|ут)|ответ(?:ит|ят)|верн[её]тся|провер(?:ит|ят)|уточн(?:ит|ят))\\b",
-    "lineno": 616,
+    "lineno": 594,
     "col_offset": 35,
     "row_id": "adr003:6b2616616eaf2dffa4afd2cc"
   },
@@ -6344,22 +6040,9 @@
     "pattern_sha256": "5757214a47c801e40d2f2d8ac15cc0a72b43df13307273ffdf76f66fcedaed8a",
     "flags": "re.I",
     "pattern_preview": "(?:\\b(?:место|бронь|запис[ьи]\\w*|заявк\\w*|групп\\w*)\\b[^.!?\\n]{0,90}?\\b(?:заброниров\\w*|закреп\\w*|сохран\\w*|подтвержд\\w*|оформ\\w*|зачисл\\w*)\\b|\\b(?:заброниров\\w*",
-    "lineno": 748,
+    "lineno": 726,
     "col_offset": 35,
     "row_id": "adr003:754fcf72d6abb6ae46222c79"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_unpk_regular_moscow_route",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "71b4d6941aa8bc3222aa734a9a81ede24101d38d9523a4dd2f2716cfaf4fb983",
-    "flags": "value",
-    "pattern_preview": "моск|заняти|площадк|очн|регулярн|обычн|адрес",
-    "lineno": 703,
-    "col_offset": 35,
-    "row_id": "adr003:6f4d82dbee35c00f3cb4dabd"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -6379,7 +6062,7 @@
     "symbol": "In",
     "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
     "expression_preview": "\"онлайн\" in value",
-    "lineno": 4083,
+    "lineno": 4061,
     "col_offset": 36,
     "row_id": "adr003:e6bc6471ea538789d599ace0"
   },
@@ -6440,7 +6123,7 @@
     "pattern_sha256": "f8a206270e4a1eb97a4813e58db8a87162d0b15c225a4678a8edf5b01ccd4c41",
     "flags": "re.I",
     "pattern_preview": "(?P<sentence>[^.?!\\n]{0,180}(?:(?:телефон|номер(?:\\s+телефона)?|почт[ауеы]|email|e-mail|адрес|контакт(?:ы|ные\\s+данные)?)[^.?!\\n]{0,180}(?:уже\\s+(?:есть|вижу|ук",
-    "lineno": 3206,
+    "lineno": 3184,
     "col_offset": 36,
     "row_id": "adr003:b712a3275ba5424f0f61e27a"
   },
@@ -6453,22 +6136,9 @@
     "pattern_sha256": "05bd3d959059eb60967571ce847a7d855a7009342a097cee20bb0e08f40ae4a3",
     "flags": "re.I",
     "pattern_preview": "\\b(?:не\\s+(?:обещаю|гарантирую|могу\\s+обещать|буду\\s+обещать)|без\\s+проверки|после\\s+проверки|сначала\\s+менеджер\\s+проверит|если\\s+(?:место|группа|вариант)\\s+(?",
-    "lineno": 805,
+    "lineno": 783,
     "col_offset": 36,
     "row_id": "adr003:b6f8918b7bfebe0619af6e04"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "3d3e181278fa2eb34a8314f14493a22150bed2bd69d0c299a14570c57c6a62d0",
-    "flags": "text",
-    "pattern_preview": "(ваше\\s+имя|как\\s+вас\\s+зовут|фио\\s+родител)",
-    "lineno": 1629,
-    "col_offset": 36,
-    "row_id": "adr003:57509a3a71774f0289cdc891"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -6490,22 +6160,9 @@
     "pattern_sha256": "0aa61a70915d18e7cb21050e98ce70317be47467d2d23c37a018fe98d87484de",
     "flags": "",
     "pattern_preview": "^\\s*[-–—_*]{3,}\\s*$",
-    "lineno": 597,
+    "lineno": 575,
     "col_offset": 37,
     "row_id": "adr003:d4dc356ef21ff7899cdf6272"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_remove_repeated_known_data_questions",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "c62d69145e6412ac051a44fb265cfecc6df34934f5251fd9819de7c32827935e",
-    "flags": "lowered",
-    "pattern_preview": "(напишите|подскажите|уточните)[^.!?\\n]{0,70}предмет",
-    "lineno": 1600,
-    "col_offset": 37,
-    "row_id": "adr003:e4bf0244d2a116e3f5ee4de1"
   },
   {
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -6529,22 +6186,9 @@
     "pattern_sha256": "ef11b886a8b298d97b00bbf0faa216abbbc5b63827dd898182055349bd065d65",
     "flags": "re.I",
     "pattern_preview": "\\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\\s+обеда|в\\s+течение\\s+\\d+\\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|до\\s+\\d{1,2}(?::\\d{2})?|к\\s+\\d{1,2}",
-    "lineno": 622,
+    "lineno": 600,
     "col_offset": 37,
     "row_id": "adr003:f80b013b74c9ce2af8e10dba"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "find_redundant_questions_for_known_context",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "80bd7e152953e102056c5c13ee7b2c750f42c5e1011bf87d333636f79f5d1ca0",
-    "flags": "text",
-    "pattern_preview": "(фотон\\s+или\\s+унпк|какой\\s+центр|какой\\s+учебн\\w+\\s+центр)",
-    "lineno": 1639,
-    "col_offset": 37,
-    "row_id": "adr003:aef96a4f49bbd8261a7f2b2d"
   },
   {
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -6612,7 +6256,7 @@
     "pattern_sha256": "2ca4fac0deb3b92e88118157ed53654770eb53dc794ebc2b4db274e9dbe04ac4",
     "flags": "re.I",
     "pattern_preview": "\\bздравствующ\\w*(?:\\s+момент)?[,.!:;—-]*\\s*|\\bникакого\\s+спешки\\b",
-    "lineno": 600,
+    "lineno": 578,
     "col_offset": 38,
     "row_id": "adr003:ceaf980d0911a94e928e7bb2"
   },
@@ -6636,7 +6280,7 @@
     "symbol": "In",
     "expression_sha256": "6862942e4e68de6ea91507fa34e4c68d209e694b19888973b0f71189d8d35e39",
     "expression_preview": "\"payment dispute\" in lowered",
-    "lineno": 836,
+    "lineno": 814,
     "col_offset": 39,
     "row_id": "adr003:e1b0cad12a9b6f5cbaeec967"
   },
@@ -6760,7 +6404,7 @@
     "pattern_sha256": "20cce4a8fe9da7111b21f6a208b599f780539dc4356a4797624aa87a7a22b420",
     "flags": "re.I",
     "pattern_preview": "\\b(?:менеджер\\w*|сотрудник\\w*)\\b[^.!?\\n]{0,80}\\b(?:верн[её]тся|свяжется|подключится|ответит)\\b",
-    "lineno": 466,
+    "lineno": 444,
     "col_offset": 4,
     "row_id": "adr003:eee3b972601d4cd4c26e1fcb"
   },
@@ -6773,7 +6417,7 @@
     "pattern_sha256": "140e4aeb1318c07ef30feaeb8c75560ef3a67b15df611e255dde545422b4cdb5",
     "flags": "re.I",
     "pattern_preview": "\\b(?:верн[её]тся|свяжется|подключится|ответит)\\b[^.!?\\n]{0,80}\\b(?:менеджер\\w*|сотрудник\\w*)\\b",
-    "lineno": 467,
+    "lineno": 445,
     "col_offset": 4,
     "row_id": "adr003:b890801ca3d6ef84ef3e32d1"
   },
@@ -6786,7 +6430,7 @@
     "pattern_sha256": "d69909cfcbcd6986ffb4313a61d023d8ccf914991cd0e14fae5c2c472bf69014",
     "flags": "re.I",
     "pattern_preview": "\\bпередам\\b[^.!?\\n]{0,40}\\b(?:вопрос\\s+|вас\\s+)?менеджер\\w*\\b",
-    "lineno": 468,
+    "lineno": 446,
     "col_offset": 4,
     "row_id": "adr003:32feae9089673a3fbe4d3bb3"
   },
@@ -6799,7 +6443,7 @@
     "pattern_sha256": "a070b45657a91897db0e99240da02dc061a2c8d8cb2b18d7913a95e07d9886fb",
     "flags": "re.I",
     "pattern_preview": "\\b\\d{1,3}(?:[,.]\\d{1,2})?\\s*(?:%|процент\\w*)",
-    "lineno": 557,
+    "lineno": 531,
     "col_offset": 4,
     "row_id": "adr003:1f0e5a08ae22abc3ed6df648"
   },
@@ -6812,7 +6456,7 @@
     "pattern_sha256": "206cd2830d1b1fa3fbb7bb21cb8cf25a2d425873e7188adae9f4daf8cdc456a2",
     "flags": "re.I",
     "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:руб(?:\\.|лей|ля|ль)?|₽|р\\.)",
-    "lineno": 558,
+    "lineno": 532,
     "col_offset": 4,
     "row_id": "adr003:9ec69f8b98998cc035ff8a0b"
   },
@@ -6825,7 +6469,7 @@
     "pattern_sha256": "26c635b1ee4aa4b2c3a1e6d51c34ee6291f2e4238a86466492edfce0c0bdfc08",
     "flags": "re.I",
     "pattern_preview": "\\b\\d+\\s*(?:к|тыс\\.?|тысяч)\\b",
-    "lineno": 560,
+    "lineno": 534,
     "col_offset": 4,
     "row_id": "adr003:0474c7a328d5f51a222e933c"
   },
@@ -6838,7 +6482,7 @@
     "pattern_sha256": "5facc89f168f01e1bd7815ea7c147cc792e61f0250bc5cdcbd5398fbed489ee1",
     "flags": "re.I",
     "pattern_preview": "\\b(?:до|по)\\s+\\d{1,2}(?:[./-]\\d{1,2}(?:[./-]\\d{2,4})?|\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))",
-    "lineno": 561,
+    "lineno": 535,
     "col_offset": 4,
     "row_id": "adr003:2db92c753a3a0f545283cade"
   },
@@ -6895,7 +6539,7 @@
     "symbol": "NotIn",
     "expression_sha256": "5417759b50ce7af8c943bcd1a3edd4f91d015ac0812260df6552b319f8d9ca3c",
     "expression_preview": "\"ссыл\" not in normalized",
-    "lineno": 3418,
+    "lineno": 3396,
     "col_offset": 41,
     "row_id": "adr003:524f2ef7daf72579bac8297b"
   },
@@ -6909,19 +6553,6 @@
     "lineno": 1193,
     "col_offset": 41,
     "row_id": "adr003:61bf08fbe8ac1e2c398a5ba0"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_remove_repeated_known_data_questions",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "3d3e181278fa2eb34a8314f14493a22150bed2bd69d0c299a14570c57c6a62d0",
-    "flags": "lowered",
-    "pattern_preview": "(ваше\\s+имя|как\\s+вас\\s+зовут|фио\\s+родител)",
-    "lineno": 1604,
-    "col_offset": 41,
-    "row_id": "adr003:19c78ef6491ca88cc6e34ee9"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -6945,7 +6576,7 @@
     "pattern_sha256": "11632ed39d6a6b8bd7abb7b8fd883d3715af860c3275c1f80818afe9d4feff79",
     "flags": "re.I",
     "pattern_preview": "(?:чтобы\\s+не\\s+ошибиться,\\s*)?менеджер\\s+уточнит\\s+именно\\s+про\\s+(?P<detail>[^.?!\\n]{20,220}?)(?=\\s+и\\s+верн[её]тся\\s+с\\s+ответом|[.?!]|$)(?:\\s+и\\s+верн[её]тс",
-    "lineno": 580,
+    "lineno": 558,
     "col_offset": 41,
     "row_id": "adr003:bfe3696743f043371df433eb"
   },
@@ -6956,7 +6587,7 @@
     "symbol": "In",
     "expression_sha256": "a76ce45400964caf268a76295005eec5d788790fbe2ecb868b9c0a965641d038",
     "expression_preview": "'\"semantic_frame\"' in prompt_text",
-    "lineno": 1058,
+    "lineno": 1037,
     "col_offset": 42,
     "row_id": "adr003:7bc8d7851a0c273431584057"
   },
@@ -6972,19 +6603,6 @@
     "row_id": "adr003:8a3abccf7ba89425a976bdaa"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_remove_repeated_known_data_questions",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "c8d920c951d5ef9808fb5e3b4e16245f59607ca4f7fb5048765bf43ae299493e",
-    "flags": "lowered",
-    "pattern_preview": "(напишите|подскажите|уточните)[^.!?\\n]{0,70}(имя|фио)",
-    "lineno": 1602,
-    "col_offset": 42,
-    "row_id": "adr003:40e5a064397c8f89c5e3d5f1"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
     "node_kind": "regex_call",
@@ -6993,7 +6611,7 @@
     "pattern_sha256": "80d17be11f80807cd2cd34497a3b2487a34e38b7d9b9f5e18bd18a0cf3afa6be",
     "flags": "re.I",
     "pattern_preview": "r\"(?:\"\n    r\"\\bследующ(?:ий|им)\\s+шаг(?:ом)?(?:\\s+\\w+){0,2}\\s*(?:[:—-]|\\b(?:будет|это)\\b)\\s*\"\n    r\"|\"\n    r\"\\bдальше\\s+(?:нужно|по\\s+плану)\\s+\"\n    r\")\"\n    r\"",
-    "lineno": 775,
+    "lineno": 753,
     "col_offset": 42,
     "row_id": "adr003:6b91da4ae1d034e8eaa5d05e"
   },
@@ -7006,7 +6624,7 @@
     "pattern_sha256": "8239c82c42e46cfabe7e3ec66fc9952ce55cb604c0ba5766cd033f9fda5960f5",
     "flags": "re.I",
     "pattern_preview": "(?:\\bследующ(?:ий|им)\\s+шаг(?:ом)?(?:\\s+\\w+){0,2}\\s*(?:[:—-]|\\b(?:будет|это)\\b)\\s*|\\bдальше\\s+(?:нужно|по\\s+плану)\\s+|\\bлучше\\s+начать\\s+с\\s+)[^.!?\\n]{0,160}?\\b",
-    "lineno": 817,
+    "lineno": 795,
     "col_offset": 43,
     "row_id": "adr003:320b78df028d569ab81912d8"
   },
@@ -7065,7 +6683,7 @@
     "pattern_sha256": "ac77cd7c29c4e8a7afa6c96607285483c1b1a625004525c87b2e415aa3789fa4",
     "flags": "re.I",
     "pattern_preview": "^(?=.*\\[/?manager\\])(?=.*(?:интерпретир\\w+|служебн\\w+\\s+тег|тег\\s+\\[/?manager\\])).*$",
-    "lineno": 591,
+    "lineno": 569,
     "col_offset": 46,
     "row_id": "adr003:4aaf515bf96cb14c9fa4d2c4"
   },
@@ -7343,7 +6961,7 @@
     "pattern_sha256": "c58bacd161deb0ab54d1c6752fdebc50b2f2946729e167c9ffd5a6b39b59e82d",
     "flags": "part",
     "pattern_preview": "^[А-ЯЁ]",
-    "lineno": 2048,
+    "lineno": 2026,
     "col_offset": 50,
     "row_id": "adr003:cbce912552b6986b638462dc"
   },
@@ -7422,7 +7040,7 @@
     "pattern_sha256": "c58bacd161deb0ab54d1c6752fdebc50b2f2946729e167c9ffd5a6b39b59e82d",
     "flags": "part",
     "pattern_preview": "^[А-ЯЁ]",
-    "lineno": 2111,
+    "lineno": 2089,
     "col_offset": 54,
     "row_id": "adr003:c52e4bbeffc24d7c4548cd57"
   },
@@ -7479,7 +7097,7 @@
     "symbol": "In",
     "expression_sha256": "b70a7d9e2a6ef886a118a0435c3c64c78a667b4a225274258007048ed1c61bd7",
     "expression_preview": "\"претенз\" in lowered",
-    "lineno": 840,
+    "lineno": 818,
     "col_offset": 60,
     "row_id": "adr003:29affa09f2ba6376690c8df5"
   },
@@ -7514,7 +7132,7 @@
     "symbol": "In",
     "expression_sha256": "1f38d6faab66e56e71d9ed3ab0a126f1d0892090ef4315c8309f45ad4063e2d4",
     "expression_preview": "\"?\" in value",
-    "lineno": 4083,
+    "lineno": 4061,
     "col_offset": 64,
     "row_id": "adr003:f504752f5f5fdd90860c01f7"
   },
@@ -7648,7 +7266,7 @@
     "symbol": "In",
     "expression_sha256": "5e2676c45ed46dad6ba2d1863008422bf809b7649489500b484115cde275033e",
     "expression_preview": "\".\" in normalized",
-    "lineno": 2725,
+    "lineno": 2703,
     "col_offset": 7,
     "row_id": "adr003:6caa8ee31941de8aad344ddc"
   },
@@ -7703,7 +7321,7 @@
     "symbol": "In",
     "expression_sha256": "472a026154a861e3de8b42895e56dfc0a49d6dd0199769c071381c5e1e55ee10",
     "expression_preview": "\"complaint\" in lowered",
-    "lineno": 840,
+    "lineno": 818,
     "col_offset": 7,
     "row_id": "adr003:06a3ad09db74fc7f2cb4fd84"
   },
@@ -7813,7 +7431,7 @@
     "symbol": "In",
     "expression_sha256": "bff210329a3a5a210c979af474a2afbc6233aaa1d2794b16b2a5d0dd8bb719b9",
     "expression_preview": "\"payment_dispute\" in lowered",
-    "lineno": 836,
+    "lineno": 814,
     "col_offset": 7,
     "row_id": "adr003:82ad6e0fef7dfe660d042904"
   },
@@ -7835,7 +7453,7 @@
     "symbol": "In",
     "expression_sha256": "fcc9b93c37369d363b35048b5ddbb61e9191c9e4781b0a2682179782454093d7",
     "expression_preview": "\"refund\" in lowered",
-    "lineno": 838,
+    "lineno": 816,
     "col_offset": 7,
     "row_id": "adr003:37789852ac2caf3c67fab891"
   },
@@ -7901,7 +7519,7 @@
     "symbol": "NotIn",
     "expression_sha256": "baae1c9ca412f100e9c45d526070222332d98e688cbea06b091a48e946dc8472",
     "expression_preview": "\"оплат\" not in normalized",
-    "lineno": 3418,
+    "lineno": 3396,
     "col_offset": 7,
     "row_id": "adr003:d0d9c5b39f9fdd0208504aec"
   },
@@ -8038,7 +7656,7 @@
     "pattern_sha256": "0e5bd28434eeed608f5a74b1b1b628bd84fd7c0346867606077ec647426fdcff",
     "flags": "low",
     "pattern_preview": "справит|потян|подойдет|тяжело|посильн|влит|догонять|подберут?\\s+под\\s+реб",
-    "lineno": 4016,
+    "lineno": 3994,
     "col_offset": 7,
     "row_id": "adr003:9f7724798c2aa4eda97f97a6"
   },
@@ -8129,7 +7747,7 @@
     "pattern_sha256": "fa2c06f47937241d7f93467c62ca2057e6905146c6dfeb03bc2e00c01a224b42",
     "flags": "normalized",
     "pattern_preview": "[бвгджзклмнпрстфхцчшщ]$",
-    "lineno": 2230,
+    "lineno": 2208,
     "col_offset": 7,
     "row_id": "adr003:1c40de1c08b9f2767e466afd"
   },
@@ -8171,19 +7789,6 @@
     "lineno": 346,
     "col_offset": 7,
     "row_id": "adr003:f1a77fd428c9ca27783a0a61"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_mentions_unbacked_children_rule",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "c5946ee708da4ae977bbe340f24139ad68a18be061bb3c81c323c806ad4f8267",
-    "flags": "str(facts_blob or \"\").casefold().replace(\"ё\", \"е\")",
-    "pattern_preview": "\\b(?:двое|двух|два|2)\\s+(?:дет|реб)",
-    "lineno": 939,
-    "col_offset": 7,
-    "row_id": "adr003:df792bd0f31fbbfab2010e3a"
   },
   {
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
@@ -8407,32 +8012,6 @@
     "row_id": "adr003:b2330902258245bee72edc47"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_non_tax_document_or_contract",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "54321279cc8718efe373d3f8f22af0130351507a7a2778317ffe1e79a4fe769f",
-    "flags": "text",
-    "pattern_preview": "налог|вычет|фнс|ндфл|кнд|лиценз|справк",
-    "lineno": 948,
-    "col_offset": 7,
-    "row_id": "adr003:aef7b44a0723f9eb7ff7ad8a"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_non_matkap_document_or_contract",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "0f69499e35f5ad0528992871e41c2dad15e4665a03d4919286d80d1a879d518a",
-    "flags": "text",
-    "pattern_preview": "маткап|материнск|сфр|сертификат",
-    "lineno": 957,
-    "col_offset": 7,
-    "row_id": "adr003:f031fa304857b94fb0a8fa10"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_output_sanitizer_degenerate",
     "node_kind": "regex_call",
@@ -8441,7 +8020,7 @@
     "pattern_sha256": "436a3a18c176b00c56427dd364e15e004d0b66315e6df76674dcdb9b968c0197",
     "flags": "value | re.I",
     "pattern_preview": "(?:[A-CА-В][).]\\s*[^.?!\\n]{1,120}\\s*)+",
-    "lineno": 2281,
+    "lineno": 2259,
     "col_offset": 7,
     "row_id": "adr003:228c2ba163e185248b99c616"
   },
@@ -8487,7 +8066,7 @@
     "symbol": "In",
     "expression_sha256": "72abda940131d459dd5beb96b365129f053a9fb7f4710a93079df1bb830dcdd6",
     "expression_preview": "\"спис\" in lowered",
-    "lineno": 836,
+    "lineno": 814,
     "col_offset": 71,
     "row_id": "adr003:d5facc6f89f8b9860963b44d"
   },
@@ -8498,7 +8077,7 @@
     "symbol": "In",
     "expression_sha256": "85da6c5b69f1a4d385f117b972b04734134406cc56ad5b7251ee85816baf3036",
     "expression_preview": "\"ПРЕДЫДУЩАЯ СВОДКА\" in prompt_text",
-    "lineno": 1059,
+    "lineno": 1038,
     "col_offset": 73,
     "row_id": "adr003:5a90be63bdda3312dd0ffc57"
   },
@@ -8709,7 +8288,7 @@
     "pattern_sha256": "30db10e53359394559eab689590f5d77656ad627cd39125f959b314d4510bdfd",
     "flags": "flags",
     "pattern_preview": "high[_-]?risk|p0|refund|complaint|payment[_-]?dispute|legal|zero[_-]?collect|manager[_-]?only",
-    "lineno": 4003,
+    "lineno": 3981,
     "col_offset": 8,
     "row_id": "adr003:6d63c2e8ad825e563f896298"
   },
@@ -8722,7 +8301,7 @@
     "pattern_sha256": "2c28e6bab13df547dd8eea030bedd6456fd6cd9c11a9a604562190e69e04b753",
     "flags": "low",
     "pattern_preview": "\\b(?:сможет|можно|есть|будет|получится|подойдет|подойд[её]т|оценить|сколько|когда|как|где)\\s+ли\\b|\\b(?:сын|дочк|дочь|реб[её]н|школьник|ученик)\\b|\\?$",
-    "lineno": 2266,
+    "lineno": 2244,
     "col_offset": 8,
     "row_id": "adr003:3346a68f418e092e9796f3f4"
   },
@@ -8735,7 +8314,7 @@
     "pattern_sha256": "d6b2fffbc6b6644aa50ae1ded67b7fa9cb0567dc2cbc0eb8f9c1ed69bfae669e",
     "flags": "normalized",
     "pattern_preview": "\\b(?:стоим\\w*|цена|цену|цены|ценой|прайс|почем|почём|руб(?:\\.|лей|ля|ль)?)\\b",
-    "lineno": 4186,
+    "lineno": 4164,
     "col_offset": 8,
     "row_id": "adr003:3b1615122afa53f1b1e61641"
   },
@@ -8904,22 +8483,9 @@
     "pattern_sha256": "4ebe01bc8abe032efe6a24dd77a6f6d693522f234bce712a79af4be0416713bf",
     "flags": "value",
     "pattern_preview": "заочно|не\\s+буду\\s+обещ|не\\s+возьмусь|лучше\\s+(?:сверить|подобрать|оценить)|стоит\\s+сверить|на\\s+пробн|без\\s+обещан|уровень\\s+лучше",
-    "lineno": 4028,
+    "lineno": 4006,
     "col_offset": 8,
     "row_id": "adr003:32a8429f5361a4570372d9b4"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_asks_unpk_regular_moscow_route",
-    "node_kind": "regex_call",
-    "symbol": "re.search",
-    "target": "",
-    "pattern_sha256": "3d0ad76c5036aa3a5fee8d6444e3af439fa4388d091d7c1d08b27d62ac4a09d8",
-    "flags": "value",
-    "pattern_preview": "как\\s+(?:доехать|добраться|попасть|пройти|проехать)|доехать|добраться|проезд|маршрут",
-    "lineno": 697,
-    "col_offset": 8,
-    "row_id": "adr003:66ec807c01578d48cc960e0a"
   },
   {
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -8976,7 +8542,7 @@
     "symbol": "In",
     "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
     "expression_preview": "\"онлайн\" in value",
-    "lineno": 4082,
+    "lineno": 4060,
     "col_offset": 9,
     "row_id": "adr003:2601a8e1f6e8a777b7cfdf3d"
   },
@@ -8998,7 +8564,7 @@
     "symbol": "In",
     "expression_sha256": "53a6095eb4b0a82fbd6a1913aa50d0c15c02e80c1cadbd1d9eaa3f2bb8c1ad22",
     "expression_preview": "\"chargeback\" in lowered",
-    "lineno": 836,
+    "lineno": 814,
     "col_offset": 96,
     "row_id": "adr003:3f427448884466e263794c0f"
   },

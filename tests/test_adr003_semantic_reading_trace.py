@@ -5,7 +5,6 @@ import pytest
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     OFF_TOPIC_FOTON_SAFE_TEXT,
-    apply_known_context_redundant_question_guard,
 )
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_frame_manager_action_gate
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_reading_trace_finalize
@@ -15,7 +14,6 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     apply_reliable_answerer_output_guard,
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
-    READING_APPLY_CLASSES_ENV,
     SEMANTIC_READING_CLASSES_ENV,
     append_reading_trace_record,
     semantic_reading_trace_record,
@@ -217,35 +215,6 @@ def _live_status_frame_result(
             }
         },
     )
-
-
-def test_route_templates_trace_records_known_context_reask_guard() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Подскажите класс ребёнка?",
-        metadata={
-            "semantic_frame": {
-                "source": "inline",
-                "requested_action": "answer_question",
-                "confidence": 0.91,
-            }
-        },
-    )
-
-    guarded = apply_known_context_redundant_question_guard(
-        result,
-        client_message="А сколько стоит?",
-        context={
-            SEMANTIC_READING_CLASSES_ENV: "route_templates",
-            "dialogue_memory_view": {"known_slots": {"grade": "8"}},
-        },
-    )
-
-    assert guarded.route == "draft_for_manager"
-    trace = guarded.metadata["semantic_reading_trace"][0]
-    assert trace["class"] == "route_templates"
-    assert trace["metadata"]["stage"] == "redundant_guard"
-    assert "grade" in trace["metadata"]["repeated_fields"]
 
 
 def test_live_status_read_records_reliable_answerer_facets_and_keeps_floor() -> None:

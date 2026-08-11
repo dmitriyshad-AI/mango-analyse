@@ -199,7 +199,9 @@ Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` и `tests/f
 - `TELEGRAM_FACT_SELECT_FRAME` + `fact_select_read` — выбор фактов по уже готовому SemanticFrame, с fail-closed при низкой уверенности;
 - `TELEGRAM_TONE_CLOSE_FRAME_VETO` — запрет ложного закрытия горячего лида по уже готовому SemanticFrame;
 - `TELEGRAM_P0_LATCH_AUTORELEASE_V2` — снятие ложного P0-латча только после безопасного inline-frame и трёх нейтральных ходов;
-- `roles_read/refund_tax`, `reask_read/final_text`, `route_templates/autonomy_matrix` — применение уже существующих trace/apply-классов;
+- `route_templates/autonomy_matrix` и временно `roles_read/refund_tax`, `reask_read/final_text` —
+  применение уже существовавших trace/apply-классов; два последних
+  класса удалены 2026-08-11 после доказанного отсутствия production-вызовов;
 - `TELEGRAM_P0_MODEL_LED`, `TELEGRAM_PROSE_MODEL_LED`, `TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT`, `TELEGRAM_SEATS_DEFAULT_OPEN`.
 
 Это не добавляет новых regex/keyword-правил понимания клиента. Наоборот, профиль переводит смысловые решения на SemanticFrame/LLM-блоки, а детерминированные слои остаются полами безопасности: ПДн, бренды, числа, P0, обещания живых мест и fail-closed. Явный `ENV=0` сохраняется как откат для каждого нового профильного флага.
@@ -208,7 +210,10 @@ Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` и `tests/f
 
 Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлён намеренно, чтобы зафиксировать уже введённую fail-closed проверку `P0_LATCH_AUTORELEASE_V2` (`"нет претенз" in normalized`) в `dialogue_memory.py`. Это не новый маршрутный классификатор, а ограничитель снятия старого P0-латча только при явном нейтральном ходе клиента и безопасном frame.
 
-Дополнение того же захода: `roles_read/refund_tax` теперь исправляет клиентский смысл текста при ложном “возврате НДФЛ”, но не снимает уже поставленный `manager_only`/`no_auto_send` safety-floor. Инвариант: `SemanticFrame` владеет смыслом клиентского шаблона, legacy/P0 слой может только ужесточать маршрут.
+Исторически `roles_read/refund_tax` исправлял клиентский текст при ложном
+«возврате НДФЛ», но на рабочем provider-пути не вызывался; 2026-08-11 он
+удалён вместе с ложным профильным объявлением. Инвариант сохранён:
+`SemanticFrame` владеет смыслом, legacy/P0 слой может только ужесточать маршрут.
 
 Удалён `DIRECT_PATH_GOLD_TOPIC_KEYWORDS` как keyword-подборщик few-shot gold-примеров. Это не safety-floor и не route-логика: после удаления примеры выбираются по уже рассчитанному контексту/плану, без нового чтения сырого текста клиента регулярками.
 
@@ -383,3 +388,25 @@ Pre-model `conversation_intent_plan` пока остаётся: он участ�
 карточкам псевдонимных диалогов и не доказывает равенство CRM/Timeline-фактов.
 Удаление разрешается только после парного read-only replay на точно связанных
 диалогах; строить новый fallback или ещё один классификатор запрещено.
+
+## Разрешённое обновление 2026-08-11: удаление невызванных наблюдателей
+
+После первой волны в `policy_routing.py` оставались замкнутые цепочки
+`reask_read`, `roles_read`, старого informational verifier, адресного
+autonomy-ремонтника и model-intent переходов. Рабочий `build_draft()` их не
+вызывал; ссылки состояли из пассивных фасадных импортов, re-export и тестов
+самих этих функций. Они удалены без замены: SemanticFrame уже формируется
+основной моделью, а новый параллельный классификатор не нужен.
+
+Direct-path inventory уменьшен `735 -> 701`: удалено 26 inline regex-вызовов,
+четыре marker-helper вызова и четыре мёртвые таблицы/проверки. Бюджет
+marker-helper для `policy_routing.py` снижен `6 -> 2`. Runtime `re.compile`
+snapshot не изменился. P0, output/fact, identity, ПДн, provider callbacks и
+pre-model `conversation_intent_plan` не менялись.
+
+После повторного аудита также удалён невызываемый
+`TELEGRAM_READING_APPLY_CLASSES`-реестр и ложные классы `route_templates`, `reask_read`,
+`roles_read` в профиле и ADR-003 runner-ах. Из allowlist также убраны
+`off_topic`, `intent_actions`, `rewrite_quality`, `post_semantics`: production-потребители
+есть только у `sense_seats`, `slots_gsf`, `live_status_read`, `fact_select_read`. Замена новым
+флагом или LLM-вызовом не создавалась.

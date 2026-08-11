@@ -18,14 +18,11 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_
 from mango_mvp.channels.subscription_llm_parts.support import DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
-    READING_APPLY_CLASSES_ENV,
     SEMANTIC_READING_CLASSES_ENV,
     SEMANTIC_READING_SLOT_SOURCE,
     SemanticReading,
-    apply_classes,
     enabled_classes,
     off_topic_reading_decision,
-    reading_apply_class_enabled,
     reading_class_enabled,
     sense_seats_reading_decision,
     slot_candidates_from_reading,
@@ -48,27 +45,20 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     }
     assert enabled_classes(context) == frozenset(
         {
-            "off_topic",
             "slots_gsf",
-            "intent_actions",
-            "route_templates",
-            "rewrite_quality",
-            "post_semantics",
             "live_status_read",
-            "reask_read",
-            "roles_read",
             "fact_select_read",
         }
     )
-    assert reading_class_enabled(context, "off_topic") is True
+    assert reading_class_enabled(context, "off_topic") is False
     assert reading_class_enabled(context, "sense_seats") is False
-    assert reading_class_enabled(context, "intent_actions") is True
-    assert reading_class_enabled(context, "route_templates") is True
-    assert reading_class_enabled(context, "rewrite_quality") is True
-    assert reading_class_enabled(context, "post_semantics") is True
+    assert reading_class_enabled(context, "intent_actions") is False
+    assert reading_class_enabled(context, "route_templates") is False
+    assert reading_class_enabled(context, "rewrite_quality") is False
+    assert reading_class_enabled(context, "post_semantics") is False
     assert reading_class_enabled(context, "live_status_read") is True
-    assert reading_class_enabled(context, "reask_read") is True
-    assert reading_class_enabled(context, "roles_read") is True
+    assert reading_class_enabled(context, "reask_read") is False
+    assert reading_class_enabled(context, "roles_read") is False
     assert reading_class_enabled(context, "fact_select_read") is True
 
 
@@ -80,23 +70,19 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
         {
             "sense_seats",
             "slots_gsf",
-            "off_topic",
-            "intent_actions",
             "live_status_read",
             "fact_select_read",
-            "route_templates",
-            "reask_read",
-            "roles_read",
         }
     )
     assert reading_class_enabled(None, "slots_gsf") is True
-    assert reading_class_enabled(None, "intent_actions") is True
-    assert reading_class_enabled(None, "route_templates") is True
+    assert reading_class_enabled(None, "off_topic") is False
+    assert reading_class_enabled(None, "intent_actions") is False
+    assert reading_class_enabled(None, "route_templates") is False
     assert reading_class_enabled(None, "rewrite_quality") is False
     assert reading_class_enabled(None, "post_semantics") is False
     assert reading_class_enabled(None, "live_status_read") is True
-    assert reading_class_enabled(None, "reask_read") is True
-    assert reading_class_enabled(None, "roles_read") is True
+    assert reading_class_enabled(None, "reask_read") is False
+    assert reading_class_enabled(None, "roles_read") is False
     assert reading_class_enabled(None, "fact_select_read") is True
 
     assert enabled_classes({SEMANTIC_READING_CLASSES_ENV: ""}) == frozenset()
@@ -104,63 +90,7 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
     monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "")
     assert enabled_classes({}) == frozenset()
     monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "off_topic")
-    assert enabled_classes({}) == frozenset({"off_topic"})
-
-
-def test_semantic_reading_apply_classes_are_default_off_and_require_enabled_class(monkeypatch) -> None:
-    monkeypatch.delenv(READING_APPLY_CLASSES_ENV, raising=False)
-    monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
-
-    assert apply_classes({}) == frozenset()
-    assert reading_apply_class_enabled({}, "route_templates/autonomy_matrix") is False
-    assert reading_apply_class_enabled({}, "live_status_read/conversation_intent_plan") is False
-
-    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
-
-    assert apply_classes({}) == frozenset(
-        {
-            "live_status_read/conversation_intent_plan",
-            "route_templates/autonomy_matrix",
-            "reask_read/final_text",
-            "roles_read/refund_tax",
-        }
-    )
-    assert reading_apply_class_enabled(None, "live_status_read/conversation_intent_plan") is True
-    assert reading_apply_class_enabled({}, "route_templates/autonomy_matrix") is True
-    assert (
-        reading_apply_class_enabled(
-            {READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix"},
-            "route_templates/autonomy_matrix",
-        )
-        is True
-    )
-    assert apply_classes({READING_APPLY_CLASSES_ENV: ""}) == frozenset()
-    assert reading_apply_class_enabled(
-        {READING_APPLY_CLASSES_ENV: ""},
-        "live_status_read/conversation_intent_plan",
-    ) is False
-    context = {
-        SEMANTIC_READING_CLASSES_ENV: "route_templates,live_status_read",
-        READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix,roles_read/refund_tax,reask_read/final_text,unknown",
-    }
-
-    assert apply_classes(context) == frozenset({"route_templates/autonomy_matrix", "reask_read/final_text", "roles_read/refund_tax"})
-    assert reading_apply_class_enabled(context, "route_templates/autonomy_matrix") is True
-    assert reading_apply_class_enabled(context, "route_templates") is False
-    assert reading_apply_class_enabled(context, "live_status_read") is False
-    assert reading_apply_class_enabled(context, "reask_read/final_text") is False
-    assert reading_apply_class_enabled(context, "roles_read/refund_tax") is False
-    context = {
-        SEMANTIC_READING_CLASSES_ENV: "reask_read",
-        READING_APPLY_CLASSES_ENV: "reask_read/final_text",
-    }
-    assert apply_classes(context) == frozenset({"reask_read/final_text"})
-    assert reading_apply_class_enabled(context, "reask_read/final_text") is True
-    context = {
-        SEMANTIC_READING_CLASSES_ENV: "roles_read",
-        READING_APPLY_CLASSES_ENV: "roles_read/refund_tax",
-    }
-    assert reading_apply_class_enabled(context, "roles_read/refund_tax") is True
+    assert enabled_classes({}) == frozenset()
 
 
 def test_semantic_reading_reads_inline_frame_without_exposing_p0_fields() -> None:

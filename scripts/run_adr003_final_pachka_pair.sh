@@ -28,8 +28,7 @@ if [[ "$RUN_ORDER" != "B_FIRST" && "$RUN_ORDER" != "ON_FIRST" ]]; then
 fi
 
 OLD_READING_CLASSES="sense_seats,slots_gsf,off_topic,intent_actions,live_status_read"
-OLD_APPLY_CLASSES="live_status_read/conversation_intent_plan"
-TARGET_READING_CLASSES="fact_select_read,route_templates,reask_read,roles_read"
+TARGET_READING_CLASSES="fact_select_read"
 NEW_FLAGS=(
   TELEGRAM_FACT_SELECT_FRAME
   TELEGRAM_TONE_CLOSE_FRAME_VETO
@@ -86,7 +85,6 @@ for flag in "${NEW_FLAGS[@]}"; do
 done
 on_env+=(
   -u TELEGRAM_SEMANTIC_READING_CLASSES
-  -u TELEGRAM_READING_APPLY_CLASSES
   "${base_assignments[@]}"
 )
 
@@ -94,7 +92,6 @@ b_env=(
   "${base_unsets[@]}"
   "${base_assignments[@]}"
   TELEGRAM_SEMANTIC_READING_CLASSES="$OLD_READING_CLASSES"
-  TELEGRAM_READING_APPLY_CLASSES="$OLD_APPLY_CLASSES"
 )
 for flag in "${NEW_FLAGS[@]}"; do
   b_env+=("$flag=0")
@@ -122,7 +119,7 @@ validate_leg() {
 }
 
 write_env_contract() {
-  python3 - "$OUT" "$OLD_READING_CLASSES" "$OLD_APPLY_CLASSES" "$TARGET_READING_CLASSES" "$RUN_ORDER" "${NEW_FLAGS[@]}" <<'PY'
+  python3 - "$OUT" "$OLD_READING_CLASSES" "$TARGET_READING_CLASSES" "$RUN_ORDER" "${NEW_FLAGS[@]}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -130,10 +127,9 @@ from pathlib import Path
 
 out = Path(sys.argv[1])
 old_reading = sys.argv[2]
-old_apply = sys.argv[3]
-target_reading = sys.argv[4]
-run_order = sys.argv[5]
-flags = sys.argv[6:]
+target_reading = sys.argv[3]
+run_order = sys.argv[4]
+flags = sys.argv[5:]
 contract = {
     "schema_version": "adr003_final_pachka_env_contract_v1_2026_07_07",
     "created_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
@@ -141,13 +137,12 @@ contract = {
     "B": {
         "meaning": "old pilot profile emulated by explicit overrides",
         "TELEGRAM_SEMANTIC_READING_CLASSES": old_reading,
-        "TELEGRAM_READING_APPLY_CLASSES": old_apply,
         "explicit_zero_flags": {flag: "0" for flag in flags},
         "forbid_trace_classes": target_reading,
     },
     "ON": {
         "meaning": "current HEAD pilot profile as-is; no manual env for target flags",
-        "unset_flags": flags + ["TELEGRAM_SEMANTIC_READING_CLASSES", "TELEGRAM_READING_APPLY_CLASSES"],
+        "unset_flags": flags + ["TELEGRAM_SEMANTIC_READING_CLASSES"],
         "require_trace_classes": target_reading,
     },
 }
@@ -255,7 +250,6 @@ echo "scenarios=$SCEN"
 echo "snapshot=$SNAPSHOT"
 echo "target_reading_classes=$TARGET_READING_CLASSES"
 echo "old_reading_classes=$OLD_READING_CLASSES"
-echo "old_apply_classes=$OLD_APPLY_CLASSES"
 echo "run_order=$RUN_ORDER"
 echo "out=$OUT"
 if [[ "$DRY_CHECK" == "1" ]]; then

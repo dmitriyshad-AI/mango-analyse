@@ -276,6 +276,200 @@ def test_readiness_probe_accepts_tuple_and_rejects_future_measurement(
     )
 
 
+def test_codex_model_probe_uses_exact_models_and_isolated_wrapper(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o700)
+    config = SimpleNamespace(
+        codex_binary=codex,
+        codex_home_root=tmp_path / "codex-homes",
+        strict_ready_provenance=True,
+        codex_resolve_model="resolve-exact",
+        codex_analyze_model="analyze-exact",
+        codex_reasoning_effort="medium",
+        codex_service_tier="flex",
+    )
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def completed(command, **kwargs):
+        if "--output-last-message" in command:
+            Path(command[command.index("--output-last-message") + 1]).write_text(
+                "OK\n",
+                encoding="utf-8",
+            )
+        calls.append(([str(item) for item in command], dict(kwargs)))
+        return SimpleNamespace(returncode=0)
+
+    for name in (
+        "MANGO_OFFICE_API_SALT",
+        "TALLANTO_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "YANDEX_DISK_TOKEN",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.setenv(name, f"sentinel-{name}")
+    monkeypatch.setattr(probe, "codex_network_available", lambda: True)
+    monkeypatch.setattr(
+        probe,
+        "ensure_codex_runtime_anchor",
+        lambda _config: tmp_path,
+    )
+    monkeypatch.setattr(
+        probe,
+        "prepare_codex_home",
+        lambda path, **_kwargs: path,
+    )
+    monkeypatch.setattr(probe.subprocess, "run", completed)
+
+    first = probe.probe_codex_models(config)
+    second = probe.probe_codex_models(config)
+
+    assert all(first.values())
+    assert all(second.values())
+    model_commands = [command for command, _kwargs in calls if "--model" in command]
+    assert len(model_commands) == 4
+    assert [
+        command[command.index("--model") + 1] for command in model_commands
+    ] == ["resolve-exact", "analyze-exact"] * 2
+    assert all("run_codex_cli_isolated.sh" in command[0] for command in model_commands)
+    assert all("--ephemeral" not in command for command in model_commands)
+    assert all("--output-last-message" in command for command in model_commands)
+    assert all('service_tier="flex"' in command for command in model_commands)
+    first_model_calls = [
+        (command, kwargs)
+        for command, kwargs in calls
+        if "--model" in command
+    ][:2]
+    resolve_command, resolve_kwargs = first_model_calls[0]
+    analyze_command, analyze_kwargs = first_model_calls[1]
+    assert "--ignore-user-config" not in resolve_command
+    assert resolve_command[-1].endswith("Reply with exactly OK.")
+    assert resolve_kwargs["input"] is None
+    assert "--ignore-user-config" in analyze_command
+    assert analyze_command[-1] == "-"
+    assert analyze_kwargs["input"].endswith("Reply with exactly OK.")
+    expected_env_keys = {
+        "HOME",
+        "CODEX_HOME",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "NO_COLOR",
+        "MANGO_CODEX_REAL_BIN",
+        "MANGO_CODEX_PROCESS_HOME",
+        "MANGO_CODEX_PROCESS_TMPDIR",
+    }
+    for command, kwargs in calls:
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        assert set(environment) <= expected_env_keys
+        assert not {
+            "MANGO_OFFICE_API_SALT",
+            "TALLANTO_API_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "YANDEX_DISK_TOKEN",
+            "OPENAI_API_KEY",
+        } & set(environment)
+        assert kwargs["cwd"] == Path(str(environment["HOME"]))
+        if "--model" in command:
+            assert set(environment) == expected_env_keys
+            assert environment["MANGO_CODEX_REAL_BIN"] == str(codex)
+            assert environment["MANGO_CODEX_PROCESS_HOME"] == environment["HOME"]
+            assert (
+                environment["MANGO_CODEX_PROCESS_TMPDIR"]
+                == environment["TMPDIR"]
+            )
+        else:
+            assert set(environment) == expected_env_keys - {
+                "MANGO_CODEX_REAL_BIN",
+                "MANGO_CODEX_PROCESS_HOME",
+                "MANGO_CODEX_PROCESS_TMPDIR",
+            }
+            assert "MANGO_CODEX_REAL_BIN" not in environment
+    assert not list(tmp_path.glob(".mango-codex-model-probe-*"))
+    assert not list(config.codex_home_root.glob("probe-*"))
+
+
+def test_codex_model_probe_fails_closed_on_auth_network_or_model_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o700)
+    config = SimpleNamespace(
+        codex_binary=codex,
+        codex_home_root=tmp_path / "codex-homes",
+        strict_ready_provenance=True,
+        codex_resolve_model="resolve-exact",
+        codex_analyze_model="analyze-exact",
+        codex_reasoning_effort="medium",
+        codex_service_tier="flex",
+    )
+    monkeypatch.setattr(
+        probe,
+        "prepare_codex_home",
+        lambda path, **_kwargs: path,
+    )
+    monkeypatch.setattr(
+        probe,
+        "ensure_codex_runtime_anchor",
+        lambda _config: tmp_path,
+    )
+
+    monkeypatch.setattr(probe, "codex_network_available", lambda: False)
+    monkeypatch.setattr(
+        probe.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    no_network = probe.probe_codex_models(config)
+    assert no_network == {
+        "codex_auth_probe_attempted": True,
+        "codex_resolve_model_access_attempted": False,
+        "codex_analyze_model_access_attempted": False,
+        "codex_resolve_model_access_completed": False,
+        "codex_analyze_model_access_completed": False,
+        "codex_authenticated_ok": True,
+        "codex_network_ok": False,
+        "codex_resolve_model_access_ok": False,
+        "codex_analyze_model_access_ok": False,
+    }
+
+    monkeypatch.setattr(probe, "codex_network_available", lambda: True)
+
+    def auth_failure(command, **_kwargs):
+        return SimpleNamespace(returncode=1 if "login" in command else 0)
+
+    monkeypatch.setattr(probe.subprocess, "run", auth_failure)
+    auth_failed = probe.probe_codex_models(config)
+    assert auth_failed["codex_authenticated_ok"] is False
+    assert auth_failed["codex_resolve_model_access_ok"] is False
+    assert auth_failed["codex_analyze_model_access_ok"] is False
+
+    def analyze_failure(command, **_kwargs):
+        if "--output-last-message" in command:
+            model = command[command.index("--model") + 1]
+            Path(command[command.index("--output-last-message") + 1]).write_text(
+                "NOT_OK\n" if model == "analyze-exact" else "OK\n",
+                encoding="utf-8",
+            )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(probe.subprocess, "run", analyze_failure)
+    analyze_failed = probe.probe_codex_models(config)
+    assert analyze_failed["codex_resolve_model_access_ok"] is True
+    assert analyze_failed["codex_analyze_model_access_ok"] is False
+
+
 def test_readiness_probe_requires_europe_moscow_timezone(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -283,15 +477,35 @@ def test_readiness_probe_requires_europe_moscow_timezone(
 
     host_id_file = tmp_path / "host_id"
     host_id_file.write_text("m1-host\n", encoding="utf-8")
-    parsed_config = SimpleNamespace(host_id_file=host_id_file)
+    host_id_file.chmod(0o600)
+    parsed_config = SimpleNamespace(
+        host_id_file=host_id_file,
+        strict_ready_provenance=True,
+        expected_active_host_id="m1-host",
+        expected_previous_host_id="source-mac",
+    )
     config = {
         "pipeline_root": str(tmp_path / "pipeline"),
         "codex_home_root": str(tmp_path / "codex"),
         "expected_code_sha": "a" * 40,
+        "expected_active_host_id": "m1-host",
     }
     approved = probe.approved_runtime_fingerprint()
     monkeypatch.setattr(probe, "current_git_sha", lambda _root: "a" * 40)
     monkeypatch.setattr(probe, "git_worktree_is_clean", lambda _root: True)
+    monkeypatch.setattr(
+        probe.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="dmitriy"),
+    )
+    monkeypatch.setattr(
+        probe,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "active_host_id": "m1-host",
+        },
+    )
     monkeypatch.setattr(probe, "command_output", lambda _command: "")
     monkeypatch.setattr(probe, "physical_memory_bytes", lambda: 64 * 1024**3)
     monkeypatch.setattr(
@@ -321,8 +535,27 @@ def test_readiness_probe_requires_europe_moscow_timezone(
         probe,
         "probe_offline_models",
         lambda _config: {
+            "offline_whisper_synthetic_attempted": True,
+            "offline_gigaam_synthetic_attempted": True,
+            "offline_whisper_synthetic_completed": True,
+            "offline_gigaam_synthetic_completed": True,
             "offline_whisper_synthetic_ok": True,
             "offline_gigaam_synthetic_ok": True,
+        },
+    )
+    monkeypatch.setattr(
+        probe,
+        "probe_codex_models",
+        lambda _config: {
+            "codex_auth_probe_attempted": True,
+            "codex_resolve_model_access_attempted": True,
+            "codex_analyze_model_access_attempted": True,
+            "codex_resolve_model_access_completed": True,
+            "codex_analyze_model_access_completed": True,
+            "codex_authenticated_ok": True,
+            "codex_network_ok": True,
+            "codex_resolve_model_access_ok": True,
+            "codex_analyze_model_access_ok": True,
         },
     )
     monkeypatch.setattr(probe, "probe_time_sync", lambda: True)
@@ -345,20 +578,194 @@ def test_readiness_probe_requires_europe_moscow_timezone(
         evidence,
         parsed_config=parsed_config,
         run_offline_model_probes=True,
+        run_codex_model_probes=True,
     )
     assert ready["checks"]["timezone_is_europe_moscow"] is True
     assert ready["host_readiness"] == "OK"
+    assert ready["controlled_1_readiness"]["status"] == "OK"
+    assert ready["controlled_1_readiness"]["requires_controlled_10"] is False
+    assert ready["service_capacity_readiness"]["status"] == "OK"
+    assert ready["service_capacity_readiness"]["requires_controlled_10"] is True
+    assert ready["production_service_readiness"]["status"] == "OK"
+    assert (
+        ready["mode"]
+        == "read_only_access_plus_synthetic_offline_and_codex_models"
+    )
     assert ready["machine"]["timezone"] == "Europe/Moscow"
+    assert ready["checks"]["active_m1_host_identity_bound"] is True
+    assert ready["checks"]["runtime_user_is_dmitriy"] is True
+    assert ready["runs_content_free_network_model_inference"] is True
+    assert ready["runs_codex_model_access_probes"] is True
+    assert ready["runs_asr"] is True
+    assert ready["runs_resolve_analyze_pipeline"] is False
+    assert ready["uses_customer_content"] is False
 
+    offline_only = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+    )
+    assert (
+        offline_only["mode"]
+        == "read_only_access_plus_synthetic_offline_models"
+    )
+    assert offline_only["controlled_1_readiness"]["status"] == "STOP"
+
+    monkeypatch.setattr(
+        probe,
+        "_measurement_evidence_ok",
+        lambda *_args, **_kwargs: False,
+    )
+    without_controlled_10 = probe.probe(
+        config,
+        {},
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert without_controlled_10["controlled_1_readiness"]["status"] == "OK"
+    assert without_controlled_10["service_capacity_readiness"]["status"] == "STOP"
+    assert without_controlled_10["production_service_readiness"]["status"] == "STOP"
+    assert without_controlled_10["host_readiness"] == "STOP"
+
+    wrong_host_config = {**config, "expected_active_host_id": "another-m1"}
+    wrong_host = probe.probe(
+        wrong_host_config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert wrong_host["checks"]["active_m1_host_identity_bound"] is False
+    assert wrong_host["controlled_1_readiness"]["status"] == "STOP"
+
+    monkeypatch.setattr(
+        probe,
+        "_measurement_evidence_ok",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(probe, "machine_timezone", lambda: "UTC")
     wrong_timezone = probe.probe(
         config,
         evidence,
         parsed_config=parsed_config,
         run_offline_model_probes=True,
+        run_codex_model_probes=True,
     )
     assert wrong_timezone["checks"]["timezone_is_europe_moscow"] is False
     assert wrong_timezone["host_readiness"] == "STOP"
+    assert wrong_timezone["controlled_1_readiness"]["status"] == "STOP"
+    assert wrong_timezone["service_capacity_readiness"]["status"] == "OK"
+    assert wrong_timezone["production_service_readiness"]["status"] == "STOP"
+
+    monkeypatch.setattr(probe, "machine_timezone", lambda: "Europe/Moscow")
+    monkeypatch.setattr(
+        probe,
+        "probe_codex_models",
+        lambda _config: {
+            "codex_auth_probe_attempted": True,
+            "codex_resolve_model_access_attempted": True,
+            "codex_analyze_model_access_attempted": True,
+            "codex_resolve_model_access_completed": True,
+            "codex_analyze_model_access_completed": True,
+            "codex_authenticated_ok": True,
+            "codex_network_ok": True,
+            "codex_resolve_model_access_ok": True,
+            "codex_analyze_model_access_ok": False,
+        },
+    )
+    unavailable_analyze = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert unavailable_analyze["controlled_1_readiness"]["status"] == "STOP"
+    assert unavailable_analyze["production_service_readiness"]["status"] == "STOP"
+
+    monkeypatch.setattr(
+        probe,
+        "probe_codex_models",
+        lambda _config: {
+            "codex_auth_probe_attempted": True,
+            "codex_resolve_model_access_attempted": True,
+            "codex_analyze_model_access_attempted": True,
+            "codex_resolve_model_access_completed": True,
+            "codex_analyze_model_access_completed": True,
+            "codex_authenticated_ok": True,
+            "codex_network_ok": True,
+            "codex_resolve_model_access_ok": False,
+            "codex_analyze_model_access_ok": False,
+        },
+    )
+    failed_model_requests = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert failed_model_requests["codex_model_access_probe_attempted"] is True
+    assert failed_model_requests["runs_codex_model_access_probes"] is True
+    assert failed_model_requests["external_model_requests_made"] is None
+
+    requested_without_parsed_config = probe.probe(
+        config,
+        evidence,
+        parsed_config=None,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+    assert requested_without_parsed_config["offline_model_probes_requested"] is True
+    assert requested_without_parsed_config["codex_model_access_probes_requested"] is True
+    assert requested_without_parsed_config["runs_asr"] is False
+    assert (
+        requested_without_parsed_config["runs_codex_model_access_probes"]
+        is False
+    )
+    assert (
+        requested_without_parsed_config[
+            "runs_content_free_network_model_inference"
+        ]
+        is False
+    )
+
+
+def test_readiness_probe_cli_selects_controlled_1_without_weakening_service(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    monkeypatch.setattr(probe, "load_owner_only_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        probe.CallsTwoProcessesConfig,
+        "from_json",
+        lambda _path: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        probe,
+        "probe",
+        lambda *_args, **_kwargs: {
+            "host_readiness": "STOP",
+            "controlled_1_readiness": {"status": "OK", "ok": True},
+            "service_capacity_readiness": {"status": "STOP", "ok": False},
+            "production_service_readiness": {"status": "STOP", "ok": False},
+        },
+    )
+    config_path = tmp_path / "config.json"
+
+    assert probe.main(["--config", str(config_path)]) == 1
+    assert probe.main(
+        [
+            "--config",
+            str(config_path),
+            "--readiness-target",
+            "controlled-1",
+        ]
+    ) == 0
 
 
 def test_ephemeral_codex_cycle_is_checked_for_persistent_residue(
@@ -376,18 +783,22 @@ def test_ephemeral_codex_cycle_is_checked_for_persistent_residue(
     captured = tmp_path / "args.txt"
     fake = tmp_path / "fake-codex"
     fake.write_text(
-        "#!/bin/zsh\nprintf '%s\\n' \"$@\" > \"$CAPTURED\"\n",
+        "#!/bin/zsh\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(captured))}\n",
         encoding="utf-8",
     )
     fake.chmod(0o700)
     wrapper = ROOT / "scripts" / "run_codex_cli_isolated.sh"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    process_tmp = tmp_path / "process-tmp"
+    process_tmp.mkdir(mode=0o700)
     env = {
         **os.environ,
         "HOME": str(home),
         "CODEX_HOME": str(runtime_home),
         "MANGO_CODEX_REAL_BIN": str(fake),
-        "CAPTURED": str(captured),
+        "MANGO_CODEX_PROCESS_HOME": str(home),
+        "MANGO_CODEX_PROCESS_TMPDIR": str(process_tmp),
     }
 
     subprocess.run(
@@ -400,12 +811,28 @@ def test_ephemeral_codex_cycle_is_checked_for_persistent_residue(
     assert "--ephemeral" in args
     assert probe.inspect_codex_home(runtime_home)["ok"] is True
 
-    residue = runtime_home / "history.jsonl"
+    for label in (
+        "worker",
+        "transcribe",
+        "backfill_second_asr",
+        "resolve",
+        "analyze",
+    ):
+        stage_home = runtime_home / label
+        stage_home.mkdir(mode=0o700)
+        stage_home.chmod(0o700)
+        stage_config = stage_home / "config.toml"
+        stage_config.write_text("# synthetic\n", encoding="utf-8")
+        stage_config.chmod(0o600)
+    assert probe.inspect_codex_home(runtime_home)["ok"] is True
+
+    residue = runtime_home / "analyze" / "history.jsonl"
     residue.write_text("safe synthetic prompt\n", encoding="utf-8")
     residue.chmod(0o600)
     rejected = probe.inspect_codex_home(runtime_home)
     assert rejected["ok"] is False
     assert rejected["persistent_session_or_history"] is True
+    assert rejected["unknown_files"] == ["analyze/history.jsonl"]
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL control")

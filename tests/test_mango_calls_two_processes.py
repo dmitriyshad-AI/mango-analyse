@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import plistlib
+import shlex
 import subprocess
 import sqlite3
 import sys
@@ -30,6 +31,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     dead_letter_total,
     dead_letter_mass_failure,
     environment_preflight,
+    ensure_codex_runtime_anchor,
     finalize_report,
     hardlink_or_copy,
     module_probe_command,
@@ -84,6 +86,7 @@ def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_stagin
         python_executable=Path(sys.executable),
         codex_binary=Path(sys.executable),
         codex_home_root=tmp_path / "codex_home",
+        expected_active_host_id="m1-host",
         min_free_gib=1,
     )
 
@@ -2043,12 +2046,28 @@ def test_worker_command_is_drain_and_never_sync(tmp_path: Path) -> None:
     assert "sync" not in command
 
 
+def test_calls_runtime_requires_flex_codex_service_tier(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), codex_service_tier="fast")
+
+    with pytest.raises(ValueError, match="codex_service_tier must be flex"):
+        config.validate()
+
+
 def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     calls: list[tuple[list[str], dict[str, str]]] = []
+    ephemeral_paths: list[Path] = []
 
     def fake_runner(command, env, cwd):
         del cwd
+        for key in (
+            "CODEX_HOME",
+            "MANGO_CODEX_PROCESS_HOME",
+            "MANGO_CODEX_PROCESS_TMPDIR",
+        ):
+            path = Path(str(env[key]))
+            assert path.is_dir()
+            ephemeral_paths.append(path)
         calls.append((list(command), dict(env)))
         return {"rc": 0}
 
@@ -2063,6 +2082,93 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     assert calls[2][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert calls[3][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert all("sync" not in command for command, _ in calls)
+    assert len({path.parent for path in ephemeral_paths}) == 4
+    assert all(not path.exists() for path in ephemeral_paths)
+    assert config.codex_home_root.is_dir()
+    assert config.codex_home_root.stat().st_mode & 0o777 == 0o700
+    assert not list(config.codex_home_root.iterdir())
+
+    second = run_sequential_pipeline_workers(config, {}, fake_runner)
+    assert len(second) == 4
+    assert all(not path.exists() for path in ephemeral_paths)
+    assert not list(config.codex_home_root.iterdir())
+
+
+def test_codex_runtime_anchor_repairs_owned_mode_and_rejects_symlink(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.codex_home_root.mkdir(mode=0o755)
+    config.codex_home_root.chmod(0o755)
+
+    resolved = ensure_codex_runtime_anchor(config)
+
+    assert resolved == config.codex_home_root.resolve()
+    assert resolved.stat().st_mode & 0o777 == 0o700
+
+    config.codex_home_root.rmdir()
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o700)
+    config.codex_home_root.symlink_to(victim, target_is_directory=True)
+    with pytest.raises((OSError, RuntimeError)):
+        ensure_codex_runtime_anchor(config)
+
+
+@pytest.mark.parametrize("terminate_raises", [False, True])
+def test_real_stage_cleans_runtime_and_checks_group_after_parent_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminate_raises: bool,
+) -> None:
+    config = config_for(tmp_path)
+    runtime_paths: list[Path] = []
+    terminated: list[int] = []
+
+    class ExitedParent:
+        pid = 424242
+        returncode = 0
+
+        def __init__(self, *_args, **kwargs) -> None:
+            runtime = Path(str(kwargs["env"]["CODEX_HOME"])).parent
+            (runtime / ".sandbox_migration").write_text(
+                "synthetic residue\n",
+                encoding="utf-8",
+            )
+            runtime_paths.append(runtime)
+
+        def poll(self) -> int:
+            return 0
+
+    def terminate(proc) -> None:
+        terminated.append(proc.pid)
+        if terminate_raises:
+            raise RuntimeError("synthetic terminate failure")
+
+    monkeypatch.setattr(calls_runtime, "pipeline_stages", lambda *_a, **_k: ("resolve",))
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", ExitedParent)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+
+    if terminate_raises:
+        with pytest.raises(RuntimeError, match="synthetic terminate failure"):
+            run_sequential_pipeline_workers(
+                config,
+                {},
+                calls_runtime.run_command,
+                run_id="synthetic",
+            )
+    else:
+        report = run_sequential_pipeline_workers(
+            config,
+            {},
+            calls_runtime.run_command,
+            run_id="synthetic",
+        )
+        assert report[0]["rc"] == 0
+
+    assert terminated == [424242]
+    assert runtime_paths
+    assert all(not path.exists() for path in runtime_paths)
+    assert not list(config.codex_home_root.iterdir())
 
 
 def test_each_stage_timeout_is_capped_by_shared_four_hour_cycle() -> None:
@@ -5753,14 +5859,33 @@ def test_strict_codex_home_rejects_auth_source_inside_cloud_symlink(
 
 def test_codex_wrapper_disables_desktop_tools(tmp_path: Path) -> None:
     captured = tmp_path / "args.txt"
+    captured_env = tmp_path / "env.txt"
     fake = tmp_path / "fake-codex"
     fake.write_text(
-        "#!/bin/zsh\nprintf '%s\\n' \"$@\" > \"$CAPTURED\"\n",
+        "#!/bin/zsh\n"
+        f"/usr/bin/env > {shlex.quote(str(captured_env))}\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(captured))}\n",
         encoding="utf-8",
     )
     fake.chmod(0o700)
     wrapper = Path(__file__).resolve().parents[1] / "scripts" / "run_codex_cli_isolated.sh"
-    env = {**os.environ, "MANGO_CODEX_REAL_BIN": str(fake), "CAPTURED": str(captured)}
+    codex_home = tmp_path / "codex-home"
+    process_home = tmp_path / "process-home"
+    process_tmp = tmp_path / "process-tmp"
+    for directory in (codex_home, process_home, process_tmp):
+        directory.mkdir(mode=0o700)
+    env = {
+        **os.environ,
+        "CODEX_HOME": str(codex_home),
+        "MANGO_CODEX_REAL_BIN": str(fake),
+        "MANGO_CODEX_PROCESS_HOME": str(process_home),
+        "MANGO_CODEX_PROCESS_TMPDIR": str(process_tmp),
+        "MANGO_OFFICE_API_SALT": "must-not-reach-codex",
+        "TALLANTO_API_KEY": "must-not-reach-codex",
+        "GOOGLE_APPLICATION_CREDENTIALS": "must-not-reach-codex",
+        "YANDEX_DISK_TOKEN": "must-not-reach-codex",
+        "OPENAI_API_KEY": "must-not-reach-codex",
+    }
 
     subprocess.run([str(wrapper), "exec", "--model", "test", "prompt"], env=env, check=True)
 
@@ -5769,6 +5894,25 @@ def test_codex_wrapper_disables_desktop_tools(tmp_path: Path) -> None:
     assert args.count("--disable") == 5
     assert "apps" in args and "plugins" in args and "browser_use" in args
     assert args[-3:] == ["--model", "test", "prompt"]
+    child_env = dict(
+        line.split("=", 1)
+        for line in captured_env.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert child_env["HOME"] == str(process_home)
+    assert child_env["CODEX_HOME"] == str(codex_home)
+    assert child_env["TMPDIR"] == str(process_tmp)
+    assert child_env["NO_COLOR"] == "1"
+    assert not {
+        "MANGO_CODEX_REAL_BIN",
+        "MANGO_CODEX_PROCESS_HOME",
+        "MANGO_CODEX_PROCESS_TMPDIR",
+        "MANGO_OFFICE_API_SALT",
+        "TALLANTO_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "YANDEX_DISK_TOKEN",
+        "OPENAI_API_KEY",
+    } & set(child_env)
 
 
 def create_ready_call_db(path: Path) -> None:

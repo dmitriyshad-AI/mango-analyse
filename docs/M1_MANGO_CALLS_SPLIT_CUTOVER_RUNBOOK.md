@@ -594,6 +594,7 @@ MANGO_CALLS_TALLANTO_EXPORT=<HOME>/.mango_local/tallanto/Contacts_current.csv
 ```json
 {
   "host_id_path": "<HOME>/.mango_local/mango_calls_two_processes/state/host_id",
+  "expected_active_host_id": "<M1_HOST_ID>",
   "expected_previous_host_id": "<PREVIOUS_MAC_HOST_ID>",
   "cutover_manifest_path": "<HOME>/.mango_local/mango_calls_two_processes/state/cutover_manifest.json",
   "previous_host_snapshot_path": "<HOME>/.mango_local/mango_calls_two_processes/state/previous_host_shutdown_snapshot.json"

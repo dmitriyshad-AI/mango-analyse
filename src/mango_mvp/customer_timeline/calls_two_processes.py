@@ -190,12 +190,14 @@ class CallsTwoProcessesConfig:
     codex_resolve_model: str = "gpt-5.4"
     codex_analyze_model: str = "gpt-5.4-mini"
     codex_reasoning_effort: str = "medium"
+    codex_service_tier: str = "flex"
     mlx_whisper_snapshot_path: Optional[Path] = None
     heavy_stage_timeout_seconds: int = 4 * 60 * 60
     expected_code_sha: Optional[str] = None
     host_id_path: Optional[Path] = None
     cutover_manifest_path: Optional[Path] = None
     previous_host_snapshot_path: Optional[Path] = None
+    expected_active_host_id: Optional[str] = None
     expected_previous_host_id: Optional[str] = None
     cutover_proof_max_age_minutes: int = 90
     max_catch_up_days: int = 7
@@ -248,6 +250,9 @@ class CallsTwoProcessesConfig:
             codex_resolve_model=str(payload.get("codex_resolve_model") or "gpt-5.4"),
             codex_analyze_model=str(payload.get("codex_analyze_model") or "gpt-5.4-mini"),
             codex_reasoning_effort=str(payload.get("codex_reasoning_effort") or "medium"),
+            codex_service_tier=str(
+                payload.get("codex_service_tier") or "flex"
+            ).strip(),
             mlx_whisper_snapshot_path=(
                 Path(str(payload["mlx_whisper_snapshot_path"])).expanduser()
                 if payload.get("mlx_whisper_snapshot_path")
@@ -274,6 +279,9 @@ class CallsTwoProcessesConfig:
                 Path(str(payload["previous_host_snapshot_path"])).expanduser()
                 if payload.get("previous_host_snapshot_path")
                 else None
+            ),
+            expected_active_host_id=optional_text(
+                payload.get("expected_active_host_id")
             ),
             expected_previous_host_id=optional_text(
                 payload.get("expected_previous_host_id")
@@ -314,6 +322,8 @@ class CallsTwoProcessesConfig:
             raise ValueError("recording_set_stabilization_minutes must be non-negative")
         if self.asr_mode != "mlx_dual":
             raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
+        if self.codex_service_tier != "flex":
+            raise ValueError("codex_service_tier must be flex in strict M1 Calls runtime")
         if self.min_free_gib < 1:
             raise ValueError("min_free_gib must be at least 1")
         if self.heavy_stage_timeout_seconds < 60:
@@ -332,11 +342,23 @@ class CallsTwoProcessesConfig:
             raise ValueError("expected_code_sha is required for cutover authority")
         if self.require_cutover_authority and not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}",
+            self.expected_active_host_id or "",
+        ):
+            raise ValueError(
+                "expected_active_host_id is required for cutover authority"
+            )
+        if self.require_cutover_authority and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}",
             self.expected_previous_host_id or "",
         ):
             raise ValueError(
                 "expected_previous_host_id is required for cutover authority"
             )
+        if (
+            self.require_cutover_authority
+            and self.expected_active_host_id == self.expected_previous_host_id
+        ):
+            raise ValueError("active and previous host IDs must differ")
         if self.publication_root is not None:
             publication = self.publication_root.resolve(strict=False)
             owner_local = (Path.home() / ".mango_local").resolve(strict=False)
@@ -500,6 +522,12 @@ def cutover_authority_report(
         proof_max_age_minutes=config.cutover_proof_max_age_minutes,
         require_fresh_previous_host_proof=False,
     ))
+    if report.get("active_host_id") != config.expected_active_host_id:
+        report["ok"] = False
+        report["errors"] = [
+            *list(report.get("errors") or ()),
+            "expected_active_host_id_mismatch",
+        ]
     if report.get("ok") is not True:
         return report
     expected_cursor_sha = str(report.get("source_cursor_sha256") or "")
@@ -3766,6 +3794,73 @@ def read_known_processed_ids(product_data_root: Path) -> tuple[set[str], set[str
     return recording_ids, call_ids
 
 
+def ensure_codex_runtime_anchor(config: CallsTwoProcessesConfig) -> Path:
+    """Create and validate the private container for ephemeral Codex homes."""
+
+    anchor = config.codex_home_root.expanduser()
+    anchor.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(anchor, flags)
+    except OSError as exc:
+        raise RuntimeError("codex_runtime_anchor_unsafe") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.getuid():
+            raise RuntimeError("codex_runtime_anchor_wrong_owner_or_type")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+    resolved = validate_owner_only_directory(
+        anchor,
+        label="codex_runtime_anchor",
+        owner_only_mode=0o700,
+    )
+    _validate_codex_location(
+        resolved,
+        require_owner_local=config.strict_ready_provenance,
+    )
+    return resolved
+
+
+@contextmanager
+def temporary_codex_runtime(
+    config: CallsTwoProcessesConfig,
+    *,
+    label: str,
+) -> Iterator[Mapping[str, str]]:
+    """Build a clean Codex home/process home for exactly one subprocess."""
+
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]", "_", label).strip("._-")
+    if not safe_label:
+        raise RuntimeError("temporary Codex runtime label is invalid")
+    parent = ensure_codex_runtime_anchor(config)
+    with tempfile.TemporaryDirectory(
+        prefix=f".mango-codex-{safe_label}-",
+        dir=parent,
+    ) as raw_runtime:
+        runtime = Path(raw_runtime)
+        runtime.chmod(0o700)
+        process_home = runtime / "home"
+        process_tmp = runtime / "tmp"
+        process_home.mkdir(mode=0o700)
+        process_tmp.mkdir(mode=0o700)
+        codex_home = prepare_codex_home(
+            runtime / "codex-home",
+            strict=config.strict_ready_provenance,
+        )
+        yield {
+            "CODEX_HOME": str(codex_home),
+            "MANGO_CODEX_PROCESS_HOME": str(process_home),
+            "MANGO_CODEX_PROCESS_TMPDIR": str(process_tmp),
+        }
+
+
 def environment_preflight(
     config: CallsTwoProcessesConfig,
     *,
@@ -3798,25 +3893,30 @@ def environment_preflight(
             modules_ok = False
     if run_commands and codex_ok:
         try:
-            codex_home = prepare_codex_home(
-                config.codex_home_root / "worker",
-                strict=config.strict_ready_provenance,
-            )
-            auth = subprocess.run(
-                [str(config.codex_binary), "login", "status"],
-                env={
-                    **os.environ,
-                    "HOME": str(Path.home()),
-                    "CODEX_HOME": str(codex_home),
-                    "PATH": command_path(config),
-                },
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=30,
-            )
-            auth_ok = auth.returncode == 0
-        except subprocess.TimeoutExpired:
+            with temporary_codex_runtime(
+                config,
+                label="preflight",
+            ) as codex_runtime:
+                auth = subprocess.run(
+                    [str(config.codex_binary), "login", "status"],
+                    env={
+                        "HOME": codex_runtime["MANGO_CODEX_PROCESS_HOME"],
+                        "CODEX_HOME": codex_runtime["CODEX_HOME"],
+                        "TMPDIR": codex_runtime[
+                            "MANGO_CODEX_PROCESS_TMPDIR"
+                        ],
+                        "PATH": command_path(config),
+                        "LANG": "en_US.UTF-8",
+                        "LC_ALL": "en_US.UTF-8",
+                        "NO_COLOR": "1",
+                    },
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=30,
+                )
+                auth_ok = auth.returncode == 0
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
             auth_ok = False
     elif not run_commands:
         modules_ok = True
@@ -4170,16 +4270,16 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
     project_root = Path(__file__).resolve().parents[3]
     isolated_codex = project_root / "scripts" / "run_codex_cli_isolated.sh"
     config.transcripts_dir.mkdir(parents=True, exist_ok=True)
-    codex_home = prepare_codex_home(
-        config.codex_home_root / "worker",
-        strict=config.strict_ready_provenance,
-    )
     return {
         **os.environ,
         "PATH": command_path(config),
         "DATABASE_URL": f"sqlite:///{config.working_db}",
         "TRANSCRIPT_EXPORT_DIR": str(config.transcripts_dir),
-        "CODEX_HOME": str(codex_home),
+        # Each heavy stage replaces these empty sentinels with a fresh,
+        # one-subprocess runtime. Prelude init/ingest never invokes Codex.
+        "CODEX_HOME": "",
+        "MANGO_CODEX_PROCESS_HOME": "",
+        "MANGO_CODEX_PROCESS_TMPDIR": "",
         "PYTHONPATH": str(project_root / "src"),
         "PYTHONDONTWRITEBYTECODE": "1",
         "SQLITE_BUSY_TIMEOUT_MS": "60000",
@@ -4187,6 +4287,7 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         "MANGO_CODEX_REAL_BIN": str(config.codex_binary),
         "CODEX_CLI_TIMEOUT_SEC": "360",
         "CODEX_REASONING_EFFORT": config.codex_reasoning_effort,
+        "MANGO_CODEX_SERVICE_TIER": config.codex_service_tier,
         "CODEX_RESOLVE_MODEL": config.codex_resolve_model,
         "CODEX_ANALYZE_MODEL": config.codex_analyze_model,
         "RESOLVE_LLM_PROVIDER": "codex_cli",
@@ -4382,14 +4483,27 @@ def run_sequential_pipeline_workers(
 ) -> list[Mapping[str, Any]]:
     stages = pipeline_stages(config, include_llm=include_llm)
     if runner is not run_command:
-        return [
-            runner(
-                worker_command(config, stage),
-                stage_worker_environment_for(config, base_env, stage),
-                config.working_dir,
-            )
-            for stage in stages
-        ]
+        reports: list[Mapping[str, Any]] = []
+        for stage in stages:
+            with temporary_codex_runtime(
+                config,
+                label=stage.replace("-", "_"),
+            ) as codex_runtime:
+                reports.append(
+                    runner(
+                        worker_command(config, stage),
+                        {
+                            **stage_worker_environment_for(
+                                config,
+                                base_env,
+                                stage,
+                            ),
+                            **codex_runtime,
+                        },
+                        config.working_dir,
+                    )
+                )
+        return reports
     logs_dir = config.working_dir / "logs"
     logs_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     logs_dir.chmod(0o700)
@@ -4403,15 +4517,6 @@ def run_sequential_pipeline_workers(
     for stage in stages:
         label = stage.replace("-", "_")
         log_path = logs_dir / f"stage_{label}_{log_run_id}.log"
-        worker_env = {
-            **stage_worker_environment_for(config, base_env, stage),
-            "CODEX_HOME": str(
-                prepare_codex_home(
-                    config.codex_home_root / label,
-                    strict=config.strict_ready_provenance,
-                )
-            ),
-        }
         started_at = time.monotonic()
         if started_at >= heavy_cycle_deadline:
             log_path.write_text("heavy_cycle_timeout_before_stage\n", encoding="utf-8")
@@ -4440,7 +4545,16 @@ def run_sequential_pipeline_workers(
         heartbeat_path = config.process_a_heartbeat_path
         proc: subprocess.Popen[str] | None = None
         timed_out = False
+        codex_runtime_scope = temporary_codex_runtime(
+            config,
+            label=label,
+        )
+        codex_runtime = codex_runtime_scope.__enter__()
         try:
+            worker_env = {
+                **stage_worker_environment_for(config, base_env, stage),
+                **codex_runtime,
+            }
             with log_path.open("x", encoding="utf-8") as log_handle:
                 log_path.chmod(0o600)
                 command = worker_command(config, stage)
@@ -4481,9 +4595,14 @@ def run_sequential_pipeline_workers(
                 if timed_out:
                     log_handle.write("stage_timeout\n")
         finally:
-            if proc is not None and proc.poll() is None:
-                terminate_process_group(proc)
-            heartbeat_path.unlink(missing_ok=True)
+            try:
+                if proc is not None:
+                    terminate_process_group(proc)
+            finally:
+                try:
+                    heartbeat_path.unlink(missing_ok=True)
+                finally:
+                    codex_runtime_scope.__exit__(None, None, None)
         after_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         stage_metrics = parse_macos_time_metrics(log_path)
         reports.append(

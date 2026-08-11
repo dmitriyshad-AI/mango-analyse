@@ -2,7 +2,7 @@
 
 Ветка: codex/m1-calls-service-fast-value-20260811
 Базовый SHA: 655bf6b993982bd0c1d45a492c0a0e4c7c9891cf
-Зоны: src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/services/resolve.py, src/mango_mvp/services/analyze.py, scripts/probe_m1_calls_access.py, scripts/publish_current_mango_calls_google.py, scripts/run_mango_calls_publication_coordinator.py, tests/, docs/, audits/_inbox/m1_calls_controlled1_blockers_20260811/, tasks/
+Зоны: src/mango_mvp/config.py, src/mango_mvp/cli.py, src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_config.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/services/pipeline_claims.py, src/mango_mvp/services/transcribe.py, src/mango_mvp/services/resolve.py, src/mango_mvp/services/analyze.py, src/mango_mvp/services/worker.py, scripts/probe_m1_calls_access.py, scripts/run_codex_cli_isolated.sh, scripts/publish_current_mango_calls_google.py, scripts/run_mango_calls_publication_coordinator.py, tests/, docs/, audits/_inbox/m1_calls_controlled1_blockers_20260811/, tasks/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
 Семантический-аудит: да
 
@@ -42,6 +42,10 @@ cutover и внешние записи. `business_pass` остаётся `false`
      конфигурация готовы; замер десяти звонков не требуется;
    - `service_capacity_readiness`: controlled-10 и запас мощности доказаны;
    - итоговый production/service readiness остаётся STOP до обоих доказательств.
+   Controlled-1 отдельно требует owner-only `host_id`, его совпадение с
+   `expected_active_host_id` и cutover-authority, фактического пользователя
+   `dmitriy`, точных production-параметров Codex (`flex`, output readback) и
+   одноразовых изолированных `CODEX_HOME` без передачи секретов моделям.
 
 5. Controlled-1 использует owner-only allowlist с одним точным
    `source_call_id`. Этот фильтр применяется одинаково к Whisper, GigaAM,

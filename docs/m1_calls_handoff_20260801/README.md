@@ -124,6 +124,28 @@ codex login status
 Не копировать `auth.json`. Resolve и Analyze работают в отдельном профиле без
 skills, plugins и MCP. Пользовательские skills нужны только Codex-разработчику.
 
+### 4.1 Проверить готовность ровно одного звонка
+
+Только когда на M1 не идёт тяжёлая сборка Customer Timeline, разрешена
+синтетическая проверка моделей без аудио и текста клиентов:
+
+```bash
+set -euo pipefail
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/probe_m1_calls_access.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --run-offline-model-probes \
+  --run-codex-model-probes \
+  --readiness-target controlled-1
+```
+
+`controlled-1` не требует замера десяти звонков. Обычный запуск без
+`--readiness-target` остаётся строгим `service` и вернёт успех только после
+отдельного доказательства capacity. В отчёте `requested`, `attempted` и
+успешные синтетические вызовы разделены; реальные Resolve/Analyze, аудио и
+внешние записи эта команда не выполняет.
+
 ### 5. Подготовить локальные файлы
 
 - `~/.mango_secrets/` - каталог `0700`;

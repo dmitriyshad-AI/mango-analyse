@@ -202,6 +202,7 @@ def _seal_ready(
                 "until": "2026-07-28T21:00:00+00:00",
                 "result_complete": True,
                 "rows": ready_count,
+                "scope": "rolling_authority",
             }
         ],
         "catch_up": False,
@@ -1017,6 +1018,77 @@ def test_repeated_export_reuses_identical_audio(tmp_path: Path, monkeypatch: pyt
     assert (second["transcripts_copied"], second["transcripts_reused"]) == (0, 2)
     assert second["reused"] is True
     assert Path(second["xlsx"]).stat().st_mtime_ns == xlsx_mtime
+
+
+def test_export_reuses_unchanged_day_across_ready_manifest_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+    }
+    first = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        **kwargs,
+    )
+    ready_manifest = ready_db.with_suffix(".manifest.json")
+    original_ready_manifest_sha256 = _sha(ready_manifest)
+    payload = json.loads(ready_manifest.read_text(encoding="utf-8"))
+    payload["enumeration_evidence_sha256"] = "c" * 64
+    ready_manifest.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    second_ready_manifest_sha256 = _sha(ready_manifest)
+
+    second = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        **kwargs,
+    )
+    payload["enumeration_evidence_sha256"] = "d" * 64
+    ready_manifest.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    third_ready_manifest_sha256 = _sha(ready_manifest)
+    third = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        **kwargs,
+    )
+
+    assert first["content_sha256"] == second["content_sha256"] == third[
+        "content_sha256"
+    ]
+    assert second["reused"] is True
+    assert third["reused"] is True
+    assert second["manifest"] == third["manifest"] == first["manifest"]
+    assert second["source_ready_manifest_sha256"] == (
+        original_ready_manifest_sha256
+    )
+    assert third["source_ready_manifest_sha256"] == (
+        original_ready_manifest_sha256
+    )
+    assert second["decision_ready_manifest_sha256"] == (
+        second_ready_manifest_sha256
+    )
+    assert third["decision_ready_manifest_sha256"] == (
+        third_ready_manifest_sha256
+    )
+    assert not list(out.glob("*supplement-*.manifest.json"))
 
 
 def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

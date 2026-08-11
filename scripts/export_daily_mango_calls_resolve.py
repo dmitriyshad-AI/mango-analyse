@@ -885,13 +885,12 @@ def reusable_export(
     row_count: int,
     *,
     incomplete: bool,
+    source_ready_manifest_sha256: str,
 ) -> Mapping[str, Any] | None:
     for manifest in existing_export_manifests(
         output_root, day, incomplete=incomplete
     ):
-        if (
-            manifest.get("content_sha256") != content_sha256
-        ):
+        if manifest.get("content_sha256") != content_sha256:
             continue
         xlsx = output_root / str(manifest["xlsx"])
         transcript_dir = output_root / str(manifest["transcript_dir"])
@@ -899,7 +898,17 @@ def reusable_export(
         if len(transcripts) != row_count or any(not isinstance(item, Mapping) for item in transcripts):
             return None
         payload = public_manifest_payload(manifest)
-        return {**payload, "transcripts_copied": 0, "transcripts_reused": row_count, "transcripts_updated": 0, "reused": True, "xlsx": str(xlsx), "transcript_dir": str(transcript_dir), "manifest": str(manifest["_manifest_path"])}
+        return {
+            **payload,
+            "decision_ready_manifest_sha256": source_ready_manifest_sha256,
+            "transcripts_copied": 0,
+            "transcripts_reused": row_count,
+            "transcripts_updated": 0,
+            "reused": True,
+            "xlsx": str(xlsx),
+            "transcript_dir": str(transcript_dir),
+            "manifest": str(manifest["_manifest_path"]),
+        }
     return None
 
 
@@ -1381,6 +1390,9 @@ def _export_day_locked(
         content_sha256,
         len(rows),
         incomplete=incomplete,
+        source_ready_manifest_sha256=str(
+            source_before["ready_manifest_sha256"]
+        ),
     ):
         return reused
     generation = content_sha256[:12]

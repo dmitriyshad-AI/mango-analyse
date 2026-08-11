@@ -209,6 +209,66 @@ def test_daily_close_retries_closed_days_from_the_previous_72_hours(
     )
 
 
+def test_daily_close_records_current_decision_sha_when_package_is_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = _config(tmp_path, monkeypatch)
+    decision_sha = "d" * 64
+    package_source_sha = "a" * 64
+    monkeypatch.setattr(
+        coordinator,
+        "_ready_snapshot",
+        lambda *_args: (_manifest(closed=True), decision_sha),
+    )
+
+    def reused_export(
+        _config: object,
+        _root: Path,
+        _day: date,
+        *,
+        sealed_only: bool,
+        expected_ready_manifest_sha256: str | None = None,
+    ) -> dict[str, object]:
+        assert sealed_only is True
+        assert expected_ready_manifest_sha256 == decision_sha
+        return {
+            "package_status": "FINAL_CLOSED",
+            "closure_ok": True,
+            "reused": True,
+            "source_ready_manifest_sha256": package_source_sha,
+        }
+
+    monkeypatch.setattr(coordinator, "_daily_export", reused_export)
+
+    result = coordinator.run(config_path, "daily-close", day=DAY)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    persisted = json.loads(
+        (
+            Path(str(config["publication_root"]))
+            / "state"
+            / "daily-close.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert result["status"] == "closed"
+    assert result["decision_ready_manifest_sha256"] == decision_sha
+    assert persisted["decision_ready_manifest_sha256"] == decision_sha
+    assert persisted["attempts"][0][
+        "package_source_ready_manifest_sha256"
+    ] == package_source_sha
+    assert result["attempts"] == [
+        {
+            "day": DAY.isoformat(),
+            "status": "closed",
+            "reused": True,
+            "package_status": "FINAL_CLOSED",
+            "closure_ok": True,
+            "package_source_ready_manifest_sha256": package_source_sha,
+            "decision_ready_manifest_sha256": decision_sha,
+        }
+    ]
+
+
 def test_daily_close_keeps_the_full_72_hour_boundary_reachable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

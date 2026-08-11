@@ -1010,7 +1010,9 @@ def validate_transfer_cursor(root: Path) -> Mapping[str, Any]:
         )
         if parsed_until.tzinfo is None or parsed_until.utcoffset() is None:
             raise ValueError
-        end_offset = int(cursor.get("manifest_end_offset"))
+        end_offset = cursor.get("manifest_end_offset")
+        if isinstance(end_offset, bool) or not isinstance(end_offset, int):
+            raise ValueError
     except (TypeError, ValueError):
         raise RelocationError("Mango freshness cursor identity is invalid") from None
     manifest_raw = _read_regular_bytes(root / CAPTURE_REL, label="capture manifest")

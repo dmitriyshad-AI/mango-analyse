@@ -103,13 +103,22 @@ def _ready(call_key: str, **extra: object) -> dict[str, object]:
 
 
 def _enumeration(*keys: str, complete: bool = True, zero_proofs: int = 0) -> dict[str, object]:
+    unique_keys = sorted(set(keys))
     return {
         "mango_enumeration_complete": complete,
-        "call_keys": list(keys),
-        "independent_zero_enumerations": zero_proofs,
+        "call_keys": unique_keys,
+        "calls_by_moscow_day": {DAY.isoformat(): list(keys)} if keys else {},
+        "independent_zero_enumerations_by_day": {
+            DAY.isoformat(): 0 if keys else zero_proofs
+        },
+        "api_requests": 1,
+        "api_rows_total": len(keys),
+        "api_authoritative_rows_total": len(keys),
+        "api_events_total": len(unique_keys),
         "mango_enumeration_source": {
             "mode": "strict_service",
             "since": "2026-08-09T21:00:00+00:00",
+            "rolling_since": "2026-08-09T21:00:00+00:00",
             "until": "2026-08-10T21:00:00+00:00",
             "cursor": "not_applicable_stats_request_result",
             "requests": 1,
@@ -120,6 +129,8 @@ def _enumeration(*keys: str, complete: bool = True, zero_proofs: int = 0) -> dic
                     "since": "2026-08-09T21:00:00+00:00",
                     "until": "2026-08-10T21:00:00+00:00",
                     "result_complete": True,
+                    "rows": len(keys),
+                    "scope": "rolling_authority",
                 }
             ],
         },
@@ -681,11 +692,13 @@ def test_partial_current_day_can_be_consistent_but_never_closed() -> None:
     source["until"] = "2026-08-10T15:00:00+00:00"
     source["covered_intervals"] = [
         {
-            "since": "2026-08-09T21:00:00+00:00",
-            "until": "2026-08-10T15:00:00+00:00",
-            "result_complete": True,
-        }
-    ]
+                "since": "2026-08-09T21:00:00+00:00",
+                "until": "2026-08-10T15:00:00+00:00",
+                "result_complete": True,
+                "rows": 1,
+                "scope": "rolling_authority",
+            }
+        ]
     enumeration["mango_enumeration_source"] = source
     result = build_stage10_verdict(
         day=DAY,
@@ -827,6 +840,69 @@ def test_valid_strict_ready_manifest_is_accepted() -> None:
     ) == []
 
 
+def test_first_empty_day_proof_is_valid_red_manifest_evidence() -> None:
+    verdict = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration(zero_proofs=1),
+            capture_entries=[],
+            ready_rows=[],
+            now=NOW,
+        )
+    )
+    manifest = _strict_ready_manifest_for(verdict)
+
+    assert verdict["mango_enumeration_complete"] is False
+    assert verdict["consistency_ok"] is False
+    assert verdict["closure_ok"] is False
+    assert validate_ready_manifest_payload(
+        manifest,
+        require_consistency=False,
+    ) == []
+
+
+def test_strict_manifest_rejects_compatibility_daily_source() -> None:
+    verdict = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("complete"),
+            capture_entries=[_capture("complete")],
+            ready_rows=[_ready("complete")],
+            now=NOW,
+        )
+    )
+    verdict["mango_enumeration_source"] = {
+        "mode": "compatibility_not_for_service",
+        "since": "not_proven",
+        "until": "not_proven",
+    }
+
+    errors = validate_ready_manifest_payload(_strict_ready_manifest_for(verdict))
+
+    assert "daily_verdict_enumeration_source_not_strict" in errors
+
+
+def test_strict_manifest_rejects_compatibility_top_level_source() -> None:
+    verdict = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("complete"),
+            capture_entries=[_capture("complete")],
+            ready_rows=[_ready("complete")],
+            now=NOW,
+        )
+    )
+    manifest = _strict_ready_manifest_for(verdict)
+    manifest["mango_enumeration_source"] = {
+        **manifest["mango_enumeration_source"],
+        "mode": "compatibility_not_for_service",
+    }
+
+    errors = validate_ready_manifest_payload(manifest)
+
+    assert "mango_enumeration_source_not_strict" in errors
+
+
 def test_ready_manifest_rejects_tampered_quarantine_guidance() -> None:
     verdict = dict(
         build_stage10_verdict(
@@ -921,6 +997,7 @@ def test_required_day_can_be_green_while_another_day_keeps_generation_red() -> N
     red_source = red["mango_enumeration_source"]
     red_source.update(
         since="2026-08-08T21:00:00+00:00",
+        rolling_since="2026-08-08T21:00:00+00:00",
         until="2026-08-09T21:00:00+00:00",
     )
     red_source["covered_intervals"] = [
@@ -928,6 +1005,7 @@ def test_required_day_can_be_green_while_another_day_keeps_generation_red() -> N
             "since": "2026-08-08T21:00:00+00:00",
             "until": "2026-08-09T21:00:00+00:00",
             "result_complete": True,
+            "scope": "rolling_authority",
         }
     ]
     manifest = _strict_ready_manifest_for(green)

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -54,6 +54,7 @@ from mango_mvp.productization.mango_calls_service_contract import (
     approved_runtime_fingerprint,
     build_stage10_verdict,
     current_git_sha,
+    enumeration_source_covers_day,
     foreign_host_ids,
     has_dual_asr_or_exception,
     load_ready_rows,
@@ -63,6 +64,7 @@ from mango_mvp.productization.mango_calls_service_contract import (
     ready_row_is_complete,
     safe_alert_payload,
     stage_capacity_report,
+    validate_capture_enumeration_evidence,
     validate_ready_manifest_payload,
     validate_runtime_fingerprint,
     verify_cutover_authority,
@@ -96,6 +98,7 @@ from mango_mvp.services.transcribe import TranscribeService
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
+CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v1"
 SEQUENTIAL_PIPELINE_STAGES = (
     "transcribe",
     "backfill-second-asr",
@@ -108,6 +111,50 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 SECRET_RE = re.compile(
     r"(?:token|api[_-]?key|secret|bearer|authorization)\s*[:=]\s*\S{12,}",
     re.IGNORECASE,
+)
+
+REQUIRED_RUNTIME_CALL_RECORD_COLUMNS = frozenset(
+    {
+        "id",
+        "source_file",
+        "source_filename",
+        "source_call_id",
+        "audio_codec",
+        "sample_rate",
+        "channels",
+        "duration_sec",
+        "phone",
+        "manager_name",
+        "direction",
+        "started_at",
+        "transcription_status",
+        "resolve_status",
+        "analysis_status",
+        "sync_status",
+        "transcribe_attempts",
+        "resolve_attempts",
+        "analyze_attempts",
+        "sync_attempts",
+        "pipeline_stage",
+        "pipeline_worker_id",
+        "pipeline_claimed_at",
+        "analysis_worker_id",
+        "analysis_claimed_at",
+        "next_retry_at",
+        "dead_letter_stage",
+        "transcript_manager",
+        "transcript_client",
+        "transcript_text",
+        "transcript_variants_json",
+        "resolve_json",
+        "resolve_quality_score",
+        "analysis_json",
+        "amocrm_contact_id",
+        "amocrm_lead_id",
+        "last_error",
+        "created_at",
+        "updated_at",
+    }
 )
 
 
@@ -151,6 +198,11 @@ class CallsTwoProcessesConfig:
     require_cutover_authority: bool = False
     strict_ready_provenance: bool = False
     publication_root: Optional[Path] = None
+    # Internal, one-run bridge for a transfer cursor produced before strict
+    # capture-window certificates existed.  Runtime JSON cannot enable it;
+    # entrypoints set it only after cutover authority and the transferred
+    # manifest prefix have both been verified.
+    legacy_cursor_migration_mode: bool = False
 
     @classmethod
     def from_json(
@@ -267,6 +319,10 @@ class CallsTwoProcessesConfig:
         if self.require_cutover_authority != self.strict_ready_provenance:
             raise ValueError(
                 "cutover authority and strict ready provenance must be enabled together"
+            )
+        if self.legacy_cursor_migration_mode and not self.strict_ready_provenance:
+            raise ValueError(
+                "legacy cursor migration is available only in strict service mode"
             )
         if self.require_cutover_authority and not self.expected_code_sha:
             raise ValueError("expected_code_sha is required for cutover authority")
@@ -502,6 +558,104 @@ def cutover_authority_report(
     return report
 
 
+def working_db_is_authoritative(path: Path) -> bool:
+    if not os.path.lexists(path):
+        return False
+    try:
+        before = os.lstat(path)
+        usable = bool(
+            stat.S_ISREG(before.st_mode)
+            and not path.is_symlink()
+            and before.st_uid == os.getuid()
+            and before.st_nlink == 1
+            and before.st_size > 0
+        )
+        if usable:
+            with closing(
+                sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+            ) as connection:
+                connection.execute("PRAGMA query_only=ON")
+                table_info = list(
+                    connection.execute("PRAGMA table_info(call_records)")
+                )
+                columns = {str(row[1]) for row in table_info}
+                column_info = {str(row[1]): row for row in table_info}
+                id_column = column_info.get("id")
+                source_file_column = column_info.get("source_file")
+                source_file_unique = False
+                for index_row in connection.execute(
+                    "PRAGMA index_list(call_records)"
+                ):
+                    if not bool(index_row[2]) or bool(index_row[4]):
+                        continue
+                    index_columns = [
+                        str(row[0])
+                        for row in connection.execute(
+                            "SELECT name FROM pragma_index_info(?) "
+                            "ORDER BY seqno",
+                            (str(index_row[1]),),
+                        )
+                    ]
+                    if index_columns == ["source_file"]:
+                        source_file_unique = True
+                        break
+                critical_constraints_ok = bool(
+                    id_column is not None
+                    and str(id_column[2]).strip().upper() == "INTEGER"
+                    and int(id_column[5]) == 1
+                    and source_file_column is not None
+                    and int(source_file_column[3]) == 1
+                    and source_file_unique
+                )
+                usable = bool(
+                    connection.execute("PRAGMA quick_check").fetchone()[0]
+                    == "ok"
+                    and connection.execute(
+                        "SELECT COUNT(*) FROM sqlite_master "
+                        "WHERE type='table' AND name='call_records'"
+                    ).fetchone()[0]
+                    == 1
+                    and REQUIRED_RUNTIME_CALL_RECORD_COLUMNS.issubset(columns)
+                    and critical_constraints_ok
+                )
+        after = os.lstat(path)
+        return bool(
+            usable
+            and (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        )
+    except (OSError, sqlite3.DatabaseError, TypeError):
+        return False
+
+
+def working_db_authority_issue(
+    config: CallsTwoProcessesConfig,
+) -> str | None:
+    working_missing = not os.path.lexists(config.working_db)
+    if not working_missing and working_db_is_authoritative(config.working_db):
+        return None
+    # A crash may leave the only durable ready generation in the publication
+    # transaction before either canonical file exists.  Recover under the
+    # publication lock before deciding whether this is a fresh runtime.  An
+    # invalid existing working DB is never a valid bootstrap source, even when
+    # no ready generation survives.
+    with ready_publication_lock(config.ready_db):
+        recover_ready_generation(config.ready_db, lock_held=True)
+        ready_exists = bool(
+            os.path.lexists(config.ready_db)
+            or os.path.lexists(config.ready_manifest)
+        )
+    if working_missing and not ready_exists:
+        return None
+    if working_missing:
+        return "working_db_missing_ready_generation_preserved"
+    return (
+        "working_db_invalid_ready_generation_preserved"
+        if ready_exists
+        else "working_db_invalid"
+    )
+
+
 def run_capture(
     config: CallsTwoProcessesConfig,
     *,
@@ -537,10 +691,30 @@ def run_capture(
                     "insufficient_disk_space",
                     {"authority": authority, "disk": disk, "lock": lock_info},
                 )
-            window_since, window_until = resolve_capture_window(
-                config, since=since, until=until
+            try:
+                window_since, window_until = resolve_capture_window(
+                    config, since=since, until=until
+                )
+                capture_config = config_for_capture_window(
+                    config,
+                    since=since,
+                    window_since=window_since,
+                    window_until=window_until,
+                )
+            except RuntimeError:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "capture",
+                    "failed",
+                    "capture_enumeration_evidence_invalid",
+                    {"authority": authority, "disk": disk, "lock": lock_info},
+                )
+            capture = capture_runner(
+                capture_config,
+                window_since,
+                window_until,
             )
-            capture = capture_runner(config, window_since, window_until)
             if capture.get("status") == "failed" or capture.get(
                 "mango_enumeration_complete"
             ) is not True:
@@ -550,6 +724,42 @@ def run_capture(
                     "capture",
                     "failed",
                     "capture_or_enumeration_failed",
+                    {
+                        "authority": authority,
+                        "disk": disk,
+                        "capture": capture,
+                        "lock": lock_info,
+                    },
+                )
+            try:
+                enumeration_evidence_sha256 = capture_enumeration_exact_sha256(
+                    capture,
+                    expected_source_mode=(
+                        "strict_service"
+                        if config.strict_ready_provenance
+                        else None
+                    ),
+                    expected_until=window_until,
+                    expected_rolling_since=capture_rolling_window_start(
+                        config,
+                        since=window_since,
+                        until=window_until,
+                    ),
+                )
+                capture = certify_capture_window(
+                    config,
+                    capture,
+                    requested_since=window_since,
+                    requested_until=window_until,
+                    enumeration_evidence_sha256=enumeration_evidence_sha256,
+                )
+            except RuntimeError:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "capture",
+                    "failed",
+                    "capture_enumeration_evidence_invalid",
                     {
                         "authority": authority,
                         "disk": disk,
@@ -671,10 +881,13 @@ def _run_pipeline_locked(
             "authority": authority,
         }
     cursor = read_json(config.cursor_path)
-    try:
-        manifest_end_offset = int(cursor.get("manifest_end_offset"))
-    except (TypeError, ValueError):
-        manifest_end_offset = -1
+    raw_manifest_end_offset = cursor.get("manifest_end_offset")
+    manifest_end_offset = (
+        raw_manifest_end_offset
+        if isinstance(raw_manifest_end_offset, int)
+        and not isinstance(raw_manifest_end_offset, bool)
+        else -1
+    )
     expected_snapshot_sha = str(cursor.get("manifest_snapshot_sha256") or "")
     if (
         cursor.get("mango_enumeration_complete") is not True
@@ -753,6 +966,35 @@ def _run_pipeline_locked(
     }
 
 
+@contextmanager
+def process_a_leases(
+    config: CallsTwoProcessesConfig,
+    *,
+    pipeline_lock_info: Optional[Mapping[str, Any]],
+    skip_capture: bool,
+) -> Iterator[Mapping[str, Any]]:
+    """Serialize process A capture behind pipeline, then capture, locks."""
+
+    pipeline_lease = (
+        nullcontext(pipeline_lock_info)
+        if pipeline_lock_info is not None
+        else process_lease(
+            config.pipeline_lock,
+            stale_seconds=config.stale_lock_seconds,
+        )
+    )
+    with pipeline_lease as pipeline_info:
+        base_info = dict(pipeline_info or {})
+        if skip_capture:
+            yield base_info
+            return
+        with process_lease(
+            config.capture_lock,
+            stale_seconds=config.stale_lock_seconds,
+        ) as capture_info:
+            yield {**base_info, "capture_lease": dict(capture_info)}
+
+
 def run_process_a(
     config: CallsTwoProcessesConfig,
     *,
@@ -772,12 +1014,10 @@ def run_process_a(
     started = datetime.now(timezone.utc)
     run_id = new_calls_run_id(started)
     try:
-        lease = (
-            nullcontext(pipeline_lock_info)
-            if pipeline_lock_info is not None
-            else process_lease(
-                config.pipeline_lock, stale_seconds=config.stale_lock_seconds
-            )
+        lease = process_a_leases(
+            config,
+            pipeline_lock_info=pipeline_lock_info,
+            skip_capture=skip_capture,
         )
         with lease as lock_info:
             authority = cutover_authority_report(
@@ -791,6 +1031,22 @@ def run_process_a(
                     "failed",
                     "cutover_authority_failed",
                     {"authority": authority, "lock": lock_info},
+                )
+            if working_issue := working_db_authority_issue(config):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    working_issue,
+                    {
+                        "authority": authority,
+                        "drop": {
+                            "status": "preserved",
+                            "reason": working_issue,
+                        },
+                        "lock": lock_info,
+                    },
                 )
             disk = disk_preflight(config)
             environment = environment_preflight(
@@ -816,15 +1072,44 @@ def run_process_a(
                     "insufficient_disk_space",
                     {"disk": disk, "environment": environment, "lock": lock_info},
                 )
-            window_since, window_until = resolve_capture_window(config, since=since, until=until)
+            try:
+                window_since, window_until = resolve_capture_window(
+                    config, since=since, until=until
+                )
+                capture_config = (
+                    config
+                    if skip_capture
+                    else config_for_capture_window(
+                        config,
+                        since=since,
+                        window_since=window_since,
+                        window_until=window_until,
+                    )
+                )
+            except RuntimeError:
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "capture_enumeration_evidence_invalid",
+                    {"disk": disk, "environment": environment, "lock": lock_info},
+                )
+            effective_capture_evidence = capture_evidence
+            if skip_capture and effective_capture_evidence is None:
+                effective_capture_evidence = read_json(config.cursor_path)
             capture = (
                 {
                     "status": "skipped",
                     "reason": "skip_capture",
-                    **dict(capture_evidence or {}),
+                    **dict(effective_capture_evidence or {}),
                 }
                 if skip_capture
-                else capture_runner(config, window_since, window_until)
+                else capture_runner(
+                    capture_config,
+                    window_since,
+                    window_until,
+                )
             )
             if capture.get("status") == "failed":
                 return finalize_report(
@@ -835,14 +1120,100 @@ def run_process_a(
                     "capture_failed",
                     {"disk": disk, "environment": environment, "capture": capture, "lock": lock_info},
                 )
+            try:
+                source_evidence = capture.get("mango_enumeration_source")
+                captured_until = window_until
+                expected_rolling_since: Any = capture_rolling_window_start(
+                    config,
+                    since=window_since,
+                    until=window_until,
+                )
+                if skip_capture:
+                    if config.strict_ready_provenance:
+                        (
+                            _certified_since,
+                            captured_until,
+                            expected_rolling_since,
+                        ) = verified_capture_window(config, capture)
+                    else:
+                        captured_until = capture.get("until") or (
+                            source_evidence.get("until")
+                            if isinstance(source_evidence, Mapping)
+                            else None
+                        )
+                        expected_rolling_since = (
+                            source_evidence.get("rolling_since")
+                            if isinstance(source_evidence, Mapping)
+                            else None
+                        )
+                enumeration_evidence_sha256 = capture_enumeration_exact_sha256(
+                    capture,
+                    expected_source_mode=(
+                        "strict_service"
+                        if config.strict_ready_provenance
+                        else None
+                    ),
+                    expected_until=captured_until,
+                    expected_rolling_since=expected_rolling_since,
+                )
+                if not skip_capture:
+                    capture = certify_capture_window(
+                        config,
+                        capture,
+                        requested_since=window_since,
+                        requested_until=window_until,
+                        enumeration_evidence_sha256=(
+                            enumeration_evidence_sha256
+                        ),
+                    )
+            except (RuntimeError, TypeError, ValueError):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "capture_enumeration_evidence_invalid",
+                    {
+                        "disk": disk,
+                        "environment": environment,
+                        "capture": capture,
+                        "lock": lock_info,
+                    },
+                )
+            effective_manifest_end_offset = manifest_end_offset
+            if (
+                effective_manifest_end_offset is None
+                and skip_capture
+                and config.strict_ready_provenance
+            ):
+                raw_manifest_end_offset = capture.get("manifest_end_offset")
+                if (
+                    isinstance(raw_manifest_end_offset, bool)
+                    or not isinstance(raw_manifest_end_offset, int)
+                    or raw_manifest_end_offset < 0
+                ):
+                    return finalize_report(
+                        config,
+                        run_id,
+                        "process_a",
+                        "failed",
+                        "capture_enumeration_evidence_invalid",
+                        {
+                            "disk": disk,
+                            "environment": environment,
+                            "capture": capture,
+                            "lock": lock_info,
+                        },
+                    )
+                effective_manifest_end_offset = raw_manifest_end_offset
             metadata = dict(
                 prepare_ingest_inputs(config)
-                if manifest_end_offset is None
+                if effective_manifest_end_offset is None
                 else prepare_ingest_inputs(
                     config,
-                    manifest_end_offset=manifest_end_offset,
+                    manifest_end_offset=effective_manifest_end_offset,
                     expected_manifest_sha256=optional_text(
-                        (capture_evidence or {}).get("manifest_snapshot_sha256")
+                        capture.get("manifest_snapshot_sha256")
                     ),
                 )
             )
@@ -864,14 +1235,21 @@ def run_process_a(
                     },
                 )
             worker_reports: list[Mapping[str, Any]] = []
-            if not skip_workers and (metadata["audio_files"] or metadata["db_open_work"]):
+            working_db_missing = not config.working_db.exists()
+            if not skip_workers and (
+                working_db_missing
+                or metadata["audio_files"]
+                or metadata["db_open_work"]
+            ):
                 heavy_cycle_deadline = (
                     time.monotonic() + config.heavy_stage_timeout_seconds
                 )
                 base_env = worker_environment(config)
+                prelude_commands: list[Sequence[str]] = []
+                if working_db_missing or metadata["audio_files"]:
+                    prelude_commands.append(cli_command(config, "init-db"))
                 if metadata["audio_files"]:
-                    prelude_commands = (
-                        cli_command(config, "init-db"),
+                    prelude_commands.append(
                         cli_command(
                             config,
                             "ingest",
@@ -879,27 +1257,30 @@ def run_process_a(
                             str(config.working_audio_dir),
                             "--metadata-csv",
                             str(config.metadata_csv),
-                        ),
-                    )
-                    for command in prelude_commands:
-                        report = (
-                            run_command(
-                                command,
-                                base_env,
-                                config.working_dir,
-                                deadline=heavy_cycle_deadline,
-                            )
-                            if command_runner is run_command
-                            else command_runner(
-                                command, base_env, config.working_dir
-                            )
                         )
-                        worker_reports.append(report)
-                        if int(report.get("rc", 0)) != 0:
-                            break
-                if not any(
-                    int(report.get("rc", 0)) != 0
-                    for report in worker_reports
+                    )
+                for command in prelude_commands:
+                    report = (
+                        run_command(
+                            command,
+                            base_env,
+                            config.working_dir,
+                            deadline=heavy_cycle_deadline,
+                        )
+                        if command_runner is run_command
+                        else command_runner(
+                            command, base_env, config.working_dir
+                        )
+                    )
+                    worker_reports.append(report)
+                    if int(report.get("rc", 0)) != 0:
+                        break
+                if (
+                    (metadata["audio_files"] or metadata["db_open_work"])
+                    and not any(
+                        int(report.get("rc", 0)) != 0
+                        for report in worker_reports
+                    )
                 ):
                     worker_reports.extend(
                         run_sequential_pipeline_workers(
@@ -1007,7 +1388,14 @@ def run_process_a(
                         expected_incident_sha256=incident_sha256_values.pop(),
                     )
                 return report
-            if not bool(environment.get("codex_network_ok")):
+            # A quiet database needs no network-dependent Resolve/Analyze
+            # work.  Still seal its enumeration evidence so a zero-call day
+            # can advance from the first proof to an honest closed verdict.
+            remaining_open_work = call_db_has_open_work(config.working_db)
+            if (
+                not bool(environment.get("codex_network_ok"))
+                and remaining_open_work
+            ):
                 if not skip_capture:
                     write_cursor(config.cursor_path, window_until, capture)
                 return finalize_report(
@@ -1504,6 +1892,29 @@ def capture_mango_window(
     api_salt = os.getenv("MANGO_OFFICE_API_SALT", "").strip()
     if not api_key or not api_salt:
         return {"status": "failed", "reason": "mango_credentials_missing"}
+    if config.strict_ready_provenance:
+        previous_cursor, previous_cursor_sha256 = read_capture_cursor_snapshot(
+            config.cursor_path
+        )
+        if config.legacy_cursor_migration_mode:
+            if not previous_cursor or not legacy_transfer_cursor_can_be_replaced(
+                config,
+                previous_cursor,
+            ):
+                raise RuntimeError(
+                    "legacy capture cursor changed before migration"
+                )
+            # The transfer cursor proves only its frozen manifest prefix.  It
+            # is not current API evidence and contributes no zero-day proof.
+            zero_evidence_cursor: Mapping[str, Any] = {}
+        else:
+            if previous_cursor:
+                verified_capture_window(config, previous_cursor)
+            zero_evidence_cursor = previous_cursor
+    else:
+        previous_cursor = read_json(config.cursor_path)
+        previous_cursor_sha256 = None
+        zero_evidence_cursor = previous_cursor
     credentials = MangoOfficeCredentials(api_key=api_key, api_salt=api_salt)
     client = MangoOfficeClient(credentials=credentials, base_url=config.base_url, timeout_sec=60)
     downloader = MangoRecordingDownloader(
@@ -1518,7 +1929,7 @@ def capture_mango_window(
     host_id = configured_host_id(
         config, required=config.require_cutover_authority
     )
-    rows: list[Mapping[str, Any]] = []
+    scoped_rows: list[tuple[Mapping[str, Any], str]] = []
     manifest_store = CaptureManifestStore(config.capture_manifest)
     if not os.path.lexists(config.capture_manifest) and capture_runtime_has_prior_state(config):
         raise RuntimeError("capture manifest is missing for an existing runtime")
@@ -1558,15 +1969,10 @@ def capture_mango_window(
     overlap = timedelta(minutes=config.poll_overlap_minutes)
     # The permanent service always proves a rolling TTL window.  Direct legacy
     # callers retain their explicit window; service JSON enables strict mode.
-    rolling_day_start = (
-        threshold.astimezone(ZoneInfo("Europe/Moscow"))
-        .replace(hour=0, minute=0, second=0, microsecond=0)
-        .astimezone(timezone.utc)
-    )
-    base_window_start = (
-        min(since, rolling_day_start)
-        if config.strict_ready_provenance
-        else since
+    base_window_start = capture_rolling_window_start(
+        config,
+        since=since,
+        until=until,
     )
     poll_windows = [(base_window_start, until)]
     for entry in {
@@ -1574,15 +1980,19 @@ def capture_mango_window(
     }.values():
         started = parse_datetime(entry.started_at)
         ended = parse_datetime(entry.ended_at) if entry.ended_at else started + timedelta(hours=1)
-        poll_windows.append((started - overlap, ended + overlap))
+        retry_start = started - overlap
+        retry_end = min(ended + overlap, until)
+        if retry_start < retry_end:
+            poll_windows.append((retry_start, retry_end))
     for entry in due_expired_unknown:
-        poll_windows.append(
-            moscow_day_bounds_utc(
-                parse_datetime(entry.started_at)
-                .astimezone(ZoneInfo("Europe/Moscow"))
-                .date()
-            )
+        retry_start, retry_end = moscow_day_bounds_utc(
+            parse_datetime(entry.started_at)
+            .astimezone(ZoneInfo("Europe/Moscow"))
+            .date()
         )
+        retry_end = min(retry_end, until)
+        if retry_start < retry_end:
+            poll_windows.append((retry_start, retry_end))
     merged_windows: list[tuple[datetime, datetime]] = []
     for start, end in sorted(poll_windows):
         if merged_windows and start <= merged_windows[-1][1]:
@@ -1595,10 +2005,17 @@ def capture_mango_window(
         chunk_start = window_start
         while chunk_start < window_end:
             chunk_end = min(window_end, chunk_start + timedelta(hours=config.api_window_hours))
+            if chunk_start < base_window_start < chunk_end:
+                chunk_end = base_window_start
+            scope = (
+                "rolling_authority"
+                if chunk_start >= base_window_start
+                else "recovery_auxiliary"
+            )
             chunk_rows = client.poll_call_history(
                 since=chunk_start, until=chunk_end
             )
-            rows.extend(chunk_rows)
+            scoped_rows.extend((row, scope) for row in chunk_rows)
             api_requests += 1
             covered_intervals.append(
                 {
@@ -1606,26 +2023,51 @@ def capture_mango_window(
                     "until": chunk_end.isoformat(),
                     "result_complete": True,
                     "rows": len(chunk_rows),
+                    "scope": scope,
                 }
             )
             chunk_start = chunk_end
+    if config.strict_ready_provenance:
+        _current_cursor, current_cursor_sha256 = read_capture_cursor_snapshot(
+            config.cursor_path
+        )
+        if current_cursor_sha256 != previous_cursor_sha256:
+            raise RuntimeError("capture cursor changed during Mango enumeration")
     unique_events: dict[str, Any] = {}
-    for row in rows:
+    authoritative_event_keys: set[str] = set()
+    for row, scope in scoped_rows:
         event = mapper.from_payload(tenant=tenant, payload=row)
         prior = unique_events.get(event.event_key)
         if prior is not None:
             refs = merge_recording_ids(event_recording_ids(prior), event_recording_ids(event))
             event = replace(event, recording_ref=refs[0] if refs else None, recording_refs=refs)
         unique_events[event.event_key] = event
+        if scope == "rolling_authority":
+            authoritative_event_keys.add(event.event_key)
+    # Only events observed in the current Mango responses are authoritative
+    # enumeration evidence.  Local recovery entries are still staged below,
+    # but must not be allowed to expand or fabricate the API balance.
+    enumerated_events = sorted(
+        (unique_events[event_key] for event_key in authoritative_event_keys),
+        key=lambda event: (event.started_at, event.provider_call_id),
+    )
     if config.strict_ready_provenance:
         # After cutover only the transferred SQLite generations are authority;
         # neighbouring archives must never silently suppress a new API event.
+        # A damaged processing DB must not stop the lightweight capture loop,
+        # but it is never trusted for deduplication either.
+        working_db_trusted = working_db_is_authoritative(config.working_db)
+        trusted_ready_calls = trusted_ready_call_ids_for_capture(config)
         known_recordings: set[str] = set()
         known_calls = (
-            read_ingested_call_ids(config.working_db)
-            | read_ingested_call_ids(config.ready_db)
+            (
+                read_ingested_call_ids(config.working_db)
+                if working_db_trusted
+                else set()
+            )
+            | trusted_ready_calls
         )
-        fully_ready_calls = read_fully_ready_call_ids(config)
+        fully_ready_calls = trusted_ready_calls
     else:
         known_recordings, known_calls = read_known_processed_ids(
             config.pipeline_root.parent
@@ -1738,15 +2180,16 @@ def capture_mango_window(
         else "partial"
     )
     calls_by_moscow_day: dict[str, list[str]] = {}
-    for event in mapped_events:
+    for event in enumerated_events:
         day_key = event.started_at.astimezone(
             ZoneInfo("Europe/Moscow")
         ).date().isoformat()
         calls_by_moscow_day.setdefault(day_key, []).append(event.provider_call_id)
     for values in calls_by_moscow_day.values():
         values[:] = sorted(set(values))
-    previous_cursor = read_json(config.cursor_path)
-    previous_zero = previous_cursor.get("independent_zero_enumerations_by_day")
+    previous_zero = zero_evidence_cursor.get(
+        "independent_zero_enumerations_by_day"
+    )
     if not isinstance(previous_zero, Mapping):
         previous_zero = {}
     zero_proofs: dict[str, int] = {
@@ -1754,7 +2197,7 @@ def capture_mango_window(
     }
     enumeration_start = min(start for start, _end in merged_windows)
     covered_days: set[date] = set()
-    for start, end in merged_windows:
+    for start, end in ((base_window_start, until),):
         day_cursor = start.astimezone(ZoneInfo("Europe/Moscow")).date()
         last_day = (end - timedelta(microseconds=1)).astimezone(
             ZoneInfo("Europe/Moscow")
@@ -1766,7 +2209,8 @@ def capture_mango_window(
             day_cursor += timedelta(days=1)
     for covered_day in sorted(covered_days):
         key = covered_day.isoformat()
-        zero_proofs[key] = (
+        zero_proofs[key] = min(
+            2,
             0
             if calls_by_moscow_day.get(key)
             else positive_int(previous_zero.get(key)) + 1
@@ -1801,15 +2245,21 @@ def capture_mango_window(
             "catch_up": catch_up,
         },
         "call_keys": sorted(
-            {event.provider_call_id for event in mapped_events}
+            {event.provider_call_id for event in enumerated_events}
         ),
         "calls_by_moscow_day": calls_by_moscow_day,
         "independent_zero_enumerations_by_day": zero_proofs,
         "manifest_end_offset": manifest_end_offset,
         "manifest_snapshot_sha256": sealed_capture["sha256"],
         "api_requests": api_requests,
-        "api_rows_total": len(rows),
-        "api_events_total": len(mapped_events),
+        "api_rows_total": len(scoped_rows),
+        "api_authoritative_rows_total": sum(
+            scope == "rolling_authority" for _row, scope in scoped_rows
+        ),
+        "api_auxiliary_rows_total": sum(
+            scope == "recovery_auxiliary" for _row, scope in scoped_rows
+        ),
+        "api_events_total": len(enumerated_events),
         "api_events_already_known_external": len(external_known_keys),
         "pending_recording_retries": len(remaining_pending),
         "pending_recording_expired": pending_expired,
@@ -2658,6 +3108,66 @@ def read_fully_ready_call_ids(config: CallsTwoProcessesConfig) -> set[str]:
     return complete(config.working_db) & complete(config.ready_db)
 
 
+def trusted_ready_call_ids_for_capture(
+    config: CallsTwoProcessesConfig,
+) -> set[str]:
+    """Return only unique complete calls from a sealed ready generation.
+
+    Capture must fail open for deduplication: an absent, stale, malformed or
+    unsealed downstream generation can cause extra local work, but can never
+    suppress a fresh Mango recording.
+    """
+
+    try:
+        manifest = read_json(config.ready_manifest)
+        before = os.lstat(config.ready_db)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or config.ready_db.is_symlink()
+            or before.st_uid != os.getuid()
+            or before.st_nlink != 1
+            or manifest.get("ready_db") != str(config.ready_db)
+            or manifest.get("sha256") != sha256_file(config.ready_db)
+            or manifest.get("size_bytes") != before.st_size
+            or manifest.get("ready_mtime_ns") != before.st_mtime_ns
+            or validate_ready_manifest_payload(
+                manifest,
+                require_consistency=False,
+                expected_code_sha=config.expected_code_sha,
+                expected_host_id=configured_host_id(config, required=True),
+            )
+        ):
+            return set()
+        rows = load_ready_rows(config.ready_db)
+        after = os.lstat(config.ready_db)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            return set()
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, RuntimeError):
+        return set()
+    counts: dict[str, int] = {}
+    for row in rows:
+        call_id = str(row.get("source_call_id") or "").strip()
+        if call_id:
+            counts[call_id] = counts.get(call_id, 0) + 1
+    return {
+        call_id
+        for row in rows
+        if (call_id := str(row.get("source_call_id") or "").strip())
+        and counts[call_id] == 1
+        and ready_row_is_complete(row)
+    }
+
+
 def call_db_has_open_work(path: Path) -> bool:
     if not path.is_file():
         return False
@@ -2986,6 +3496,8 @@ def resolve_capture_window(
         start = parse_datetime(since)
     else:
         cursor = read_json(config.cursor_path)
+        if config.strict_ready_provenance and cursor:
+            verified_capture_window(config, cursor)
         raw = optional_text(cursor.get("until")) or config.bootstrap_since
         if raw:
             start = parse_datetime(raw) - timedelta(minutes=config.poll_overlap_minutes)
@@ -2998,6 +3510,149 @@ def resolve_capture_window(
     if end <= start:
         raise ValueError("capture until must be after since")
     return start, end
+
+
+def legacy_transfer_cursor_can_be_replaced(
+    config: CallsTwoProcessesConfig,
+    cursor: Mapping[str, Any],
+) -> bool:
+    """Recognize only the exact pre-certificate transfer-cursor shape.
+
+    The handoff release wrote none of the fields below.  Their presence means
+    that a current cursor lost or had its certificate changed, which must not
+    be mistaken for a legitimate legacy rollout.
+    """
+
+    if any(
+        field in cursor
+        for field in (
+            "capture_window_certificate",
+            "api_requests",
+            "api_rows_total",
+            "api_authoritative_rows_total",
+            "api_events_total",
+        )
+    ):
+        return False
+    if (
+        cursor.get("schema_version") != "mango_api_freshness_v1"
+        or cursor.get("mango_enumeration_complete") is not True
+    ):
+        return False
+    try:
+        parsed_until = datetime.fromisoformat(
+            str(cursor.get("until") or "").replace("Z", "+00:00")
+        )
+        if parsed_until.tzinfo is None or parsed_until.utcoffset() is None:
+            return False
+        end_offset = cursor.get("manifest_end_offset")
+        if isinstance(end_offset, bool) or not isinstance(end_offset, int):
+            return False
+        if end_offset <= 0:
+            return False
+        expected_sha256 = cursor.get("manifest_snapshot_sha256")
+        if not isinstance(expected_sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", expected_sha256
+        ):
+            return False
+        snapshot = capture_manifest_snapshot(
+            config.capture_manifest,
+            end_offset=end_offset,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return (
+        snapshot.get("end_offset") == end_offset
+        and snapshot.get("sha256") == expected_sha256
+    )
+
+
+def config_for_capture_window(
+    config: CallsTwoProcessesConfig,
+    *,
+    since: Optional[str],
+    window_since: datetime,
+    window_until: datetime,
+) -> CallsTwoProcessesConfig:
+    """Require a continuous strict window and authorize one legacy bridge.
+
+    Every existing certified cursor is checked against the proposed window.
+    A current-but-invalid cursor is a hard stop.  Only the exact old handoff
+    shape, with its manifest prefix still intact and an operator-supplied start
+    boundary, gets the transient migration flag.
+    """
+
+    if not config.strict_ready_provenance:
+        return config
+    cursor, _cursor_sha256 = read_capture_cursor_snapshot(config.cursor_path)
+    if not cursor:
+        return config
+    if "capture_window_certificate" in cursor:
+        _prior_since, prior_until, _prior_rolling_since = (
+            verified_capture_window(config, cursor)
+        )
+        if (
+            window_until < prior_until
+            or capture_rolling_window_start(
+                config,
+                since=window_since,
+                until=window_until,
+            )
+            > prior_until
+        ):
+            raise RuntimeError(
+                "certified capture replacement window is not continuous"
+            )
+        return config
+    if since is None:
+        raise RuntimeError(
+            "legacy capture cursor replacement requires explicit since"
+        )
+    if not legacy_transfer_cursor_can_be_replaced(config, cursor):
+        raise RuntimeError("legacy capture cursor is not eligible for migration")
+    try:
+        legacy_until = datetime.fromisoformat(
+            str(cursor.get("until") or "").replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("legacy capture cursor boundary is invalid") from exc
+    if (
+        window_until < legacy_until
+        or capture_rolling_window_start(
+            config,
+            since=window_since,
+            until=window_until,
+        )
+        > legacy_until
+    ):
+        raise RuntimeError("legacy capture replacement window is not continuous")
+    return replace(config, legacy_cursor_migration_mode=True)
+
+
+def capture_rolling_window_start(
+    config: CallsTwoProcessesConfig,
+    *,
+    since: datetime,
+    until: datetime,
+) -> datetime:
+    """Return the exact rolling boundary that strict evidence must prove."""
+
+    if not config.strict_ready_provenance:
+        return since
+    threshold = until - timedelta(
+        hours=max(1, config.pending_recording_retry_hours)
+    )
+    rolling_day_start = (
+        threshold.astimezone(ZoneInfo("Europe/Moscow"))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
+    earliest = min(since, rolling_day_start)
+    return (
+        earliest.astimezone(ZoneInfo("Europe/Moscow"))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
 
 
 def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
@@ -3630,6 +4285,12 @@ def publish_ready_db(
         sha = sha256_file(temp)
         temp_stat = temp.stat()
         evidence = dict(capture_evidence or read_json(config.cursor_path))
+        enumeration_evidence_sha256 = capture_enumeration_evidence_sha256(
+            evidence,
+            expected_source_mode=(
+                "strict_service" if config.strict_ready_provenance else None
+            ),
+        )
         verdicts, snapshot, evidence = _ready_verdicts(
             config,
             ready_db=temp,
@@ -3705,6 +4366,7 @@ def publish_ready_db(
                 evidence.get("mango_enumeration_complete") is True
             ),
             "mango_enumeration_source": dict(source),
+            "enumeration_evidence_sha256": enumeration_evidence_sha256,
             "catch_up": bool(source.get("catch_up")),
             "sla_mode": "catch_up" if source.get("catch_up") else "live",
             "manifest_snapshot": {
@@ -3757,6 +4419,377 @@ def sqlite_storage_signature(path: Path) -> Mapping[str, Mapping[str, int]]:
     return result
 
 
+def capture_enumeration_evidence_sha256(
+    evidence: Mapping[str, Any],
+    *,
+    expected_source_mode: Optional[str] = None,
+    expected_until: Any = None,
+    expected_rolling_since: Any = None,
+) -> str:
+    """Digest semantic day evidence for deterministic ready-generation reuse.
+
+    This intentionally ignores polling geometry and operational telemetry.
+    Cursor certificates must use :func:`capture_enumeration_exact_sha256`.
+    """
+
+    validation_errors = validate_capture_enumeration_evidence(
+        evidence,
+        expected_source_mode=expected_source_mode,
+        expected_until=expected_until,
+        expected_rolling_since=expected_rolling_since,
+    )
+    if validation_errors:
+        raise RuntimeError(
+            "invalid capture enumeration evidence: "
+            + ",".join(validation_errors)
+        )
+    calls_by_day = evidence.get("calls_by_moscow_day")
+    zero_by_day = evidence.get("independent_zero_enumerations_by_day")
+    source = evidence.get("mango_enumeration_source")
+    source = source if isinstance(source, Mapping) else {}
+
+    def canonical_day_keys(mapping: Any, *, label: str) -> set[str]:
+        if not isinstance(mapping, Mapping):
+            return set()
+        result: set[str] = set()
+        for raw_day in mapping:
+            if not isinstance(raw_day, str):
+                raise RuntimeError(f"{label} contains a non-string day key")
+            try:
+                canonical = datetime.fromisoformat(raw_day).date().isoformat()
+            except ValueError:
+                canonical = ""
+            if raw_day != canonical:
+                raise RuntimeError(f"{label} contains a non-canonical day key")
+            result.add(raw_day)
+        return result
+
+    day_keys = sorted(
+        canonical_day_keys(calls_by_day, label="calls_by_moscow_day")
+        | canonical_day_keys(
+            zero_by_day,
+            label="independent_zero_enumerations_by_day",
+        )
+    )
+    days: dict[str, Mapping[str, Any]] = {}
+    for day_key in day_keys:
+        raw_calls = (
+            calls_by_day.get(day_key)
+            if isinstance(calls_by_day, Mapping)
+            else None
+        )
+        normalized_calls = (
+            sorted(
+                str(value).strip()
+                for value in raw_calls
+                if str(value or "").strip()
+            )
+            if isinstance(raw_calls, Sequence)
+            and not isinstance(raw_calls, (str, bytes))
+            else None
+        )
+        try:
+            parsed_day = datetime.fromisoformat(day_key).date()
+        except ValueError:
+            covered = full_day_covered = False
+        else:
+            covered = enumeration_source_covers_day(source, parsed_day)
+            full_day_covered = enumeration_source_covers_day(
+                source, parsed_day, require_full_day=True
+            )
+        days[day_key] = {
+            "call_keys": normalized_calls,
+            "zero_proofs": min(
+                2,
+                positive_int(
+                    zero_by_day.get(day_key)
+                    if isinstance(zero_by_day, Mapping)
+                    else 0
+                ),
+            ),
+            "covered": covered,
+            "full_day_covered": full_day_covered,
+        }
+    projected = {
+        "mango_enumeration_complete": evidence.get(
+            "mango_enumeration_complete"
+        ),
+        "source_mode": source.get("mode"),
+        "catch_up": source.get("catch_up"),
+        "days": days,
+        "call_keys_fallback": (
+            None
+            if isinstance(calls_by_day, Mapping)
+            else sorted(
+                str(value).strip()
+                for value in evidence.get("call_keys", ())
+                if str(value or "").strip()
+            )
+            if isinstance(evidence.get("call_keys"), Sequence)
+            and not isinstance(evidence.get("call_keys"), (str, bytes))
+            else None
+        ),
+        "independent_zero_enumerations_fallback": (
+            None
+            if isinstance(zero_by_day, Mapping)
+            else min(
+                2,
+                positive_int(evidence.get("independent_zero_enumerations")),
+            )
+        ),
+    }
+    serialized = json.dumps(
+        projected,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def capture_enumeration_exact_sha256(
+    evidence: Mapping[str, Any],
+    *,
+    expected_source_mode: Optional[str] = None,
+    expected_until: Any = None,
+    expected_rolling_since: Any = None,
+) -> str:
+    """Seal the exact strict API proof, not the ready-reuse semantics.
+
+    Ready publication intentionally ignores harmless polling telemetry.  A
+    cursor certificate has a different job: every executed interval, row
+    count and canonical call/zero collection must remain byte-semantically
+    identical after it is signed.
+    """
+
+    validation_errors = validate_capture_enumeration_evidence(
+        evidence,
+        expected_source_mode=expected_source_mode,
+        expected_until=expected_until,
+        expected_rolling_since=expected_rolling_since,
+    )
+    if validation_errors:
+        raise RuntimeError(
+            "invalid capture enumeration evidence: "
+            + ",".join(validation_errors)
+        )
+    source = evidence.get("mango_enumeration_source")
+    source = source if isinstance(source, Mapping) else {}
+    raw_intervals = source.get("covered_intervals")
+    intervals = raw_intervals if isinstance(raw_intervals, Sequence) else ()
+    calls_by_day = evidence.get("calls_by_moscow_day")
+    zero_by_day = evidence.get("independent_zero_enumerations_by_day")
+    projected = {
+        "mango_enumeration_complete": evidence.get(
+            "mango_enumeration_complete"
+        ),
+        "mango_enumeration_source": {
+            key: source.get(key)
+            for key in (
+                "mode",
+                "since",
+                "rolling_since",
+                "until",
+                "cursor",
+                "pages",
+                "pagination",
+                "requests",
+                "catch_up",
+            )
+        }
+        | {
+            "covered_intervals": [
+                {
+                    key: interval.get(key)
+                    for key in (
+                        "since",
+                        "until",
+                        "result_complete",
+                        "rows",
+                        "scope",
+                    )
+                }
+                for interval in intervals
+                if isinstance(interval, Mapping)
+            ]
+        },
+        "call_keys": list(evidence.get("call_keys") or ()),
+        "calls_by_moscow_day": {
+            key: list(calls_by_day[key])
+            for key in sorted(calls_by_day)
+        }
+        if isinstance(calls_by_day, Mapping)
+        else None,
+        "independent_zero_enumerations_by_day": {
+            key: zero_by_day[key] for key in sorted(zero_by_day)
+        }
+        if isinstance(zero_by_day, Mapping)
+        else None,
+        "api_requests": evidence.get("api_requests"),
+        "api_rows_total": evidence.get("api_rows_total"),
+        "api_authoritative_rows_total": evidence.get(
+            "api_authoritative_rows_total"
+        ),
+        "api_events_total": evidence.get("api_events_total"),
+    }
+    serialized = json.dumps(
+        projected,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def certify_capture_window(
+    config: CallsTwoProcessesConfig,
+    capture: Mapping[str, Any],
+    *,
+    requested_since: datetime,
+    requested_until: datetime,
+    enumeration_evidence_sha256: str,
+) -> Mapping[str, Any]:
+    """Bind a validated strict capture to the caller's exact request window."""
+
+    if not config.strict_ready_provenance:
+        return dict(capture)
+    expected_rolling_since = capture_rolling_window_start(
+        config,
+        since=requested_since,
+        until=requested_until,
+    )
+    body: dict[str, Any] = {
+        "schema_version": CAPTURE_WINDOW_CERTIFICATE_SCHEMA,
+        "requested_since": requested_since.astimezone(timezone.utc).isoformat(),
+        "requested_until": requested_until.astimezone(timezone.utc).isoformat(),
+        "expected_rolling_since": expected_rolling_since.astimezone(
+            timezone.utc
+        ).isoformat(),
+        "pending_recording_retry_hours": config.pending_recording_retry_hours,
+        "tenant_id": config.tenant_id,
+        "base_url": config.base_url,
+        "enumeration_evidence_sha256": enumeration_evidence_sha256,
+        "manifest_end_offset": capture.get("manifest_end_offset"),
+        "manifest_snapshot_sha256": capture.get("manifest_snapshot_sha256"),
+        "expected_code_sha": config.expected_code_sha,
+        "host_id": capture.get("host_id"),
+    }
+    serialized = json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    body["certificate_sha256"] = hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()
+    return {**dict(capture), "capture_window_certificate": body}
+
+
+def verified_capture_window(
+    config: CallsTwoProcessesConfig,
+    capture: Mapping[str, Any],
+) -> tuple[datetime, datetime, datetime]:
+    """Verify and return the request window sealed by ``run_capture``."""
+
+    certificate = capture.get("capture_window_certificate")
+    if not isinstance(certificate, Mapping):
+        raise RuntimeError("capture window certificate is missing")
+    body = {
+        key: value
+        for key, value in certificate.items()
+        if key != "certificate_sha256"
+    }
+    serialized = json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected_certificate_sha256 = hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()
+    if (
+        certificate.get("schema_version")
+        != CAPTURE_WINDOW_CERTIFICATE_SCHEMA
+        or certificate.get("certificate_sha256")
+        != expected_certificate_sha256
+        or certificate.get("pending_recording_retry_hours")
+        != config.pending_recording_retry_hours
+        or certificate.get("tenant_id") != config.tenant_id
+        or certificate.get("base_url") != config.base_url
+        or not re.fullmatch(
+            r"[0-9a-f]{40}",
+            str(certificate.get("expected_code_sha") or ""),
+        )
+        or certificate.get("host_id") != capture.get("host_id")
+        or certificate.get("manifest_end_offset")
+        != capture.get("manifest_end_offset")
+        or certificate.get("manifest_snapshot_sha256")
+        != capture.get("manifest_snapshot_sha256")
+    ):
+        raise RuntimeError("capture window certificate is invalid")
+    manifest_end_offset = certificate.get("manifest_end_offset")
+    manifest_snapshot_sha256 = certificate.get("manifest_snapshot_sha256")
+    if (
+        isinstance(manifest_end_offset, bool)
+        or not isinstance(manifest_end_offset, int)
+        or manifest_end_offset < 0
+        or not re.fullmatch(
+            r"[0-9a-f]{64}", str(manifest_snapshot_sha256 or "")
+        )
+    ):
+        raise RuntimeError("capture window certificate manifest is invalid")
+    try:
+        manifest_snapshot = capture_manifest_snapshot(
+            config.capture_manifest,
+            end_offset=manifest_end_offset,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "capture window certificate manifest prefix is unavailable"
+        ) from exc
+    if (
+        manifest_snapshot.get("end_offset") != manifest_end_offset
+        or manifest_snapshot.get("sha256") != manifest_snapshot_sha256
+    ):
+        raise RuntimeError(
+            "capture window certificate manifest prefix changed"
+        )
+    try:
+        requested_since = parse_datetime(
+            str(certificate.get("requested_since") or "")
+        )
+        requested_until = parse_datetime(
+            str(certificate.get("requested_until") or "")
+        )
+        expected_rolling_since = parse_datetime(
+            str(certificate.get("expected_rolling_since") or "")
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("capture window certificate timestamps are invalid") from exc
+    if requested_since >= requested_until or expected_rolling_since != (
+        capture_rolling_window_start(
+            config,
+            since=requested_since,
+            until=requested_until,
+        )
+    ):
+        raise RuntimeError("capture window certificate boundaries are invalid")
+    cursor_until = capture.get("until")
+    if cursor_until is None or parse_datetime(str(cursor_until)) != requested_until:
+        raise RuntimeError("capture cursor until differs from its certificate")
+    evidence_sha256 = capture_enumeration_exact_sha256(
+        capture,
+        expected_source_mode="strict_service",
+        expected_until=requested_until,
+        expected_rolling_since=expected_rolling_since,
+    )
+    if certificate.get("enumeration_evidence_sha256") != evidence_sha256:
+        raise RuntimeError("capture window certificate evidence changed")
+    return requested_since, requested_until, expected_rolling_since
+
+
 def publish_ready_db_if_changed(
     config: CallsTwoProcessesConfig,
     counts: Mapping[str, Any],
@@ -3775,6 +4808,14 @@ def publish_ready_db_if_changed(
         ready_stat = config.ready_db.stat()
         ready_unchanged = manifest.get("size_bytes") == ready_stat.st_size and manifest.get("ready_mtime_ns") == ready_stat.st_mtime_ns
         evidence = dict(capture_evidence or read_json(config.cursor_path))
+        evidence_same = manifest.get(
+            "enumeration_evidence_sha256"
+        ) == capture_enumeration_evidence_sha256(
+            evidence,
+            expected_source_mode=(
+                "strict_service" if config.strict_ready_provenance else None
+            ),
+        )
         expected_offset = positive_int(
             manifest_end_offset
             if manifest_end_offset is not None
@@ -3793,6 +4834,15 @@ def publish_ready_db_if_changed(
         if expected_snapshot_sha is None and not config.strict_ready_provenance:
             expected_snapshot_sha = str(current_snapshot["sha256"])
         prior_snapshot = manifest.get("manifest_snapshot")
+        verdicts = manifest.get("daily_verdicts")
+        time_sensitive_pending = bool(
+            isinstance(verdicts, Mapping)
+            and any(
+                isinstance(verdict, Mapping)
+                and positive_int(verdict.get("pending_unique")) > 0
+                for verdict in verdicts.values()
+            )
+        )
         snapshot_same = bool(
             isinstance(prior_snapshot, Mapping)
             and positive_int(prior_snapshot.get("end_offset")) == expected_offset
@@ -3803,6 +4853,8 @@ def publish_ready_db_if_changed(
             manifest.get("status") == "ready"
             and ready_unchanged
             and snapshot_same
+            and evidence_same
+            and not time_sensitive_pending
             and manifest.get("source_storage")
             == sqlite_storage_signature(config.working_db)
             and not validate_ready_manifest_payload(
@@ -4679,6 +5731,9 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "manifest_snapshot_sha256": capture.get(
                 "manifest_snapshot_sha256"
             ),
+            "capture_window_certificate": capture.get(
+                "capture_window_certificate"
+            ),
             "mango_enumeration_complete": capture.get(
                 "mango_enumeration_complete"
             ),
@@ -4689,6 +5744,12 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "sla_mode": capture.get("sla_mode") or "live",
             "call_keys": capture.get("call_keys"),
             "calls_by_moscow_day": capture.get("calls_by_moscow_day"),
+            "api_requests": capture.get("api_requests"),
+            "api_rows_total": capture.get("api_rows_total"),
+            "api_authoritative_rows_total": capture.get(
+                "api_authoritative_rows_total"
+            ),
+            "api_events_total": capture.get("api_events_total"),
             "independent_zero_enumerations_by_day": capture.get(
                 "independent_zero_enumerations_by_day"
             ),
@@ -4732,6 +5793,25 @@ def read_json(path: Path) -> Mapping[str, Any]:
     if not path.exists():
         return {}
     return parse_json_object(path.read_text(encoding="utf-8"))
+
+
+def read_capture_cursor_snapshot(
+    path: Path,
+) -> tuple[Mapping[str, Any], Optional[str]]:
+    if not os.path.lexists(path):
+        return {}, None
+    raw = read_stable_regular_bytes(
+        path,
+        label="mango_capture_cursor",
+        owner_only_mode=0o600,
+    )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("existing capture cursor is malformed") from exc
+    if not isinstance(payload, Mapping) or not payload:
+        raise RuntimeError("existing capture cursor is malformed")
+    return payload, hashlib.sha256(raw).hexdigest()
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:

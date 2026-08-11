@@ -10,7 +10,7 @@ import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import pytest
 
@@ -67,6 +67,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
 from mango_mvp.productization.ready_publication import (
+    commit_ready_generation,
     inspect_ready_publication,
     recover_ready_generation,
 )
@@ -91,6 +92,57 @@ def create_empty_capture_manifest(config: CallsTwoProcessesConfig) -> None:
     from mango_mvp.productization.capture_staging import CaptureManifestStore
 
     CaptureManifestStore(config.capture_manifest).ensure_exists()
+
+
+def create_legacy_transfer_cursor(
+    config: CallsTwoProcessesConfig,
+    *,
+    until: str,
+    zero_proofs: Mapping[str, int],
+) -> Mapping[str, object]:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+    )
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at=until,
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:transferred-call",
+            provider_call_id="transferred-call",
+            recording_id=None,
+            started_at=until,
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+    )
+    snapshot = calls_runtime.capture_manifest_snapshot(config.capture_manifest)
+    cursor: Mapping[str, object] = {
+        "schema_version": "mango_api_freshness_v1",
+        "until": until,
+        "updated_at": until,
+        "capture_status": "ok",
+        "host_id": "source-mac",
+        "manifest_end_offset": snapshot["end_offset"],
+        "manifest_snapshot_sha256": snapshot["sha256"],
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": {},
+        "catch_up": True,
+        "sla_mode": "catch_up",
+        "call_keys": [],
+        "calls_by_moscow_day": {
+            day: [] for day in zero_proofs
+        },
+        "independent_zero_enumerations_by_day": dict(zero_proofs),
+    }
+    write_json(config.cursor_path, cursor)
+    return cursor
 
 
 def test_config_refuses_prod_and_stable_runtime_paths(tmp_path: Path) -> None:
@@ -1021,6 +1073,189 @@ def test_pending_recording_widens_poll_window_beyond_normal_overlap(
     assert report["status"] == "ok"
 
 
+def test_recent_manifest_overlap_is_clamped_to_exact_enumeration_until(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        api_window_hours=24,
+        strict_ready_provenance=True,
+    )
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    audio = config.recordings_dir / "recent.wav"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"synthetic-audio")
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-08-11T11:56:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:recent",
+            provider_call_id="recent",
+            recording_id="recording-recent",
+            started_at="2026-08-11T11:55:00+00:00",
+            ended_at="2026-08-11T11:56:00+00:00",
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(audio),
+        )
+    )
+    requested: list[tuple[datetime, datetime]] = []
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, until: datetime
+        ) -> list[dict[str, object]]:
+            requested.append((since, until))
+            return []
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0}
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        lambda **_: Summary(),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    exact_until = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 11, 11, tzinfo=timezone.utc),
+        exact_until,
+    )
+
+    assert requested
+    assert max(window_until for _window_since, window_until in requested) == exact_until
+    assert all(window_until <= exact_until for _window_since, window_until in requested)
+    assert report["mango_enumeration_source"]["until"] == exact_until.isoformat()
+    calls_runtime.capture_enumeration_evidence_sha256(report)
+
+
+def test_old_local_recovery_is_not_fabricated_as_current_api_enumeration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        api_window_hours=24,
+        strict_ready_provenance=True,
+    )
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2025-01-01T10:01:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:old-failed",
+            provider_call_id="old-failed",
+            recording_id="recording-old",
+            started_at="2025-01-01T10:00:00+00:00",
+            ended_at="2025-01-01T10:01:00+00:00",
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="failed",
+            local_audio_path=str(config.recordings_dir / "missing.wav"),
+            error="synthetic_missing_asset",
+        )
+    )
+    staged: list[TelephonyCallEvent] = []
+    old_event = TelephonyCallEvent(
+        tenant=TenantRef("foton"),
+        provider="mango",
+        provider_call_id="old-failed",
+        started_at=datetime(2025, 1, 1, 10, tzinfo=timezone.utc),
+        ended_at=datetime(2025, 1, 1, 10, 1, tzinfo=timezone.utc),
+        direction=Direction.INBOUND,
+        client_phone=None,
+        manager_ref=None,
+        recording_ref="recording-old",
+        raw_payload={},
+    )
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, **_: object
+        ) -> list[dict[str, object]]:
+            return [{"id": "old-failed"}] if since.year == 2025 else []
+
+    class FakeMapper:
+        def from_payload(self, **_: object) -> TelephonyCallEvent:
+            return old_event
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0}
+
+    def fake_stage(
+        *, events: list[TelephonyCallEvent], **_: object
+    ) -> Summary:
+        staged.extend(events)
+        return Summary()
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoOfficePayloadMapper",
+        FakeMapper,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        fake_stage,
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 11, 11, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 12, tzinfo=timezone.utc),
+    )
+
+    assert [event.provider_call_id for event in staged] == ["old-failed"]
+    assert "2025-01-01" not in report["calls_by_moscow_day"]
+    assert "old-failed" not in report["call_keys"]
+    assert report["api_events_total"] == 0
+    assert report["api_rows_total"] == 1
+    assert report["api_authoritative_rows_total"] == 0
+    assert report["api_auxiliary_rows_total"] == 1
+    calls_runtime.capture_enumeration_evidence_sha256(report)
+
+
 def test_recording_retry_ttl_uses_first_seen_and_expires_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1925,6 +2160,105 @@ def test_ready_publication_rolls_back_if_forward_manifest_is_missing(
     assert config.ready_db.stat().st_mtime_ns == restored_manifest["ready_mtime_ns"]
 
 
+def test_ready_publication_same_sha_rollback_restores_reusable_metadata(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "CREATE TABLE call_records(source_call_id TEXT, started_at TEXT)"
+        )
+    create_empty_capture_manifest(config)
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest,
+        end_offset=0,
+    )
+    source = {
+        "mode": "strict_service",
+        "since": "2026-08-07T21:00:00+00:00",
+        "rolling_since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "requests": 1,
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "covered_intervals": [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+        ],
+    }
+
+    def evidence(zero_proofs: int) -> dict[str, object]:
+        return {
+            "mango_enumeration_complete": True,
+            "mango_enumeration_source": source,
+            "call_keys": [],
+            "calls_by_moscow_day": {"2026-08-08": []},
+            "independent_zero_enumerations_by_day": {
+                "2026-08-08": zero_proofs
+            },
+            "api_requests": 1,
+            "api_rows_total": 0,
+            "api_authoritative_rows_total": 0,
+            "api_events_total": 0,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": snapshot["sha256"],
+        }
+
+    first_evidence = evidence(2)
+    publish_ready_db(
+        config,
+        {"total": 0},
+        capture_evidence=first_evidence,
+        manifest_end_offset=0,
+    )
+    old_db_sha = sha256_file(config.ready_db)
+    old_mtime_ns = config.ready_db.stat().st_mtime_ns
+
+    def crash_after_database(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic same-sha crash after database")
+
+    with pytest.raises(RuntimeError, match="synthetic same-sha crash"):
+        publish_ready_db(
+            config,
+            {"total": 0},
+            capture_evidence=evidence(2),
+            manifest_end_offset=0,
+            publication_checkpoint=crash_after_database,
+        )
+
+    assert sha256_file(config.ready_db) == old_db_sha
+    replacement_inode = config.ready_db.stat().st_ino
+    transaction = config.ready_db.parent / (
+        f".{config.ready_db.name}.publication.txn"
+    )
+    staged_old_inode = (transaction / "old.sqlite").stat().st_ino
+    (transaction / "new.manifest.json").unlink()
+
+    recovered = recover_ready_generation(config.ready_db)
+    recovered_stat = config.ready_db.stat()
+    reused = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=first_evidence,
+        manifest_end_offset=0,
+    )
+
+    assert recovered["generation"] == "old"
+    assert recovered_stat.st_ino == staged_old_inode
+    assert recovered_stat.st_ino != replacement_inode
+    assert recovered_stat.st_mtime_ns == old_mtime_ns
+    assert reused["reused"] is True
+
+
 def test_ready_publication_inspection_does_not_alarm_during_active_commit(
     tmp_path: Path,
 ) -> None:
@@ -2076,6 +2410,1849 @@ def test_unchanged_working_db_rebuilds_modified_ready_copy(tmp_path: Path) -> No
 
     assert result["reused"] is False
     assert sqlite_check(config.ready_db, "quick_check") == "ok"
+
+
+def test_ready_manifest_rebuilds_when_only_enumeration_evidence_advances(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "CREATE TABLE call_records(source_call_id TEXT, started_at TEXT)"
+        )
+    create_empty_capture_manifest(config)
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest,
+        end_offset=0,
+    )
+    day = "2026-08-08"
+    source = {
+        "mode": "strict_service",
+        "since": "2026-08-07T21:00:00+00:00",
+        "rolling_since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "requests": 1,
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "covered_intervals": [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+        ],
+    }
+
+    def evidence(zero_proofs: int) -> dict[str, object]:
+        return {
+            "mango_enumeration_complete": True,
+            "mango_enumeration_source": source,
+            "call_keys": [],
+            "calls_by_moscow_day": {day: []},
+            "independent_zero_enumerations_by_day": {day: zero_proofs},
+            "api_requests": 1,
+            "api_rows_total": 0,
+            "api_authoritative_rows_total": 0,
+            "api_events_total": 0,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": snapshot["sha256"],
+        }
+
+    first = publish_ready_db(
+        config,
+        {"total": 0},
+        capture_evidence=evidence(1),
+        manifest_end_offset=0,
+    )
+    second = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=evidence(2),
+        manifest_end_offset=0,
+    )
+    repeated = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=evidence(2),
+        manifest_end_offset=0,
+    )
+
+    assert first["daily_verdicts"][day]["mango_enumeration_complete"] is False
+    assert first["consistency_ok"] is False
+    assert first["closure_ok"] is False
+    assert second["reused"] is False
+    assert second["daily_verdicts"][day]["mango_enumeration_complete"] is True
+    assert second["consistency_ok"] is True
+    assert second["closure_ok"] is True
+    assert first["enumeration_evidence_sha256"] != second[
+        "enumeration_evidence_sha256"
+    ]
+    assert repeated["reused"] is True
+    assert repeated["enumeration_evidence_sha256"] == second[
+        "enumeration_evidence_sha256"
+    ]
+
+
+def test_green_ready_manifest_rebuilds_only_for_semantic_enumeration_change(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "CREATE TABLE call_records(source_call_id TEXT, started_at TEXT)"
+        )
+    create_empty_capture_manifest(config)
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest,
+        end_offset=0,
+    )
+    def source(
+        until: str, intervals: list[dict[str, object]]
+    ) -> dict[str, object]:
+        return {
+            "mode": "strict_service",
+            "since": "2026-08-07T21:00:00+00:00",
+            "rolling_since": "2026-08-07T21:00:00+00:00",
+            "until": until,
+            "cursor": "not_applicable_stats_request_result",
+            "requests": len(intervals),
+            "pages": None,
+            "pagination": "not_applicable_stats_request_result",
+            "covered_intervals": intervals,
+            "catch_up": False,
+        }
+
+    first_source = source(
+        "2026-08-08T21:00:00+00:00",
+        [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+        ],
+    )
+    two_day_source = source(
+        "2026-08-09T21:00:00+00:00",
+        [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-09T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+        ],
+    )
+    telemetry_churn_source = source(
+        "2026-08-09T22:00:00+00:00",
+        [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T22:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            },
+            {
+                "since": "2026-08-08T22:00:00+00:00",
+                "until": "2026-08-09T22:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            },
+        ],
+    )
+
+    def evidence(
+        enumeration_source: Mapping[str, object],
+        zero_proofs: Mapping[str, int],
+        **telemetry: object,
+    ) -> dict[str, object]:
+        return {
+            "mango_enumeration_complete": True,
+            "mango_enumeration_source": enumeration_source,
+            "call_keys": [],
+            "calls_by_moscow_day": {day: [] for day in zero_proofs},
+            "independent_zero_enumerations_by_day": dict(zero_proofs),
+            "api_requests": len(enumeration_source["covered_intervals"]),
+            "api_rows_total": 0,
+            "api_authoritative_rows_total": 0,
+            "api_events_total": 0,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": snapshot["sha256"],
+            **telemetry,
+        }
+
+    first = publish_ready_db(
+        config,
+        {"total": 0},
+        capture_evidence=evidence(first_source, {"2026-08-08": 2}),
+        manifest_end_offset=0,
+    )
+    semantic_change = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=evidence(
+            two_day_source,
+            {"2026-08-08": 2, "2026-08-09": 2},
+        ),
+        manifest_end_offset=0,
+    )
+    telemetry_only = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=evidence(
+            telemetry_churn_source,
+            {"2026-08-08": 2, "2026-08-09": 2},
+            downloaded=123,
+        ),
+        manifest_end_offset=0,
+    )
+
+    assert first["consistency_ok"] is True
+    assert semantic_change["consistency_ok"] is True
+    assert semantic_change["reused"] is False
+    assert first["enumeration_evidence_sha256"] != semantic_change[
+        "enumeration_evidence_sha256"
+    ]
+    assert telemetry_only["reused"] is True
+    assert telemetry_only["enumeration_evidence_sha256"] == semantic_change[
+        "enumeration_evidence_sha256"
+    ]
+
+
+def test_real_empty_capture_caps_proofs_and_ignores_poll_telemetry_churn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=12)
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, object]]:
+            return []
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", EmptyClient)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", EmptyClient)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    since = datetime(2026, 8, 7, 21, tzinfo=timezone.utc)
+    first_until = datetime(2026, 8, 8, 21, tzinfo=timezone.utc)
+    second_until = first_until + timedelta(minutes=15)
+    third_until = first_until + timedelta(minutes=30)
+
+    first = capture_mango_window(config, since, first_until)
+    calls_runtime.write_cursor(config.cursor_path, first_until, first)
+    second = capture_mango_window(config, since, second_until)
+    calls_runtime.write_cursor(config.cursor_path, second_until, second)
+    third = capture_mango_window(config, since, third_until)
+
+    day = "2026-08-08"
+    assert first["independent_zero_enumerations_by_day"][day] == 1
+    assert second["independent_zero_enumerations_by_day"][day] == 2
+    assert third["independent_zero_enumerations_by_day"][day] == 2
+    assert first["api_requests"] == 2
+    assert second["api_requests"] == third["api_requests"] == 3
+    assert first["mango_enumeration_source"]["until"] != second[
+        "mango_enumeration_source"
+    ]["until"]
+    assert calls_runtime.capture_enumeration_evidence_sha256(first) != (
+        calls_runtime.capture_enumeration_evidence_sha256(second)
+    )
+    assert calls_runtime.capture_enumeration_evidence_sha256(second) == (
+        calls_runtime.capture_enumeration_evidence_sha256(third)
+    )
+
+
+def test_strict_capture_floors_midday_catch_up_to_moscow_midnight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+        api_window_hours=12,
+    )
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, object]]:
+            return []
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", EmptyClient)
+    monkeypatch.setattr(
+        calls_runtime,
+        "MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "configured_host_id",
+        lambda *_args, **_kwargs: "m1-host",
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    since = datetime(2026, 8, 5, 12, 34, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 9, 21, tzinfo=timezone.utc)
+
+    capture = capture_mango_window(config, since, until)
+
+    assert capture["mango_enumeration_source"]["rolling_since"] == (
+        "2026-08-04T21:00:00+00:00"
+    )
+    assert capture["mango_enumeration_source"]["since"] == (
+        "2026-08-04T21:00:00+00:00"
+    )
+    assert capture["independent_zero_enumerations_by_day"][
+        "2026-08-05"
+    ] == 1
+    calls_runtime.capture_enumeration_exact_sha256(
+        capture,
+        expected_source_mode="strict_service",
+        expected_until=until,
+        expected_rolling_since=datetime(
+            2026,
+            8,
+            4,
+            21,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+
+def test_enumeration_digest_rejects_noncanonical_colliding_day_key(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "CREATE TABLE call_records(source_call_id TEXT, started_at TEXT)"
+        )
+    create_empty_capture_manifest(config)
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest,
+        end_offset=0,
+    )
+    source = {
+        "mode": "strict_service",
+        "since": "2026-08-07T21:00:00+00:00",
+        "rolling_since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "requests": 1,
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "covered_intervals": [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+        ],
+    }
+    clean = {
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "call_keys": [],
+        "calls_by_moscow_day": {"2026-08-08": []},
+        "independent_zero_enumerations_by_day": {"2026-08-08": 2},
+        "api_requests": 1,
+        "api_rows_total": 0,
+        "api_authoritative_rows_total": 0,
+        "api_events_total": 0,
+        "manifest_end_offset": 0,
+        "manifest_snapshot_sha256": snapshot["sha256"],
+    }
+    publish_ready_db(
+        config,
+        {"total": 0},
+        capture_evidence=clean,
+        manifest_end_offset=0,
+    )
+    malformed = {
+        **clean,
+        "calls_by_moscow_day": {
+            "2026-08-08": [],
+            " 2026-08-08 ": ["hidden-call"],
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="day_key_not_canonical"):
+        publish_ready_db_if_changed(
+            config,
+            {"total": 0},
+            changed=False,
+            capture_evidence=malformed,
+            manifest_end_offset=0,
+        )
+
+
+def test_positive_api_rows_can_never_close_an_empty_strict_day() -> None:
+    source = {
+        "mode": "strict_service",
+        "since": "2026-08-07T21:00:00+00:00",
+        "rolling_since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "requests": 1,
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "covered_intervals": [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 1,
+                "scope": "rolling_authority",
+            }
+        ],
+    }
+    malformed = {
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "call_keys": [],
+        "calls_by_moscow_day": {"2026-08-08": []},
+        "independent_zero_enumerations_by_day": {"2026-08-08": 2},
+        "api_requests": 1,
+        "api_rows_total": 1,
+        "api_authoritative_rows_total": 1,
+        "api_events_total": 0,
+    }
+
+    with pytest.raises(RuntimeError, match="strict_api_rows_without_calls"):
+        calls_runtime.capture_enumeration_evidence_sha256(malformed)
+    verdict = calls_runtime.build_stage10_verdict(
+        day=datetime(2026, 8, 8, tzinfo=timezone.utc).date(),
+        enumeration=malformed,
+        capture_entries=[],
+        ready_rows=[],
+    )
+    assert verdict["consistency_ok"] is False
+    assert verdict["closure_ok"] is False
+
+
+@pytest.mark.parametrize("entrypoint", ("capture", "process_a"))
+@pytest.mark.parametrize(
+    "malformation",
+    (
+        "noncanonical_day",
+        "string_call_collection",
+        "invalid_source",
+        "rolling_coverage_gap",
+        "until_mismatch",
+    ),
+)
+def test_runtime_rejects_malformed_enumeration_before_cursor_or_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+    malformation: str,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        min_free_gib=1,
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": True,
+        },
+    )
+    source = {
+        "mode": "strict_service",
+        "since": "2026-08-07T21:00:00+00:00",
+        "rolling_since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "requests": 1,
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "covered_intervals": [
+            {
+                "since": "2026-08-07T21:00:00+00:00",
+                "until": "2026-08-08T21:00:00+00:00",
+                "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+        ],
+    }
+    malformed: dict[str, object] = {
+        "status": "ok",
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "call_keys": [],
+        "calls_by_moscow_day": {"2026-08-08": []},
+        "independent_zero_enumerations_by_day": {"2026-08-08": 2},
+        "api_requests": 1,
+        "api_rows_total": 0,
+        "api_authoritative_rows_total": 0,
+        "api_events_total": 0,
+    }
+    if malformation == "noncanonical_day":
+        malformed["calls_by_moscow_day"] = {
+            "2026-08-08": [],
+            " 2026-08-08 ": ["hidden-call"],
+        }
+    elif malformation == "string_call_collection":
+        malformed.update(
+            call_keys=["hidden-call"],
+            calls_by_moscow_day={"2026-08-08": "hidden-call"},
+            independent_zero_enumerations_by_day={"2026-08-08": 0},
+            api_rows_total=1,
+            api_events_total=1,
+        )
+        source["covered_intervals"][0]["rows"] = 1
+    elif malformation == "invalid_source":
+        malformed["mango_enumeration_source"] = {}
+    elif malformation == "rolling_coverage_gap":
+        malformed.update(
+            call_keys=[],
+            calls_by_moscow_day={},
+            independent_zero_enumerations_by_day={},
+        )
+        source["covered_intervals"][0]["until"] = (
+            "2026-08-07T22:00:00+00:00"
+        )
+    else:
+        malformed.update(
+            call_keys=[],
+            calls_by_moscow_day={},
+            independent_zero_enumerations_by_day={},
+        )
+        source["until"] = "2026-08-07T22:00:00+00:00"
+        source["covered_intervals"][0]["until"] = source["until"]
+    capture_runner = lambda *_args: malformed
+    exact_window = {
+        "since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+    }
+
+    if entrypoint == "capture":
+        result = run_capture(
+            config,
+            capture_runner=capture_runner,
+            **exact_window,
+        )
+    else:
+        result = run_process_a(
+            config,
+            capture_runner=capture_runner,
+            command_runner=lambda *_args: pytest.fail(
+                "worker command must not run"
+            ),
+            **exact_window,
+        )
+
+    assert result["status"] == "failed"
+    assert result["stop_reason"] == "capture_enumeration_evidence_invalid"
+    assert read_json(config.cursor_path) == {}
+    assert not config.working_db.exists()
+    assert not config.ready_db.exists()
+
+
+@pytest.mark.parametrize("entrypoint", ("capture", "process_a"))
+def test_runtime_rejects_enumeration_that_omits_requested_rolling_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        min_free_gib=1,
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": True,
+        },
+    )
+    omitted_start = "2026-08-08T21:00:00+00:00"
+    requested_until = "2026-08-09T21:00:00+00:00"
+    incomplete = {
+        "status": "ok",
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": {
+            "mode": "strict_service",
+            "since": omitted_start,
+            "rolling_since": omitted_start,
+            "until": requested_until,
+            "cursor": "not_applicable_stats_request_result",
+            "requests": 1,
+            "pages": None,
+            "pagination": "not_applicable_stats_request_result",
+            "covered_intervals": [
+                {
+                    "since": omitted_start,
+                    "until": requested_until,
+                    "result_complete": True,
+                    "rows": 0,
+                    "scope": "rolling_authority",
+                }
+            ],
+        },
+        "call_keys": [],
+        "calls_by_moscow_day": {"2026-08-09": []},
+        "independent_zero_enumerations_by_day": {"2026-08-09": 2},
+        "api_requests": 1,
+        "api_rows_total": 0,
+        "api_authoritative_rows_total": 0,
+        "api_events_total": 0,
+    }
+    capture_runner = lambda *_args: incomplete
+    exact_window = {
+        "since": "2026-08-07T21:00:00+00:00",
+        "until": requested_until,
+    }
+
+    if entrypoint == "capture":
+        result = run_capture(
+            config,
+            capture_runner=capture_runner,
+            **exact_window,
+        )
+    else:
+        result = run_process_a(
+            config,
+            capture_runner=capture_runner,
+            command_runner=lambda *_args: pytest.fail(
+                "worker command must not run"
+            ),
+            **exact_window,
+        )
+
+    assert result["status"] == "failed"
+    assert result["stop_reason"] == "capture_enumeration_evidence_invalid"
+    assert read_json(config.cursor_path) == {}
+    assert not config.working_db.exists()
+    assert not config.ready_db.exists()
+
+
+def test_pipeline_rejects_shortened_cursor_after_exact_capture_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        min_free_gib=1,
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": True,
+        },
+    )
+    create_empty_capture_manifest(config)
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest,
+        end_offset=0,
+    )
+    requested_since = "2026-08-07T21:00:00+00:00"
+    requested_until = "2026-08-09T21:00:00+00:00"
+    complete = {
+        "status": "ok",
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": {
+            "mode": "strict_service",
+            "since": requested_since,
+            "rolling_since": requested_since,
+            "until": requested_until,
+            "cursor": "not_applicable_stats_request_result",
+            "requests": 1,
+            "pages": None,
+            "pagination": "not_applicable_stats_request_result",
+            "covered_intervals": [
+                {
+                    "since": requested_since,
+                    "until": requested_until,
+                    "result_complete": True,
+                    "rows": 0,
+                    "scope": "rolling_authority",
+                }
+            ],
+        },
+        "call_keys": [],
+        "calls_by_moscow_day": {},
+        "independent_zero_enumerations_by_day": {
+            "2026-08-08": 2,
+            "2026-08-09": 2,
+        },
+        "api_requests": 1,
+        "api_rows_total": 0,
+        "api_authoritative_rows_total": 0,
+        "api_events_total": 0,
+        "manifest_end_offset": 0,
+        "manifest_snapshot_sha256": snapshot["sha256"],
+    }
+    captured = run_capture(
+        config,
+        since=requested_since,
+        until=requested_until,
+        capture_runner=lambda *_args: complete,
+    )
+    assert captured["status"] == "ok"
+    cursor = dict(read_json(config.cursor_path))
+    assert cursor["capture_window_certificate"]["requested_since"] == (
+        requested_since
+    )
+    with pytest.raises(RuntimeError, match="certificate is invalid"):
+        calls_runtime.verified_capture_window(
+            replace(config, tenant_id="other-tenant"),
+            cursor,
+        )
+    with pytest.raises(RuntimeError, match="certificate is invalid"):
+        calls_runtime.verified_capture_window(
+            replace(config, base_url="https://other.invalid"),
+            cursor,
+        )
+    reached_after_validation: list[Mapping[str, object]] = []
+
+    def stop_after_validation(*_args: object, **_kwargs: object) -> object:
+        reached_after_validation.append(dict(_kwargs))
+        raise LookupError("validation_reached")
+
+    with monkeypatch.context() as local_patch:
+        local_patch.setattr(
+            calls_runtime,
+            "prepare_ingest_inputs",
+            stop_after_validation,
+        )
+        manual_resume = run_process_a(
+            config,
+            skip_capture=True,
+            skip_workers=True,
+        )
+    assert reached_after_validation == [
+        {
+            "manifest_end_offset": 0,
+            "expected_manifest_sha256": snapshot["sha256"],
+        }
+    ]
+    assert manual_resume["stop_reason"] == "process_a_exception:LookupError"
+
+    for mutation in ("until", "zero_proof", "missing_certificate"):
+        tampered = json.loads(json.dumps(cursor))
+        if mutation == "until":
+            tampered["until"] = "2026-08-09T20:00:00+00:00"
+        elif mutation == "zero_proof":
+            tampered["independent_zero_enumerations_by_day"][
+                "2026-08-08"
+            ] = 1
+        else:
+            tampered.pop("capture_window_certificate")
+        calls_runtime.write_json(config.cursor_path, tampered)
+        capture_attempts: list[bool] = []
+        rejected_capture = run_capture(
+            config,
+            until="2026-08-10T21:00:00+00:00",
+            capture_runner=lambda *_args: (
+                capture_attempts.append(True)
+                or {"status": "failed", "reason": "must_not_run"}
+            ),
+        )
+        assert rejected_capture["status"] == "failed"
+        assert rejected_capture["stop_reason"] == (
+            "capture_enumeration_evidence_invalid"
+        )
+        assert capture_attempts == []
+    calls_runtime.write_json(config.cursor_path, cursor)
+
+    shortened = json.loads(json.dumps(cursor))
+    omitted_start = "2026-08-08T21:00:00+00:00"
+    shortened["mango_enumeration_source"]["since"] = omitted_start
+    shortened["mango_enumeration_source"]["rolling_since"] = omitted_start
+    shortened["mango_enumeration_source"]["covered_intervals"] = [
+        {
+            "since": omitted_start,
+            "until": requested_until,
+            "result_complete": True,
+            "rows": 0,
+            "scope": "rolling_authority",
+        }
+    ]
+    shortened["independent_zero_enumerations_by_day"] = {
+        "2026-08-09": 2
+    }
+    calls_runtime.write_json(config.cursor_path, shortened)
+
+    result = run_pipeline(
+        config,
+        command_runner=lambda *_args: pytest.fail("worker must not run"),
+        process_b_runner=lambda *_args: pytest.fail(
+            "process B must not run"
+        ),
+    )
+
+    assert result["status"] == "failed"
+    assert result["process_a"]["stop_reason"] == (
+        "capture_enumeration_evidence_invalid"
+    )
+    assert not config.working_db.exists()
+    assert not config.ready_db.exists()
+
+
+def test_legacy_transfer_cursor_requires_continuous_explicit_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": True,
+        },
+    )
+    legacy_until = "2026-08-08T21:00:00+00:00"
+    create_legacy_transfer_cursor(
+        config,
+        until=legacy_until,
+        zero_proofs={"2026-08-08": 999},
+    )
+    legacy_bytes = config.cursor_path.read_bytes()
+
+    no_explicit_attempts: list[bool] = []
+    no_explicit = run_capture(
+        config,
+        until="2026-08-09T21:00:00+00:00",
+        capture_runner=lambda *_args: (
+            no_explicit_attempts.append(True)
+            or {"status": "failed"}
+        ),
+    )
+    assert no_explicit["status"] == "failed"
+    assert no_explicit["stop_reason"] == (
+        "capture_enumeration_evidence_invalid"
+    )
+    assert no_explicit_attempts == []
+
+    for explicit_since, explicit_until in (
+        (
+            None,
+            "2026-08-09T20:59:59+00:00",
+        ),
+        (
+            "2026-08-07T21:00:00+00:00",
+            "2026-08-08T20:59:59+00:00",
+        ),
+        (
+            "2026-08-11T21:00:00+00:00",
+            "2026-08-12T21:00:00+00:00",
+        ),
+    ):
+        attempts: list[bool] = []
+        rejected = run_capture(
+            config,
+            since=explicit_since,
+            until=explicit_until,
+            capture_runner=lambda *_args: (
+                attempts.append(True) or {"status": "failed"}
+            ),
+        )
+        assert rejected["status"] == "failed"
+        assert rejected["stop_reason"] == (
+            "capture_enumeration_evidence_invalid"
+        )
+        assert attempts == []
+
+    failed = run_capture(
+        config,
+        since="2026-08-07T21:00:00+00:00",
+        until="2026-08-09T21:00:00+00:00",
+        capture_runner=lambda runtime_config, *_args: {
+            "status": "failed",
+            "migration_mode": runtime_config.legacy_cursor_migration_mode,
+        },
+    )
+    assert failed["status"] == "failed"
+    assert failed["counters"]["capture"]["migration_mode"] is True
+    assert config.cursor_path.read_bytes() == legacy_bytes
+
+    skipped = run_process_a(
+        config,
+        since="2026-08-07T21:00:00+00:00",
+        until="2026-08-09T21:00:00+00:00",
+        skip_capture=True,
+        skip_workers=True,
+        command_runner=lambda *_args: pytest.fail("worker must not run"),
+    )
+    assert skipped["status"] == "failed"
+    assert skipped["stop_reason"] == "capture_enumeration_evidence_invalid"
+    assert config.cursor_path.read_bytes() == legacy_bytes
+
+
+def test_legacy_transfer_cursor_migrates_without_inheriting_zero_and_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+        api_window_hours=12,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": True,
+        },
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "configured_host_id",
+        lambda *_args, **_kwargs: "m1-host",
+    )
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, object]]:
+            return []
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", EmptyClient)
+    monkeypatch.setattr(
+        calls_runtime,
+        "MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    create_legacy_transfer_cursor(
+        config,
+        until="2026-08-08T21:00:00+00:00",
+        zero_proofs={"2026-08-08": 999},
+    )
+
+    migrated = run_capture(
+        config,
+        since="2026-08-07T21:00:00+00:00",
+        until="2026-08-09T21:00:00+00:00",
+    )
+
+    assert migrated["status"] == "ok"
+    cursor = dict(read_json(config.cursor_path))
+    assert cursor["independent_zero_enumerations_by_day"] == {
+        "2026-08-08": 1,
+        "2026-08-09": 1,
+    }
+    assert cursor["capture_window_certificate"]["schema_version"] == (
+        "mango_capture_window_certificate_v1"
+    )
+    assert calls_runtime.verified_capture_window(config, cursor)[1] == (
+        datetime(2026, 8, 9, 21, tzinfo=timezone.utc)
+    )
+    rotated_code_config = replace(config, expected_code_sha="b" * 40)
+    assert calls_runtime.verified_capture_window(
+        rotated_code_config,
+        cursor,
+    )[1] == datetime(2026, 8, 9, 21, tzinfo=timezone.utc)
+    manifest_bytes = config.capture_manifest.read_bytes()
+    changed_manifest = manifest_bytes.replace(
+        b"transferred-call",
+        b"transferred-fall",
+        1,
+    )
+    assert changed_manifest != manifest_bytes
+    config.capture_manifest.write_bytes(changed_manifest)
+    with pytest.raises(RuntimeError, match="manifest prefix changed"):
+        calls_runtime.verified_capture_window(config, cursor)
+    manifest_attempts: list[bool] = []
+    rejected_manifest = run_capture(
+        config,
+        since="2026-08-07T21:00:00+00:00",
+        until="2026-08-10T21:00:00+00:00",
+        capture_runner=lambda *_args: (
+            manifest_attempts.append(True) or {"status": "failed"}
+        ),
+    )
+    assert rejected_manifest["status"] == "failed"
+    assert rejected_manifest["stop_reason"] == (
+        "capture_enumeration_evidence_invalid"
+    )
+    assert manifest_attempts == []
+    config.capture_manifest.write_bytes(manifest_bytes)
+    split_intervals = json.loads(json.dumps(cursor))
+    original_interval = split_intervals["mango_enumeration_source"][
+        "covered_intervals"
+    ][0]
+    interval_start = datetime.fromisoformat(original_interval["since"])
+    interval_end = datetime.fromisoformat(original_interval["until"])
+    interval_middle = interval_start + (interval_end - interval_start) / 2
+    split_intervals["mango_enumeration_source"]["covered_intervals"][0:1] = [
+        {**original_interval, "until": interval_middle.isoformat()},
+        {**original_interval, "since": interval_middle.isoformat()},
+    ]
+    split_intervals["mango_enumeration_source"]["requests"] += 1
+    split_intervals["api_requests"] += 1
+    with pytest.raises(RuntimeError, match="certificate evidence changed"):
+        calls_runtime.verified_capture_window(config, split_intervals)
+    missing_cursor_until = json.loads(json.dumps(cursor))
+    missing_cursor_until.pop("until")
+    with pytest.raises(RuntimeError, match="cursor until differs"):
+        calls_runtime.verified_capture_window(config, missing_cursor_until)
+
+    certified_bytes = config.cursor_path.read_bytes()
+    for explicit_since, explicit_until in (
+        (
+            None,
+            "2026-08-09T20:59:59+00:00",
+        ),
+        (
+            "2026-08-07T21:00:00+00:00",
+            "2026-08-09T20:59:59+00:00",
+        ),
+        (
+            "2026-08-12T21:00:00+00:00",
+            "2026-08-13T21:00:00+00:00",
+        ),
+    ):
+        attempts: list[bool] = []
+        rejected = run_capture(
+            config,
+            since=explicit_since,
+            until=explicit_until,
+            capture_runner=lambda *_args: (
+                attempts.append(True) or {"status": "failed"}
+            ),
+        )
+        assert rejected["status"] == "failed"
+        assert rejected["stop_reason"] == (
+            "capture_enumeration_evidence_invalid"
+        )
+        assert attempts == []
+        assert config.cursor_path.read_bytes() == certified_bytes
+
+    for mutation in ("null_certificate", "removed_certificate"):
+        tampered = json.loads(json.dumps(cursor))
+        if mutation == "null_certificate":
+            tampered["capture_window_certificate"] = None
+        else:
+            tampered.pop("capture_window_certificate")
+        write_json(config.cursor_path, tampered)
+        attempts: list[bool] = []
+        rejected = run_capture(
+            config,
+            since="2026-08-07T21:00:00+00:00",
+            until="2026-08-10T21:00:00+00:00",
+            capture_runner=lambda *_args: (
+                attempts.append(True) or {"status": "failed"}
+            ),
+        )
+        assert rejected["status"] == "failed"
+        assert rejected["stop_reason"] == (
+            "capture_enumeration_evidence_invalid"
+        )
+        assert attempts == []
+    write_json(config.cursor_path, cursor)
+
+    reached_after_validation: list[Mapping[str, object]] = []
+
+    def stop_after_validation(*_args: object, **kwargs: object) -> object:
+        reached_after_validation.append(dict(kwargs))
+        raise LookupError("validation_reached")
+
+    monkeypatch.setattr(
+        calls_runtime,
+        "prepare_ingest_inputs",
+        stop_after_validation,
+    )
+    resumed = run_process_a(
+        config,
+        skip_capture=True,
+        skip_workers=True,
+    )
+    assert reached_after_validation == [
+        {
+            "manifest_end_offset": cursor["manifest_end_offset"],
+            "expected_manifest_sha256": cursor[
+                "manifest_snapshot_sha256"
+            ],
+        }
+    ]
+    assert resumed["stop_reason"] == "process_a_exception:LookupError"
+
+
+def test_strict_capture_detects_cursor_change_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+        legacy_cursor_migration_mode=True,
+    )
+    legacy = dict(
+        create_legacy_transfer_cursor(
+            config,
+            until="2026-08-08T21:00:00+00:00",
+            zero_proofs={"2026-08-08": 2},
+        )
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "configured_host_id",
+        lambda *_args, **_kwargs: "m1-host",
+    )
+    changed = False
+
+    class SwappingClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, object]]:
+            nonlocal changed
+            if not changed:
+                changed = True
+                write_json(
+                    config.cursor_path,
+                    {**legacy, "updated_at": "2026-08-08T21:00:01+00:00"},
+                )
+            return []
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", SwappingClient)
+    monkeypatch.setattr(
+        calls_runtime,
+        "MangoRecordingDownloader",
+        SwappingClient,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "stage_capture_events",
+        lambda **_kwargs: pytest.fail(
+            "cursor race must stop before staging or downloads"
+        ),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    with pytest.raises(RuntimeError, match="cursor changed during"):
+        capture_mango_window(
+            config,
+            datetime(2026, 8, 7, 21, tzinfo=timezone.utc),
+            datetime(2026, 8, 9, 21, tzinfo=timezone.utc),
+        )
+    assert changed is True
+
+
+def test_process_a_capture_uses_capture_lock(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    attempts: list[bool] = []
+
+    with process_lease(
+        config.capture_lock,
+        stale_seconds=config.stale_lock_seconds,
+    ):
+        result = run_process_a(
+            config,
+            since="2026-08-08T00:00:00+00:00",
+            until="2026-08-08T01:00:00+00:00",
+            skip_workers=True,
+            capture_runner=lambda *_args: (
+                attempts.append(True) or {"status": "failed"}
+            ),
+        )
+
+    assert result["status"] == "locked"
+    assert result["stop_reason"] == "process_a_locked"
+    assert attempts == []
+
+
+@pytest.mark.parametrize(
+    "schema_case",
+    ("id_only", "missing_runtime_column", "missing_critical_constraints"),
+)
+def test_runtime_rejects_incomplete_working_schema_before_api_or_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_case: str,
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    if schema_case == "id_only":
+        config.working_db.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(config.working_db) as connection:
+            connection.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+    elif schema_case == "missing_runtime_column":
+        create_ready_call_db(config.working_db)
+        with sqlite3.connect(config.working_db) as connection:
+            connection.execute("ALTER TABLE call_records DROP COLUMN dead_letter_stage")
+    else:
+        config.working_db.parent.mkdir(parents=True, exist_ok=True)
+        columns = ", ".join(
+            f'"{column}" TEXT'
+            for column in sorted(
+                calls_runtime.REQUIRED_RUNTIME_CALL_RECORD_COLUMNS
+            )
+        )
+        with sqlite3.connect(config.working_db) as connection:
+            connection.execute(f"CREATE TABLE call_records ({columns})")
+            connection.executemany(
+                "INSERT INTO call_records(id, source_file) VALUES (?, ?)",
+                (("duplicate", "same"), ("duplicate", "same")),
+            )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    result = run_process_a(
+        config,
+        capture_runner=lambda *_args: pytest.fail("Mango API must not run"),
+        command_runner=lambda *_args: pytest.fail("worker must not run"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["stop_reason"] == "working_db_invalid"
+    assert read_json(config.cursor_path) == {}
+    assert config.working_db.is_file()
+    assert not config.ready_db.exists()
+
+
+def test_capture_does_not_trust_or_wait_for_invalid_working_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    columns = ", ".join(
+        f'"{column}" TEXT'
+        for column in sorted(calls_runtime.REQUIRED_RUNTIME_CALL_RECORD_COLUMNS)
+    )
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(f"CREATE TABLE call_records ({columns})")
+        connection.execute(
+            "INSERT INTO call_records(id, source_file, source_call_id) "
+            "VALUES ('not-a-primary-key', 'untrusted', 'must-not-dedupe')"
+        )
+    config.ready_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.ready_db) as connection:
+        connection.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        connection.execute(
+            "INSERT INTO call_records VALUES ('must-not-dedupe')"
+        )
+    api_windows: list[tuple[datetime, datetime]] = []
+    staged: list[TelephonyCallEvent] = []
+    event = TelephonyCallEvent(
+        tenant=TenantRef("foton"),
+        provider="mango",
+        provider_call_id="must-not-dedupe",
+        started_at=datetime(2026, 8, 8, 10, tzinfo=timezone.utc),
+        ended_at=None,
+        direction=Direction.INBOUND,
+        client_phone=None,
+        manager_ref=None,
+        recording_ref="recording-new",
+        raw_payload={},
+    )
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, until: datetime
+        ) -> list[dict[str, object]]:
+            api_windows.append((since, until))
+            return [{"id": "must-not-dedupe"}]
+
+    class FakeMapper:
+        def from_payload(self, **_: object) -> TelephonyCallEvent:
+            return event
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 1, "failed": 0}
+
+    def fake_stage(
+        *, events: Sequence[TelephonyCallEvent], **_: object
+    ) -> Summary:
+        staged.extend(events)
+        return Summary()
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", EmptyClient)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", EmptyClient)
+    monkeypatch.setattr(calls_runtime, "MangoOfficePayloadMapper", FakeMapper)
+    monkeypatch.setattr(
+        calls_runtime,
+        "read_ingested_call_ids",
+        lambda *_args, **_kwargs: pytest.fail(
+            "untrusted downstream DB must not be used for deduplication"
+        ),
+    )
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", fake_stage)
+    monkeypatch.setattr(
+        calls_runtime,
+        "configured_host_id",
+        lambda *_args, **_kwargs: "m1-host",
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 7, 21, tzinfo=timezone.utc),
+        datetime(2026, 8, 8, 21, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "ok"
+    assert api_windows
+    assert report["api_events_total"] == 1
+    assert report["api_events_already_known_external"] == 0
+    assert [item.provider_call_id for item in staged] == ["must-not-dedupe"]
+    assert config.working_db.is_file()
+
+
+def test_missing_working_db_never_replaces_surviving_ready_generation(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    ready_pair = (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+        config.ready_db.stat().st_ino,
+        config.ready_db.stat().st_mtime_ns,
+    )
+    config.working_db.unlink()
+    capture_attempts: list[bool] = []
+
+    def failed_capture(*_args: object) -> Mapping[str, object]:
+        capture_attempts.append(True)
+        return {"status": "failed", "reason": "synthetic_api_failure"}
+
+    capture = run_capture(
+        config,
+        capture_runner=failed_capture,
+    )
+    process_a = run_process_a(
+        config,
+        capture_runner=lambda *_args: pytest.fail("Mango API must not run"),
+        command_runner=lambda *_args: pytest.fail("init-db must not run"),
+    )
+
+    assert capture_attempts == [True]
+    assert capture["status"] == process_a["status"] == "failed"
+    assert capture["stop_reason"] == "capture_or_enumeration_failed"
+    assert process_a["stop_reason"] == (
+        "working_db_missing_ready_generation_preserved"
+    )
+    assert not config.working_db.exists()
+    assert ready_pair == (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+        config.ready_db.stat().st_ino,
+        config.ready_db.stat().st_mtime_ns,
+    )
+    assert read_json(config.cursor_path) == {}
+
+
+@pytest.mark.parametrize("entrypoint", ("capture", "process_a"))
+def test_invalid_working_db_never_replaces_surviving_ready_generation(
+    tmp_path: Path,
+    entrypoint: str,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    ready_pair = (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+        config.ready_db.stat().st_ino,
+        config.ready_db.stat().st_mtime_ns,
+    )
+    config.working_db.write_bytes(b"")
+    capture_attempts: list[bool] = []
+
+    def invoke() -> Mapping[str, object]:
+        if entrypoint == "capture":
+            return run_capture(
+                config,
+                capture_runner=lambda *_args: (
+                    capture_attempts.append(True)
+                    or {"status": "failed", "reason": "synthetic_api_failure"}
+                ),
+            )
+        return run_process_a(
+            config,
+            capture_runner=lambda *_args: pytest.fail(
+                "Mango API must not run"
+            ),
+            command_runner=lambda *_args: pytest.fail(
+                "worker command must not run"
+            ),
+        )
+
+    first = invoke()
+    second = invoke()
+
+    assert first["status"] == second["status"] == "failed"
+    expected_reason = (
+        "capture_or_enumeration_failed"
+        if entrypoint == "capture"
+        else "working_db_invalid_ready_generation_preserved"
+    )
+    assert first["stop_reason"] == second["stop_reason"] == expected_reason
+    assert capture_attempts == ([True, True] if entrypoint == "capture" else [])
+    assert config.working_db.stat().st_size == 0
+    assert ready_pair == (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+        config.ready_db.stat().st_ino,
+        config.ready_db.stat().st_mtime_ns,
+    )
+    assert read_json(config.cursor_path) == {}
+
+
+def test_process_a_recovers_staged_ready_before_working_db_gate(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO call_records VALUES (1)")
+    manifest = {
+        "ready_db": str(config.ready_db),
+        "sha256": sha256_file(config.working_db),
+        "size_bytes": config.working_db.stat().st_size,
+    }
+
+    def crash_after_journal(stage: str) -> None:
+        if stage == "journal_written":
+            raise RuntimeError("synthetic crash after journal")
+
+    with pytest.raises(RuntimeError, match="synthetic crash after journal"):
+        commit_ready_generation(
+            config.ready_db,
+            config.working_db,
+            manifest,
+            checkpoint=crash_after_journal,
+        )
+
+    assert not config.working_db.exists()
+    assert not config.ready_db.exists()
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is True
+
+    def invoke() -> Mapping[str, object]:
+        return run_process_a(
+            config,
+            capture_runner=lambda *_args: pytest.fail(
+                "Mango API must not run"
+            ),
+            command_runner=lambda *_args: pytest.fail(
+                "init-db must not run"
+            ),
+        )
+
+    first = invoke()
+    first_pair = (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+        config.ready_db.stat().st_ino,
+        config.ready_db.stat().st_mtime_ns,
+    )
+    second = invoke()
+
+    assert first["status"] == second["status"] == "failed"
+    assert first["stop_reason"] == second["stop_reason"] == (
+        "working_db_missing_ready_generation_preserved"
+    )
+    assert not config.working_db.exists()
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is False
+    assert first_pair == (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+        config.ready_db.stat().st_ino,
+        config.ready_db.stat().st_mtime_ns,
+    )
+
+
+def test_ready_manifest_with_pending_call_is_never_time_frozen_by_reuse(
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+    )
+
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "UPDATE call_records SET resolve_status='pending', "
+            "analysis_status='pending', analysis_json=NULL"
+        )
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:provider-1",
+            provider_call_id="provider-1",
+            recording_id="recording-1",
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+        )
+    )
+    manifest_end_offset = config.capture_manifest.stat().st_size
+    snapshot = calls_runtime.capture_manifest_snapshot(
+        config.capture_manifest,
+        end_offset=manifest_end_offset,
+    )
+    evidence = {
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": {
+            "mode": "strict_service",
+            "since": "2026-07-08T21:00:00+00:00",
+            "rolling_since": "2026-07-08T21:00:00+00:00",
+            "until": "2026-07-09T21:00:00+00:00",
+            "cursor": "not_applicable_stats_request_result",
+            "requests": 1,
+            "pages": None,
+            "pagination": "not_applicable_stats_request_result",
+            "covered_intervals": [
+                {
+                    "since": "2026-07-08T21:00:00+00:00",
+                    "until": "2026-07-09T21:00:00+00:00",
+                    "result_complete": True,
+                    "rows": 1,
+                    "scope": "rolling_authority",
+                }
+            ],
+        },
+        "call_keys": ["provider-1"],
+        "calls_by_moscow_day": {"2026-07-09": ["provider-1"]},
+        "independent_zero_enumerations_by_day": {"2026-07-09": 0},
+        "api_requests": 1,
+        "api_rows_total": 1,
+        "api_authoritative_rows_total": 1,
+        "api_events_total": 1,
+        "manifest_end_offset": manifest_end_offset,
+        "manifest_snapshot_sha256": snapshot["sha256"],
+    }
+    first = publish_ready_db(
+        config,
+        {"total": 1},
+        capture_evidence=evidence,
+        manifest_end_offset=manifest_end_offset,
+    )
+    repeated = publish_ready_db_if_changed(
+        config,
+        {"total": 1},
+        changed=False,
+        capture_evidence=evidence,
+        manifest_end_offset=manifest_end_offset,
+    )
+
+    assert first["daily_verdicts"]["2026-07-09"]["pending_unique"] == 1
+    assert repeated["reused"] is False
+    assert repeated["daily_verdicts"]["2026-07-09"]["pending_unique"] == 1
+
+
+def test_network_outage_with_open_llm_work_remains_deferred(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "UPDATE call_records SET resolve_status='pending', "
+            "analysis_status='pending', analysis_json=NULL"
+        )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": False,
+        },
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "prepare_ingest_inputs",
+        lambda *_args, **_kwargs: {"audio_files": 0, "skipped_total": 0},
+    )
+    commands: list[list[str]] = []
+
+    def command_runner(
+        command: list[str], _environment: Mapping[str, str], _cwd: Path
+    ) -> Mapping[str, object]:
+        commands.append(command)
+        return {"rc": 0, "command": command[-1]}
+
+    result = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=command_runner,
+    )
+
+    assert result["status"] == "deferred"
+    assert result["stop_reason"] == "codex_network_unavailable"
+    assert [
+        command[command.index("--stages") + 1]
+        for command in commands
+        if "--stages" in command
+    ] == ["transcribe", "backfill-second-asr"]
+    assert not config.ready_db.exists()
+
+
+def test_empty_runtime_persists_zero_proofs_and_reuses_closed_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        min_free_gib=1,
+        pending_recording_retry_hours=24,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "disk_preflight",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "codex_network_ok": False,
+        },
+    )
+    zero_proofs = iter((1, 2, 2))
+    commands: list[list[str]] = []
+
+    def command_runner(
+        command: list[str], environment: Mapping[str, str], cwd: Path
+    ) -> Mapping[str, object]:
+        commands.append(command)
+        return run_command(command, environment, cwd)
+
+    def empty_capture(
+        runtime_config: CallsTwoProcessesConfig,
+        since: datetime,
+        until: datetime,
+    ) -> dict[str, object]:
+        create_empty_capture_manifest(runtime_config)
+        snapshot = calls_runtime.capture_manifest_snapshot(
+            runtime_config.capture_manifest,
+            end_offset=0,
+        )
+        return {
+            "status": "ok",
+            "downloaded": 0,
+            "failed": 0,
+            "mango_enumeration_complete": True,
+            "mango_enumeration_source": {
+                "mode": "strict_service",
+                "since": since.isoformat(),
+                "rolling_since": since.isoformat(),
+                "until": until.isoformat(),
+                "cursor": "not_applicable_stats_request_result",
+                "requests": 1,
+                "pages": None,
+                "pagination": "not_applicable_stats_request_result",
+                "covered_intervals": [
+                    {
+                        "since": since.isoformat(),
+                        "until": until.isoformat(),
+                        "result_complete": True,
+                "rows": 0,
+                "scope": "rolling_authority",
+            }
+                ],
+            },
+            "call_keys": [],
+            "calls_by_moscow_day": {"2026-08-08": []},
+            "independent_zero_enumerations_by_day": {
+                "2026-08-08": next(zero_proofs)
+            },
+            "api_requests": 1,
+            "api_rows_total": 0,
+            "api_authoritative_rows_total": 0,
+            "api_events_total": 0,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": snapshot["sha256"],
+        }
+
+    kwargs = {
+        "since": "2026-08-07T21:00:00+00:00",
+        "until": "2026-08-08T21:00:00+00:00",
+        "capture_runner": empty_capture,
+    }
+    first = run_process_a(config, command_runner=command_runner, **kwargs)
+    first_cursor = read_json(config.cursor_path)
+    second = run_process_a(config, command_runner=command_runner, **kwargs)
+    second_cursor = read_json(config.cursor_path)
+    repeated = run_process_a(config, command_runner=command_runner, **kwargs)
+
+    assert config.working_db.is_file()
+    assert first["status"] == "partial"
+    assert first["counters"]["drop"]["closure_ok"] is False
+    assert first["counters"]["drop"]["enumeration_evidence_sha256"] == (
+        calls_runtime.capture_enumeration_evidence_sha256(first_cursor)
+    )
+    assert second["status"] == "ok"
+    assert second["counters"]["drop"]["reused"] is False
+    assert second["counters"]["drop"]["closure_ok"] is True
+    assert second["counters"]["drop"]["enumeration_evidence_sha256"] == (
+        calls_runtime.capture_enumeration_evidence_sha256(second_cursor)
+    )
+    assert repeated["status"] == "ok"
+    assert repeated["counters"]["drop"]["reused"] is True
+    assert len(commands) == 1
+    assert commands[0][-1] == "init-db"
 
 
 def test_network_outage_runs_only_local_asr_stages(tmp_path: Path) -> None:
@@ -2812,15 +4989,23 @@ def create_ready_call_db(path: Path) -> None:
             CREATE TABLE call_records (
                 id INTEGER PRIMARY KEY,
                 source_call_id TEXT,
-                source_filename TEXT,
-                source_file TEXT,
+                source_filename TEXT NOT NULL,
+                source_file TEXT NOT NULL UNIQUE,
                 started_at TEXT,
+                audio_codec TEXT,
+                sample_rate INTEGER,
+                channels INTEGER,
                 phone TEXT,
                 manager_name TEXT,
                 direction TEXT,
                 duration_sec REAL,
                 transcription_status TEXT,
+                sync_status TEXT,
+                transcribe_attempts INTEGER DEFAULT 0,
                 transcript_variants_json TEXT,
+                transcript_manager TEXT,
+                transcript_client TEXT,
+                transcript_text TEXT,
                 resolve_status TEXT,
                 analysis_status TEXT,
                 analysis_json TEXT,
@@ -2832,12 +5017,15 @@ def create_ready_call_db(path: Path) -> None:
                 analysis_claimed_at TEXT,
                 resolve_attempts INTEGER DEFAULT 0,
                 analyze_attempts INTEGER DEFAULT 0,
+                sync_attempts INTEGER DEFAULT 0,
                 next_retry_at TEXT,
                 resolve_json TEXT,
                 resolve_quality_score REAL,
                 last_error TEXT,
                 amocrm_contact_id TEXT,
-                amocrm_lead_id TEXT
+                amocrm_lead_id TEXT,
+                created_at TEXT,
+                updated_at TEXT
             )
             """
         )
@@ -3248,7 +5436,14 @@ def test_missing_resolve_state_rejects_normalized_duplicate_call_id(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(call_records)")
         ]
-        selected = ["2" if column == "id" else column for column in columns]
+        selected = [
+            "2"
+            if column == "id"
+            else "'/ignored/masked-2.mp3'"
+            if column == "source_file"
+            else column
+            for column in columns
+        ]
         connection.execute(
             f"INSERT INTO call_records ({','.join(columns)}) "
             f"SELECT {','.join(selected)} FROM call_records WHERE id=1"
@@ -4500,9 +6695,9 @@ def test_process_a_complete_existing_db_runs_no_commands(
 
     CaptureManifestStore(config.capture_manifest).append(
         ManifestEntry(
-            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            schema_version="v1", created_at="2026-07-09T10:00:00+00:00", tenant_id="foton",
             provider="mango", event_key="foton:mango:provider-1", provider_call_id="provider-1",
-            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            recording_id="rec-1", started_at="2026-07-09T10:00:00+00:00", ended_at=None,
             direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
             local_audio_path=str(source),
         )
@@ -4579,7 +6774,6 @@ def test_call_db_open_work_excludes_future_retry_and_exhausted_attempts(tmp_path
     config = config_for(tmp_path)
     create_ready_call_db(config.working_db)
     with sqlite3.connect(config.working_db) as con:
-        con.execute("ALTER TABLE call_records ADD COLUMN transcribe_attempts INTEGER")
         con.execute(
             "UPDATE call_records SET transcription_status='failed', transcribe_attempts=3, "
             "next_retry_at='2099-01-01T00:00:00+00:00'"

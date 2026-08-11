@@ -427,7 +427,11 @@ def _recover_ready_generation_locked(
         )
     )
     if can_finish_forward:
-        if current_db_sha != new_db_sha:
+        # Replace an explicitly staged database even when its bytes equal the
+        # current generation.  Its manifest carries the staged file metadata;
+        # keeping the old inode would make an evidence-only republish look
+        # modified forever and defeat idempotent reuse.
+        if current_db_sha != new_db_sha or staged_new_db_sha == new_db_sha:
             _replace_and_sync(paths["new_db"], ready_db)
             if checkpoint:
                 checkpoint("db_replaced")
@@ -452,7 +456,11 @@ def _recover_ready_generation_locked(
         )
         if not can_roll_back:
             raise RuntimeError("ready publication cannot finish or roll back safely")
-        if current_db_sha != old_db_sha:
+        # As in the forward path, restore an explicitly staged database even
+        # when the old and new generations have identical bytes.  The old
+        # manifest records the old inode metadata; keeping the replacement
+        # inode would make the rolled-back pair fail its own reuse check.
+        if current_db_sha != old_db_sha or staged_old_db_sha == old_db_sha:
             _replace_and_sync(paths["old_db"], ready_db)
         if current_manifest_sha != old_manifest_sha:
             _replace_and_sync(paths["old_manifest"], paths["manifest"])

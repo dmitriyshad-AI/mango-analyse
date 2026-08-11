@@ -490,6 +490,45 @@ def _relocate(fixture: Mapping[str, Any], *, execute: bool, checkpoint=lambda _n
     )
 
 
+def test_transfer_cursor_offset_contract_matches_runtime(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    root = synthetic_pipeline["pipeline"]
+    cursor_path = root / relocation.CURSOR_REL
+    original = json.loads(cursor_path.read_text(encoding="utf-8"))
+    config = calls.CallsTwoProcessesConfig(
+        pipeline_root=root,
+        timeline_db=synthetic_pipeline["local"] / "staging" / "timeline.sqlite",
+        timeline_allowed_root=synthetic_pipeline["local"] / "staging",
+        python_executable=Path("/usr/bin/python3"),
+        codex_binary=Path("/usr/bin/true"),
+        codex_home_root=synthetic_pipeline["local"] / "codex_home",
+        expected_code_sha="a" * 40,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+
+    accepted = relocation.validate_transfer_cursor(root)
+    assert calls.legacy_transfer_cursor_can_be_replaced(config, accepted)
+
+    for invalid_offset in (
+        str(original["manifest_end_offset"]),
+        True,
+    ):
+        invalid = {**original, "manifest_end_offset": invalid_offset}
+        _private_json(cursor_path, invalid)
+        with pytest.raises(
+            relocation.RelocationError,
+            match="cursor identity is invalid",
+        ):
+            relocation.validate_transfer_cursor(root)
+        assert not calls.legacy_transfer_cursor_can_be_replaced(
+            config,
+            invalid,
+        )
+
+
 def test_relocation_stops_for_interrupted_ready_publication(
     synthetic_pipeline: Mapping[str, Any],
 ) -> None:

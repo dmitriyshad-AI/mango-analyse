@@ -941,7 +941,11 @@ def enumeration_source_covers_day(
             end = parse_aware_datetime(item.get("until"))
             if start >= end:
                 return False
-            if end > day_start and start < coverage_end:
+            if (
+                item.get("scope") == "rolling_authority"
+                and end > day_start
+                and start < coverage_end
+            ):
                 parsed.append((max(start, day_start), min(end, coverage_end)))
     except (TypeError, ValueError):
         return False
@@ -951,6 +955,302 @@ def enumeration_source_covers_day(
             return False
         cursor = max(cursor, end)
     return cursor >= coverage_end
+
+
+def validate_capture_enumeration_evidence(
+    enumeration: Any,
+    *,
+    expected_source_mode: Optional[str] = None,
+    expected_until: Any = None,
+    expected_rolling_since: Any = None,
+) -> list[str]:
+    """Validate the loss-prevention evidence before it can move runtime state.
+
+    Stage 10 deliberately returns a red verdict for incomplete business state,
+    but malformed evidence is different: it must never be interpreted as an
+    empty Mango day.  Keep this validator independent from the semantic digest
+    so both cursor writes and ready-generation reuse fail closed.
+    """
+
+    if not isinstance(enumeration, Mapping):
+        return ["enumeration_not_object"]
+    errors: list[str] = []
+    calls_by_day = enumeration.get("calls_by_moscow_day")
+    zero_by_day = enumeration.get("independent_zero_enumerations_by_day")
+    source = enumeration.get("mango_enumeration_source")
+    source_mode = str(source.get("mode") or "") if isinstance(source, Mapping) else ""
+
+    if expected_source_mode and source_mode != expected_source_mode:
+        errors.append("enumeration_source_mode_mismatch")
+
+    def canonical_day(raw_day: Any, label: str) -> Optional[str]:
+        if not isinstance(raw_day, str):
+            errors.append(f"{label}_day_key_not_string")
+            return None
+        try:
+            canonical = date.fromisoformat(raw_day).isoformat()
+        except ValueError:
+            canonical = ""
+        if raw_day != canonical:
+            errors.append(f"{label}_day_key_not_canonical")
+            return None
+        return raw_day
+
+    normalized_calls: dict[str, list[str]] = {}
+    if calls_by_day is not None and not isinstance(calls_by_day, Mapping):
+        errors.append("calls_by_moscow_day_not_object")
+    elif isinstance(calls_by_day, Mapping):
+        for raw_day, raw_calls in calls_by_day.items():
+            day_key = canonical_day(raw_day, "calls_by_moscow_day")
+            if not isinstance(raw_calls, Sequence) or isinstance(
+                raw_calls, (str, bytes)
+            ):
+                errors.append("calls_by_moscow_day_value_not_array")
+                continue
+            values: list[str] = []
+            for raw_call in raw_calls:
+                if (
+                    not isinstance(raw_call, str)
+                    or not raw_call.strip()
+                    or raw_call != raw_call.strip()
+                ):
+                    errors.append("calls_by_moscow_day_call_key_invalid")
+                    continue
+                values.append(raw_call)
+            if day_key is not None:
+                normalized_calls[day_key] = values
+
+    normalized_zero: dict[str, int] = {}
+    if zero_by_day is not None and not isinstance(zero_by_day, Mapping):
+        errors.append("independent_zero_enumerations_by_day_not_object")
+    elif isinstance(zero_by_day, Mapping):
+        for raw_day, raw_count in zero_by_day.items():
+            day_key = canonical_day(
+                raw_day, "independent_zero_enumerations_by_day"
+            )
+            if (
+                isinstance(raw_count, bool)
+                or not isinstance(raw_count, int)
+                or raw_count < 0
+                or raw_count > 2
+            ):
+                errors.append("independent_zero_enumerations_count_invalid")
+                continue
+            if day_key is not None:
+                normalized_zero[day_key] = raw_count
+
+    if source_mode != "strict_service":
+        return sorted(set(errors))
+
+    if enumeration.get("mango_enumeration_complete") is not True:
+        errors.append("strict_enumeration_not_complete")
+    if not isinstance(calls_by_day, Mapping):
+        errors.append("strict_calls_by_moscow_day_missing")
+    if not isinstance(zero_by_day, Mapping):
+        errors.append("strict_zero_enumerations_by_day_missing")
+    if not isinstance(source, Mapping):
+        errors.append("strict_enumeration_source_missing")
+        return sorted(set(errors))
+    if (
+        source.get("cursor") != "not_applicable_stats_request_result"
+        or source.get("pagination") != "not_applicable_stats_request_result"
+        or "pages" not in source
+        or source.get("pages") is not None
+    ):
+        errors.append("strict_enumeration_source_contract_invalid")
+
+    requests = source.get("requests")
+    if isinstance(requests, bool) or not isinstance(requests, int) or requests <= 0:
+        errors.append("strict_enumeration_requests_invalid")
+        requests = None
+    intervals = source.get("covered_intervals")
+    if not isinstance(intervals, Sequence) or isinstance(intervals, (str, bytes)):
+        errors.append("strict_enumeration_intervals_invalid")
+        intervals = ()
+    elif requests is not None and len(intervals) != requests:
+        errors.append("strict_enumeration_request_count_mismatch")
+
+    try:
+        source_since = _parse_strict_aware_datetime(source.get("since"))
+        source_until = _parse_strict_aware_datetime(source.get("until"))
+        if source_since >= source_until:
+            raise ValueError("empty source window")
+    except (TypeError, ValueError):
+        errors.append("strict_enumeration_window_invalid")
+        source_since = source_until = None
+    try:
+        rolling_since = _parse_strict_aware_datetime(source.get("rolling_since"))
+        if (
+            source_since is None
+            or source_until is None
+            or rolling_since < source_since
+            or rolling_since >= source_until
+        ):
+            raise ValueError("rolling window outside source window")
+    except (TypeError, ValueError):
+        errors.append("strict_enumeration_rolling_window_invalid")
+        rolling_since = None
+    if expected_rolling_since is not None:
+        try:
+            exact_rolling_since = _parse_strict_aware_datetime(
+                expected_rolling_since
+            )
+            if rolling_since is None or rolling_since != exact_rolling_since:
+                errors.append("strict_enumeration_rolling_since_mismatch")
+        except (TypeError, ValueError):
+            errors.append("strict_expected_rolling_since_invalid")
+    if expected_until is not None:
+        try:
+            exact_until = _parse_strict_aware_datetime(expected_until)
+            if source_until is None or source_until != exact_until:
+                errors.append("strict_enumeration_until_mismatch")
+        except (TypeError, ValueError):
+            errors.append("strict_expected_until_invalid")
+
+    interval_rows_total = 0
+    authoritative_rows_total = 0
+    interval_days: set[date] = set()
+    parsed_intervals: list[tuple[datetime, datetime]] = []
+    rolling_intervals: list[tuple[datetime, datetime]] = []
+    for interval in intervals:
+        if not isinstance(interval, Mapping):
+            errors.append("strict_enumeration_interval_not_object")
+            continue
+        rows = interval.get("rows")
+        if isinstance(rows, bool) or not isinstance(rows, int) or rows < 0:
+            errors.append("strict_enumeration_interval_rows_invalid")
+        else:
+            interval_rows_total += rows
+        scope = interval.get("scope")
+        if scope not in {"rolling_authority", "recovery_auxiliary"}:
+            errors.append("strict_enumeration_interval_scope_invalid")
+        elif (
+            scope == "rolling_authority"
+            and isinstance(rows, int)
+            and not isinstance(rows, bool)
+        ):
+            authoritative_rows_total += rows
+        if interval.get("result_complete") is not True:
+            errors.append("strict_enumeration_interval_incomplete")
+        try:
+            interval_since = _parse_strict_aware_datetime(interval.get("since"))
+            interval_until = _parse_strict_aware_datetime(interval.get("until"))
+            if interval_since >= interval_until:
+                raise ValueError("empty interval")
+            if source_since is not None and (
+                interval_since < source_since or interval_until > source_until
+            ):
+                errors.append("strict_enumeration_interval_outside_window")
+            parsed_intervals.append((interval_since, interval_until))
+            if scope == "rolling_authority":
+                rolling_intervals.append((interval_since, interval_until))
+            first_day = interval_since.astimezone(MOSCOW).date()
+            last_day = (interval_until - timedelta(microseconds=1)).astimezone(
+                MOSCOW
+            ).date()
+            if (last_day - first_day).days > 370:
+                errors.append("strict_enumeration_interval_too_wide")
+            else:
+                while first_day <= last_day:
+                    interval_days.add(first_day)
+                    first_day += timedelta(days=1)
+        except (TypeError, ValueError):
+            errors.append("strict_enumeration_interval_window_invalid")
+
+    if parsed_intervals and source_since is not None:
+        if min(start for start, _end in parsed_intervals) != source_since:
+            errors.append("strict_enumeration_source_start_mismatch")
+    if rolling_since is not None and source_until is not None:
+        coverage_cursor = rolling_since
+        for interval_since, interval_until in sorted(rolling_intervals):
+            if interval_until <= coverage_cursor:
+                continue
+            if interval_since > coverage_cursor:
+                errors.append("strict_enumeration_rolling_coverage_gap")
+                break
+            coverage_cursor = max(coverage_cursor, interval_until)
+            if coverage_cursor >= source_until:
+                break
+        if coverage_cursor < source_until:
+            errors.append("strict_enumeration_rolling_coverage_incomplete")
+
+    api_requests = enumeration.get("api_requests")
+    api_rows_total = enumeration.get("api_rows_total")
+    api_authoritative_rows_total = enumeration.get(
+        "api_authoritative_rows_total"
+    )
+    api_events_total = enumeration.get("api_events_total")
+    for label, value in (
+        ("api_requests", api_requests),
+        ("api_rows_total", api_rows_total),
+        ("api_authoritative_rows_total", api_authoritative_rows_total),
+        ("api_events_total", api_events_total),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            errors.append(f"strict_{label}_invalid")
+    if isinstance(api_requests, int) and not isinstance(api_requests, bool):
+        if requests is not None and api_requests != requests:
+            errors.append("strict_api_request_count_mismatch")
+    if isinstance(api_rows_total, int) and not isinstance(api_rows_total, bool):
+        if api_rows_total != interval_rows_total:
+            errors.append("strict_api_row_count_mismatch")
+    if isinstance(api_authoritative_rows_total, int) and not isinstance(
+        api_authoritative_rows_total, bool
+    ):
+        if api_authoritative_rows_total != authoritative_rows_total:
+            errors.append("strict_api_authoritative_row_count_mismatch")
+
+    flattened = [value for values in normalized_calls.values() for value in values]
+    unique_calls = sorted(set(flattened))
+    raw_call_keys = enumeration.get("call_keys")
+    if not isinstance(raw_call_keys, Sequence) or isinstance(
+        raw_call_keys, (str, bytes)
+    ):
+        errors.append("strict_call_keys_invalid")
+    else:
+        exact_call_keys = [
+            value
+            for value in raw_call_keys
+            if isinstance(value, str) and value and value == value.strip()
+        ]
+        if len(exact_call_keys) != len(raw_call_keys):
+            errors.append("strict_call_keys_invalid")
+        elif exact_call_keys != sorted(set(exact_call_keys)):
+            errors.append("strict_call_keys_not_canonical")
+        elif exact_call_keys != unique_calls:
+            errors.append("strict_call_keys_mismatch")
+    if isinstance(api_events_total, int) and not isinstance(api_events_total, bool):
+        if api_events_total != len(unique_calls):
+            errors.append("strict_api_event_count_mismatch")
+    if authoritative_rows_total > 0 and not unique_calls:
+        errors.append("strict_api_rows_without_calls")
+
+    evidence_days = set(normalized_calls) | set(normalized_zero)
+    for day_key in evidence_days:
+        day = date.fromisoformat(day_key)
+        if not enumeration_source_covers_day(source, day):
+            errors.append("strict_evidence_day_not_covered")
+    fully_covered_days = {
+        day
+        for day in interval_days
+        if enumeration_source_covers_day(source, day, require_full_day=True)
+    }
+    expected_zero_days = set(normalized_calls) | {
+        day.isoformat() for day in fully_covered_days
+    }
+    if set(normalized_zero) != expected_zero_days:
+        errors.append("strict_zero_enumeration_days_mismatch")
+    for day_key in expected_zero_days:
+        calls = normalized_calls.get(day_key, [])
+        proof_count = normalized_zero.get(day_key)
+        if calls and proof_count != 0:
+            errors.append("strict_nonempty_day_has_zero_proof")
+        elif not calls and day_key in {
+            day.isoformat() for day in fully_covered_days
+        } and proof_count not in {1, 2}:
+            errors.append("strict_full_empty_day_zero_proof_missing")
+
+    return sorted(set(errors))
 
 
 def build_stage10_verdict(
@@ -963,6 +1263,7 @@ def build_stage10_verdict(
     pending_sla_hours: int = 72,
 ) -> Mapping[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    evidence_schema_ok = not validate_capture_enumeration_evidence(enumeration)
     latest_capture = _latest_capture_by_call(capture_entries, day)
     ready, ready_duplicate_count = _ready_rows_by_call(ready_rows, day)
     calls_by_day = enumeration.get("calls_by_moscow_day")
@@ -984,13 +1285,17 @@ def build_stage10_verdict(
         and enumeration_source_covers_day(source, day)
     )
     zero_by_day = enumeration.get("independent_zero_enumerations_by_day")
-    zero_proofs = int(
-        (
-            zero_by_day.get(day.isoformat())
-            if isinstance(zero_by_day, Mapping)
-            else enumeration.get("independent_zero_enumerations")
-        )
-        or 0
+    raw_zero_proofs = (
+        zero_by_day.get(day.isoformat())
+        if isinstance(zero_by_day, Mapping)
+        else enumeration.get("independent_zero_enumerations")
+    )
+    zero_proofs = (
+        raw_zero_proofs
+        if isinstance(raw_zero_proofs, int)
+        and not isinstance(raw_zero_proofs, bool)
+        and raw_zero_proofs >= 0
+        else 0
     )
     if not mango_keys and zero_proofs < 2:
         enumeration_complete = False
@@ -1128,7 +1433,8 @@ def build_stage10_verdict(
     if not isinstance(source, Mapping):
         source = {}
     consistency_ok = bool(
-        enumeration_complete
+        evidence_schema_ok
+        and enumeration_complete
         and not extra_state_keys
         and state_overlap_count == 0
         and not unexplained_keys
@@ -1267,6 +1573,11 @@ def validate_ready_manifest_payload(
             errors.append("mango_window_invalid")
         else:
             source = manifest.get("mango_enumeration_source")
+            if not (
+                isinstance(source, Mapping)
+                and source.get("mode") == "strict_service"
+            ):
+                errors.append("mango_enumeration_source_not_strict")
             intervals = source.get("covered_intervals") if isinstance(source, Mapping) else None
             if not isinstance(intervals, Sequence) or isinstance(intervals, (str, bytes)) or not intervals:
                 errors.append("mango_covered_intervals_missing")
@@ -1375,6 +1686,19 @@ def validate_ready_manifest_payload(
                 date.fromisoformat(str(day_key)),
             ):
                 errors.append("daily_verdict_enumeration_source_invalid")
+            if (
+                not compatibility
+                and not (
+                    isinstance(
+                        raw_verdict.get("mango_enumeration_source"), Mapping
+                    )
+                    and str(
+                        raw_verdict["mango_enumeration_source"].get("mode")
+                    )
+                    == "strict_service"
+                )
+            ):
+                errors.append("daily_verdict_enumeration_source_not_strict")
             if counts["mango_unique"] != (
                 counts["ready_unique"]
                 + counts["quarantine_unique"]
@@ -1400,6 +1724,7 @@ def validate_ready_manifest_payload(
                 or (
                     counts["mango_unique"] == 0
                     and counts["independent_zero_enumerations"] < 2
+                    and raw_verdict.get("mango_enumeration_complete") is not False
                 )
             ):
                 errors.append("daily_verdict_pending_or_zero_proof_mismatch")

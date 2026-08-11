@@ -339,6 +339,10 @@ def _daily_close(
                     "reused": bool(result.get("reused")),
                     "package_status": result.get("package_status"),
                     "closure_ok": package_closed,
+                    "package_source_ready_manifest_sha256": result.get(
+                        "source_ready_manifest_sha256"
+                    ),
+                    "decision_ready_manifest_sha256": manifest_sha256,
                 }
             )
         except Exception as exc:
@@ -361,6 +365,7 @@ def _daily_close(
         "target_status": target["status"],
         "day": day.isoformat(),
         "attempts": attempts,
+        "decision_ready_manifest_sha256": manifest_sha256,
         "external_write": False,
     }
 
@@ -436,6 +441,10 @@ def _daily_status(
             "status": "final" if package_closed else "incomplete",
             "package_status": package.get("package_status"),
             "reused": bool(package.get("reused")),
+            "package_source_ready_manifest_sha256": package.get(
+                "source_ready_manifest_sha256"
+            ),
+            "decision_ready_manifest_sha256": manifest_sha256,
         }
     except Exception as exc:
         result = {

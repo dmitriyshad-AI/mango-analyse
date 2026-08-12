@@ -5,11 +5,14 @@ import json
 import fcntl
 import os
 import re
+import signal
 import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -33,7 +36,9 @@ if TYPE_CHECKING:
 
 
 CONTROLLED_CALL_ALLOWLIST_SCHEMA = "mango_calls_controlled_allowlist_v2"
-CONTROLLED_CALL_RUN_AUTHORITY_SCHEMA = "mango_calls_controlled_run_authority_v2"
+CONTROLLED_CAPTURE_REQUEST_SCHEMA = "mango_calls_controlled_capture_request_v1"
+CONTROLLED_CALL_RUN_AUTHORITY_SCHEMA = "mango_calls_controlled_run_authority_v3"
+CONTROLLED_CALL_LIFELINE_FD_ENV = "MANGO_CALLS_CONTROLLED_LIFELINE_FD"
 CONTROLLED_CALL_ALLOWED_CLI_COMMANDS = frozenset(
     {
         "worker",
@@ -56,6 +61,20 @@ class ControlledCallScope:
     host_id: str
     allowlist_path: Path
     allowlist_sha256: str
+
+
+@dataclass(frozen=True)
+class ControlledCaptureRequest:
+    source_call_id: str
+    expected_count: int
+    since: datetime
+    until: datetime
+    pipeline_root: Path
+    tenant_id: str
+    code_sha: str
+    host_id: str
+    request_path: Path
+    request_sha256: str
 
 
 def _setting_text(settings: "Settings", name: str) -> str:
@@ -83,6 +102,133 @@ def _canonical_source_call_id(value: Any) -> str:
     if not value or len(value) > 256 or any(ord(char) < 32 for char in value):
         raise RuntimeError("controlled_call_source_call_id_invalid")
     return value
+
+
+def _request_boundary(value: Any, *, label: str) -> datetime:
+    if not isinstance(value, str) or value != value.strip():
+        raise RuntimeError(f"controlled_capture_request_{label}_invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError(
+            f"controlled_capture_request_{label}_invalid"
+        ) from exc
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() is None
+        or parsed.microsecond
+    ):
+        raise RuntimeError(f"controlled_capture_request_{label}_invalid")
+    return parsed.astimezone(timezone.utc)
+
+
+def load_controlled_capture_request(
+    *,
+    path: Path,
+    expected_sha256: str,
+    expected_tenant_id: str,
+    expected_code_sha: str,
+    expected_host_id: str,
+    host_id_path: Path,
+    project_root: Path,
+    expected_pipeline_root: Path,
+    now: Optional[datetime] = None,
+) -> ControlledCaptureRequest:
+    """Load one immutable pre-download request for an isolated pilot call."""
+
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise RuntimeError("controlled_capture_request_sha256_invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_code_sha):
+        raise RuntimeError("controlled_capture_request_code_sha_invalid")
+    if read_host_id(host_id_path) != expected_host_id:
+        raise RuntimeError("controlled_capture_request_host_mismatch")
+    raw, resolved = read_stable_regular_bytes_with_path(
+        path,
+        label="controlled_capture_request",
+        owner_only_mode=0o600,
+    )
+    owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+    if path_has_cloud_marker(resolved) or owner_local not in resolved.parents:
+        raise RuntimeError("controlled_capture_request_must_be_owner_local")
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError("controlled_capture_request_sha256_mismatch")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("controlled_capture_request_invalid_json") from exc
+    expected_keys = {
+        "schema_version",
+        "source_call_ids",
+        "expected_count",
+        "since",
+        "until",
+        "pipeline_root",
+        "tenant_id",
+        "code_sha",
+        "host_id",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != expected_keys:
+        raise RuntimeError("controlled_capture_request_schema_fields_mismatch")
+    if payload.get("schema_version") != CONTROLLED_CAPTURE_REQUEST_SCHEMA:
+        raise RuntimeError("controlled_capture_request_schema_mismatch")
+    source_call_ids = payload.get("source_call_ids")
+    if not isinstance(source_call_ids, list) or len(source_call_ids) != 1:
+        raise RuntimeError("controlled_capture_request_requires_one_id")
+    source_call_id = _canonical_source_call_id(source_call_ids[0])
+    if type(payload.get("expected_count")) is not int or payload.get(
+        "expected_count"
+    ) != 1:
+        raise RuntimeError("controlled_capture_request_expected_count_invalid")
+    since = _request_boundary(payload.get("since"), label="since")
+    until = _request_boundary(payload.get("until"), label="until")
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if (
+        since >= until
+        or until - since > timedelta(hours=1)
+        or until > reference_now - timedelta(minutes=1)
+    ):
+        raise RuntimeError("controlled_capture_request_window_not_closed")
+    moscow = ZoneInfo("Europe/Moscow")
+    if since.astimezone(moscow).date() != (
+        until - timedelta(seconds=1)
+    ).astimezone(moscow).date():
+        raise RuntimeError(
+            "controlled_capture_request_crosses_moscow_day"
+        )
+    requested_pipeline = Path(str(payload.get("pipeline_root") or "")).expanduser()
+    expected_pipeline = expected_pipeline_root.expanduser().resolve(strict=False)
+    if (
+        not requested_pipeline.is_absolute()
+        or requested_pipeline.resolve(strict=False) != expected_pipeline
+        or expected_pipeline == owner_local
+        or owner_local not in expected_pipeline.parents
+        or path_has_cloud_marker(expected_pipeline)
+    ):
+        raise RuntimeError("controlled_capture_request_pipeline_mismatch")
+    if payload.get("tenant_id") != expected_tenant_id:
+        raise RuntimeError("controlled_capture_request_tenant_mismatch")
+    if payload.get("code_sha") != expected_code_sha:
+        raise RuntimeError("controlled_capture_request_code_mismatch")
+    if payload.get("host_id") != expected_host_id:
+        raise RuntimeError("controlled_capture_request_host_mismatch")
+    if (
+        current_git_sha(project_root) != expected_code_sha
+        or not git_worktree_is_clean(project_root)
+    ):
+        raise RuntimeError("controlled_capture_request_runtime_code_mismatch")
+    return ControlledCaptureRequest(
+        source_call_id=source_call_id,
+        expected_count=1,
+        since=since,
+        until=until,
+        pipeline_root=expected_pipeline,
+        tenant_id=expected_tenant_id,
+        code_sha=expected_code_sha,
+        host_id=expected_host_id,
+        request_path=resolved,
+        request_sha256=actual_sha256,
+    )
 
 
 def load_controlled_call_allowlist(
@@ -459,7 +605,9 @@ def _validate_controlled_run_authority(
         "target_record_id",
         "source_audio_sha256",
         "source_audio_size_bytes",
-        "cutover_manifest_path",
+        "authority_mode",
+        "authority_evidence_path",
+        "authority_evidence_sha256",
         "cutover_manifest_sha256",
         "pipeline_lock_path",
         "orchestrator_pid",
@@ -492,19 +640,34 @@ def _validate_controlled_run_authority(
         or orchestrator_pid != os.getppid()
     ):
         raise RuntimeError("controlled_call_run_authority_parent_mismatch")
-    cutover_raw, cutover_resolved = read_stable_regular_bytes_with_path(
-        Path(str(payload.get("cutover_manifest_path") or "")),
-        label="controlled_call_cutover_manifest",
+    authority_mode = payload.get("authority_mode")
+    if authority_mode not in {
+        "service_cutover_manifest",
+        "isolated_controlled_request",
+    }:
+        raise RuntimeError("controlled_call_run_authority_mode_invalid")
+    legacy_cutover_sha256 = payload.get("cutover_manifest_sha256")
+    if (
+        authority_mode == "service_cutover_manifest"
+        and legacy_cutover_sha256 != payload.get("authority_evidence_sha256")
+    ) or (
+        authority_mode == "isolated_controlled_request"
+        and legacy_cutover_sha256 != ""
+    ):
+        raise RuntimeError("controlled_call_run_authority_legacy_digest_invalid")
+    authority_raw, authority_resolved = read_stable_regular_bytes_with_path(
+        Path(str(payload.get("authority_evidence_path") or "")),
+        label="controlled_call_authority_evidence",
         owner_only_mode=0o600,
     )
     owner_local = (Path.home() / ".mango_local").resolve(strict=False)
     if (
-        path_has_cloud_marker(cutover_resolved)
-        or owner_local not in cutover_resolved.parents
-        or hashlib.sha256(cutover_raw).hexdigest()
-        != payload.get("cutover_manifest_sha256")
+        path_has_cloud_marker(authority_resolved)
+        or owner_local not in authority_resolved.parents
+        or hashlib.sha256(authority_raw).hexdigest()
+        != payload.get("authority_evidence_sha256")
     ):
-        raise RuntimeError("controlled_call_run_authority_cutover_mismatch")
+        raise RuntimeError("controlled_call_run_authority_evidence_mismatch")
     lock_path = Path(str(payload.get("pipeline_lock_path") or ""))
     if path_has_cloud_marker(lock_path) or owner_local not in lock_path.resolve(
         strict=False
@@ -574,3 +737,46 @@ def enforce_controlled_worker_stages(
         scope=scope,
         stage=stage,
     )
+
+
+@contextmanager
+def controlled_worker_parent_lifeline(
+    settings: "Settings",
+) -> Iterator[None]:
+    """Kill the controlled worker group if its orchestrator disappears."""
+
+    if not controlled_call_scope_configured(settings):
+        yield
+        return
+    raw_fd = os.getenv(CONTROLLED_CALL_LIFELINE_FD_ENV, "")
+    if not re.fullmatch(r"[0-9]{1,6}", raw_fd):
+        raise RuntimeError("controlled_call_lifeline_missing")
+    read_fd = int(raw_fd)
+    try:
+        descriptor = os.fstat(read_fd)
+    except OSError as exc:
+        raise RuntimeError("controlled_call_lifeline_invalid") from exc
+    if not stat.S_ISFIFO(descriptor.st_mode):
+        raise RuntimeError("controlled_call_lifeline_invalid")
+    sentinel_pid = os.fork()
+    if sentinel_pid == 0:
+        try:
+            signal.signal(signal.SIGTERM, lambda *_args: os._exit(0))
+            while os.read(read_fd, 1):
+                pass
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        except BaseException:
+            os._exit(70)
+        os._exit(0)
+    os.close(read_fd)
+    try:
+        yield
+    finally:
+        try:
+            os.kill(sentinel_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            os.waitpid(sentinel_pid, 0)
+        except ChildProcessError:
+            pass

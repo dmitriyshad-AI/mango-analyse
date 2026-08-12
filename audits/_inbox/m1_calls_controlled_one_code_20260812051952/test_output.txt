@@ -1,0 +1,13 @@
+# Тесты
+
+Команда:
+
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_calls_two_processes.py tests/test_controlled_call_scope.py tests/test_mango_calls_schedule.py tests/test_mango_calls_m1_bootstrap.py tests/test_mango_calls_stage10_verdict.py tests/test_mango_calls_publication_coordinator.py tests/test_publish_current_mango_calls_google.py tests/test_export_daily_mango_calls_resolve.py tests/test_mango_calls_external_watchdog.py tests/test_relocate_mango_calls_pipeline.py`
+
+Результат на Python 3.12.13: `681 passed, 209 warnings in 59.18s`, exit code 0.
+
+Дополнительно: `git diff --check`, `py_compile` изменённых Python-файлов и
+`zsh -n scripts/run_mango_calls_process.sh` — exit code 0.
+
+Реальные Mango API, ASR, Resolve, Analyze, публикация, launchd и cutover не
+запускались.

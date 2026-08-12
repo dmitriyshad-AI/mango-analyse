@@ -495,6 +495,21 @@ def apply_tallanto_names(
     *, snapshot_as_of: datetime | None = None,
 ) -> Mapping[str, Any]:
     if not export_path.is_file():
+        if client is None:
+            for row in rows:
+                row["client_fio"] = ""
+                row["tallanto_source"] = "ФИО не подтверждено"
+                row["issues"].append(
+                    "Локальный снимок Tallanto отсутствует; API не вызывался"
+                )
+                row["manager_ready"] = bool(
+                    row.get("complete") and row.get("chronology_confirmed")
+                )
+            return {
+                "fresh": False,
+                "mode": "client_name_unconfirmed_offline",
+                "snapshot_as_of": None,
+            }
         raise RuntimeError(f"выгрузка Tallanto не найдена: {export_path}")
     snapshot = snapshot_as_of or datetime.fromtimestamp(export_path.stat().st_mtime, MOSCOW)
     if snapshot.tzinfo is None:
@@ -535,12 +550,20 @@ def apply_tallanto_names(
             row["issues"].append("Телефон совпал с несколькими карточками Tallanto")
         elif phone in missing and not api_complete:
             row["issues"].append("Не удалось проверить телефон через Tallanto API")
+        elif phone in missing and client is None:
+            row["issues"].append(
+                "Телефон не найден в локальном снимке Tallanto; API не вызывался"
+            )
         else:
             row["issues"].append("Телефон не найден в Tallanto")
         row["manager_ready"] = bool(row.get("complete") and row.get("chronology_confirmed") and not row["issues"])
     return {
         "fresh": True,
-        "mode": "fresh_snapshot_plus_readonly_api",
+        "mode": (
+            "fresh_snapshot_plus_readonly_api"
+            if client is not None
+            else "fresh_snapshot_offline"
+        ),
         "snapshot_as_of": snapshot.isoformat(),
     }
 
@@ -724,14 +747,24 @@ def publication_content_sha256(
     return hashlib.sha256(json.dumps(document, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-def incomplete_prefix(incomplete: bool) -> str:
+def incomplete_prefix(
+    incomplete: bool, *, controlled_preview: bool = False
+) -> str:
+    if controlled_preview:
+        return "КОНТРОЛЬНЫЙ ПРЕДПРОСМОТР, НЕ ИТОГ — "
     return "НЕПОЛНЫЙ, НЕ ИСПОЛЬЗОВАТЬ КАК ИТОГ — " if incomplete else ""
 
 
 def export_manifest_paths(
-    output_root: Path, day: date, *, incomplete: bool
+    output_root: Path,
+    day: date,
+    *,
+    incomplete: bool,
+    controlled_preview: bool = False,
 ) -> list[Path]:
-    prefix = incomplete_prefix(incomplete)
+    prefix = incomplete_prefix(
+        incomplete, controlled_preview=controlled_preview
+    )
     base = output_root / f"{prefix}Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
     supplements: list[tuple[int, Path]] = []
     for path in output_root.glob(
@@ -809,9 +842,16 @@ def verified_export_manifest(
 
 
 def existing_export_manifests(
-    output_root: Path, day: date, *, incomplete: bool
+    output_root: Path, day: date, *, incomplete: bool,
+    expected_package_status: str | None = None,
+    controlled_preview: bool = False,
 ) -> list[Mapping[str, Any]]:
-    paths = export_manifest_paths(output_root, day, incomplete=incomplete)
+    paths = export_manifest_paths(
+        output_root,
+        day,
+        incomplete=incomplete,
+        controlled_preview=controlled_preview,
+    )
     manifests = [
         verified_export_manifest(path, output_root)
         for path in paths
@@ -819,12 +859,14 @@ def existing_export_manifests(
     ]
     if not manifests:
         return []
-    prefix = incomplete_prefix(incomplete)
+    prefix = incomplete_prefix(
+        incomplete, controlled_preview=controlled_preview
+    )
     base_name = f"{prefix}Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
     if Path(str(manifests[0]["_manifest_path"])).name != base_name:
         raise RuntimeError("daily export supplement lineage has no immutable base")
     base_sha = manifests[0]["_manifest_sha256"]
-    expected_status = (
+    expected_status = expected_package_status or (
         "INCOMPLETE_DO_NOT_USE_AS_FINAL" if incomplete else "FINAL_CLOSED"
     )
     for index, manifest in enumerate(manifests):
@@ -886,9 +928,15 @@ def reusable_export(
     *,
     incomplete: bool,
     source_ready_manifest_sha256: str,
+    expected_package_status: str | None = None,
+    controlled_preview: bool = False,
 ) -> Mapping[str, Any] | None:
     for manifest in existing_export_manifests(
-        output_root, day, incomplete=incomplete
+        output_root,
+        day,
+        incomplete=incomplete,
+        expected_package_status=expected_package_status,
+        controlled_preview=controlled_preview,
     ):
         if manifest.get("content_sha256") != content_sha256:
             continue
@@ -908,6 +956,7 @@ def reusable_export(
             "xlsx": str(xlsx),
             "transcript_dir": str(transcript_dir),
             "manifest": str(manifest["_manifest_path"]),
+            "readback_ok": True,
         }
     return None
 
@@ -1020,8 +1069,20 @@ def reconcile_interrupted_export_journals(
         fsync_directory(output_root)
 
 
-def supplement_number(output_root: Path, day: date, *, incomplete: bool) -> int | None:
-    paths = export_manifest_paths(output_root, day, incomplete=incomplete)
+def supplement_number(
+    output_root: Path,
+    day: date,
+    *,
+    incomplete: bool,
+    expected_package_status: str | None = None,
+    controlled_preview: bool = False,
+) -> int | None:
+    paths = export_manifest_paths(
+        output_root,
+        day,
+        incomplete=incomplete,
+        controlled_preview=controlled_preview,
+    )
     base_exists = paths[0].is_file() or os.path.lexists(paths[0])
     supplement_exists = any(
         path.is_file() or os.path.lexists(path) for path in paths[1:]
@@ -1029,7 +1090,11 @@ def supplement_number(output_root: Path, day: date, *, incomplete: bool) -> int 
     if supplement_exists and not base_exists:
         raise RuntimeError("daily export supplement lineage has no immutable base")
     manifests = existing_export_manifests(
-        output_root, day, incomplete=incomplete
+        output_root,
+        day,
+        incomplete=incomplete,
+        expected_package_status=expected_package_status,
+        controlled_preview=controlled_preview,
     )
     if not manifests:
         return None
@@ -1271,17 +1336,26 @@ def _export_day_locked(
     tallanto_env: Path = DEFAULT_TALLANTO_ENV,
     tallanto_snapshot_as_of: datetime | None = None,
     tallanto_client: TallantoApiClient | None = None,
+    tallanto_api_enabled: bool = True,
+    controlled_preview: bool = False,
     current_manager_users: Sequence[Mapping[str, Any]] = (),
     sealed_only: bool = False,
     external_publication_evidence: Path | None = None,
 ) -> Mapping[str, Any]:
-    if day >= datetime.now(MOSCOW).date():
+    if day >= datetime.now(MOSCOW).date() and not controlled_preview:
         raise ValueError("можно выгружать только завершённые сутки по Москве")
     cloud_output = any(
         marker in part.casefold()
         for part in output_root.expanduser().resolve(strict=False).parts
         for marker in ("yandex.disk", "icloud", "mobile documents", "dropbox", "onedrive")
     )
+    if controlled_preview and (
+        tallanto_api_enabled
+        or sealed_only
+        or external_publication_evidence is not None
+        or cloud_output
+    ):
+        raise RuntimeError("controlled preview must be offline, local and non-final")
     publication_evidence: Mapping[str, Any] = {}
     if cloud_output:
         if external_publication_evidence is None:
@@ -1345,7 +1419,18 @@ def _export_day_locked(
                 manager_names,
                 sealed_only=False,
             )
-    client = tallanto_client or build_tallanto_client(tallanto_env)
+    if controlled_preview:
+        rows = [row for row in rows if row.get("complete")]
+        working_only = 0
+        if len(rows) != 1:
+            raise RuntimeError(
+                "controlled preview requires exactly one ready call"
+            )
+    client = (
+        tallanto_client or build_tallanto_client(tallanto_env)
+        if tallanto_api_enabled
+        else None
+    )
     tallanto_freshness = apply_tallanto_names(
         rows, tallanto_export, client, snapshot_as_of=tallanto_snapshot_as_of
     )
@@ -1362,7 +1447,13 @@ def _export_day_locked(
         if manager_users
         else ""
     )
-    package_status = "INCOMPLETE_DO_NOT_USE_AS_FINAL" if incomplete else "FINAL_CLOSED"
+    package_status = (
+        "CONTROLLED_PREVIEW_NOT_FINAL"
+        if controlled_preview
+        else "INCOMPLETE_DO_NOT_USE_AS_FINAL"
+        if incomplete
+        else "FINAL_CLOSED"
+    )
     stage10_balance = dict(source_before.get("stage10_balance") or {})
     content_sha256 = publication_content_sha256(
         rows,
@@ -1393,12 +1484,24 @@ def _export_day_locked(
         source_ready_manifest_sha256=str(
             source_before["ready_manifest_sha256"]
         ),
+        expected_package_status=package_status,
+        controlled_preview=controlled_preview,
     ):
         return reused
     generation = content_sha256[:12]
-    supplement = supplement_number(output_root, day, incomplete=incomplete)
+    supplement = supplement_number(
+        output_root,
+        day,
+        incomplete=incomplete,
+        expected_package_status=package_status,
+        controlled_preview=controlled_preview,
+    )
     current_lineage = existing_export_manifests(
-        output_root, day, incomplete=incomplete
+        output_root,
+        day,
+        incomplete=incomplete,
+        expected_package_status=package_status,
+        controlled_preview=controlled_preview,
     )
     supplement_base = current_lineage[0] if supplement is not None else None
     incomplete_lineage = (
@@ -1408,7 +1511,9 @@ def _export_day_locked(
     )
     superseded_incomplete = incomplete_lineage[-1] if incomplete_lineage else None
     supplement_suffix = f" supplement-{supplement}" if supplement is not None else ""
-    prefix = incomplete_prefix(incomplete)
+    prefix = incomplete_prefix(
+        incomplete, controlled_preview=controlled_preview
+    )
     transcript_dir = output_root / (
         f"{prefix}Расшифровки разговоров {day.isoformat()}{supplement_suffix} v5-{generation}"
     )
@@ -1473,7 +1578,9 @@ def _export_day_locked(
         "tallanto_names_found": sum(bool(row["client_fio"]) for row in rows),
         "tallanto_match_sources": dict(Counter(row["tallanto_source"] or "не найдено" for row in rows)),
         "current_mango_users": len(current_manager_users),
-        "source_ready_db_sha256": source_before["sha256"], "tallanto_export_sha256": sha256_file(tallanto_export),
+        "source_ready_db_sha256": source_before["sha256"], "tallanto_export_sha256": (
+            sha256_file(tallanto_export) if tallanto_export.is_file() else None
+        ),
         "tallanto_snapshot_as_of": tallanto_snapshot_as_of.isoformat() if tallanto_snapshot_as_of else None,
         "tallanto_freshness": tallanto_freshness,
         "closure_ok": not incomplete,
@@ -1523,7 +1630,14 @@ def _export_day_locked(
     write_private_json(manifest_path, manifest)
     journal_path.unlink(missing_ok=True)
     fsync_directory(output_root)
-    return {**manifest, "xlsx": str(xlsx), "transcript_dir": str(transcript_dir), "manifest": str(manifest_path)}
+    verified = verified_export_manifest(manifest_path, output_root)
+    return {
+        **public_manifest_payload(verified),
+        "xlsx": str(xlsx),
+        "transcript_dir": str(transcript_dir),
+        "manifest": str(manifest_path),
+        "readback_ok": True,
+    }
 
 
 def export_day(
@@ -1537,13 +1651,17 @@ def export_day(
     tallanto_env: Path = DEFAULT_TALLANTO_ENV,
     tallanto_snapshot_as_of: datetime | None = None,
     tallanto_client: TallantoApiClient | None = None,
+    tallanto_api_enabled: bool = True,
     current_manager_users: Sequence[Mapping[str, Any]] = (),
     sealed_only: bool = False,
     external_publication_evidence: Path | None = None,
     expected_ready_manifest_sha256: str | None = None,
+    controlled_preview: bool = False,
 ) -> Mapping[str, Any]:
-    if day >= datetime.now(MOSCOW).date():
+    if day >= datetime.now(MOSCOW).date() and not controlled_preview:
         raise ValueError("можно выгружать только завершённые сутки по Москве")
+    if controlled_preview and (sealed_only or external_publication_evidence):
+        raise ValueError("controlled preview must stay local and non-final")
     with daily_export_lock(ready_db, output_root, day):
         with ready_publication_lock(ready_db):
             recover_ready_generation(ready_db, lock_held=True)
@@ -1563,6 +1681,8 @@ def export_day(
                 tallanto_env=tallanto_env,
                 tallanto_snapshot_as_of=tallanto_snapshot_as_of,
                 tallanto_client=tallanto_client,
+                tallanto_api_enabled=tallanto_api_enabled,
+                controlled_preview=controlled_preview,
                 current_manager_users=current_manager_users,
                 sealed_only=sealed_only,
                 external_publication_evidence=external_publication_evidence,

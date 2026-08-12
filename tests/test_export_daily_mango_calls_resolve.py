@@ -311,6 +311,55 @@ def test_moscow_calendar_day_has_exact_utc_bounds() -> None:
     assert exporter.day_bounds_utc(date(2026, 7, 28)) == ("2026-07-27 21:00:00", "2026-07-28 21:00:00")
 
 
+def test_controlled_preview_allows_today_without_tallanto_or_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready, working, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready, ready_count=1)
+    tallanto.unlink()
+    real_datetime = exporter.datetime
+
+    class FixedDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = real_datetime(2026, 7, 28, 12, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(exporter, "datetime", FixedDateTime)
+
+    result = exporter.export_day(
+        ready,
+        working,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_api_enabled=False,
+        controlled_preview=True,
+    )
+    replay = exporter.export_day(
+        ready,
+        working,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_api_enabled=False,
+        controlled_preview=True,
+    )
+
+    assert result["package_status"] == "CONTROLLED_PREVIEW_NOT_FINAL"
+    assert result["rows"] == 1
+    assert result["tallanto_names_found"] == 0
+    assert result["tallanto_freshness"]["mode"] == (
+        "client_name_unconfirmed_offline"
+    )
+    assert Path(result["xlsx"]).is_file()
+    assert len(result["transcripts"]) == 1
+    assert replay["reused"] is True
+
+
 def test_daily_export_lock_is_derived_from_exact_ready_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

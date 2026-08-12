@@ -19,7 +19,7 @@ import time
 import uuid
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
@@ -100,7 +100,9 @@ from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, Te
 from mango_mvp.services.transcribe import TranscribeService
 from mango_mvp.services.controlled_call_scope import (
     CONTROLLED_CALL_RUN_AUTHORITY_SCHEMA,
+    ControlledCaptureRequest,
     ControlledCallScope,
+    load_controlled_capture_request,
     load_controlled_call_allowlist,
 )
 
@@ -201,6 +203,10 @@ class CallsTwoProcessesConfig:
     codex_reasoning_effort: str = "medium"
     codex_service_tier: str = "flex"
     processing_scope: str = "service"
+    runtime_authority_mode: str = "service_cutover"
+    controlled_capture_request_path: Optional[Path] = None
+    controlled_capture_request_sha256: Optional[str] = None
+    production_cursor_guard_path: Optional[Path] = None
     controlled_call_allowlist_path: Optional[Path] = None
     controlled_call_allowlist_sha256: Optional[str] = None
     mlx_whisper_snapshot_path: Optional[Path] = None
@@ -268,6 +274,22 @@ class CallsTwoProcessesConfig:
             processing_scope=str(
                 payload.get("processing_scope") or "service"
             ).strip().lower(),
+            runtime_authority_mode=str(
+                payload.get("runtime_authority_mode") or "service_cutover"
+            ).strip().lower(),
+            controlled_capture_request_path=(
+                Path(str(payload["controlled_capture_request_path"])).expanduser()
+                if payload.get("controlled_capture_request_path")
+                else None
+            ),
+            controlled_capture_request_sha256=optional_text(
+                payload.get("controlled_capture_request_sha256")
+            ),
+            production_cursor_guard_path=(
+                Path(str(payload["production_cursor_guard_path"])).expanduser()
+                if payload.get("production_cursor_guard_path")
+                else None
+            ),
             controlled_call_allowlist_path=(
                 Path(str(payload["controlled_call_allowlist_path"])).expanduser()
                 if payload.get("controlled_call_allowlist_path")
@@ -347,19 +369,79 @@ class CallsTwoProcessesConfig:
             raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
         if self.codex_service_tier != "flex":
             raise ValueError("codex_service_tier must be flex in strict M1 Calls runtime")
-        if self.processing_scope not in {"service", "controlled_1"}:
-            raise ValueError("processing_scope must be service or controlled_1")
+        if self.processing_scope not in {
+            "service",
+            "controlled_1_prepare",
+            "controlled_1",
+        }:
+            raise ValueError("processing_scope is invalid")
+        if self.runtime_authority_mode not in {
+            "service_cutover",
+            "isolated_controlled",
+        }:
+            raise ValueError("runtime_authority_mode is invalid")
         controlled_fields_present = bool(
             self.controlled_call_allowlist_path
             or self.controlled_call_allowlist_sha256
         )
-        if self.processing_scope == "service" and controlled_fields_present:
-            raise ValueError("service scope must not configure a controlled call allowlist")
-        if self.processing_scope == "controlled_1":
-            if not self.strict_ready_provenance or not self.require_cutover_authority:
-                raise ValueError("controlled_1 requires strict cutover authority")
+        request_fields_present = bool(
+            self.controlled_capture_request_path
+            or self.controlled_capture_request_sha256
+        )
+        if self.processing_scope == "service" and (
+            controlled_fields_present or request_fields_present
+        ):
+            raise ValueError("service scope must not configure controlled artifacts")
+        if self.processing_scope in {"controlled_1_prepare", "controlled_1"}:
+            if not self.strict_ready_provenance:
+                raise ValueError("controlled runtime requires strict provenance")
             if self.stage_limit != 1:
-                raise ValueError("controlled_1 requires stage_limit=1")
+                raise ValueError("controlled runtime requires stage_limit=1")
+            owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+            resolved_pipeline = self.pipeline_root.resolve(strict=False)
+            if owner_local not in resolved_pipeline.parents:
+                raise ValueError(
+                    "controlled pipeline_root must stay under $HOME/.mango_local"
+                )
+            if (
+                self.runtime_authority_mode == "isolated_controlled"
+                and not resolved_pipeline.name.startswith("controlled-")
+            ):
+                raise ValueError(
+                    "isolated pipeline_root name must start with controlled-"
+                )
+            request_required = bool(
+                self.processing_scope == "controlled_1_prepare"
+                or self.runtime_authority_mode == "isolated_controlled"
+            )
+            if request_required:
+                if (
+                    self.controlled_capture_request_path is None
+                    or not self.controlled_capture_request_path.is_absolute()
+                    or not re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        self.controlled_capture_request_sha256 or "",
+                    )
+                ):
+                    raise ValueError("controlled capture request is required")
+                resolved_request = self.controlled_capture_request_path.resolve(
+                    strict=False
+                )
+                if (
+                    path_has_cloud_marker(resolved_request)
+                    or owner_local not in resolved_request.parents
+                ):
+                    raise ValueError("controlled request must stay under $HOME/.mango_local")
+            elif request_fields_present:
+                raise ValueError("service cutover controlled scope forbids capture request")
+        if self.processing_scope == "controlled_1_prepare" and controlled_fields_present:
+            raise ValueError("controlled preparation must not contain a post-capture allowlist")
+        if (
+            self.processing_scope == "controlled_1_prepare"
+            and self.runtime_authority_mode != "isolated_controlled"
+        ):
+            raise ValueError("controlled preparation requires isolated authority")
+        if self.processing_scope == "controlled_1":
             if self.controlled_call_allowlist_path is None:
                 raise ValueError("controlled_1 allowlist path is required")
             if not re.fullmatch(
@@ -370,11 +452,6 @@ class CallsTwoProcessesConfig:
             if not allowlist.is_absolute():
                 raise ValueError("controlled_1 allowlist path must be absolute")
             owner_local = (Path.home() / ".mango_local").resolve(strict=False)
-            resolved_pipeline = self.pipeline_root.resolve(strict=False)
-            if owner_local not in resolved_pipeline.parents:
-                raise ValueError(
-                    "controlled_1 pipeline_root must stay under $HOME/.mango_local"
-                )
             resolved_allowlist = allowlist.resolve(strict=False)
             if (
                 path_has_cloud_marker(resolved_allowlist)
@@ -387,16 +464,74 @@ class CallsTwoProcessesConfig:
             raise ValueError("heavy_stage_timeout_seconds must be at least 60")
         if self.max_catch_up_days < 1:
             raise ValueError("max_catch_up_days must be positive")
-        if self.require_cutover_authority != self.strict_ready_provenance:
+        if (
+            self.runtime_authority_mode == "service_cutover"
+            and self.require_cutover_authority != self.strict_ready_provenance
+        ):
             raise ValueError(
                 "cutover authority and strict ready provenance must be enabled together"
             )
+        if self.runtime_authority_mode == "isolated_controlled" and (
+            self.require_cutover_authority or not self.strict_ready_provenance
+        ):
+            raise ValueError("isolated controlled authority flags are invalid")
+        if (
+            self.runtime_authority_mode == "isolated_controlled"
+            and self.processing_scope not in {"controlled_1_prepare", "controlled_1"}
+        ):
+            raise ValueError("isolated authority is only for controlled runtime")
+        if self.runtime_authority_mode == "isolated_controlled":
+            isolated_root = self.pipeline_root.resolve(strict=False)
+            if self.production_cursor_guard_path is None:
+                raise ValueError(
+                    "isolated controlled production_cursor_guard_path is required"
+                )
+            production_cursor = self.production_cursor_guard_path.resolve(
+                strict=False
+            )
+            if (
+                not self.production_cursor_guard_path.is_absolute()
+                or path_has_cloud_marker(production_cursor)
+                or owner_local not in production_cursor.parents
+                or production_cursor == self.cursor_path.resolve(strict=False)
+                or isolated_root in production_cursor.parents
+            ):
+                raise ValueError(
+                    "isolated production cursor guard must be owner-local and outside pipeline_root"
+                )
+            if self.publication_root is None:
+                raise ValueError(
+                    "isolated controlled publication_root is required"
+                )
+            for label, candidate in (
+                ("timeline_allowed_root", self.timeline_allowed_root),
+                ("timeline_db", self.timeline_db),
+            ):
+                resolved = candidate.resolve(strict=False)
+                if isolated_root not in resolved.parents:
+                    raise ValueError(
+                        f"isolated controlled {label} must stay below pipeline_root"
+                    )
+            resolved_publication = self.publication_root.resolve(strict=False)
+            if isolated_root not in resolved_publication.parents:
+                raise ValueError(
+                    "isolated controlled publication_root must stay below pipeline_root"
+                )
         if self.legacy_cursor_migration_mode and not self.strict_ready_provenance:
             raise ValueError(
                 "legacy cursor migration is available only in strict service mode"
             )
         if self.require_cutover_authority and not self.expected_code_sha:
             raise ValueError("expected_code_sha is required for cutover authority")
+        if self.runtime_authority_mode == "isolated_controlled" and not re.fullmatch(
+            r"[0-9a-f]{40}", self.expected_code_sha or ""
+        ):
+            raise ValueError("expected_code_sha is required for isolated authority")
+        if self.runtime_authority_mode == "isolated_controlled" and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}",
+            self.expected_active_host_id or "",
+        ):
+            raise ValueError("expected_active_host_id is required for isolated authority")
         if self.require_cutover_authority and not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}",
             self.expected_active_host_id or "",
@@ -485,6 +620,10 @@ class CallsTwoProcessesConfig:
     @property
     def capture_lock(self) -> Path:
         return self.pipeline_root / "locks" / "capture.lock"
+
+    @property
+    def controlled_full_lock(self) -> Path:
+        return self.pipeline_root / "locks" / "controlled_full.lock"
 
     @property
     def process_b_lock(self) -> Path:
@@ -582,6 +721,30 @@ def controlled_call_scope_for_config(
     )
 
 
+def controlled_capture_request_for_config(
+    config: CallsTwoProcessesConfig,
+) -> ControlledCaptureRequest | None:
+    if config.runtime_authority_mode != "isolated_controlled":
+        return None
+    if (
+        config.controlled_capture_request_path is None
+        or config.controlled_capture_request_sha256 is None
+        or config.expected_code_sha is None
+        or config.expected_active_host_id is None
+    ):
+        raise RuntimeError("controlled_capture_request_configuration_incomplete")
+    return load_controlled_capture_request(
+        path=config.controlled_capture_request_path,
+        expected_sha256=config.controlled_capture_request_sha256,
+        expected_tenant_id=config.tenant_id,
+        expected_code_sha=config.expected_code_sha,
+        expected_host_id=config.expected_active_host_id,
+        host_id_path=config.host_id_file,
+        project_root=Path(__file__).resolve().parents[3],
+        expected_pipeline_root=config.pipeline_root,
+    )
+
+
 @contextmanager
 def controlled_worker_authority_environment(
     config: CallsTwoProcessesConfig,
@@ -600,11 +763,34 @@ def controlled_worker_authority_environment(
     authority = controlled_read_only_cutover_authority_report(config)
     if authority.get("ok") is not True:
         raise RuntimeError("controlled_worker_cutover_authority_failed")
-    verified_cutover_sha256 = str(
+    legacy_cutover_sha256 = str(
         authority.get("verified_cutover_manifest_sha256") or ""
     )
-    if not re.fullmatch(r"[0-9a-f]{64}", verified_cutover_sha256):
-        raise RuntimeError("controlled_worker_cutover_digest_missing")
+    verified_authority_mode = str(
+        authority.get("verified_authority_mode") or ""
+    )
+    verified_authority_path = str(
+        authority.get("verified_authority_path") or ""
+    )
+    if (
+        not verified_authority_mode
+        and not verified_authority_path
+        and re.fullmatch(r"[0-9a-f]{64}", legacy_cutover_sha256)
+    ):
+        verified_authority_mode = "service_cutover_manifest"
+        verified_authority_path = str(config.cutover_manifest_file)
+    verified_authority_sha256 = str(
+        authority.get("verified_authority_sha256")
+        or authority.get("verified_cutover_manifest_sha256")
+        or ""
+    )
+    if (
+        verified_authority_mode
+        not in {"service_cutover_manifest", "isolated_controlled_request"}
+        or not verified_authority_path
+        or not re.fullmatch(r"[0-9a-f]{64}", verified_authority_sha256)
+    ):
+        raise RuntimeError("controlled_worker_authority_evidence_missing")
     controlled_call_bound_snapshot(config, scope)
     lock_metadata = read_json(config.pipeline_lock)
     if positive_int(lock_metadata.get("pid")) != os.getpid():
@@ -634,8 +820,14 @@ def controlled_worker_authority_environment(
         "target_record_id": scope.target_record_id,
         "source_audio_sha256": scope.source_audio_sha256,
         "source_audio_size_bytes": scope.source_audio_size_bytes,
-        "cutover_manifest_path": str(config.cutover_manifest_file),
-        "cutover_manifest_sha256": verified_cutover_sha256,
+        "authority_mode": verified_authority_mode,
+        "authority_evidence_path": verified_authority_path,
+        "authority_evidence_sha256": verified_authority_sha256,
+        "cutover_manifest_sha256": (
+            verified_authority_sha256
+            if verified_authority_mode == "service_cutover_manifest"
+            else ""
+        ),
         "pipeline_lock_path": str(config.pipeline_lock),
         "orchestrator_pid": os.getpid(),
     }
@@ -669,8 +861,10 @@ def reject_controlled_call_broad_operation(
     config: CallsTwoProcessesConfig,
     operation: str,
 ) -> None:
-    if config.processing_scope == "controlled_1":
-        raise RuntimeError(f"controlled_1_forbids_broad_operation:{operation}")
+    if config.processing_scope in {"controlled_1_prepare", "controlled_1"}:
+        raise RuntimeError(
+            f"{config.processing_scope}_forbids_broad_operation:{operation}"
+        )
 
 
 def cutover_authority_report(
@@ -761,10 +955,69 @@ def cutover_authority_report(
     return report
 
 
+def isolated_controlled_authority_report(
+    config: CallsTwoProcessesConfig,
+) -> Mapping[str, Any]:
+    """Bind workers to one local request/cursor without claiming cutover."""
+
+    try:
+        request = controlled_capture_request_for_config(config)
+        if request is None:
+            raise RuntimeError("isolated controlled request is missing")
+        cursor = read_json(config.cursor_path)
+        verified_capture_window(config, cursor)
+        selection = cursor.get("controlled_capture")
+        if not isinstance(selection, Mapping):
+            raise RuntimeError("controlled capture selection is missing")
+        expected = {
+            "request_sha256": request.request_sha256,
+            "allowed_call_key": request.source_call_id,
+            "expected_count": 1,
+            "matched_count": 1,
+            "attempted_other": 0,
+            "since": request.since.isoformat(),
+            "until": request.until.isoformat(),
+        }
+        if any(selection.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("controlled capture selection does not match request")
+        if cursor.get("host_id") != request.host_id:
+            raise RuntimeError("controlled capture host does not match request")
+        evidence = read_stable_regular_bytes(
+            request.request_path,
+            label="controlled_capture_request",
+            owner_only_mode=0o600,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return {
+            "ok": False,
+            "errors": ["isolated_controlled_authority_unproven"],
+            "source_cursor_lineage_ok": False,
+            "controlled_cursor_binding_ok": False,
+            "lineage_mode": "isolated_controlled",
+            "shared_service_lineage_written": False,
+        }
+    digest = hashlib.sha256(evidence).hexdigest()
+    ok = digest == request.request_sha256
+    return {
+        "ok": ok,
+        "errors": [] if ok else ["controlled_capture_request_changed"],
+        "active_host_id": request.host_id,
+        "source_cursor_lineage_ok": False,
+        "controlled_cursor_binding_ok": ok,
+        "verified_authority_mode": "isolated_controlled_request",
+        "verified_authority_path": str(request.request_path),
+        "verified_authority_sha256": digest if ok else "",
+        "lineage_mode": "isolated_controlled",
+        "shared_service_lineage_written": False,
+    }
+
+
 def controlled_read_only_cutover_authority_report(
     config: CallsTwoProcessesConfig,
 ) -> Mapping[str, Any]:
     """Prove transferred cursor lineage without enabling service cutover."""
+    if config.runtime_authority_mode == "isolated_controlled":
+        return isolated_controlled_authority_report(config)
     if not config.require_cutover_authority or config.expected_code_sha is None:
         return {
             "ok": False,
@@ -840,6 +1093,11 @@ def controlled_read_only_cutover_authority_report(
         "source_cursor_lineage_ok": lineage_ok,
         "controlled_cursor_binding_ok": lineage_ok,
         "verified_cutover_manifest_sha256": (
+            hashlib.sha256(cutover_before).hexdigest() if lineage_ok else ""
+        ),
+        "verified_authority_mode": "service_cutover_manifest",
+        "verified_authority_path": str(config.cutover_manifest_file),
+        "verified_authority_sha256": (
             hashlib.sha256(cutover_before).hexdigest() if lineage_ok else ""
         ),
         "lineage_mode": "controlled_read_only",
@@ -1266,6 +1524,8 @@ def controlled_call_database_snapshot(
             "target_row_sha256": hashlib.sha256(target_serialized).hexdigest(),
             "target": {
                 "record_id": positive_int(target.get("id")),
+                "channels": positive_int(target.get("channels")),
+                "started_at": target.get("started_at"),
                 "transcription_status": target.get("transcription_status"),
                 "resolve_status": target.get("resolve_status"),
                 "analysis_status": target.get("analysis_status"),
@@ -1323,6 +1583,68 @@ def controlled_call_bound_snapshot(
     ):
         raise RuntimeError("controlled_one_allowlist_target_binding_mismatch")
     return snapshot
+
+
+def create_isolated_controlled_allowlist(
+    config: CallsTwoProcessesConfig,
+    request: ControlledCaptureRequest,
+) -> ControlledCallScope:
+    """Promote a pre-download request after exactly one row was ingested."""
+
+    if config.runtime_authority_mode != "isolated_controlled":
+        raise RuntimeError("isolated controlled authority is required")
+    snapshot = controlled_call_database_snapshot(
+        config.working_db,
+        request.source_call_id,
+        working_audio_dir=config.working_audio_dir,
+        require_source_audio=True,
+    )
+    target = snapshot.get("target")
+    audio = target.get("source_audio") if isinstance(target, Mapping) else None
+    if not isinstance(target, Mapping) or not isinstance(audio, Mapping):
+        raise RuntimeError("controlled target/audio snapshot is incomplete")
+    if positive_int(target.get("channels")) != 2:
+        raise RuntimeError("controlled target audio must have exactly two channels")
+    payload = {
+        "schema_version": "mango_calls_controlled_allowlist_v2",
+        "source_call_ids": [request.source_call_id],
+        "target_record_id": target.get("record_id"),
+        "source_audio_sha256": audio.get("sha256"),
+        "source_audio_size_bytes": audio.get("size_bytes"),
+        "tenant_id": request.tenant_id,
+        "code_sha": request.code_sha,
+        "host_id": request.host_id,
+    }
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    parent = config.pipeline_root / "state" / "controlled"
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent.chmod(0o700)
+    validate_owner_only_directory(
+        parent,
+        label="isolated_controlled_allowlist_parent",
+        owner_only_mode=0o700,
+    )
+    path = parent / "allowlist.json"
+    atomic_replace_owner_only_bytes(
+        path,
+        raw,
+        label="isolated_controlled_allowlist",
+    )
+    digest = hashlib.sha256(raw).hexdigest()
+    return load_controlled_call_allowlist(
+        path=path,
+        expected_sha256=digest,
+        expected_tenant_id=request.tenant_id,
+        expected_code_sha=request.code_sha,
+        expected_host_id=request.host_id,
+        host_id_path=config.host_id_file,
+        project_root=Path(__file__).resolve().parents[3],
+    )
 
 
 @contextmanager
@@ -1491,11 +1813,49 @@ def _write_controlled_one_report(
     return {**dict(report), "report_path": str(path)}
 
 
+def assert_no_live_controlled_heavy_worker(
+    config: CallsTwoProcessesConfig,
+) -> None:
+    """Keep a parent crash from allowing a second heavy controlled run."""
+
+    path = config.process_a_heartbeat_path
+    if not os.path.lexists(path):
+        return
+    raw = read_stable_regular_bytes(
+        path,
+        label="controlled_heavy_heartbeat",
+        owner_only_mode=0o600,
+    )
+    heartbeat = parse_json_object(raw.decode("utf-8"))
+    pid = positive_int(heartbeat.get("pid"))
+    stage = str(heartbeat.get("stage") or "")
+    if stage in SEQUENTIAL_PIPELINE_STAGES and pid_exists(pid):
+        raise RuntimeError("controlled_orphan_heavy_worker_live")
+
+
 def run_controlled_one(
     config: CallsTwoProcessesConfig,
     *,
     command_runner: CommandRunner = None,
+    capture_runner: Optional[Callable[..., Mapping[str, Any]]] = None,
+    process_b_runner: Optional[
+        Callable[[CallsTwoProcessesConfig], Mapping[str, Any]]
+    ] = None,
+    preview_runner: Optional[
+        Callable[[Path, date], Mapping[str, Any]]
+    ] = None,
+    runtime_config_path: Optional[Path] = None,
+    _pipeline_lock_info: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
+    if config.processing_scope == "controlled_1_prepare":
+        return run_controlled_one_from_request(
+            config,
+            command_runner=command_runner,
+            capture_runner=capture_runner,
+            process_b_runner=process_b_runner,
+            preview_runner=preview_runner,
+            runtime_config_path=runtime_config_path,
+        )
     started = datetime.now(timezone.utc)
     run_id = new_calls_run_id(started)
     runner = command_runner or run_command
@@ -1505,9 +1865,10 @@ def run_controlled_one(
         config_valid = True
         if config.processing_scope != "controlled_1":
             raise RuntimeError("controlled_one_requires_controlled_1_scope")
-        with process_lease(
-            config.pipeline_lock,
-            stale_seconds=config.stale_lock_seconds,
+        assert_no_live_controlled_heavy_worker(config)
+        with controlled_pipeline_lease(
+            config,
+            inherited_lock_info=_pipeline_lock_info,
         ) as lock_info:
             scope_before = controlled_call_scope_for_config(config)
             assert scope_before is not None
@@ -1794,6 +2155,674 @@ def run_controlled_one(
         return _write_controlled_one_report(config, run_id, report)
     except Exception:
         return report
+
+
+def run_controlled_process_b(
+    config: CallsTwoProcessesConfig,
+) -> Mapping[str, Any]:
+    """Import one sealed controlled drop only into its isolated Timeline DB."""
+
+    config.validate()
+    if (
+        config.processing_scope != "controlled_1"
+        or config.runtime_authority_mode != "isolated_controlled"
+    ):
+        raise RuntimeError("controlled process B requires isolated controlled scope")
+    authority = isolated_controlled_authority_report(config)
+    if authority.get("ok") is not True:
+        raise RuntimeError("isolated controlled authority is not proven")
+    try:
+        with process_lease(
+            config.process_b_lock,
+            stale_seconds=config.stale_lock_seconds,
+        ):
+            with ready_publication_lock(config.ready_db):
+                recover_ready_generation(config.ready_db, lock_held=True)
+                return _run_process_b(config)
+    except LockBusy as exc:
+        return finalize_report(
+            config,
+            new_calls_run_id(datetime.now(timezone.utc)),
+            "controlled_process_b",
+            "locked",
+            "process_b_locked",
+            {"lock": exc.metadata},
+        )
+
+
+def controlled_timeline_effect_snapshot(
+    config: CallsTwoProcessesConfig,
+    source_call_id: str,
+) -> Mapping[str, Any]:
+    """Content-free durable receipt for one isolated Timeline target."""
+
+    if not config.timeline_db.is_file() or config.timeline_db.is_symlink():
+        return {
+            "state": "absent",
+            "total_rows": 0,
+            "target_rows": 0,
+            "mango_rows": 0,
+        }
+    timeline_source_id = f"provider:{source_call_id}"
+    with closing(
+        sqlite3.connect(
+            f"file:{config.timeline_db}?mode=ro",
+            uri=True,
+            timeout=30,
+        )
+    ) as con:
+        logical_digest = hashlib.sha256()
+        for statement in con.iterdump():
+            logical_digest.update(statement.encode("utf-8"))
+            logical_digest.update(b"\n")
+        total_rows = int(
+            con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0]
+        )
+        mango_rows = int(
+            con.execute(
+                "SELECT COUNT(*) FROM timeline_events "
+                "WHERE source_system='mango_processed_summary' "
+                "AND tenant_id=? AND event_type='mango_call'",
+                (config.tenant_id,),
+            ).fetchone()[0]
+        )
+        target_rows = int(
+            con.execute(
+                "SELECT COUNT(*) FROM timeline_events "
+                "WHERE source_system='mango_processed_summary' "
+                "AND tenant_id=? AND event_type='mango_call' AND source_id=?",
+                (config.tenant_id, timeline_source_id),
+            ).fetchone()[0]
+        )
+        quick_check = str(con.execute("PRAGMA quick_check").fetchone()[0])
+    return {
+        "state": "present",
+        "total_rows": total_rows,
+        "target_rows": target_rows,
+        "mango_rows": mango_rows,
+        "quick_check": quick_check,
+        "logical_sha256": logical_digest.hexdigest(),
+    }
+
+
+def controlled_timeline_readback(
+    config: CallsTwoProcessesConfig,
+    source_call_id: str,
+) -> Mapping[str, Any]:
+    snapshot = controlled_timeline_effect_snapshot(config, source_call_id)
+    if snapshot.get("state") != "present":
+        return {"ok": False, **snapshot}
+    timeline_source_id = f"provider:{source_call_id}"
+    total_rows = positive_int(snapshot.get("total_rows"))
+    mango_rows = positive_int(snapshot.get("mango_rows"))
+    target_rows = positive_int(snapshot.get("target_rows"))
+    quick_check = str(snapshot.get("quick_check") or "")
+    return {
+        "ok": (
+            total_rows == 1
+            and mango_rows == 1
+            and target_rows == 1
+            and quick_check == "ok"
+        ),
+        "total_rows": total_rows,
+        "mango_rows": mango_rows,
+        "target_rows": target_rows,
+        "source_call_id_sha256": hashlib.sha256(
+            source_call_id.encode("utf-8")
+        ).hexdigest(),
+        "timeline_source_id_sha256": hashlib.sha256(
+            timeline_source_id.encode("utf-8")
+        ).hexdigest(),
+        "quick_check": quick_check,
+    }
+
+
+def run_controlled_local_previews(
+    runtime_config_path: Path,
+    day: date,
+    expected_source_call_id: str | None = None,
+) -> Mapping[str, Any]:
+    """Build existing Google/Yandex local artifacts without external writes."""
+
+    project_root = Path(__file__).resolve().parents[3]
+    if str(project_root) not in sys.path:
+        # The guarded worker executes ROOT/scripts/run_mango_calls_pipeline.py;
+        # Python then exposes scripts/ but not its parent as an import root.
+        # Add the verified repository root before importing the existing
+        # coordinator namespace package.
+        sys.path.insert(0, str(project_root))
+    from scripts.run_mango_calls_publication_coordinator import run as run_preview
+
+    google = run_preview(
+        runtime_config_path,
+        "current-plan",
+        day=day,
+        offline_only=True,
+        controlled_preview=True,
+    )
+    yandex = run_preview(
+        runtime_config_path,
+        "daily-status",
+        day=day,
+        offline_only=True,
+        controlled_preview=True,
+    )
+    google_plan = Path(str(google.get("plan") or ""))
+    yandex_xlsx = Path(str(yandex.get("xlsx") or ""))
+    yandex_manifest = Path(str(yandex.get("manifest") or ""))
+    transcripts = yandex.get("transcripts")
+    try:
+        google_payload = json.loads(google_plan.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        google_payload = {}
+    safe_rows = (
+        google_payload.get("rows")
+        if isinstance(google_payload, Mapping)
+        else None
+    )
+    google_call_key_ok = bool(
+        isinstance(safe_rows, list)
+        and len(safe_rows) == 1
+        and (
+            expected_source_call_id is None
+            or safe_rows[0].get("call_key") == expected_source_call_id
+        )
+    )
+    artifacts_ok = bool(
+        google.get("rows") == 1
+        and google_call_key_ok
+        and google_plan.is_file()
+        and not google_plan.is_symlink()
+        and yandex.get("rows") == 1
+        and yandex_xlsx.is_file()
+        and not yandex_xlsx.is_symlink()
+        and yandex_manifest.is_file()
+        and not yandex_manifest.is_symlink()
+        and isinstance(transcripts, list)
+        and len(transcripts) == 1
+        and yandex.get("readback_ok") is True
+    )
+    return {
+        "google": google,
+        "yandex": yandex,
+        "external_write": False,
+        "tallanto_api_called": False,
+        "artifacts_readback_ok": artifacts_ok,
+        "ok": artifacts_ok and all(
+            item.get("status") not in {"failed", "alert"}
+            for item in (google, yandex)
+        ),
+    }
+
+
+def controlled_production_cursor_snapshot(path: Path) -> Mapping[str, Any]:
+    """Return content-free evidence for the production cursor sentinel."""
+
+    path_hash = hashlib.sha256(str(path.resolve(strict=False)).encode()).hexdigest()
+    if not os.path.lexists(path):
+        return {"state": "absent", "path_sha256": path_hash}
+    evidence = inspect_stable_regular_file(
+        path,
+        label="controlled_production_cursor_guard",
+        require_owner=True,
+        require_single_link=True,
+        owner_only_mode=0o600,
+    )
+    current = os.lstat(path)
+    return {
+        "state": "present",
+        "path_sha256": path_hash,
+        "device": current.st_dev,
+        "inode": current.st_ino,
+        "size_bytes": evidence["size_bytes"],
+        "mtime_ns": current.st_mtime_ns,
+        "sha256": evidence["sha256"],
+    }
+
+
+def run_controlled_one_from_request(
+    config: CallsTwoProcessesConfig,
+    *,
+    command_runner: CommandRunner = None,
+    capture_runner: Optional[Callable[..., Mapping[str, Any]]] = None,
+    process_b_runner: Optional[
+        Callable[[CallsTwoProcessesConfig], Mapping[str, Any]]
+    ] = None,
+    preview_runner: Optional[
+        Callable[[Path, date], Mapping[str, Any]]
+    ] = None,
+    runtime_config_path: Optional[Path] = None,
+) -> Mapping[str, Any]:
+    """Run one request from pre-download selection through local previews."""
+
+    started = datetime.now(timezone.utc)
+    run_id = new_calls_run_id(started)
+    runner = command_runner or run_command
+    capture_callable = capture_runner or capture_mango_window
+    config_valid = False
+    try:
+        config.validate()
+        config_valid = True
+        if config.processing_scope != "controlled_1_prepare":
+            raise RuntimeError("controlled preparation scope is required")
+        request = controlled_capture_request_for_config(config)
+        if request is None:
+            raise RuntimeError("controlled capture request is missing")
+        with process_lease(
+            config.controlled_full_lock,
+            stale_seconds=config.stale_lock_seconds,
+        ) as full_lock_info:
+            return _run_controlled_one_from_request_locked(
+                config,
+                request=request,
+                run_id=run_id,
+                runner=runner,
+                capture_callable=capture_callable,
+                process_b_runner=process_b_runner,
+                preview_runner=preview_runner,
+                runtime_config_path=runtime_config_path,
+                full_lock_info=full_lock_info,
+            )
+    except LockBusy as exc:
+        return {
+            "schema_version": "mango_calls_controlled_one_full_report_v1",
+            "run_id": run_id,
+            "process": "controlled_one_full",
+            "status": "locked",
+            "stop_reason": "controlled_one_locked",
+            "attempted": 0,
+            "processed": 0,
+            "attempted_other": 0,
+            "lock": exc.metadata,
+        }
+    except Exception as exc:  # noqa: BLE001 - fail closed without call PII.
+        report = {
+            "schema_version": "mango_calls_controlled_one_full_report_v1",
+            "run_id": run_id,
+            "process": "controlled_one_full",
+            "status": "failed",
+            "stop_reason": f"controlled_one_full_exception:{type(exc).__name__}",
+            "attempted": 0,
+            "processed": 0,
+            "attempted_other": 0,
+            "diagnostic": safe_exception_diagnostic(exc),
+            "controlled_1_human_pass": False,
+            "business_pass": False,
+            "runtime_pass": False,
+            "safety": {
+                "production_cursor_written": False,
+                "writes_timeline_staging": False,
+                "writes_external_systems": False,
+                "writes_amo": False,
+            },
+        }
+        if not config_valid:
+            return report
+        try:
+            return _write_controlled_one_report(config, run_id, report)
+        except Exception:
+            return report
+
+
+def _run_controlled_one_from_request_locked(
+    config: CallsTwoProcessesConfig,
+    *,
+    request: ControlledCaptureRequest,
+    run_id: str,
+    runner: Any,
+    capture_callable: Callable[..., Mapping[str, Any]],
+    process_b_runner: Optional[
+        Callable[[CallsTwoProcessesConfig], Mapping[str, Any]]
+    ],
+    preview_runner: Optional[Callable[[Path, date], Mapping[str, Any]]],
+    runtime_config_path: Optional[Path],
+    full_lock_info: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Execute one isolated request while the outer full-run lease is held."""
+    effects: dict[str, Any] = {
+        "attempted": 0,
+        "attempted_other": 0,
+        "downloaded": 0,
+        "processed": 0,
+        "writes_timeline_staging": False,
+        "timeline_step_completed": False,
+        "timeline_readback_ok": False,
+        "local_previews_ok": False,
+    }
+    production_cursor_before: Mapping[str, Any] | None = None
+    production_cursor_after: Mapping[str, Any] | None = None
+    production_cursor_unchanged = False
+    try:
+        if config.production_cursor_guard_path is None:
+            raise RuntimeError("controlled_production_cursor_guard_missing")
+        assert_no_live_controlled_heavy_worker(config)
+        production_cursor_before = controlled_production_cursor_snapshot(
+            config.production_cursor_guard_path
+        )
+        disk = disk_preflight(config)
+        environment = environment_preflight(
+            config,
+            run_commands=runner is run_command,
+            require_mango_credentials=True,
+        )
+        if disk.get("ok") is not True:
+            raise RuntimeError("controlled one has insufficient disk space")
+        if environment.get("ok") is not True:
+            raise RuntimeError("controlled one environment preflight failed")
+        timeline_before = controlled_timeline_effect_snapshot(
+            config,
+            request.source_call_id,
+        )
+        with process_lease(
+            config.pipeline_lock,
+            stale_seconds=config.stale_lock_seconds,
+        ) as lock_info:
+            with process_lease(
+                config.capture_lock,
+                stale_seconds=config.stale_lock_seconds,
+            ):
+                capture = capture_callable(
+                    config,
+                    request.since,
+                    request.until,
+                    controlled_request=request,
+                )
+                selection = capture.get("controlled_capture")
+                if isinstance(selection, Mapping):
+                    for name in ("attempted", "attempted_other"):
+                        value = selection.get(name)
+                        if type(value) is int and value >= 0:
+                            effects[name] = value
+                downloaded = capture.get("downloaded")
+                if type(downloaded) is int and downloaded >= 0:
+                    effects["downloaded"] = downloaded
+                if (
+                    capture.get("status") not in {"ok", "partial"}
+                    or capture.get("mango_enumeration_complete") is not True
+                    or capture.get("enumeration_consistency_ok") is not True
+                ):
+                    raise RuntimeError("controlled capture failed")
+                enumeration_sha256 = capture_enumeration_exact_sha256(
+                    capture,
+                    expected_source_mode="strict_service",
+                    expected_until=request.until,
+                    expected_rolling_since=request.since,
+                )
+                capture = certify_capture_window(
+                    config,
+                    capture,
+                    requested_since=request.since,
+                    requested_until=request.until,
+                    enumeration_evidence_sha256=enumeration_sha256,
+                )
+                write_cursor(config.cursor_path, request.until, capture)
+                metadata = dict(
+                    prepare_ingest_inputs(
+                        config,
+                        manifest_end_offset=capture.get(
+                            "manifest_end_offset"
+                        ),
+                        expected_manifest_sha256=str(
+                            capture.get("manifest_snapshot_sha256") or ""
+                        ),
+                        controlled_request=request,
+                    )
+                )
+                working_db_missing = not config.working_db.exists()
+                prelude_env = dict(worker_environment(config))
+                prelude_env.update(
+                    {
+                        "MANGO_CALLS_PROCESSING_SCOPE": "service",
+                        "MANGO_CALLS_CONTROLLED_ALLOWLIST_PATH": "",
+                        "MANGO_CALLS_CONTROLLED_ALLOWLIST_SHA256": "",
+                        "MANGO_CALLS_CONTROLLED_TENANT_ID": "",
+                        "MANGO_CALLS_CONTROLLED_CODE_SHA": "",
+                        "MANGO_CALLS_CONTROLLED_HOST_ID": "",
+                        "MANGO_CALLS_CONTROLLED_HOST_ID_PATH": "",
+                    }
+                )
+                prelude_commands: list[Sequence[str]] = []
+                if working_db_missing or metadata.get("audio_files"):
+                    prelude_commands.append(cli_command(config, "init-db"))
+                if metadata.get("audio_files"):
+                    prelude_commands.append(
+                        cli_command(
+                            config,
+                            "ingest",
+                            "--recordings-dir",
+                            str(config.working_audio_dir),
+                            "--metadata-csv",
+                            str(config.metadata_csv),
+                        )
+                    )
+                prelude_reports: list[Mapping[str, Any]] = []
+                deadline = time.monotonic() + config.heavy_stage_timeout_seconds
+                for command in prelude_commands:
+                    item = (
+                        run_command(
+                            command,
+                            prelude_env,
+                            config.working_dir,
+                            deadline=deadline,
+                            parent_lifeline=(
+                                config.processing_scope
+                                == "controlled_1_prepare"
+                            ),
+                        )
+                        if runner is run_command
+                        else runner(command, prelude_env, config.working_dir)
+                    )
+                    prelude_reports.append(item)
+                    if int(item.get("rc") or 0) != 0:
+                        raise RuntimeError("controlled ingest command failed")
+                scope = create_isolated_controlled_allowlist(config, request)
+            promoted = replace(
+                config,
+                processing_scope="controlled_1",
+                controlled_call_allowlist_path=scope.allowlist_path,
+                controlled_call_allowlist_sha256=scope.allowlist_sha256,
+            )
+            promoted.validate()
+            heavy = run_controlled_one(
+                promoted,
+                command_runner=runner,
+                _pipeline_lock_info=lock_info,
+            )
+        effects["processed"] = (
+            1 if heavy.get("execution_class") == "transitioned_to_ready" else 0
+        )
+        if heavy.get("status") != "ok":
+            raise RuntimeError("controlled heavy pipeline failed")
+        cursor = read_json(promoted.cursor_path)
+        manifest_end_offset = cursor.get("manifest_end_offset")
+        if type(manifest_end_offset) is not int or manifest_end_offset < 0:
+            raise RuntimeError("controlled capture manifest offset is invalid")
+        counts = call_db_counts(promoted.working_db)
+        drop = publish_ready_db_if_changed(
+            promoted,
+            counts,
+            changed=bool(
+                metadata.get("audio_files")
+                or heavy.get("execution_class") == "transitioned_to_ready"
+            ),
+            run_id=run_id,
+            capture_evidence=cursor,
+            manifest_end_offset=manifest_end_offset,
+            stage_reports=heavy.get("stages") or (),
+            runtime_fingerprint=environment.get("runtime_fingerprint"),
+        )
+        if (
+            drop.get("status") != "ready"
+            or drop.get("consistency_ok") is not True
+        ):
+            raise RuntimeError("controlled ready drop is not green")
+        effects["writes_timeline_staging"] = None
+        try:
+            timeline = (process_b_runner or run_controlled_process_b)(promoted)
+        finally:
+            try:
+                timeline_after = controlled_timeline_effect_snapshot(
+                    promoted,
+                    request.source_call_id,
+                )
+                effects["writes_timeline_staging"] = bool(
+                    timeline_after.get("state") != timeline_before.get("state")
+                    or timeline_after.get("logical_sha256")
+                    != timeline_before.get("logical_sha256")
+                )
+            except Exception:
+                effects["writes_timeline_staging"] = None
+                raise
+        timeline_safety = timeline.get("safety")
+        effects["timeline_step_completed"] = bool(
+            timeline.get("status") in {"ok", "idle"}
+        )
+        reported_timeline_write = bool(
+            isinstance(timeline_safety, Mapping)
+            and timeline_safety.get("writes_timeline_staging") is True
+        )
+        if reported_timeline_write != effects["writes_timeline_staging"]:
+            raise RuntimeError("controlled Timeline write receipt mismatch")
+        if timeline.get("status") not in {"ok", "idle"}:
+            raise RuntimeError("controlled Timeline staging import failed")
+        timeline_readback = controlled_timeline_readback(
+            promoted,
+            request.source_call_id,
+        )
+        if timeline_readback.get("ok") is not True:
+            raise RuntimeError("controlled Timeline target readback failed")
+        effects["timeline_readback_ok"] = True
+        heavy_after = heavy.get("after")
+        heavy_target = (
+            heavy_after.get("target")
+            if isinstance(heavy_after, Mapping)
+            else None
+        )
+        if not isinstance(heavy_target, Mapping) or not heavy_target.get(
+            "started_at"
+        ):
+            raise RuntimeError("controlled target start time is missing")
+        target_day = parse_datetime(
+            str(heavy_target["started_at"])
+        ).astimezone(ZoneInfo("Europe/Moscow")).date()
+        previews: Mapping[str, Any]
+        selected_preview_runner = preview_runner
+        if selected_preview_runner is None and runtime_config_path is not None:
+            selected_preview_runner = run_controlled_local_previews
+        if selected_preview_runner is None or runtime_config_path is None:
+            raise RuntimeError("controlled local preview runner is missing")
+        if selected_preview_runner is run_controlled_local_previews:
+            previews = selected_preview_runner(
+                runtime_config_path,
+                target_day,
+                request.source_call_id,
+            )
+        else:
+            previews = selected_preview_runner(runtime_config_path, target_day)
+        if previews.get("ok") is not True:
+            raise RuntimeError("controlled local previews failed")
+        effects["local_previews_ok"] = True
+        production_cursor_after = controlled_production_cursor_snapshot(
+            config.production_cursor_guard_path
+        )
+        production_cursor_unchanged = bool(
+            production_cursor_after == production_cursor_before
+        )
+        if not production_cursor_unchanged:
+            raise RuntimeError("controlled_production_cursor_changed")
+        selection = capture.get("controlled_capture")
+        if not isinstance(selection, Mapping):
+            raise RuntimeError("controlled capture counters are missing")
+        report = {
+            "schema_version": "mango_calls_controlled_one_full_report_v1",
+            "run_id": run_id,
+            "process": "controlled_one_full",
+            "status": "ok",
+            "stop_reason": "",
+            "allowed_call_key": request.source_call_id,
+            "expected_count": 1,
+            "attempted": selection.get("attempted"),
+            "processed": effects["processed"],
+            "attempted_other": selection.get("attempted_other"),
+            "downloaded": effects["downloaded"],
+            "capture": capture,
+            "ingest": {
+                "metadata": metadata,
+                "commands": compact_command_reports(prelude_reports),
+            },
+            "heavy": heavy,
+            "ready": drop,
+            "timeline_staging": timeline,
+            "timeline_readback": timeline_readback,
+            "local_previews": previews,
+            "controlled_1_human_pass": False,
+            "business_pass": False,
+            "runtime_pass": False,
+            "safety": {
+                "old_mac_may_remain_active": True,
+                "production_cursor_written": False,
+                "production_cursor_unchanged": True,
+                "production_cursor_guard": {
+                    "before": production_cursor_before,
+                    "after": production_cursor_after,
+                },
+                "writes_timeline_staging": effects["writes_timeline_staging"],
+                "writes_external_systems": False,
+                "writes_amo": False,
+                "publishes_google": False,
+                "publishes_yandex_disk": False,
+            },
+            "lock": lock_info,
+            "full_lock": full_lock_info,
+        }
+        return _write_controlled_one_report(promoted, run_id, report)
+    except Exception as exc:  # noqa: BLE001 - fail closed without call PII.
+        if (
+            production_cursor_before is not None
+            and config.production_cursor_guard_path is not None
+        ):
+            try:
+                production_cursor_after = controlled_production_cursor_snapshot(
+                    config.production_cursor_guard_path
+                )
+                production_cursor_unchanged = bool(
+                    production_cursor_after == production_cursor_before
+                )
+            except Exception:
+                production_cursor_unchanged = False
+        report = {
+            "schema_version": "mango_calls_controlled_one_full_report_v1",
+            "run_id": run_id,
+            "process": "controlled_one_full",
+            "status": "failed",
+            "stop_reason": f"controlled_one_full_exception:{type(exc).__name__}",
+            "attempted": effects["attempted"],
+            "processed": effects["processed"],
+            "attempted_other": effects["attempted_other"],
+            "downloaded": effects["downloaded"],
+            "effects": dict(effects),
+            "diagnostic": safe_exception_diagnostic(exc),
+            "controlled_1_human_pass": False,
+            "business_pass": False,
+            "runtime_pass": False,
+            "safety": {
+                "production_cursor_written": (
+                    False if production_cursor_unchanged else None
+                ),
+                "production_cursor_unchanged": production_cursor_unchanged,
+                "production_cursor_guard": {
+                    "before": production_cursor_before,
+                    "after": production_cursor_after,
+                },
+                "writes_timeline_staging": effects["writes_timeline_staging"],
+                "writes_external_systems": False,
+                "writes_amo": False,
+            },
+        }
+        try:
+            return _write_controlled_one_report(config, run_id, report)
+        except Exception:
+            return report
 
 
 def _run_pipeline_locked(
@@ -2479,6 +3508,49 @@ def _run_process_b(
             "max_source_ts": None,
         }
     )
+    if config.runtime_authority_mode == "isolated_controlled":
+        prior = read_json(config.process_b_cursor_path)
+        controlled_request = controlled_capture_request_for_config(config)
+        controlled_snapshot = (
+            controlled_timeline_effect_snapshot(
+                config,
+                controlled_request.source_call_id,
+            )
+            if controlled_request is not None
+            else {}
+        )
+        if (
+            prior.get("schema_version")
+            == "mango_calls_process_b_cursor_v1"
+            and prior.get("sha256") == drop_fingerprint.get("sha256")
+            and prior.get("size_bytes") == drop_fingerprint.get("size_bytes")
+            and controlled_snapshot.get("state") == "present"
+            and positive_int(controlled_snapshot.get("total_rows")) == 1
+            and positive_int(controlled_snapshot.get("target_rows")) == 1
+            and positive_int(controlled_snapshot.get("mango_rows")) == 1
+            and controlled_snapshot.get("quick_check") == "ok"
+        ):
+            return finalize_report(
+                config,
+                run_id,
+                "process_b",
+                "idle",
+                "controlled_drop_already_imported",
+                {
+                    "events": 0,
+                    "drop": drop_fingerprint,
+                    "producer_scan_mode": "controlled_exact_drop_reuse",
+                    "import": {
+                        "validation_ok": True,
+                        "records_read": 0,
+                        "records_accepted": 0,
+                        "records_rejected": 0,
+                        "writes_applied": 0,
+                        "status_counts": {},
+                        "source_system": "mango_processed_summary",
+                    },
+                },
+            )
     increment_path = config.ingest_dir / "mango_processed_summary.jsonl"
     producer_report_path = config.ingest_dir / "mango_processed_summary_producer_report.json"
     # Always scan the sealed drop and let dedupe_key decide.  A source-only
@@ -2734,6 +3806,52 @@ class LockBusy(RuntimeError):
     def __init__(self, metadata: Mapping[str, Any]) -> None:
         super().__init__("process lock is busy")
         self.metadata = dict(metadata)
+
+
+@contextmanager
+def controlled_pipeline_lease(
+    config: CallsTwoProcessesConfig,
+    *,
+    inherited_lock_info: Optional[Mapping[str, Any]] = None,
+) -> Iterator[Mapping[str, Any]]:
+    """Reuse only a currently held, same-process controlled pipeline lock."""
+
+    if inherited_lock_info is None:
+        with process_lease(
+            config.pipeline_lock,
+            stale_seconds=config.stale_lock_seconds,
+        ) as acquired:
+            yield acquired
+        return
+    expected = dict(inherited_lock_info)
+    raw = read_stable_regular_bytes(
+        config.pipeline_lock,
+        label="controlled_inherited_pipeline_lock",
+        owner_only_mode=0o600,
+    )
+    current = parse_json_object(raw.decode("utf-8"))
+    if (
+        current != expected
+        or positive_int(current.get("pid")) != os.getpid()
+    ):
+        raise RuntimeError("controlled_inherited_pipeline_lock_mismatch")
+    descriptor = os.open(
+        config.pipeline_lock,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0),
+    )
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield expected
+        else:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            raise RuntimeError("controlled_inherited_pipeline_lock_not_held")
+    finally:
+        os.close(descriptor)
 
 
 @contextmanager
@@ -3235,9 +4353,21 @@ def capture_mango_window(
     config: CallsTwoProcessesConfig,
     since: datetime,
     until: datetime,
+    *,
+    controlled_request: ControlledCaptureRequest | None = None,
 ) -> Mapping[str, Any]:
     since = _mango_wire_datetime(since)
     until = _mango_wire_datetime(until)
+    if controlled_request is not None:
+        expected_request = controlled_capture_request_for_config(config)
+        if (
+            expected_request != controlled_request
+            or since != controlled_request.since
+            or until != controlled_request.until
+            or controlled_request.pipeline_root
+            != config.pipeline_root.resolve(strict=False)
+        ):
+            raise RuntimeError("controlled capture request/config mismatch")
     proof_observed_at = datetime.now(timezone.utc)
     proof_run_id = new_calls_run_id(proof_observed_at)
     api_key = os.getenv("MANGO_OFFICE_API_KEY", "").strip()
@@ -3286,13 +4416,6 @@ def capture_mango_window(
         if config.strict_ready_provenance
         else primary_client
     )
-    downloader = MangoRecordingDownloader(
-        credentials=credentials,
-        base_url=config.base_url,
-        timeout_sec=60,
-        link_retries=8,
-        rate_limit_sleep_sec=30.0,
-    )
     mapper = MangoOfficePayloadMapper()
     tenant = TenantRef(config.tenant_id)
     host_id = configured_host_id(
@@ -3306,6 +4429,22 @@ def capture_mango_window(
         manifest_store.ensure_exists()
         manifest_store.recover_incomplete_tail()
     latest_manifest = manifest_store.latest_by_event_key()
+    if controlled_request is not None:
+        unexpected_manifest_calls = sorted(
+            {
+                entry.provider_call_id
+                for entry in latest_manifest.values()
+                if entry.provider_call_id != controlled_request.source_call_id
+            }
+        )
+        unexpected_db_calls = sorted(
+            read_ingested_call_ids(config.working_db)
+            - {controlled_request.source_call_id}
+        )
+        if unexpected_manifest_calls or unexpected_db_calls:
+            raise RuntimeError(
+                "controlled isolated root contains another call"
+            )
     pending_entries = [
         entry
         for entry in latest_manifest.values()
@@ -3363,6 +4502,8 @@ def capture_mango_window(
         retry_end = min(retry_end, until)
         if retry_start < retry_end:
             retry_windows.append((retry_start, retry_end))
+    if controlled_request is not None:
+        retry_windows = []
 
     def merge_windows(
         windows: Sequence[tuple[datetime, datetime]],
@@ -3755,6 +4896,55 @@ def capture_mango_window(
         for event in mapped_events
         if event.event_key not in external_known_keys
     ]
+    controlled_capture: Mapping[str, Any] | None = None
+    if controlled_request is not None:
+        matched = [
+            event
+            for event in enumerated_events
+            if event.provider_call_id == controlled_request.source_call_id
+        ]
+        if len(enumerated_events) != 1 or len(matched) != 1:
+            return {
+                "status": "failed",
+                "reason": "controlled_capture_window_not_exactly_one",
+                "mango_enumeration_complete": True,
+                "enumeration_consistency_ok": True,
+                "attempted": 0,
+                "attempted_other": 0,
+            }
+        if not event_recording_ids(matched[0]) and not matched[0].recording_url:
+            return {
+                "status": "failed",
+                "reason": "controlled_capture_target_has_no_recording",
+                "mango_enumeration_complete": True,
+                "enumeration_consistency_ok": True,
+                "attempted": 0,
+                "attempted_other": 0,
+            }
+        events = [
+            event
+            for event in events
+            if event.provider_call_id == controlled_request.source_call_id
+        ]
+        controlled_capture = {
+            "request_sha256": controlled_request.request_sha256,
+            "allowed_call_key": controlled_request.source_call_id,
+            "expected_count": 1,
+            "matched_count": 1,
+            "enumerated_count": 1,
+            "enumerated_other_count": 0,
+            "attempted": len(events),
+            "attempted_other": 0,
+            "since": controlled_request.since.isoformat(),
+            "until": controlled_request.until.isoformat(),
+        }
+    downloader = MangoRecordingDownloader(
+        credentials=credentials,
+        base_url=config.base_url,
+        timeout_sec=60,
+        link_retries=8,
+        rate_limit_sleep_sec=30.0,
+    )
     summary = stage_capture_events(
         events=events,
         manifest_store=manifest_store,
@@ -3874,6 +5064,7 @@ def capture_mango_window(
         "catch_up": catch_up,
         "sla_mode": "catch_up" if catch_up else "live",
         "mango_enumeration_complete": True,
+        "controlled_capture": controlled_capture,
         "enumeration_consistency_ok": (
             dual_enumeration.get("enumeration_consistency_ok")
             if isinstance(dual_enumeration, Mapping)
@@ -4137,8 +5328,37 @@ def prepare_ingest_inputs(
     *,
     manifest_end_offset: Optional[int] = None,
     expected_manifest_sha256: Optional[str] = None,
+    controlled_request: ControlledCaptureRequest | None = None,
 ) -> Mapping[str, Any]:
-    reject_controlled_call_broad_operation(config, "prepare_ingest_inputs")
+    if controlled_request is None:
+        reject_controlled_call_broad_operation(config, "prepare_ingest_inputs")
+    elif (
+        config.processing_scope != "controlled_1_prepare"
+        or config.runtime_authority_mode != "isolated_controlled"
+        or controlled_capture_request_for_config(config) != controlled_request
+    ):
+        raise RuntimeError("controlled ingest request/config mismatch")
+    if controlled_request is not None:
+        early_working_call_ids = read_ingested_call_ids(config.working_db)
+        if early_working_call_ids - {controlled_request.source_call_id}:
+            raise RuntimeError("controlled working DB contains another call")
+        early_snapshot = capture_manifest_snapshot(
+            config.capture_manifest,
+            end_offset=manifest_end_offset,
+        )
+        if (
+            expected_manifest_sha256
+            and early_snapshot["sha256"] != expected_manifest_sha256
+        ):
+            raise RuntimeError("capture manifest frozen prefix digest mismatch")
+        early_latest: dict[str, ManifestEntry] = {}
+        for entry in early_snapshot["entries"]:
+            early_latest[entry.event_key] = entry
+        if any(
+            entry.provider_call_id != controlled_request.source_call_id
+            for entry in early_latest.values()
+        ):
+            raise RuntimeError("controlled capture manifest contains another call")
     config.working_audio_dir.mkdir(parents=True, exist_ok=True)
     legacy_topology = normalize_recoverable_legacy_call_states(
         config.working_db
@@ -4151,6 +5371,10 @@ def prepare_ingest_inputs(
     )
     fully_ready_call_ids = read_fully_ready_call_ids(config)
     working_call_ids = read_ingested_call_ids(config.working_db)
+    if controlled_request is not None and (
+        working_call_ids - {controlled_request.source_call_id}
+    ):
+        raise RuntimeError("controlled working DB contains another call")
     manifest_store = CaptureManifestStore(config.capture_manifest)
     # Load the recovery ledger as well as the valid append-only prefix.  This is
     # read-only: an incomplete tail is reported and never silently accepted.
@@ -4163,6 +5387,11 @@ def prepare_ingest_inputs(
     latest: dict[str, ManifestEntry] = {}
     for entry in snapshot["entries"]:
         latest[entry.event_key] = entry
+    if controlled_request is not None and any(
+        entry.provider_call_id != controlled_request.source_call_id
+        for entry in latest.values()
+    ):
+        raise RuntimeError("controlled capture manifest contains another call")
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
             continue
@@ -5397,7 +6626,10 @@ def capture_rolling_window_start(
 ) -> datetime:
     """Return the exact rolling boundary that strict evidence must prove."""
 
-    if not config.strict_ready_provenance:
+    if (
+        not config.strict_ready_provenance
+        or config.runtime_authority_mode == "isolated_controlled"
+    ):
         return since
     threshold = until - timedelta(
         hours=max(1, config.pending_recording_retry_hours)
@@ -5476,6 +6708,7 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         ),
         "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_PATH": "",
         "MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_SHA256": "",
+        "MANGO_CALLS_CONTROLLED_LIFELINE_FD": "",
         "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_PATH": "",
         "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SHA256": "",
         "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SIZE_BYTES": "",
@@ -5787,6 +7020,8 @@ def run_sequential_pipeline_workers(
         )
         heartbeat_path = config.process_a_heartbeat_path
         proc: subprocess.Popen[str] | None = None
+        lifeline_read_fd = -1
+        lifeline_write_fd = -1
         timed_out = False
         authority_scope = controlled_worker_authority_environment(
             config,
@@ -5808,6 +7043,13 @@ def run_sequential_pipeline_workers(
                 **authority_env,
                 **codex_runtime,
             }
+            pass_fds: tuple[int, ...] = ()
+            if config.processing_scope == "controlled_1":
+                lifeline_read_fd, lifeline_write_fd = os.pipe()
+                worker_env["MANGO_CALLS_CONTROLLED_LIFELINE_FD"] = str(
+                    lifeline_read_fd
+                )
+                pass_fds = (lifeline_read_fd,)
             with log_path.open("x", encoding="utf-8") as log_handle:
                 log_path.chmod(0o600)
                 command = worker_command(config, stage)
@@ -5820,7 +7062,11 @@ def run_sequential_pipeline_workers(
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    pass_fds=pass_fds,
                 )
+                if lifeline_read_fd >= 0:
+                    os.close(lifeline_read_fd)
+                    lifeline_read_fd = -1
                 last_heartbeat = 0.0
                 while proc.poll() is None:
                     current = time.monotonic()
@@ -5849,13 +7095,19 @@ def run_sequential_pipeline_workers(
                     terminate_process_group(proc)
             finally:
                 try:
-                    heartbeat_path.unlink(missing_ok=True)
+                    if lifeline_read_fd >= 0:
+                        os.close(lifeline_read_fd)
+                    if lifeline_write_fd >= 0:
+                        os.close(lifeline_write_fd)
                 finally:
                     try:
-                        if codex_runtime_entered:
-                            codex_runtime_scope.__exit__(None, None, None)
+                        heartbeat_path.unlink(missing_ok=True)
                     finally:
-                        authority_scope.__exit__(None, None, None)
+                        try:
+                            if codex_runtime_entered:
+                                codex_runtime_scope.__exit__(None, None, None)
+                        finally:
+                            authority_scope.__exit__(None, None, None)
         after_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         stage_metrics = parse_macos_time_metrics(log_path)
         worker_metrics = parse_worker_stage_metrics(log_path, stage)
@@ -6092,6 +7344,7 @@ def run_command(
     cwd: Path,
     *,
     deadline: Optional[float] = None,
+    parent_lifeline: bool = False,
 ) -> Mapping[str, Any]:
     cwd.mkdir(parents=True, exist_ok=True)
     logs_dir = cwd / "logs"
@@ -6099,23 +7352,46 @@ def run_command(
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     log_path = logs_dir / f"command_{stamp}.log"
     with log_path.open("w", encoding="utf-8") as handle:
+        lifeline_read_fd = -1
+        lifeline_write_fd = -1
+        child_env = dict(env)
+        pass_fds: tuple[int, ...] = ()
+        if parent_lifeline:
+            lifeline_read_fd, lifeline_write_fd = os.pipe()
+            child_env["MANGO_CALLS_CONTROLLED_LIFELINE_FD"] = str(
+                lifeline_read_fd
+            )
+            pass_fds = (lifeline_read_fd,)
         proc = subprocess.Popen(
-            list(command),
+            (
+                parent_lifeline_subprocess_command(command)
+                if parent_lifeline
+                else list(command)
+            ),
             cwd=cwd,
-            env=dict(env),
+            env=child_env,
             text=True,
             stdout=handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            pass_fds=pass_fds,
         )
+        if lifeline_read_fd >= 0:
+            os.close(lifeline_read_fd)
         timed_out = False
-        while proc.poll() is None:
-            if deadline is not None and time.monotonic() >= deadline:
-                timed_out = True
+        try:
+            while proc.poll() is None:
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    terminate_process_group(proc)
+                    handle.write("heavy_cycle_timeout\n")
+                    break
+                time.sleep(0.1)
+        finally:
+            if proc.poll() is None:
                 terminate_process_group(proc)
-                handle.write("heavy_cycle_timeout\n")
-                break
-            time.sleep(0.1)
+            if lifeline_write_fd >= 0:
+                os.close(lifeline_write_fd)
         return_code = 124 if timed_out else int(proc.returncode or 0)
     report: dict[str, Any] = {
         "rc": return_code,
@@ -6159,16 +7435,46 @@ def run_increment_producer(
     ]
     if since:
         command.extend(["--since", since])
-    proc = subprocess.run(
-        command,
-        cwd=Path(__file__).resolve().parents[3],
-        text=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    lifeline_read_fd = -1
+    lifeline_write_fd = -1
+    producer_env = dict(os.environ)
+    pass_fds: tuple[int, ...] = ()
+    timed_command = command
+    if config.runtime_authority_mode == "isolated_controlled":
+        lifeline_read_fd, lifeline_write_fd = os.pipe()
+        producer_env["MANGO_CALLS_CONTROLLED_LIFELINE_FD"] = str(
+            lifeline_read_fd
+        )
+        pass_fds = (lifeline_read_fd,)
+        timed_command = parent_lifeline_subprocess_command(command)
+    try:
+        proc = subprocess.run(
+            timed_command,
+            cwd=Path(__file__).resolve().parents[3],
+            env=producer_env,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            start_new_session=(
+                config.runtime_authority_mode == "isolated_controlled"
+            ),
+            pass_fds=pass_fds,
+        )
+    finally:
+        if lifeline_read_fd >= 0:
+            os.close(lifeline_read_fd)
+        if lifeline_write_fd >= 0:
+            os.close(lifeline_write_fd)
     report = read_json(report_path)
     return {"status": "ok" if proc.returncode == 0 else "failed", "rc": proc.returncode, **report}
+
+
+def parent_lifeline_subprocess_command(
+    command: Sequence[str],
+) -> list[str]:
+    helper = Path(__file__).resolve().parents[3] / "scripts" / "run_parent_lifeline.py"
+    return [sys.executable, str(helper), *command]
 
 
 def _ready_verdicts(
@@ -6382,6 +7688,7 @@ def publish_ready_db(
                 evidence.get("mango_enumeration_complete") is True
             ),
             "mango_enumeration_source": dict(source),
+            "controlled_capture": evidence.get("controlled_capture"),
             "enumeration_evidence_sha256": enumeration_evidence_sha256,
             "capture_proof_sha256": capture_proof_sha256,
             "capture_proof": capture_proof,
@@ -6760,6 +8067,8 @@ def capture_enumeration_exact_projection(
         ),
         "api_events_total": evidence.get("api_events_total"),
     }
+    if isinstance(evidence.get("controlled_capture"), Mapping):
+        projected["controlled_capture"] = evidence["controlled_capture"]
     return projected
 
 
@@ -8001,6 +9310,7 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "independent_zero_enumerations_by_day": capture.get(
                 "independent_zero_enumerations_by_day"
             ),
+            "controlled_capture": capture.get("controlled_capture"),
         },
     )
 

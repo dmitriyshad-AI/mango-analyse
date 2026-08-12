@@ -126,6 +126,79 @@ skills, plugins и MCP. Пользовательские skills нужны то�
 
 ### 4.1 Проверить готовность ровно одного звонка
 
+Текущий кратчайший путь для нового звонка не требует переноса production-БД и
+не меняет production cursor. Сначала скопировать
+`config.controlled-one.bootstrap.example.json` в отдельный каталог
+`$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/`, заменить все
+плейсхолдеры, создать там `host_id`, выставить каталогам `0700`, файлам `0600`.
+Туда же создать отдельную owner-only копию worker-env `controlled.env` и в ней
+заменить только `MANGO_CALLS_PIPELINE_ROOT` на точный изолированный pipeline;
+общий service-env не использовать. Секреты в Git или командную строку не
+копировать. Конфиг, `host_id` и `controlled.env` должны иметь режим `0600`.
+`production_cursor_guard_path` обязан указывать на настоящий cursor обычного
+сервиса, находящийся вне изолированного pipeline. В `current_google` указать
+реальный email владельца и закрытый allowlist РОПа: это только локальный
+план ACL, сетевой записи или публикации controlled-preview не делает.
+
+Затем создать неизменяемое разрешение на один ID и закрытое окно (не длиннее
+часа, не пересекающее московские сутки):
+
+```bash
+set -euo pipefail
+BOOT="$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/bootstrap.json"
+REQUEST="$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/request.json"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/create_m1_calls_controlled_request.py \
+  --config "$BOOT" \
+  --source-call-id '<EXACT_PROVIDER_CALL_ID>' \
+  --since '<CLOSED_SINCE_ISO8601>' \
+  --until '<CLOSED_UNTIL_ISO8601>' \
+  --expected-count 1 \
+  --out "$REQUEST"
+```
+
+Команда не вызывает Mango, модели и внешние системы. Идентичный повтор
+возвращает `reused=true`; другое окно или ID не перезаписывает существующий
+request. В отдельную финальную копию bootstrap-конфига добавить абсолютный
+`controlled_capture_request_path` и выведенный
+`controlled_capture_request_sha256`. После этого локально проверить полный
+конфиг без запуска обработки:
+
+```bash
+set -euo pipefail
+FINAL="$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/runtime.json"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" - "$FINAL" <<'PY'
+from pathlib import Path
+import sys
+from mango_mvp.customer_timeline.calls_two_processes import CallsTwoProcessesConfig
+CallsTwoProcessesConfig.from_json(Path(sys.argv[1]))
+print("CONTROLLED_CONFIG_OK")
+PY
+```
+
+Только после отдельного разрешения Дмитрия на один реальный звонок запустить:
+
+```bash
+set -euo pipefail
+scripts/run_mango_calls_process.sh \
+  "$FINAL" \
+  "$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/controlled.env" \
+  controlled-one-worker
+```
+
+Первый отчёт принимается только при `attempted=1`, `attempted_other=0`,
+`processed=1`, зелёном Timeline readback, локальных Google/Yandex preview и
+`production_cursor_unchanged=true`. Повтор обязан показать `downloaded=0`,
+`processed=0` и отсутствие новой записи Timeline. STOP до ASR или следующей
+стадии: API вернул не ровно один разрешённый ID, запись не двухканальная,
+production cursor изменился, любой readback/preview красный или обнаружена
+внешняя запись. Локальные preview не публикуют Google/Яндекс и не являются
+бизнес-приёмкой.
+
+### 4.2 Уже скачанный звонок после разрешённого переноса
+
 Для controlled-1 используется отдельная копия runtime-конфига. Обычный
 service-конфиг сохраняет `"processing_scope": "service"` и
 `"stage_limit": 20`. После переноса рабочей БД и выбора одного уже скачанного
@@ -190,6 +263,10 @@ worker не запущен, сверить owner/права и получить 
 сохраняет полный отчёт `before/stages/after`, помечает его `status=failed` и
 `pilot_transition_proven=false`, а остаток продолжает блокировать повтор. Так
 результат не теряется, но ошибка уборки не превращается в успешный пилот.
+Каждый controlled-worker также получает kernel-lifeline: при гибели
+оркестратора его sentinel завершает всю отдельную группу worker и его дочерних
+процессов. Пока PID из owner-only heartbeat ещё жив, новый тяжёлый запуск
+завершается STOP до первого worker; вручную запускать второй процесс нельзя.
 
 Только когда на M1 не идёт тяжёлая сборка Customer Timeline, разрешена
 синтетическая проверка моделей без аудио и текста клиентов:

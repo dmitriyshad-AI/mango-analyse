@@ -239,6 +239,26 @@ def _ready_capture_proof_is_green(manifest: Mapping[str, Any]) -> bool:
         return False
     if manifest.get("capture_proof_sha256") != _canonical_json_sha256(proof):
         return False
+    base_proof_keys = {
+        "mango_enumeration_complete",
+        "mango_enumeration_source",
+        "call_keys",
+        "calls_by_moscow_day",
+        "independent_zero_enumerations_by_day",
+        "api_requests",
+        "api_rows_total",
+        "api_authoritative_rows_total",
+        "api_auxiliary_rows_total",
+        "api_events_total",
+    }
+    controlled = manifest.get("controlled_capture")
+    expected_proof_keys = (
+        base_proof_keys | {"controlled_capture"}
+        if isinstance(controlled, Mapping)
+        else base_proof_keys
+    )
+    if set(proof) != expected_proof_keys:
+        return False
     source = manifest.get("mango_enumeration_source")
     proof_source = proof.get("mango_enumeration_source")
     if not isinstance(source, Mapping) or not isinstance(proof_source, Mapping):
@@ -329,6 +349,10 @@ def _ready_capture_proof_is_green(manifest: Mapping[str, Any]) -> bool:
     return bool(
         proof.get("mango_enumeration_complete")
         == manifest.get("mango_enumeration_complete")
+        and (
+            not isinstance(controlled, Mapping)
+            or proof.get("controlled_capture") == controlled
+        )
         and proof.get("api_requests") == source.get("requests") == len(intervals)
         and proof.get("api_authoritative_rows_total") == authoritative_rows
         and proof.get("api_auxiliary_rows_total") == auxiliary_rows

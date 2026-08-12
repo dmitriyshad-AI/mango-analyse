@@ -936,6 +936,128 @@ def test_readiness_probe_cli_selects_controlled_1_without_weakening_service(
     ) == 0
 
 
+def test_readiness_probe_accepts_isolated_prepare_request_without_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    host_path = tmp_path / "host_id"
+    host_path.write_text("m1-host\n", encoding="utf-8")
+    host_path.chmod(0o600)
+    production_cursor = tmp_path / "production-cursor.json"
+    parsed = SimpleNamespace(
+        host_id_file=host_path,
+        strict_ready_provenance=True,
+        expected_active_host_id="m1-host",
+        expected_previous_host_id=None,
+        processing_scope="controlled_1_prepare",
+        runtime_authority_mode="isolated_controlled",
+        stage_limit=1,
+        production_cursor_guard_path=production_cursor,
+    )
+    request = SimpleNamespace(
+        expected_count=1,
+        request_sha256="b" * 64,
+        code_sha="a" * 40,
+        tenant_id="foton",
+        host_id="m1-host",
+    )
+    config = {
+        "pipeline_root": str(tmp_path / "pipeline"),
+        "codex_home_root": str(tmp_path / "codex"),
+        "expected_code_sha": "a" * 40,
+        "expected_active_host_id": "m1-host",
+    }
+    approved = probe.approved_runtime_fingerprint()
+    monkeypatch.setattr(probe, "current_git_sha", lambda _root: "a" * 40)
+    monkeypatch.setattr(probe, "git_worktree_is_clean", lambda _root: True)
+    monkeypatch.setattr(
+        probe.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="dmitriy"),
+    )
+    monkeypatch.setattr(probe.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(probe.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(probe, "physical_memory_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr(
+        probe.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+    monkeypatch.setattr(probe.shutil, "which", lambda _name: "/synthetic/tool")
+    monkeypatch.setattr(probe, "machine_timezone", lambda: "Europe/Moscow")
+    monkeypatch.setattr(
+        probe,
+        "observe_runtime_fingerprint",
+        lambda _config: {"ok": True, "fingerprint": approved, "errors": []},
+    )
+    monkeypatch.setattr(probe, "inspect_codex_home", lambda _path: {"ok": True})
+    monkeypatch.setattr(
+        probe, "controlled_capture_request_for_config", lambda _config: request
+    )
+    monkeypatch.setattr(
+        probe,
+        "controlled_production_cursor_snapshot",
+        lambda _path: {"state": "absent"},
+    )
+    monkeypatch.setattr(probe, "ensure_codex_runtime_anchor", lambda _config: None)
+    monkeypatch.setattr(probe, "probe_mango_readonly", lambda _config: True)
+    monkeypatch.setattr(probe, "probe_tallanto_readonly", lambda _config: True)
+    monkeypatch.setattr(
+        probe,
+        "probe_google_readonly",
+        lambda _config: {
+            "google_spreadsheet_acl_ok": True,
+            "google_metadata_readback_ok": True,
+        },
+    )
+    monkeypatch.setattr(probe, "probe_yandex_marker", lambda _config: True)
+    monkeypatch.setattr(probe, "probe_time_sync", lambda: True)
+    monkeypatch.setattr(probe, "probe_conflicting_launchd", lambda: True)
+    monkeypatch.setattr(
+        probe,
+        "probe_offline_models",
+        lambda _config: {
+            "offline_whisper_synthetic_attempted": True,
+            "offline_gigaam_synthetic_attempted": True,
+            "offline_whisper_synthetic_completed": True,
+            "offline_gigaam_synthetic_completed": True,
+            "offline_whisper_synthetic_ok": True,
+            "offline_gigaam_synthetic_ok": True,
+        },
+    )
+    monkeypatch.setattr(
+        probe,
+        "probe_codex_models",
+        lambda _config: {
+            "codex_auth_probe_attempted": True,
+            "codex_resolve_model_access_attempted": True,
+            "codex_analyze_model_access_attempted": True,
+            "codex_resolve_model_access_completed": True,
+            "codex_analyze_model_access_completed": True,
+            "codex_authenticated_ok": True,
+            "codex_network_ok": True,
+            "codex_resolve_model_access_ok": True,
+            "codex_analyze_model_access_ok": True,
+        },
+    )
+
+    report = probe.probe(
+        config,
+        {},
+        parsed_config=parsed,
+        run_offline_model_probes=True,
+        run_codex_model_probes=True,
+    )
+
+    assert report["ready_for_controlled_one"]["status"] == "OK"
+    assert report["ready_for_controlled_one"]["requires_controlled_10"] is False
+    assert report["ready_for_permanent_service"]["status"] == "STOP"
+    assert report["checks"]["controlled_one_allowlist_bound"] is True
+    assert report["checks"]["controlled_one_production_cursor_guard_readable"] is True
+
+
 def test_ephemeral_codex_cycle_is_checked_for_persistent_residue(
     tmp_path: Path, monkeypatch
 ) -> None:

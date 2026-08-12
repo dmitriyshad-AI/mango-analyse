@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import plistlib
+import signal
 import shlex
 import subprocess
 import sqlite3
 import sys
+import time
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -44,6 +46,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     pipeline_stages,
     publish_ready_db,
     publish_ready_db_if_changed,
+    parent_lifeline_subprocess_command,
     read_fully_ready_call_ids,
     read_json,
     read_known_processed_ids,
@@ -56,6 +59,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     run_process_b,
     run_cycle,
     run_command,
+    run_controlled_local_previews,
     compact_command_reports,
     pipeline_freshness,
     safe_daily_payload,
@@ -68,6 +72,10 @@ from mango_mvp.customer_timeline.calls_two_processes import (
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
+from mango_mvp.services.controlled_call_scope import (
+    ControlledCallScope,
+    ControlledCaptureRequest,
+)
 from mango_mvp.productization.ready_publication import (
     commit_ready_generation,
     inspect_ready_publication,
@@ -3816,6 +3824,613 @@ def _run_synthetic_dual_capture(
         datetime(2026, 8, 11, 21, tzinfo=timezone.utc),
     )
     return report, staged, config
+
+
+def test_controlled_capture_filters_before_downloader_and_rejects_extra_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pipeline = tmp_path / "pipeline"
+    config = replace(
+        config_for(tmp_path),
+        pipeline_root=pipeline,
+        strict_ready_provenance=True,
+        runtime_authority_mode="isolated_controlled",
+        processing_scope="controlled_1_prepare",
+        stage_limit=1,
+        expected_code_sha="a" * 40,
+        expected_active_host_id="m1-host",
+        production_cursor_guard_path=(
+            tmp_path
+            / ".mango_local"
+            / "mango_calls_two_processes"
+            / "state"
+            / "mango_api_freshness.json"
+        ),
+        publication_root=pipeline / "publication",
+        timeline_allowed_root=pipeline / "timeline",
+        timeline_db=pipeline / "timeline" / "timeline.sqlite",
+    )
+    since = datetime(2026, 8, 11, 10, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 11, 10, 30, tzinfo=timezone.utc)
+    request = ControlledCaptureRequest(
+        source_call_id="call-a",
+        expected_count=1,
+        since=since,
+        until=until,
+        pipeline_root=pipeline.resolve(strict=False),
+        tenant_id="foton",
+        code_sha="a" * 40,
+        host_id="m1-host",
+        request_path=pipeline / "state" / "request.json",
+        request_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_capture_request_for_config",
+        lambda _config: request,
+    )
+    rows: list[Mapping[str, object]] = [_dual_capture_row("call-a")]
+
+    class Client:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **window: object) -> list[Mapping[str, object]]:
+            start = window["since"]
+            end = window["until"]
+            return [
+                row
+                for row in rows
+                if start <= datetime.fromisoformat(str(row["started_at"])) < end
+            ]
+
+    downloader_constructed = 0
+
+    class Downloader:
+        def __init__(self, **_: object) -> None:
+            nonlocal downloader_constructed
+            downloader_constructed += 1
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, object]:
+            return {
+                "total_events": 1,
+                "downloaded": 1,
+                "reused_existing_file": 0,
+                "duplicate_recording": 0,
+                "skipped_no_recording": 0,
+                "already_manifested": 0,
+                "dry_run_download": 0,
+                "failed": 0,
+                "needs_review_multiple_recordings": 0,
+                "manifest_path": str(config.capture_manifest),
+                "recordings_dir": str(config.recordings_dir),
+                "integrity_quarantined": 0,
+            }
+
+    staged: list[str] = []
+
+    def stage(*, events: Sequence[TelephonyCallEvent], **_: object) -> Summary:
+        staged.extend(event.provider_call_id for event in events)
+        config.capture_manifest.parent.mkdir(parents=True, exist_ok=True)
+        config.capture_manifest.write_text("", encoding="utf-8")
+        return Summary()
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", Client)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", Downloader)
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    ok = capture_mango_window(
+        config, since, until, controlled_request=request
+    )
+    assert ok["status"] == "ok"
+    assert ok["controlled_capture"]["attempted_other"] == 0
+    assert staged == ["call-a"]
+    assert downloader_constructed == 1
+
+    rows.append(_dual_capture_row("call-b", minute=5))
+    config.capture_manifest.unlink()
+    staged.clear()
+    blocked = capture_mango_window(
+        config, since, until, controlled_request=request
+    )
+    assert blocked["reason"] == "controlled_capture_window_not_exactly_one"
+    assert staged == []
+    assert downloader_constructed == 1
+
+
+def test_controlled_full_orchestration_success_replay_and_late_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    owner_local = tmp_path / ".mango_local"
+    pipeline = owner_local / "controlled-pilot"
+    state_dir = pipeline / "state"
+    state_dir.mkdir(parents=True, mode=0o700)
+    host_path = state_dir / "host_id"
+    host_path.write_text("m1-host\n", encoding="utf-8")
+    host_path.chmod(0o600)
+    request_path = state_dir / "request.json"
+    request_path.write_text("{}", encoding="utf-8")
+    request_path.chmod(0o600)
+    production_cursor = (
+        owner_local
+        / "mango_calls_two_processes"
+        / "state"
+        / "mango_api_freshness.json"
+    )
+    production_cursor.parent.mkdir(parents=True, mode=0o700)
+    production_cursor.write_text('{"sentinel":1}\n', encoding="utf-8")
+    production_cursor.chmod(0o600)
+    runtime_config_path = state_dir / "runtime.json"
+    runtime_config_path.write_text("{}", encoding="utf-8")
+    runtime_config_path.chmod(0o600)
+    code_sha = calls_runtime.current_git_sha(Path(__file__).resolve().parents[1])
+    config = CallsTwoProcessesConfig(
+        pipeline_root=pipeline,
+        timeline_db=pipeline / "timeline" / "timeline.sqlite",
+        timeline_allowed_root=pipeline / "timeline",
+        python_executable=Path(sys.executable),
+        codex_binary=Path(sys.executable),
+        codex_home_root=pipeline / "codex-home",
+        tenant_id="foton",
+        min_free_gib=1,
+        stage_limit=1,
+        processing_scope="controlled_1_prepare",
+        runtime_authority_mode="isolated_controlled",
+        controlled_capture_request_path=request_path,
+        controlled_capture_request_sha256="b" * 64,
+        production_cursor_guard_path=production_cursor,
+        expected_code_sha=code_sha,
+        expected_active_host_id="m1-host",
+        host_id_path=host_path,
+        require_cutover_authority=False,
+        strict_ready_provenance=True,
+        publication_root=pipeline / "publication",
+    )
+    request = ControlledCaptureRequest(
+        source_call_id="TARGET",
+        expected_count=1,
+        since=datetime(2026, 8, 10, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 10, 10, 30, tzinfo=timezone.utc),
+        pipeline_root=pipeline,
+        tenant_id="foton",
+        code_sha=code_sha,
+        host_id="m1-host",
+        request_path=request_path,
+        request_sha256="b" * 64,
+    )
+    mode = {"value": "first"}
+    timeline_target_rows = {"value": 0}
+    timeline_total_rows = {"value": 0}
+    timeline_revision = {"value": 0}
+    timeline_state = {"value": "present"}
+
+    def capture(*_args: object, **_kwargs: object) -> Mapping[str, object]:
+        return {
+            "status": "ok",
+            "mango_enumeration_complete": True,
+            "enumeration_consistency_ok": True,
+            "controlled_capture": {"attempted": 1, "attempted_other": 0},
+            "downloaded": 0 if mode["value"] == "replay" else 1,
+            "manifest_end_offset": 0,
+            "manifest_snapshot_sha256": "c" * 64,
+        }
+
+    def write_controlled_cursor(
+        path: Path, _until: datetime, _capture: Mapping[str, object]
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "manifest_end_offset": 0,
+                    "manifest_snapshot_sha256": "c" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    allowlist_path = state_dir / "controlled" / "allowlist.json"
+    allowlist_path.parent.mkdir(parents=True, mode=0o700)
+    allowlist_path.write_text("{}", encoding="utf-8")
+    allowlist_path.chmod(0o600)
+    scope = ControlledCallScope(
+        source_call_id="TARGET",
+        target_record_id=1,
+        source_audio_sha256="d" * 64,
+        source_audio_size_bytes=100,
+        tenant_id="foton",
+        code_sha=code_sha,
+        host_id="m1-host",
+        allowlist_path=allowlist_path,
+        allowlist_sha256="e" * 64,
+    )
+
+    def command_runner(
+        command: Sequence[str], _env: Mapping[str, str], _cwd: Path
+    ) -> Mapping[str, object]:
+        if "init-db" in command:
+            config.working_db.parent.mkdir(parents=True, exist_ok=True)
+            config.working_db.write_bytes(b"synthetic")
+        return {"rc": 0, "command": str(command[-1]), "metrics": {}}
+
+    def heavy(
+        _config: CallsTwoProcessesConfig, **_kwargs: object
+    ) -> Mapping[str, object]:
+        with pytest.raises(LockBusy):
+            with process_lease(
+                _config.pipeline_lock,
+                stale_seconds=60,
+            ):
+                pass
+        transitioned = mode["value"] != "replay"
+        return {
+            "status": "ok",
+            "execution_class": (
+                "transitioned_to_ready" if transitioned else "idempotent_noop"
+            ),
+            "stages": [],
+            "after": {
+                "target": {"started_at": "2026-08-10T10:05:00+00:00"}
+            },
+        }
+
+    def process_b(_config: CallsTwoProcessesConfig) -> Mapping[str, object]:
+        if mode["value"] == "timeline-delete-failure":
+            timeline_state["value"] = "absent"
+            timeline_target_rows["value"] = 0
+            timeline_total_rows["value"] = 0
+            timeline_revision["value"] += 1
+            raise RuntimeError("synthetic Timeline deletion failure")
+        if mode["value"] == "timeline-foreign-commit-failure":
+            timeline_total_rows["value"] += 1
+            timeline_revision["value"] += 1
+            raise RuntimeError("synthetic post-foreign-commit failure")
+        writes = mode["value"] != "replay"
+        if writes:
+            timeline_state["value"] = "present"
+            timeline_target_rows["value"] += 1
+            timeline_total_rows["value"] += 1
+            timeline_revision["value"] += 1
+        if mode["value"] == "timeline-commit-failure":
+            raise RuntimeError("synthetic post-commit failure")
+        return {
+            "status": "ok",
+            "safety": {"writes_timeline_staging": writes},
+            "counters": {"import": {"writes_applied": int(writes)}},
+        }
+
+    def preview(_path: Path, _day: object) -> Mapping[str, object]:
+        if mode["value"] == "late-failure":
+            raise RuntimeError("synthetic preview failure")
+        if mode["value"] == "cursor-mutation":
+            production_cursor.write_text('{"sentinel":2}\n', encoding="utf-8")
+            production_cursor.chmod(0o600)
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_capture_request_for_config",
+        lambda _config: request,
+    )
+    monkeypatch.setattr(calls_runtime, "disk_preflight", lambda _config: {"ok": True})
+    monkeypatch.setattr(
+        calls_runtime,
+        "environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "runtime_fingerprint": {}},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "capture_enumeration_exact_sha256",
+        lambda *_args, **_kwargs: "f" * 64,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "certify_capture_window",
+        lambda _config, value, **_kwargs: value,
+    )
+    monkeypatch.setattr(calls_runtime, "write_cursor", write_controlled_cursor)
+    monkeypatch.setattr(
+        calls_runtime,
+        "prepare_ingest_inputs",
+        lambda *_args, **_kwargs: {
+            "audio_files": 0 if mode["value"] == "replay" else 1
+        },
+    )
+    monkeypatch.setattr(calls_runtime, "worker_environment", lambda _config: {})
+    monkeypatch.setattr(
+        calls_runtime,
+        "create_isolated_controlled_allowlist",
+        lambda *_args: scope,
+    )
+    monkeypatch.setattr(calls_runtime, "run_controlled_one", heavy)
+    monkeypatch.setattr(calls_runtime, "call_db_counts", lambda _path: {"ready": 1})
+    monkeypatch.setattr(
+        calls_runtime,
+        "publish_ready_db_if_changed",
+        lambda *_args, **_kwargs: {"status": "ready", "consistency_ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_timeline_readback",
+        lambda *_args: {"ok": True},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_timeline_effect_snapshot",
+        lambda *_args: {
+            "state": timeline_state["value"],
+            "total_rows": timeline_total_rows["value"],
+            "target_rows": timeline_target_rows["value"],
+            "mango_rows": timeline_target_rows["value"],
+            "quick_check": "ok",
+            "logical_sha256": hashlib.sha256(
+                str(timeline_revision["value"]).encode("ascii")
+            ).hexdigest(),
+        },
+    )
+
+    def run() -> Mapping[str, object]:
+        return calls_runtime.run_controlled_one_from_request(
+            config,
+            command_runner=command_runner,
+            capture_runner=capture,
+            process_b_runner=process_b,
+            preview_runner=preview,
+            runtime_config_path=runtime_config_path,
+        )
+
+    first = run()
+    assert first["status"] == "ok"
+    assert first["attempted"] == 1 and first["processed"] == 1
+    assert first["safety"]["production_cursor_unchanged"] is True
+    assert first["safety"]["writes_timeline_staging"] is True
+
+    mode["value"] = "replay"
+    replay = run()
+    assert replay["status"] == "ok"
+    assert replay["downloaded"] == 0 and replay["processed"] == 0
+    assert replay["safety"]["writes_timeline_staging"] is False
+
+    mode["value"] = "late-failure"
+    failed = run()
+    assert failed["status"] == "failed"
+    assert failed["attempted"] == 1 and failed["processed"] == 1
+    assert failed["safety"]["writes_timeline_staging"] is True
+    assert failed["safety"]["production_cursor_unchanged"] is True
+
+    mode["value"] = "timeline-commit-failure"
+    committed_failed = run()
+    assert committed_failed["status"] == "failed"
+    assert committed_failed["safety"]["writes_timeline_staging"] is True
+
+    mode["value"] = "timeline-foreign-commit-failure"
+    foreign_committed_failed = run()
+    assert foreign_committed_failed["status"] == "failed"
+    assert foreign_committed_failed["safety"]["writes_timeline_staging"] is True
+
+    mode["value"] = "timeline-delete-failure"
+    deleted_failed = run()
+    assert deleted_failed["status"] == "failed"
+    assert deleted_failed["safety"]["writes_timeline_staging"] is True
+
+    mode["value"] = "cursor-mutation"
+    mutated = run()
+    assert mutated["status"] == "failed"
+    assert mutated["safety"]["production_cursor_unchanged"] is False
+    assert mutated["safety"]["production_cursor_written"] is None
+
+    with process_lease(config.controlled_full_lock, stale_seconds=60):
+        locked = run()
+    assert locked["status"] == "locked"
+    assert locked["attempted"] == 0
+
+
+def test_controlled_full_invalid_config_does_not_write_report(
+    tmp_path: Path,
+) -> None:
+    unsafe_root = tmp_path / "stable_runtime" / "controlled-pilot"
+    timeline_root = tmp_path / "timeline"
+    timeline_root.mkdir()
+    config = CallsTwoProcessesConfig(
+        pipeline_root=unsafe_root,
+        timeline_allowed_root=timeline_root,
+        timeline_db=timeline_root / "timeline.sqlite",
+        python_executable=Path(sys.executable),
+        codex_binary=Path(sys.executable),
+        codex_home_root=tmp_path / "codex-home",
+        processing_scope="controlled_1_prepare",
+        runtime_authority_mode="isolated_controlled",
+        strict_ready_provenance=True,
+        require_cutover_authority=False,
+        stage_limit=1,
+    )
+
+    report = calls_runtime.run_controlled_one_from_request(config)
+
+    assert report["status"] == "failed"
+    assert report["diagnostic"]["type"] == "ValueError"
+    assert not unsafe_root.exists()
+
+
+def test_controlled_timeline_snapshot_sees_durable_commit_after_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    owner_local = tmp_path / ".mango_local"
+    pipeline = owner_local / "controlled-pilot"
+    timeline_root = pipeline / "timeline"
+    timeline_root.mkdir(parents=True, mode=0o700)
+    timeline_db = timeline_root / "timeline.sqlite"
+    with CustomerTimelineSQLiteStore(
+        timeline_db,
+        allowed_root=timeline_root,
+    ):
+        pass
+    config = replace(
+        config_for(tmp_path),
+        pipeline_root=pipeline,
+        timeline_allowed_root=timeline_root,
+        timeline_db=timeline_db,
+        processing_scope="controlled_1_prepare",
+        runtime_authority_mode="isolated_controlled",
+        production_cursor_guard_path=owner_local / "production" / "cursor.json",
+    )
+    # Exercise the exact finally receipt boundary without touching Mango or ASR.
+    def committed_then_failed(*_args: object, **_kwargs: object) -> Mapping[str, object]:
+        with sqlite3.connect(timeline_db) as con:
+            columns = [
+                row[1]
+                for row in con.execute("PRAGMA table_info(timeline_events)")
+            ]
+            values = {name: None for name in columns}
+            values.update(
+                {
+                    "event_id": "evt-controlled",
+                    "source_system": "mango_processed_summary",
+                    "source_id": "provider:TARGET",
+                    "dedupe_key": "dedupe-controlled",
+                    "tenant_id": "foton",
+                    "event_at": "2026-08-10T10:05:00+00:00",
+                    "event_type": "mango_call",
+                    "direction": "inbound",
+                    "match_status": "unresolved",
+                    "importance": 1,
+                    "created_at": "2026-08-10T10:06:00+00:00",
+                    "record_hash": "a" * 64,
+                    "record_json": "{}",
+                }
+            )
+            names = [name for name in columns if values[name] is not None]
+            con.execute(
+                f"INSERT INTO timeline_events ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+                tuple(values[name] for name in names),
+            )
+        raise RuntimeError("synthetic post-commit failure")
+
+    before = calls_runtime.controlled_timeline_effect_snapshot(config, "TARGET")
+    assert before["target_rows"] == 0
+    with pytest.raises(RuntimeError, match="post-commit"):
+        try:
+            committed_then_failed()
+        finally:
+            after = calls_runtime.controlled_timeline_effect_snapshot(config, "TARGET")
+            assert after["target_rows"] == 1
+
+
+def test_controlled_timeline_readback_rejects_wrong_tenant_and_event_type(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    with CustomerTimelineSQLiteStore(
+        config.timeline_db,
+        allowed_root=config.timeline_allowed_root,
+    ):
+        pass
+    with sqlite3.connect(config.timeline_db) as con:
+        columns = [row[1] for row in con.execute("PRAGMA table_info(timeline_events)")]
+        required = {
+            "event_id": "wrong",
+            "dedupe_key": "wrong",
+            "tenant_id": "other",
+            "event_type": "email",
+            "event_at": "2026-08-10T10:05:00+00:00",
+            "source_system": "mango_processed_summary",
+            "source_id": "provider:TARGET",
+            "direction": "inbound",
+            "match_status": "unresolved",
+            "importance": 1,
+            "created_at": "2026-08-10T10:06:00+00:00",
+            "record_hash": "a" * 64,
+            "record_json": "{}",
+        }
+        names = [name for name in columns if name in required]
+        con.execute(
+            f"INSERT INTO timeline_events ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+            tuple(required[name] for name in names),
+        )
+    assert calls_runtime.controlled_timeline_readback(config, "TARGET")["ok"] is False
+
+
+def test_controlled_timeline_readback_rejects_target_plus_foreign_row(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    with CustomerTimelineSQLiteStore(
+        config.timeline_db,
+        allowed_root=config.timeline_allowed_root,
+    ):
+        pass
+    with sqlite3.connect(config.timeline_db) as con:
+        columns = [row[1] for row in con.execute("PRAGMA table_info(timeline_events)")]
+        for suffix, tenant_id, event_type, source_id in (
+            ("target", config.tenant_id, "mango_call", "provider:TARGET"),
+            ("foreign", "other", "email", "provider:OTHER"),
+        ):
+            required = {
+                "event_id": suffix,
+                "dedupe_key": suffix,
+                "tenant_id": tenant_id,
+                "event_type": event_type,
+                "event_at": "2026-08-10T10:05:00+00:00",
+                "source_system": "mango_processed_summary",
+                "source_id": source_id,
+                "direction": "inbound",
+                "match_status": "unresolved",
+                "importance": 1,
+                "created_at": "2026-08-10T10:06:00+00:00",
+                "record_hash": hashlib.sha256(suffix.encode()).hexdigest(),
+                "record_json": "{}",
+            }
+            names = [name for name in columns if name in required]
+            con.execute(
+                f"INSERT INTO timeline_events ({','.join(names)}) "
+                f"VALUES ({','.join('?' for _ in names)})",
+                tuple(required[name] for name in names),
+            )
+    readback = calls_runtime.controlled_timeline_readback(config, "TARGET")
+    assert readback["ok"] is False
+    assert readback["total_rows"] == 2
+    assert readback["target_rows"] == 1
+
+
+def test_controlled_preview_imports_from_guarded_script_layout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        calls_runtime.sys,
+        "path",
+        [value for value in sys.path if value not in {"", str(root)}],
+    )
+    previous_scripts = sys.modules.pop("scripts", None)
+    previous_coordinator = sys.modules.pop(
+        "scripts.run_mango_calls_publication_coordinator", None
+    )
+    try:
+        with pytest.raises(RuntimeError, match="publication coordinator config"):
+            run_controlled_local_previews(
+                tmp_path / "missing-runtime.json",
+                date(2026, 8, 10),
+                "TARGET",
+            )
+    finally:
+        if previous_scripts is not None:
+            sys.modules["scripts"] = previous_scripts
+        if previous_coordinator is not None:
+            sys.modules[
+                "scripts.run_mango_calls_publication_coordinator"
+            ] = previous_coordinator
 
 
 def test_strict_dual_enumeration_accepts_reordered_identical_rows(
@@ -7790,6 +8405,222 @@ def test_process_b_does_not_skip_late_old_call_by_timestamp_cursor(tmp_path: Pat
     assert second["status"] == "ok"
     assert seen_since == [None]
     assert second["counters"]["producer_scan_mode"] == "full_drop_dedupe"
+
+
+def test_controlled_process_b_reuses_exact_imported_drop_without_db_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        runtime_authority_mode="isolated_controlled",
+    )
+    request = ControlledCaptureRequest(
+        source_call_id="TARGET",
+        expected_count=1,
+        since=datetime(2026, 8, 10, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 10, 10, 30, tzinfo=timezone.utc),
+        pipeline_root=config.pipeline_root,
+        tenant_id=config.tenant_id,
+        code_sha="a" * 40,
+        host_id="m1-host",
+        request_path=tmp_path / "request.json",
+        request_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_capture_request_for_config",
+        lambda _config: request,
+    )
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(
+        config.timeline_db,
+        allowed_root=config.timeline_allowed_root,
+    ):
+        pass
+    fingerprint = calls_runtime.ready_drop_fingerprint(config)
+    write_json(
+        config.process_b_cursor_path,
+        {
+            "schema_version": "mango_calls_process_b_cursor_v1",
+            "sha256": fingerprint["sha256"],
+            "size_bytes": fingerprint["size_bytes"],
+        },
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_timeline_effect_snapshot",
+        lambda *_args: {
+            "state": "present",
+            "total_rows": 1,
+            "target_rows": 1,
+            "mango_rows": 1,
+            "quick_check": "ok",
+            "logical_sha256": "a" * 64,
+        },
+    )
+    before = calls_runtime.controlled_timeline_effect_snapshot(config, "TARGET")
+    producer_called = False
+
+    def forbidden_producer(*_args: object, **_kwargs: object) -> Mapping[str, object]:
+        nonlocal producer_called
+        producer_called = True
+        raise AssertionError("controlled replay must not produce or import")
+
+    report = calls_runtime._run_process_b(
+        config,
+        producer_runner=forbidden_producer,
+    )
+    after = calls_runtime.controlled_timeline_effect_snapshot(config, "TARGET")
+
+    assert report["status"] == "idle"
+    assert report["stop_reason"] == "controlled_drop_already_imported"
+    assert report["safety"]["writes_timeline_staging"] is False
+    assert before == after
+    assert producer_called is False
+
+
+def test_controlled_process_b_does_not_skip_when_timeline_target_is_lost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        runtime_authority_mode="isolated_controlled",
+    )
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(
+        config.timeline_db,
+        allowed_root=config.timeline_allowed_root,
+    ):
+        pass
+    fingerprint = calls_runtime.ready_drop_fingerprint(config)
+    write_json(
+        config.process_b_cursor_path,
+        {
+            "schema_version": "mango_calls_process_b_cursor_v1",
+            "sha256": fingerprint["sha256"],
+            "size_bytes": fingerprint["size_bytes"],
+        },
+    )
+    request = ControlledCaptureRequest(
+        source_call_id="TARGET",
+        expected_count=1,
+        since=datetime(2026, 8, 10, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 10, 10, 30, tzinfo=timezone.utc),
+        pipeline_root=config.pipeline_root,
+        tenant_id=config.tenant_id,
+        code_sha="a" * 40,
+        host_id="m1-host",
+        request_path=tmp_path / "request.json",
+        request_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_capture_request_for_config",
+        lambda _config: request,
+    )
+    producer_called = False
+
+    def producer(
+        _config: CallsTwoProcessesConfig,
+        out: Path,
+        report: Path,
+        _since: str | None,
+    ) -> Mapping[str, object]:
+        nonlocal producer_called
+        producer_called = True
+        out.write_text("", encoding="utf-8")
+        report.write_text("{}", encoding="utf-8")
+        return {"status": "ok", "rows_selected": 0, "events_written": 0}
+
+    def importer(_config: object) -> Mapping[str, object]:
+        return {
+            "validation_ok": True,
+            "summary": {
+                "records_read": 0,
+                "records_accepted": 0,
+                "records_rejected": 0,
+                "writes_applied": 0,
+            },
+            "writes": {"status_counts": {}},
+            "source_system": "mango_processed_summary",
+        }
+
+    report = calls_runtime._run_process_b(
+        config,
+        producer_runner=producer,
+        import_runner=importer,
+    )
+    assert producer_called is True
+    assert report["stop_reason"] != "controlled_drop_already_imported"
+
+
+def test_parent_lifeline_wrapper_normal_exit_and_parent_sigkill(
+    tmp_path: Path,
+) -> None:
+    normal = run_command(
+        [sys.executable, "-c", "print('ok')"],
+        os.environ,
+        tmp_path / "normal",
+        parent_lifeline=True,
+    )
+    assert normal["rc"] == 0
+
+    child_pid_path = tmp_path / "child.pid"
+    child_code = (
+        "import os,sys,time;"
+        "open(sys.argv[1],'w').write(str(os.getpid()));"
+        "time.sleep(60)"
+    )
+    orchestrator_code = "\n".join(
+        (
+            "import os, subprocess, sys, time",
+            "read_fd, write_fd = os.pipe()",
+            "env = dict(os.environ)",
+            "env['MANGO_CALLS_CONTROLLED_LIFELINE_FD'] = str(read_fd)",
+            f"command = {parent_lifeline_subprocess_command([sys.executable, '-c', child_code, str(child_pid_path)])!r}",
+            "proc = subprocess.Popen(command, env=env, pass_fds=(read_fd,), start_new_session=True)",
+            "os.close(read_fd)",
+            "print(proc.pid, flush=True)",
+            "time.sleep(60)",
+        )
+    )
+    orchestrator = subprocess.Popen(
+        [sys.executable, "-c", orchestrator_code],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert orchestrator.stdout is not None
+    helper_pid = int(orchestrator.stdout.readline().strip())
+    deadline = time.monotonic() + 10
+    while not child_pid_path.is_file() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert child_pid_path.is_file()
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    os.kill(orchestrator.pid, signal.SIGKILL)
+    orchestrator.wait(timeout=10)
+    deadline = time.monotonic() + 10
+    state = ""
+    while time.monotonic() < deadline:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(child_pid)],
+            check=False,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        if not state or state.startswith("Z"):
+            break
+        time.sleep(0.05)
+    try:
+        assert not state or state.startswith("Z")
+    finally:
+        try:
+            os.killpg(helper_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def test_foton_pdn_sweep_blocks_phone() -> None:

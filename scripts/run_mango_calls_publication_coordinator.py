@@ -101,6 +101,13 @@ def _local_root(config: Mapping[str, Any]) -> Path:
         raise RuntimeError("publication_root must stay below $HOME/.mango_local") from None
     if root == home_local:
         raise RuntimeError("publication_root is unsafe")
+    if str(config.get("runtime_authority_mode") or "") == "isolated_controlled":
+        pipeline = Path(str(config.get("pipeline_root") or "")).expanduser()
+        pipeline = pipeline.resolve(strict=False)
+        if not config.get("publication_root") or pipeline not in root.parents:
+            raise RuntimeError(
+                "isolated controlled publication_root must stay below pipeline_root"
+            )
     return root
 
 
@@ -260,6 +267,8 @@ def _daily_export(
     *,
     sealed_only: bool,
     expected_ready_manifest_sha256: Optional[str] = None,
+    offline_only: bool = False,
+    controlled_preview: bool = False,
 ) -> Mapping[str, Any]:
     _pipeline, ready, working = _ready_paths(config)
     daily = config.get("daily_export")
@@ -269,7 +278,11 @@ def _daily_export(
         if daily.get("manager_users")
         else None
     )
-    kwargs: dict[str, Any] = {"sealed_only": sealed_only}
+    kwargs: dict[str, Any] = {
+        "sealed_only": sealed_only,
+        "tallanto_api_enabled": not offline_only,
+        "controlled_preview": controlled_preview,
+    }
     for key, argument in (
         ("tallanto_export", "tallanto_export"),
         ("tallanto_env", "tallanto_env"),
@@ -299,7 +312,7 @@ def _package_is_final(package: Mapping[str, Any]) -> bool:
 
 
 def _daily_close(
-    config: Mapping[str, Any], root: Path, day: date
+    config: Mapping[str, Any], root: Path, day: date, *, offline_only: bool = False
 ) -> Mapping[str, Any]:
     _pipeline, ready, _working = _ready_paths(config)
     manifest, manifest_sha256 = _ready_snapshot(config, ready)
@@ -330,6 +343,7 @@ def _daily_close(
                 candidate,
                 sealed_only=True,
                 expected_ready_manifest_sha256=manifest_sha256,
+                **({"offline_only": True} if offline_only else {}),
             )
             package_closed = _package_is_final(result)
             attempts.append(
@@ -421,20 +435,30 @@ def _daily_alert(
 
 
 def _daily_status(
-    config: Mapping[str, Any], root: Path, day: date
+    config: Mapping[str, Any], root: Path, day: date, *, offline_only: bool = False,
+    controlled_preview: bool = False,
 ) -> Mapping[str, Any]:
     _pipeline, ready, _working = _ready_paths(config)
     verdict_closed = False
     package_closed = False
     try:
         manifest, manifest_sha256 = _ready_snapshot(config, ready)
-        verdict_closed = _day_verdict(manifest, day).get("closure_ok") is True
+        verdict_closed = (
+            _day_verdict(manifest, day).get("closure_ok") is True
+            and not controlled_preview
+        )
         package = _daily_export(
             config,
             root,
             day,
             sealed_only=verdict_closed,
             expected_ready_manifest_sha256=manifest_sha256,
+            **({"offline_only": True} if offline_only else {}),
+            **(
+                {"controlled_preview": True}
+                if controlled_preview
+                else {}
+            ),
         )
         package_closed = verdict_closed and _package_is_final(package)
         result: dict[str, Any] = {
@@ -445,6 +469,12 @@ def _daily_status(
                 "source_ready_manifest_sha256"
             ),
             "decision_ready_manifest_sha256": manifest_sha256,
+            "rows": package.get("rows"),
+            "xlsx": package.get("xlsx"),
+            "transcript_dir": package.get("transcript_dir"),
+            "manifest": package.get("manifest"),
+            "transcripts": package.get("transcripts"),
+            "readback_ok": package.get("readback_ok") is True,
         }
     except Exception as exc:
         result = {
@@ -473,6 +503,8 @@ def run(
     command: str,
     *,
     day: Optional[date] = None,
+    offline_only: bool = False,
+    controlled_preview: bool = False,
 ) -> Mapping[str, Any]:
     config = _read_config(config_path)
     root = _local_root(config)
@@ -487,11 +519,19 @@ def run(
         if command == "current-plan":
             result = _current_plan(config, root, target_day)
         elif command == "daily-close":
-            result = _daily_close(config, root, target_day)
+            result = _daily_close(
+                config, root, target_day, offline_only=offline_only
+            )
         elif command == "daily-alert":
             result = _daily_alert(config, root, target_day)
         elif command == "daily-status":
-            result = _daily_status(config, root, target_day)
+            result = _daily_status(
+                config,
+                root,
+                target_day,
+                offline_only=offline_only,
+                controlled_preview=controlled_preview,
+            )
         else:
             raise ValueError("unsupported coordinator command")
     report = {

@@ -12,6 +12,7 @@ if [[ "${COMMAND}" != "process-a" && "${COMMAND}" != "process-a-worker" \
     && "${COMMAND}" != "process-b-pull" \
     && "${COMMAND}" != "capture" && "${COMMAND}" != "capture-worker" \
     && "${COMMAND}" != "pipeline" && "${COMMAND}" != "pipeline-worker" \
+    && "${COMMAND}" != "controlled-one" && "${COMMAND}" != "controlled-one-worker" \
     && "${COMMAND}" != "watchdog" && "${COMMAND}" != "watchdog-worker" \
     && "${COMMAND}" != "publication-current" \
     && "${COMMAND}" != "publication-close" \
@@ -56,7 +57,7 @@ fi
 if [[ "${STRICT_RUNTIME}" == "true" ]] \
     && [[ "${COMMAND}" == "process-a" || "${COMMAND}" == "process-b" \
         || "${COMMAND}" == "capture" || "${COMMAND}" == "pipeline" \
-        || "${COMMAND}" == "watchdog" ]]; then
+        || "${COMMAND}" == "controlled-one" || "${COMMAND}" == "watchdog" ]]; then
   print -u2 '{"status":"failed","stop_reason":"strict_runtime_requires_guarded_worker_command"}'
   exit 2
 fi
@@ -85,6 +86,7 @@ export MANGO_CALLS_EXPECTED_CONFIG_SHA256="${CONFIG_SHA256}"
 if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-worker" \
     || "${COMMAND}" == "process-b-pull" \
     || "${COMMAND}" == "capture-worker" || "${COMMAND}" == "pipeline-worker" \
+    || "${COMMAND}" == "controlled-one-worker" \
     || "${COMMAND}" == "watchdog-worker" \
     || "${COMMAND}" == publication-* ]]; then
   if [[ -z "${MANGO_CALLS_PIPELINE_ROOT:-}" || "${MANGO_CALLS_PIPELINE_ROOT}" != "${PIPELINE_ROOT}" ]]; then
@@ -119,6 +121,7 @@ PIPELINE_COMMAND="${COMMAND}"
 [[ "${COMMAND}" == "process-b-pull" ]] && PIPELINE_COMMAND="process-b"
 [[ "${COMMAND}" == "capture-worker" ]] && PIPELINE_COMMAND="capture"
 [[ "${COMMAND}" == "pipeline-worker" ]] && PIPELINE_COMMAND="pipeline"
+[[ "${COMMAND}" == "controlled-one-worker" ]] && PIPELINE_COMMAND="controlled-one"
 [[ "${COMMAND}" == "watchdog-worker" ]] && PIPELINE_COMMAND="watchdog"
 
 verify_split_revision() {
@@ -147,6 +150,7 @@ verify_split_revision() {
 if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-worker" \
     || "${COMMAND}" == "process-b-pull" \
     || "${COMMAND}" == "capture-worker" || "${COMMAND}" == "pipeline-worker" \
+    || "${COMMAND}" == "controlled-one-worker" \
     || "${COMMAND}" == "watchdog-worker" \
     || "${COMMAND}" == publication-* ]]; then
   verify_split_revision
@@ -181,7 +185,8 @@ if [[ "${COMMAND}" == "process-b-pull" ]]; then
 fi
 
 set +e
-if [[ "${COMMAND}" == "pipeline-worker" && -x /usr/bin/caffeinate ]]; then
+if [[ ("${COMMAND}" == "pipeline-worker" || "${COMMAND}" == "controlled-one-worker") \
+    && -x /usr/bin/caffeinate ]]; then
   OUTPUT="$(/usr/bin/caffeinate -dimsu -- "${PYTHON_EXECUTABLE}" \
     "${ROOT}/scripts/run_mango_calls_pipeline.py" --config "${CONFIG}" "${PIPELINE_COMMAND}")"
 else

@@ -42,7 +42,9 @@ from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     codex_network_available,
     command_path,
     controlled_call_bound_snapshot,
+    controlled_capture_request_for_config,
     controlled_call_scope_for_config,
+    controlled_production_cursor_snapshot,
     controlled_read_only_cutover_authority_report,
     cutover_authority_report,
     ensure_codex_runtime_anchor,
@@ -77,6 +79,7 @@ CONTROLLED_ONE_CHECKS = frozenset(
         "processing_scope_is_controlled_one",
         "controlled_one_allowlist_bound",
         "controlled_one_target_unique_in_working_db",
+        "controlled_one_production_cursor_guard_readable",
     }
 )
 SERVICE_SCOPE_CHECKS = frozenset({"processing_scope_is_service"})
@@ -657,17 +660,30 @@ def probe(
         "ok": False,
         "errors": ["cutover_authority_not_checked"],
     }
+    capture_request = None
     if parsed_config is not None:
         try:
             host_id = read_host_id(parsed_config.host_id_file)
-            authority = (
-                controlled_read_only_cutover_authority_report(parsed_config)
-                if parsed_config.processing_scope == "controlled_1"
-                else cutover_authority_report(
-                    parsed_config,
-                    initialize_lineage=False,
+            if parsed_config.processing_scope == "controlled_1_prepare":
+                capture_request = controlled_capture_request_for_config(
+                    parsed_config
                 )
-            )
+                authority = {
+                    "ok": capture_request is not None,
+                    "active_host_id": (
+                        capture_request.host_id if capture_request else ""
+                    ),
+                    "mode": "isolated_controlled_request",
+                }
+            else:
+                authority = (
+                    controlled_read_only_cutover_authority_report(parsed_config)
+                    if parsed_config.processing_scope == "controlled_1"
+                    else cutover_authority_report(
+                        parsed_config,
+                        initialize_lineage=False,
+                    )
+                )
         except (OSError, RuntimeError):
             pass
     host_identity_ok = bool(
@@ -684,23 +700,72 @@ def probe(
     controlled_target_unique = False
     controlled_scope: Mapping[str, Any] = {}
     controlled_scope_error_type = ""
+    production_cursor_guard_readable = False
     if parsed_config is not None:
         try:
-            loaded_scope = controlled_call_scope_for_config(parsed_config)
-            controlled_scope_ok = bool(
-                loaded_scope is not None
-                and parsed_config.processing_scope == "controlled_1"
-                and parsed_config.stage_limit == 1
-            )
-            if loaded_scope is not None:
+            if parsed_config.processing_scope == "controlled_1_prepare":
+                capture_request = capture_request or (
+                    controlled_capture_request_for_config(parsed_config)
+                )
+                controlled_scope_ok = bool(
+                    capture_request is not None
+                    and capture_request.expected_count == 1
+                    and parsed_config.stage_limit == 1
+                )
+                controlled_target_unique = controlled_scope_ok
                 controlled_scope = {
-                    "allowlist_sha256": loaded_scope.allowlist_sha256,
-                    "code_sha": loaded_scope.code_sha,
-                    "tenant_id": loaded_scope.tenant_id,
-                    "host_id": loaded_scope.host_id,
+                    "request_sha256": capture_request.request_sha256,
+                    "code_sha": capture_request.code_sha,
+                    "tenant_id": capture_request.tenant_id,
+                    "host_id": capture_request.host_id,
+                    "expected_count": capture_request.expected_count,
                 }
-                controlled_call_bound_snapshot(parsed_config, loaded_scope)
-                controlled_target_unique = True
+                if parsed_config.production_cursor_guard_path is None:
+                    raise RuntimeError("controlled_production_cursor_guard_missing")
+                controlled_production_cursor_snapshot(
+                    parsed_config.production_cursor_guard_path
+                )
+                production_cursor_guard_readable = True
+            else:
+                loaded_scope = controlled_call_scope_for_config(parsed_config)
+                controlled_scope_ok = bool(
+                    loaded_scope is not None
+                    and parsed_config.processing_scope == "controlled_1"
+                    and parsed_config.stage_limit == 1
+                )
+                if loaded_scope is not None:
+                    controlled_scope = {
+                        "allowlist_sha256": loaded_scope.allowlist_sha256,
+                        "code_sha": loaded_scope.code_sha,
+                        "tenant_id": loaded_scope.tenant_id,
+                        "host_id": loaded_scope.host_id,
+                    }
+                    controlled_call_bound_snapshot(parsed_config, loaded_scope)
+                    controlled_target_unique = True
+                production_cursor_guard_readable = bool(
+                    parsed_config.processing_scope != "controlled_1"
+                    or getattr(
+                        parsed_config,
+                        "runtime_authority_mode",
+                        "service_cutover",
+                    )
+                    != "isolated_controlled"
+                )
+                if (
+                    parsed_config.processing_scope == "controlled_1"
+                    and getattr(
+                        parsed_config,
+                        "runtime_authority_mode",
+                        "service_cutover",
+                    )
+                    == "isolated_controlled"
+                ):
+                    if parsed_config.production_cursor_guard_path is None:
+                        raise RuntimeError("controlled_production_cursor_guard_missing")
+                    controlled_production_cursor_snapshot(
+                        parsed_config.production_cursor_guard_path
+                    )
+                    production_cursor_guard_readable = True
         except (AttributeError, OSError, RuntimeError, ValueError) as exc:
             controlled_scope_error_type = type(exc).__name__
     measurements_ok = _measurement_evidence_ok(
@@ -742,10 +807,14 @@ def probe(
         ),
         "processing_scope_is_controlled_one": bool(
             parsed_config is not None
-            and parsed_config.processing_scope == "controlled_1"
+            and parsed_config.processing_scope
+            in {"controlled_1_prepare", "controlled_1"}
         ),
         "controlled_one_allowlist_bound": controlled_scope_ok,
         "controlled_one_target_unique_in_working_db": controlled_target_unique,
+        "controlled_one_production_cursor_guard_readable": (
+            production_cursor_guard_readable
+        ),
         "ffmpeg_present": shutil.which("ffmpeg") is not None,
         "ffprobe_present": shutil.which("ffprobe") is not None,
         **access,
@@ -819,6 +888,13 @@ def probe(
             "checks": controlled_1_checks,
             "requires_controlled_10": False,
         },
+        "ready_for_controlled_one": {
+            "status": "OK" if controlled_1_ok else "STOP",
+            "ok": controlled_1_ok,
+            "checks": controlled_1_checks,
+            "requires_controlled_10": False,
+            "does_not_authorize_real_call": True,
+        },
         "service_capacity_readiness": {
             "status": "OK" if service_capacity_ok else "STOP",
             "ok": service_capacity_ok,
@@ -840,6 +916,14 @@ def probe(
             "requires_controlled_1": True,
             "controlled_1_human_pass_is_external": True,
             "requires_service_capacity": True,
+        },
+        "ready_for_permanent_service": {
+            "status": "OK" if production_service_ok else "STOP",
+            "ok": production_service_ok,
+            "checks": production_service_checks,
+            "requires_controlled_10": True,
+            "requires_controlled_1_human_pass": True,
+            "does_not_authorize_launch": True,
         },
         "checks": checks,
         "runtime_fingerprint_errors": fingerprint_errors,

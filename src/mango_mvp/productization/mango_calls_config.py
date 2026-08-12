@@ -16,16 +16,30 @@ EXPECTED_CONFIG_SHA_ENV = "MANGO_CALLS_EXPECTED_CONFIG_SHA256"
 
 
 def strict_service_flags(payload: Mapping[str, Any]) -> tuple[bool, bool]:
+    authority_mode = str(
+        payload.get("runtime_authority_mode") or "service_cutover"
+    ).strip()
+    if authority_mode not in {"service_cutover", "isolated_controlled"}:
+        raise ValueError("runtime_authority_mode is invalid")
     values: list[bool] = []
     for name in ("require_cutover_authority", "strict_ready_provenance"):
-        value = payload[name] if name in payload else True
+        default = False if (
+            authority_mode == "isolated_controlled"
+            and name == "require_cutover_authority"
+        ) else True
+        value = payload[name] if name in payload else default
         if type(value) is not bool:
             raise ValueError(f"{name} must be a JSON boolean")
         values.append(value)
-    if values[0] != values[1]:
+    invalid = (
+        tuple(values) != (False, True)
+        if authority_mode == "isolated_controlled"
+        else values[0] != values[1]
+    )
+    if invalid:
         raise ValueError(
-            "require_cutover_authority and strict_ready_provenance "
-            "must be enabled together"
+            "runtime authority flags must be enabled together or match "
+            "isolated runtime_authority_mode"
         )
     return values[0], values[1]
 

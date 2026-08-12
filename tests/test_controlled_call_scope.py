@@ -3,7 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import sqlite3
+import subprocess
+import sys
+import time
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import mango_mvp.services.controlled_call_scope as controlled_scope_module
+import scripts.create_m1_calls_controlled_request as request_creator
 from mango_mvp.config import Settings
 from mango_mvp.customer_timeline.calls_two_processes import (
     CallsTwoProcessesConfig,
@@ -20,8 +26,10 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     parse_worker_stage_metrics,
     process_lease,
     run_controlled_one,
+    reject_controlled_call_broad_operation,
     stage_subprocess_command,
     worker_environment,
+    write_json,
 )
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
@@ -29,10 +37,13 @@ from mango_mvp.productization.mango_calls_service_contract import current_git_sh
 from mango_mvp.services.analyze import AnalyzeService
 from mango_mvp.services.controlled_call_scope import (
     CONTROLLED_CALL_ALLOWLIST_SCHEMA,
+    CONTROLLED_CAPTURE_REQUEST_SCHEMA,
     controlled_audio_input_path,
+    controlled_worker_parent_lifeline,
     enforce_controlled_cli_command,
     enforce_controlled_worker_stages,
     load_controlled_call_scope,
+    load_controlled_capture_request,
 )
 from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.transcribe import TranscribeService
@@ -43,6 +54,41 @@ from tests.test_dialogue_format import make_settings
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _write_capture_request(
+    root: Path,
+    *,
+    source_call_id: str = "TARGET",
+    since: str = "2026-08-11T10:00:00+00:00",
+    until: str = "2026-08-11T10:30:00+00:00",
+) -> tuple[Path, str, Path, Path]:
+    owner_local = root / ".mango_local"
+    pipeline = owner_local / "controlled-pipeline"
+    state = pipeline / "state"
+    state.mkdir(parents=True, mode=0o700)
+    host_id = state / "host_id"
+    host_id.write_text("m1-host\n", encoding="utf-8")
+    host_id.chmod(0o600)
+    path = state / "controlled-request.json"
+    raw = json.dumps(
+        {
+            "schema_version": CONTROLLED_CAPTURE_REQUEST_SCHEMA,
+            "source_call_ids": [source_call_id],
+            "expected_count": 1,
+            "since": since,
+            "until": until,
+            "pipeline_root": str(pipeline),
+            "tenant_id": "foton",
+            "code_sha": current_git_sha(REPO_ROOT),
+            "host_id": "m1-host",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return path, hashlib.sha256(raw).hexdigest(), pipeline, host_id
+
+
 @pytest.fixture(autouse=True)
 def _clean_git_for_scope_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -50,6 +96,277 @@ def _clean_git_for_scope_tests(monkeypatch: pytest.MonkeyPatch) -> None:
         "git_worktree_is_clean",
         lambda _root: True,
     )
+
+
+def test_controlled_capture_request_is_exact_owner_bound_and_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    path, digest, pipeline, host_id = _write_capture_request(tmp_path)
+
+    request = load_controlled_capture_request(
+        path=path,
+        expected_sha256=digest,
+        expected_tenant_id="foton",
+        expected_code_sha=current_git_sha(REPO_ROOT),
+        expected_host_id="m1-host",
+        host_id_path=host_id,
+        project_root=REPO_ROOT,
+        expected_pipeline_root=pipeline,
+        now=datetime(2026, 8, 12, tzinfo=timezone.utc),
+    )
+
+    assert request.source_call_id == "TARGET"
+    assert request.expected_count == 1
+    assert request.until - request.since == timedelta(minutes=30)
+
+    path.write_bytes(path.read_bytes().replace(b"TARGET", b"OTHER!"))
+    path.chmod(0o600)
+    with pytest.raises(RuntimeError, match="sha256_mismatch"):
+        load_controlled_capture_request(
+            path=path,
+            expected_sha256=digest,
+            expected_tenant_id="foton",
+            expected_code_sha=current_git_sha(REPO_ROOT),
+            expected_host_id="m1-host",
+            host_id_path=host_id,
+            project_root=REPO_ROOT,
+            expected_pipeline_root=pipeline,
+            now=datetime(2026, 8, 12, tzinfo=timezone.utc),
+        )
+
+
+def test_controlled_capture_request_accepts_closed_window_from_today(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    path, digest, pipeline, host_id = _write_capture_request(
+        tmp_path,
+        since="2026-08-12T07:00:00+00:00",
+        until="2026-08-12T07:30:00+00:00",
+    )
+
+    request = load_controlled_capture_request(
+        path=path,
+        expected_sha256=digest,
+        expected_tenant_id="foton",
+        expected_code_sha=current_git_sha(REPO_ROOT),
+        expected_host_id="m1-host",
+        host_id_path=host_id,
+        project_root=REPO_ROOT,
+        expected_pipeline_root=pipeline,
+        now=datetime(2026, 8, 12, 9, tzinfo=timezone.utc),
+    )
+
+    assert request.until == datetime(2026, 8, 12, 7, 30, tzinfo=timezone.utc)
+
+
+def test_controlled_request_generator_bootstraps_before_request_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(request_creator, "git_worktree_is_clean", lambda _root: True)
+    owner_local = tmp_path / ".mango_local"
+    pipeline = owner_local / "controlled-pilot"
+    state = pipeline / "state"
+    state.mkdir(parents=True, mode=0o700)
+    host_id = state / "host_id"
+    host_id.write_text("m1-host\n", encoding="utf-8")
+    host_id.chmod(0o600)
+    config_path = state / "bootstrap.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "pipeline_root": str(pipeline),
+                "tenant_id": "foton",
+                "processing_scope": "controlled_1_prepare",
+                "runtime_authority_mode": "isolated_controlled",
+                "require_cutover_authority": False,
+                "strict_ready_provenance": True,
+                "stage_limit": 1,
+                "expected_code_sha": current_git_sha(REPO_ROOT),
+                "expected_active_host_id": "m1-host",
+                "host_id_path": str(host_id),
+                "production_cursor_guard_path": str(
+                    owner_local
+                    / "mango_calls_two_processes"
+                    / "state"
+                    / "mango_api_freshness.json"
+                ),
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    request_path = state / "request.json"
+
+    rc = request_creator.main(
+        [
+            "--config",
+            str(config_path),
+            "--source-call-id",
+            "TARGET",
+            "--since",
+            "2026-08-10T10:00:00+00:00",
+            "--until",
+            "2026-08-10T10:30:00+00:00",
+            "--expected-count",
+            "1",
+            "--out",
+            str(request_path),
+        ]
+    )
+
+    result = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert result["status"] == "ok"
+    assert result["runs_mango_api"] is False
+    assert result["created"] is True
+    assert result["reused"] is False
+    assert request_path.is_file()
+    assert request_path.stat().st_mode & 0o777 == 0o600
+    original = request_path.read_bytes()
+    original_inode = request_path.stat().st_ino
+
+    repeat_rc = request_creator.main(
+        [
+            "--config",
+            str(config_path),
+            "--source-call-id",
+            "TARGET",
+            "--since",
+            "2026-08-10T10:00:00+00:00",
+            "--until",
+            "2026-08-10T10:30:00+00:00",
+            "--expected-count",
+            "1",
+            "--out",
+            str(request_path),
+        ]
+    )
+    repeat = json.loads(capsys.readouterr().out)
+    assert repeat_rc == 0
+    assert repeat["created"] is False
+    assert repeat["reused"] is True
+    assert request_path.stat().st_ino == original_inode
+
+    changed_rc = request_creator.main(
+        [
+            "--config",
+            str(config_path),
+            "--source-call-id",
+            "OTHER",
+            "--since",
+            "2026-08-10T10:00:00+00:00",
+            "--until",
+            "2026-08-10T10:30:00+00:00",
+            "--expected-count",
+            "1",
+            "--out",
+            str(request_path),
+        ]
+    )
+    assert changed_rc == 1
+    capsys.readouterr()
+    assert request_path.read_bytes() == original
+
+    final_config_path = state / "controlled-final.json"
+    final_payload = json.loads(config_path.read_text(encoding="utf-8"))
+    final_payload.update(
+        {
+            "timeline_allowed_root": str(pipeline / "timeline"),
+            "timeline_db": str(pipeline / "timeline" / "timeline.sqlite"),
+            "python_executable": os.sys.executable,
+            "codex_binary": os.sys.executable,
+            "codex_home_root": str(pipeline / "codex-home"),
+            "publication_root": str(pipeline / "publication"),
+            "controlled_capture_request_path": str(request_path),
+            "controlled_capture_request_sha256": hashlib.sha256(original).hexdigest(),
+        }
+    )
+    final_config_path.write_text(
+        json.dumps(final_payload, sort_keys=True), encoding="utf-8"
+    )
+    final_config_path.chmod(0o600)
+    final_config = CallsTwoProcessesConfig.from_json(final_config_path)
+    assert final_config.controlled_capture_request_path == request_path
+
+    invalid_out = state / "invalid-request.json"
+    invalid_rc = request_creator.main(
+        [
+            "--config",
+            str(config_path),
+            "--source-call-id",
+            "TARGET",
+            "--since",
+            "2026-08-10T10:30:00+00:00",
+            "--until",
+            "2026-08-10T10:00:00+00:00",
+            "--expected-count",
+            "1",
+            "--out",
+            str(invalid_out),
+        ]
+    )
+    assert invalid_rc == 1
+    assert not invalid_out.exists()
+
+    crash_out = state / "crash-request.json"
+    original_unlink = Path.unlink
+    failed_cleanup = False
+
+    def fail_first_pending_cleanup(
+        path: Path, missing_ok: bool = False
+    ) -> None:
+        nonlocal failed_cleanup
+        if (
+            not failed_cleanup
+            and path.name.startswith(".crash-request.json.")
+            and path.name.endswith(".pending")
+        ):
+            failed_cleanup = True
+            raise OSError("synthetic cleanup crash")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_first_pending_cleanup)
+    crash_args = [
+        "--config",
+        str(config_path),
+        "--source-call-id",
+        "TARGET",
+        "--since",
+        "2026-08-10T10:00:00+00:00",
+        "--until",
+        "2026-08-10T10:30:00+00:00",
+        "--expected-count",
+        "1",
+        "--out",
+        str(crash_out),
+    ]
+    assert request_creator.main(crash_args) == 1
+    capsys.readouterr()
+    assert crash_out.stat().st_nlink == 2
+
+    assert request_creator.main(crash_args) == 0
+    recovered = json.loads(capsys.readouterr().out)
+    assert recovered["created"] is False
+    assert recovered["reused"] is True
+    assert crash_out.stat().st_nlink == 1
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("capture", "process_a", "pipeline", "process_b", "prepare_ingest_inputs"),
+)
+def test_controlled_prepare_forbids_all_broad_operations(operation: str) -> None:
+    config = type("Config", (), {"processing_scope": "controlled_1_prepare"})()
+    with pytest.raises(RuntimeError, match="controlled_1_prepare_forbids"):
+        reject_controlled_call_broad_operation(config, operation)
 
 
 def _write_allowlist(
@@ -420,6 +737,10 @@ def test_controlled_worker_drains_only_target_then_becomes_idle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(
+        "mango_mvp.services.worker.controlled_worker_parent_lifeline",
+        lambda _settings: nullcontext(),
+    )
     monkeypatch.setattr(
         controlled_scope_module,
         "_validate_controlled_runtime_settings",
@@ -886,6 +1207,7 @@ def test_service_worker_environment_clears_inherited_controlled_scope(
     assert environment["MANGO_CALLS_CONTROLLED_HOST_ID_PATH"] == ""
     assert environment["MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_PATH"] == ""
     assert environment["MANGO_CALLS_CONTROLLED_RUN_AUTHORITY_SHA256"] == ""
+    assert environment["MANGO_CALLS_CONTROLLED_LIFELINE_FD"] == ""
     assert "LLM_CACHE_ENABLED" not in environment
     assert "LLM_CACHE_DIR" not in environment
 
@@ -1045,6 +1367,111 @@ def test_controlled_worker_requires_fresh_orchestrator_authority(
             ["transcribe"],
             stage_limit=1,
         )
+
+
+def test_controlled_lifeline_kills_worker_group_after_orchestrator_sigkill(
+    tmp_path: Path,
+) -> None:
+    pid_path = tmp_path / "worker-pids.txt"
+    worker_code = "\n".join(
+        (
+            "import os, sys, time",
+            "from pathlib import Path",
+            "from types import SimpleNamespace",
+            "from mango_mvp.services.controlled_call_scope import controlled_worker_parent_lifeline",
+            "settings=SimpleNamespace(calls_processing_scope='controlled_1')",
+            "with controlled_worker_parent_lifeline(settings):",
+            "    grand=os.fork()",
+            "    if grand == 0:",
+            "        time.sleep(60)",
+            "        os._exit(0)",
+            "    Path(sys.argv[1]).write_text(f'{os.getpid()} {grand}', encoding='utf-8')",
+            "    time.sleep(60)",
+        )
+    )
+    orchestrator_code = "\n".join(
+        (
+            "import os, subprocess, sys, time",
+            "read_fd, write_fd=os.pipe()",
+            "env=dict(os.environ)",
+            "env['MANGO_CALLS_CONTROLLED_LIFELINE_FD']=str(read_fd)",
+            f"worker_code={worker_code!r}",
+            "worker=subprocess.Popen([sys.executable, '-c', worker_code, sys.argv[1]], env=env, pass_fds=(read_fd,), start_new_session=True)",
+            "os.close(read_fd)",
+            "print(worker.pid, flush=True)",
+            "time.sleep(60)",
+        )
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(REPO_ROOT / "src")
+    orchestrator = subprocess.Popen(
+        [sys.executable, "-c", orchestrator_code, str(pid_path)],
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert orchestrator.stdout is not None
+    worker_pid = int(orchestrator.stdout.readline().strip())
+    deadline = time.monotonic() + 10
+    while not pid_path.is_file() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert pid_path.is_file()
+    recorded_worker, grandchild_pid = (
+        int(value) for value in pid_path.read_text(encoding="utf-8").split()
+    )
+    assert recorded_worker == worker_pid
+    os.kill(orchestrator.pid, signal.SIGKILL)
+    orchestrator.wait(timeout=10)
+
+    def gone_or_zombie(pid: int) -> bool:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            check=False,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        return not state or state.startswith("Z")
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not (
+        gone_or_zombie(worker_pid) and gone_or_zombie(grandchild_pid)
+    ):
+        time.sleep(0.05)
+    try:
+        assert gone_or_zombie(worker_pid)
+        assert gone_or_zombie(grandchild_pid)
+    finally:
+        try:
+            os.killpg(worker_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_controlled_lifeline_rejects_missing_and_non_pipe_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _controlled_settings(tmp_path)
+    monkeypatch.delenv("MANGO_CALLS_CONTROLLED_LIFELINE_FD", raising=False)
+    with pytest.raises(RuntimeError, match="controlled_call_lifeline_missing"):
+        with controlled_worker_parent_lifeline(settings):
+            pass
+
+    regular_file = tmp_path / "not-a-lifeline"
+    regular_file.write_text("sealed", encoding="utf-8")
+    descriptor = os.open(regular_file, os.O_RDONLY)
+    try:
+        monkeypatch.setenv(
+            "MANGO_CALLS_CONTROLLED_LIFELINE_FD",
+            str(descriptor),
+        )
+        with pytest.raises(RuntimeError, match="controlled_call_lifeline_invalid"):
+            with controlled_worker_parent_lifeline(settings):
+                pass
+    finally:
+        os.close(descriptor)
 
 
 def test_controlled_worker_ticket_uses_verified_cutover_digest(
@@ -2035,6 +2462,51 @@ def test_controlled_one_stops_on_stale_private_audio_snapshot(
         "controlled_call_audio_snapshot_stale_artifacts_present"
     )
     assert called == []
+
+
+def test_controlled_one_stops_while_orphan_heavy_worker_is_live(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    allowlist_path, allowlist_sha256 = _write_allowlist(tmp_path)
+    config = _controlled_runtime_config(
+        tmp_path,
+        allowlist_path,
+        allowlist_sha256,
+    )
+    _init_controlled_runtime_db(config)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.controlled_read_only_cutover_authority_report",
+        _controlled_authority_ok,
+    )
+    worker = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        write_json(
+            config.process_a_heartbeat_path,
+            {
+                "schema_version": "mango_calls_heavy_heartbeat_v1",
+                "stage": "transcribe",
+                "pid": worker.pid,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        called: list[str] = []
+        report = run_controlled_one(
+            config,
+            command_runner=_synthetic_controlled_runner(config, called),
+        )
+        assert report["status"] == "failed"
+        assert report["diagnostic"]["code"] == (
+            "controlled_orphan_heavy_worker_live"
+        )
+        assert called == []
+    finally:
+        os.killpg(worker.pid, signal.SIGKILL)
+        worker.wait(timeout=10)
 
 
 def test_controlled_one_does_not_claim_fresh_pilot_without_asr_receipts(

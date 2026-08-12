@@ -37,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("watchdog", help="Read local heartbeats and provenance without processing calls.")
     sub.add_parser(
         "controlled-one",
-        help="Run only the four heavy stages for one owner-authorized source_call_id.",
+        help=(
+            "Run one owner-authorized isolated call from exact Mango capture "
+            "through Timeline staging and local previews."
+        ),
     )
     process_a = sub.add_parser("process-a", help="Capture, ASR, Resolve+Analyze, publish ready drop DB.")
     process_a.add_argument("--since")
@@ -63,7 +66,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.command == "capture":
                 report = run_capture(config, since=args.since, until=args.until)
             elif args.command == "controlled-one":
-                report = run_controlled_one(config)
+                report = run_controlled_one(
+                    config,
+                    runtime_config_path=Path(args.config),
+                )
             elif args.command == "pipeline":
                 report = run_pipeline(config)
             elif args.command == "watchdog":

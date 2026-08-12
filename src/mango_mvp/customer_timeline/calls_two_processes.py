@@ -50,7 +50,12 @@ from mango_mvp.productization.capture_staging import (
     stage_capture_events,
 )
 from mango_mvp.productization.mango_calls_service_contract import (
+    DUAL_ENUMERATION_NORMALIZATION,
+    DUAL_ENUMERATION_SCHEMA,
+    MANGO_OFFICIAL_LIST_SCHEMA,
+    MANGO_OFFICIAL_PAGE_LIMIT,
     READY_MANIFEST_SCHEMA,
+    _official_list_proof_is_green,
     approved_runtime_fingerprint,
     build_stage10_verdict,
     current_git_sha,
@@ -110,10 +115,6 @@ from mango_mvp.services.controlled_call_scope import (
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
 LEGACY_CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v1"
 CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v2"
-DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v2"
-DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v2"
-MANGO_OFFICIAL_TOTAL_SCHEMA = "mango_extended_total_pages_v1"
-MANGO_OFFICIAL_PAGE_LIMIT = 5000
 SEQUENTIAL_PIPELINE_STAGES = (
     "transcribe",
     "backfill-second-asr",
@@ -4154,7 +4155,7 @@ def build_dual_enumeration_proof(
     until: datetime,
     primary: Mapping[str, Any],
     verification: Mapping[str, Any],
-    official_total: Mapping[str, Any],
+    official_list: Mapping[str, Any],
     proof_run_id: str,
     observed_at: datetime,
 ) -> Mapping[str, Any]:
@@ -4177,12 +4178,11 @@ def build_dual_enumeration_proof(
     comparison["partition_sha256_different"] = primary.get(
         "partition_sha256"
     ) != verification.get("partition_sha256")
-    comparison["official_total_equal"] = (
-        official_total.get("complete") is True
-        and official_total.get("total_calls_count")
-        == primary.get("normalized_unique_count")
-        and official_total.get("call_keys_sha256")
-        == primary.get("call_keys_sha256")
+    comparison["official_list_equal"] = _official_list_proof_is_green(
+        official_list,
+        expected_call_keys=primary.get("call_keys") or (),
+        expected_since=rolling_since,
+        expected_until=until,
     )
     matched = all(comparison.values())
     mismatches = sorted(
@@ -4203,7 +4203,7 @@ def build_dual_enumeration_proof(
         "passes_required": 2,
         "passes_completed": 2,
         "passes": [dict(primary), dict(verification)],
-        "official_total": dict(official_total),
+        "official_list": dict(official_list),
         "comparison": comparison,
         "enumeration_consistency_ok": matched,
         "mismatch_reason": "" if matched else ",".join(mismatches),
@@ -4217,44 +4217,76 @@ def _mango_wire_datetime(value: datetime) -> datetime:
     return datetime.fromtimestamp(int(value.timestamp()), tz=timezone.utc)
 
 
-def build_mango_official_total_proof(
+def _mango_extended_wire_datetime(value: datetime) -> str:
+    """Serialize an extended-statistics boundary in the PBX account timezone."""
+
+    return _mango_wire_datetime(value).astimezone(
+        ZoneInfo("Europe/Moscow")
+    ).strftime("%d.%m.%Y %H:%M:%S")
+
+
+def build_mango_official_list_proof(
     *,
     call_ids: Sequence[str],
     page_receipts: Sequence[Mapping[str, Any]],
-    total_calls_count: int,
+    since: datetime,
+    until: datetime,
 ) -> Mapping[str, Any]:
     canonical_ids = sorted(call_ids)
     proof = {
-        "schema_version": MANGO_OFFICIAL_TOTAL_SCHEMA,
+        "schema_version": MANGO_OFFICIAL_LIST_SCHEMA,
         "page_limit": MANGO_OFFICIAL_PAGE_LIMIT,
+        "request": {
+            "since_utc": _mango_wire_datetime(since).isoformat(),
+            "until_utc": _mango_wire_datetime(until).isoformat(),
+            "start_date": _mango_extended_wire_datetime(since),
+            "end_date": _mango_extended_wire_datetime(until),
+            "timezone": "Europe/Moscow",
+            "datetime_format": "dd.mm.YYYY HH:MM:SS",
+        },
         "pages": [dict(item) for item in page_receipts],
         "pages_count": len(page_receipts),
-        "total_calls_count": total_calls_count,
+        "observed_count": len(canonical_ids),
+        "call_keys": canonical_ids,
         "call_keys_sha256": _canonical_json_sha256(canonical_ids),
-        "complete": len(canonical_ids) == total_calls_count,
+        "terminal_empty_page": bool(
+            page_receipts and page_receipts[-1].get("rows") == 0
+        ),
+        "complete": bool(
+            page_receipts and page_receipts[-1].get("rows") == 0
+        ),
     }
     return {**proof, "proof_sha256": _canonical_json_sha256(proof)}
 
 
-def poll_mango_official_total_pages(
+def poll_mango_official_list_pages(
     client: MangoOfficeClient,
     *,
     since: datetime,
     until: datetime,
     expected_call_ids: Sequence[str],
 ) -> Mapping[str, Any]:
-    """Cross-check basic CSV rows against Mango's official paged total API."""
+    """Cross-check basic rows against the independent extended-statistics list."""
 
     offset = 0
-    expected_total: Optional[int] = None
+    expected_ids = sorted(str(value) for value in expected_call_ids)
+    if len(expected_ids) != len(set(expected_ids)):
+        raise ValueError("expected Mango call IDs must be unique")
+    expected_id_set = set(expected_ids)
     observed_ids: list[str] = []
     page_receipts: list[Mapping[str, Any]] = []
-    while True:
+    max_pages = max(
+        1,
+        (len(expected_ids) + MANGO_OFFICIAL_PAGE_LIMIT - 1)
+        // MANGO_OFFICIAL_PAGE_LIMIT
+        + 1,
+    )
+    for _page_number in range(max_pages):
         request_token = client.post_command(
             "/vpbx/stats/calls/request",
             {
-                "start_date": _mango_wire_datetime(since).isoformat(),
-                "end_date": _mango_wire_datetime(until).isoformat(),
+                "start_date": _mango_extended_wire_datetime(since),
+                "end_date": _mango_extended_wire_datetime(until),
                 "limit": MANGO_OFFICIAL_PAGE_LIMIT,
                 "offset": offset,
             },
@@ -4280,6 +4312,7 @@ def poll_mango_official_total_pages(
         if (
             not isinstance(result, Mapping)
             or result.get("status") != "complete"
+            or type(result.get("result")) is not int
             or result.get("result") != 1000
         ):
             raise RuntimeError("Mango extended stats result is not complete")
@@ -4289,7 +4322,7 @@ def poll_mango_official_total_pages(
         ):
             raise RuntimeError("Mango extended stats data is invalid")
         page_ids: list[str] = []
-        declared_totals: set[int] = set()
+        bucket_evidence: list[Mapping[str, Any]] = []
         for bucket in raw_buckets:
             if not isinstance(bucket, Mapping):
                 raise RuntimeError("Mango extended stats bucket is invalid")
@@ -4300,10 +4333,17 @@ def poll_mango_official_total_pages(
                 or isinstance(rows, (str, bytes))
             ):
                 raise RuntimeError("Mango extended stats total/page is invalid")
-            if bucket_total is not None:
-                if type(bucket_total) is not int or bucket_total < 0:
-                    raise RuntimeError("Mango extended stats total/page is invalid")
-                declared_totals.add(bucket_total)
+            if bucket_total is not None and (
+                type(bucket_total) is not int or bucket_total < 0
+            ):
+                raise RuntimeError("Mango extended stats bucket total is invalid")
+            period_raw = bucket.get("period")
+            if period_raw is not None and (
+                not isinstance(period_raw, str) or not period_raw.strip()
+            ):
+                raise RuntimeError("Mango extended stats bucket period is invalid")
+            period = period_raw.strip() if period_raw is not None else ""
+            bucket_ids: list[str] = []
             for row in rows:
                 if not isinstance(row, Mapping):
                     raise RuntimeError("Mango extended stats row is invalid")
@@ -4311,41 +4351,52 @@ def poll_mango_official_total_pages(
                 if not call_id:
                     raise RuntimeError("Mango extended stats row has no entry_id")
                 page_ids.append(call_id)
-        if len(declared_totals) != 1:
-            raise RuntimeError("Mango extended stats total is missing or conflicting")
-        page_total = next(iter(declared_totals))
-        if expected_total is None:
-            expected_total = page_total
-        elif page_total != expected_total:
-            raise RuntimeError("Mango extended stats total changed between pages")
+                bucket_ids.append(call_id)
+            bucket_evidence.append(
+                {
+                    "period": period or None,
+                    "declared_total_calls_count": bucket_total,
+                    "rows": len(bucket_ids),
+                    "entry_ids": list(bucket_ids),
+                    "entry_ids_sha256": _canonical_json_sha256(
+                        sorted(bucket_ids)
+                    ),
+                }
+            )
         if len(page_ids) > MANGO_OFFICIAL_PAGE_LIMIT:
             raise RuntimeError("Mango extended stats page exceeded requested limit")
+        if len(page_ids) != len(set(page_ids)):
+            raise RuntimeError("Mango extended stats page contains duplicate IDs")
         if set(page_ids).intersection(observed_ids):
             raise RuntimeError("Mango extended stats pages overlap")
+        unexpected_ids = set(page_ids) - expected_id_set
+        if unexpected_ids:
+            raise RuntimeError("Mango extended stats returned an unexpected call")
         observed_ids.extend(page_ids)
         page_receipts.append(
             {
                 "offset": offset,
                 "rows": len(page_ids),
-                "total_calls_count": expected_total,
+                "entry_ids": list(page_ids),
                 "entry_ids_sha256": _canonical_json_sha256(sorted(page_ids)),
+                "buckets": bucket_evidence,
                 "status": "complete",
             }
         )
-        if len(observed_ids) == expected_total:
-            if len(page_ids) == MANGO_OFFICIAL_PAGE_LIMIT:
-                offset = len(observed_ids)
-                continue
+        if not page_ids:
             break
-        if not page_ids or len(observed_ids) > expected_total:
-            raise RuntimeError("Mango extended stats pagination is incomplete")
+        if len(observed_ids) > len(expected_ids):
+            raise RuntimeError("Mango extended stats returned too many calls")
         offset = len(observed_ids)
-    if sorted(observed_ids) != sorted(expected_call_ids):
+    else:
+        raise RuntimeError("Mango extended stats terminal page is missing")
+    if sorted(observed_ids) != expected_ids:
         raise RuntimeError("Mango basic and extended call sets differ")
-    return build_mango_official_total_proof(
+    return build_mango_official_list_proof(
         call_ids=observed_ids,
         page_receipts=page_receipts,
-        total_calls_count=expected_total,
+        since=since,
+        until=until,
     )
 
 
@@ -4696,7 +4747,7 @@ def capture_mango_window(
             until=until,
         )
         try:
-            official_total = poll_mango_official_total_pages(
+            official_list = poll_mango_official_list_pages(
                 primary_client,
                 since=base_window_start,
                 until=until,
@@ -4707,7 +4758,7 @@ def capture_mango_window(
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
             return {
                 "status": "failed",
-                "reason": "official_mango_total_verification_failed",
+                "reason": "official_mango_list_verification_failed",
                 "mango_enumeration_complete": False,
                 "enumeration_consistency_ok": False,
                 "api_requests": len(primary_intervals)
@@ -4719,7 +4770,7 @@ def capture_mango_window(
             until=until,
             primary=primary_proof,
             verification=verification_proof,
-            official_total=official_total,
+            official_list=official_list,
             proof_run_id=proof_run_id,
             observed_at=proof_observed_at,
         )

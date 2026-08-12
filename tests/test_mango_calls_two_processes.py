@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -99,13 +100,13 @@ def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_stagin
     )
 
 
-_REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES = (
-    calls_runtime.poll_mango_official_total_pages
+_REAL_POLL_MANGO_OFFICIAL_LIST_PAGES = (
+    calls_runtime.poll_mango_official_list_pages
 )
 
 
 @pytest.fixture(autouse=True)
-def _synthetic_official_mango_total(monkeypatch: pytest.MonkeyPatch) -> None:
+def _synthetic_official_mango_list(monkeypatch: pytest.MonkeyPatch) -> None:
     def prove(
         _client: object,
         *,
@@ -113,22 +114,45 @@ def _synthetic_official_mango_total(monkeypatch: pytest.MonkeyPatch) -> None:
         until: datetime,
         expected_call_ids: Sequence[str],
     ) -> Mapping[str, object]:
-        del since, until
         call_ids = sorted(expected_call_ids)
-        receipt = {
-            "offset": 0,
-            "rows": len(call_ids),
-            "total_calls_count": len(call_ids),
-            "entry_ids_sha256": calls_runtime._canonical_json_sha256(call_ids),
-            "status": "complete",
-        }
-        return calls_runtime.build_mango_official_total_proof(
+        pages = []
+        if call_ids:
+            pages.append(
+                {
+                    "offset": 0,
+                    "rows": len(call_ids),
+                    "entry_ids": call_ids,
+                    "entry_ids_sha256": calls_runtime._canonical_json_sha256(call_ids),
+                    "buckets": [
+                        {
+                            "period": "2026-08-12",
+                            "declared_total_calls_count": len(call_ids),
+                            "rows": len(call_ids),
+                            "entry_ids": call_ids,
+                            "entry_ids_sha256": calls_runtime._canonical_json_sha256(call_ids),
+                        }
+                    ],
+                    "status": "complete",
+                }
+            )
+        pages.append(
+            {
+                "offset": len(call_ids),
+                "rows": 0,
+                "entry_ids": [],
+                "entry_ids_sha256": calls_runtime._canonical_json_sha256([]),
+                "buckets": [],
+                "status": "complete",
+            }
+        )
+        return calls_runtime.build_mango_official_list_proof(
             call_ids=call_ids,
-            page_receipts=[receipt],
-            total_calls_count=len(call_ids),
+            page_receipts=pages,
+            since=since,
+            until=until,
         )
 
-    monkeypatch.setattr(calls_runtime, "poll_mango_official_total_pages", prove)
+    monkeypatch.setattr(calls_runtime, "poll_mango_official_list_pages", prove)
 
 
 def create_empty_capture_manifest(config: CallsTwoProcessesConfig) -> None:
@@ -137,7 +161,7 @@ def create_empty_capture_manifest(config: CallsTwoProcessesConfig) -> None:
     CaptureManifestStore(config.capture_manifest).ensure_exists()
 
 
-def test_official_mango_total_pages_polls_to_complete_and_seals_pages() -> None:
+def test_official_mango_list_uses_documented_dates_and_ignores_daily_total() -> None:
     requests: list[Mapping[str, object]] = []
     sleeps: list[float] = []
 
@@ -161,36 +185,42 @@ def test_official_mango_total_pages_polls_to_complete_and_seals_pages() -> None:
             self.result_calls += 1
             if self.offset == 0 and self.result_calls == 1:
                 return {"result": 1000, "status": "work"}
-            ids = ["call-a", "call-b"] if self.offset == 0 else ["call-c"]
+            ids = ["call-a"] if self.offset == 0 else []
             return {
                 "result": 1000,
                 "status": "complete",
                 "data": [
                     {
                         "period": "2026-08-12",
-                        "total_calls_count": 3,
+                        "total_calls_count": 582,
                         "list": [{"entry_id": value} for value in ids],
                     }
                 ],
             }
 
-    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+    proof = _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES(
         Client(),
         since=datetime(2026, 8, 12, 10, 0, 0, 999999, tzinfo=timezone.utc),
         until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
-        expected_call_ids=["call-a", "call-b", "call-c"],
+        expected_call_ids=["call-a"],
     )
 
     assert proof["complete"] is True
-    assert proof["total_calls_count"] == 3
-    assert [page["offset"] for page in proof["pages"]] == [0, 2]
-    assert [request["offset"] for request in requests] == [0, 2]
+    assert proof["observed_count"] == 1
+    assert proof["terminal_empty_page"] is True
+    assert [page["offset"] for page in proof["pages"]] == [0, 1]
+    assert [request["offset"] for request in requests] == [0, 1]
     assert requests[0]["limit"] == 5000
-    assert requests[0]["start_date"] == "2026-08-12T10:00:00+00:00"
+    assert requests[0]["start_date"] == "12.08.2026 13:00:00"
+    assert requests[0]["end_date"] == "12.08.2026 14:00:00"
+    assert "T" not in str(requests[0]["start_date"])
+    assert proof["pages"][0]["buckets"][0][
+        "declared_total_calls_count"
+    ] == 582
     assert sleeps == [0.25]
 
 
-def test_official_mango_total_pages_accepts_proven_empty_window() -> None:
+def test_official_mango_list_accepts_proven_empty_window() -> None:
     class Client:
         stats_result_poll_attempts = 1
         stats_result_poll_interval_sec = 0
@@ -213,17 +243,29 @@ def test_official_mango_total_pages_accepts_proven_empty_window() -> None:
                 ],
             }
 
-    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+    proof = _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES(
         Client(),
         since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
         until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
         expected_call_ids=[],
     )
     assert proof["complete"] is True
-    assert proof["total_calls_count"] == 0
+    assert proof["observed_count"] == 0
+    assert proof["pages"][0]["rows"] == 0
 
 
-def test_official_mango_total_accepts_documented_multiblock_shape() -> None:
+def test_official_mango_extended_datetime_rejects_naive_boundary() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        calls_runtime._mango_extended_wire_datetime(datetime(2026, 8, 12, 10))
+
+
+def test_official_mango_extended_datetime_uses_moscow_day_boundary() -> None:
+    assert calls_runtime._mango_extended_wire_datetime(
+        datetime(2026, 8, 12, 21, tzinfo=timezone.utc)
+    ) == "13.08.2026 00:00:00"
+
+
+def test_official_mango_list_accepts_documented_multiblock_shape() -> None:
     call_ids = [f"call-{index}" for index in range(5)]
 
     class Client:
@@ -231,11 +273,17 @@ def test_official_mango_total_accepts_documented_multiblock_shape() -> None:
         stats_result_poll_interval_sec = 0
         sleeper = staticmethod(lambda _seconds: None)
 
+        def __init__(self) -> None:
+            self.offset = 0
+
         def post_command(
             self, path: str, payload: Mapping[str, object]
         ) -> Mapping[str, object]:
             if path.endswith("/request"):
+                self.offset = int(payload["offset"])
                 return {"key": "documented-shape"}
+            if self.offset:
+                return {"result": 1000, "status": "complete", "data": []}
             return {
                 "result": 1000,
                 "status": "complete",
@@ -256,19 +304,20 @@ def test_official_mango_total_accepts_documented_multiblock_shape() -> None:
                 ],
             }
 
-    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+    proof = _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES(
         Client(),
         since=datetime(2026, 8, 11, tzinfo=timezone.utc),
         until=datetime(2026, 8, 13, tzinfo=timezone.utc),
         expected_call_ids=call_ids,
     )
     assert proof["complete"] is True
-    assert proof["total_calls_count"] == 5
+    assert proof["observed_count"] == 5
     assert proof["pages"][0]["rows"] == 5
+    assert proof["pages"][1]["rows"] == 0
 
 
 @pytest.mark.parametrize("total", [5000, 5001])
-def test_official_mango_total_pages_proves_limit_boundary(total: int) -> None:
+def test_official_mango_list_pages_proves_limit_boundary(total: int) -> None:
     call_ids = [f"call-{index:05d}" for index in range(total)]
 
     class Client:
@@ -297,22 +346,22 @@ def test_official_mango_total_pages_proves_limit_boundary(total: int) -> None:
                 }],
             }
 
-    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+    proof = _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES(
         Client(),
         since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
         until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
         expected_call_ids=call_ids,
     )
-    assert proof["total_calls_count"] == total
+    assert proof["observed_count"] == total
     assert [page["rows"] for page in proof["pages"]] == (
-        [5000, 0] if total == 5000 else [5000, 1]
+        [5000, 0] if total == 5000 else [5000, 1, 0]
     )
 
 
 @pytest.mark.parametrize(
-    "mode", ["changed_total", "overlap", "missing_id", "missing_total"]
+    "mode", ["overlap", "missing_id", "malformed_total", "duplicate", "float_result"]
 )
-def test_official_mango_total_pages_fail_closed_on_bad_pages(mode: str) -> None:
+def test_official_mango_list_pages_fail_closed_on_bad_pages(mode: str) -> None:
     class Client:
         stats_result_poll_attempts = 1
         stats_result_poll_interval_sec = 0
@@ -327,17 +376,21 @@ def test_official_mango_total_pages_fail_closed_on_bad_pages(mode: str) -> None:
             if path.endswith("/request"):
                 self.offset = int(payload["offset"])
                 return {"key": f"page-{self.offset}"}
-            if mode == "missing_total":
-                ids, total = ["call-a"], None
+            if mode == "float_result":
+                return {"result": 1000.0, "status": "complete", "data": []}
+            if mode == "malformed_total":
+                ids, total = ["call-a"], False
+            elif mode == "duplicate":
+                ids, total = ["call-a", "call-a"], 3
             elif self.offset == 0:
                 ids, total = ["call-a", "call-b"], 3
             else:
                 ids = ["call-b"] if mode == "overlap" else ["call-c"]
-                total = 4 if mode == "changed_total" else 3
+                total = 3
             return {
                 "result": 1000,
                 "status": "complete",
-                "data": [{"total_calls_count": total, "list": [
+                "data": [{"period": "2026-08-12", "total_calls_count": total, "list": [
                     {"entry_id": value} for value in ids
                 ]}],
             }
@@ -346,7 +399,7 @@ def test_official_mango_total_pages_fail_closed_on_bad_pages(mode: str) -> None:
         "call-a", "call-b", "call-c"
     ]
     with pytest.raises(RuntimeError):
-        _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+        _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES(
             Client(),
             since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
             until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
@@ -354,7 +407,50 @@ def test_official_mango_total_pages_fail_closed_on_bad_pages(mode: str) -> None:
         )
 
 
-def test_basic_stats_silent_cap_is_blocked_by_official_total(
+def test_official_mango_list_keeps_changed_daily_total_as_evidence() -> None:
+    class Client:
+        stats_result_poll_attempts = 1
+        stats_result_poll_interval_sec = 0
+        sleeper = staticmethod(lambda _seconds: None)
+
+        def __init__(self) -> None:
+            self.offset = 0
+
+        def post_command(
+            self, path: str, payload: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            if path.endswith("/request"):
+                self.offset = int(payload["offset"])
+                return {"key": f"page-{self.offset}"}
+            total = 582 if self.offset == 0 else 583
+            ids = ["call-a"] if self.offset == 0 else []
+            return {
+                "result": 1000,
+                "status": "complete",
+                "data": [
+                    {
+                        "period": "2026-08-12",
+                        "total_calls_count": total,
+                        "list": [{"entry_id": value} for value in ids],
+                    }
+                ],
+            }
+
+    proof = _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES(
+        Client(),
+        since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
+        expected_call_ids=["call-a"],
+    )
+
+    assert proof["complete"] is True
+    assert [
+        page["buckets"][0]["declared_total_calls_count"]
+        for page in proof["pages"]
+    ] == [582, 583]
+
+
+def test_basic_stats_silent_cap_is_blocked_by_official_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = replace(config_for(tmp_path), strict_ready_provenance=True)
@@ -399,9 +495,9 @@ def test_basic_stats_silent_cap_is_blocked_by_official_total(
     monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", CappedClient)
     monkeypatch.setattr(
         calls_runtime,
-        "poll_mango_official_total_pages",
+        "poll_mango_official_list_pages",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("official total has call-c")
+            RuntimeError("official list has call-c")
         ),
     )
     monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
@@ -414,7 +510,7 @@ def test_basic_stats_silent_cap_is_blocked_by_official_total(
     )
 
     assert report["status"] == "failed"
-    assert report["reason"] == "official_mango_total_verification_failed"
+    assert report["reason"] == "official_mango_list_verification_failed"
     assert not config.capture_manifest.exists()
     assert not config.cursor_path.exists()
 
@@ -523,28 +619,48 @@ def with_dual_enumeration(
         "primary_raw_balance_ok": True,
         "verification_raw_balance_ok": True,
         "partition_sha256_different": True,
-        "official_total_equal": True,
+        "official_list_equal": True,
     }
-    official_total = {
-        "schema_version": "mango_extended_total_pages_v1",
-        "page_limit": 5000,
-        "pages": [
+    official_pages = [
+        *(
             {
                 "offset": 0,
                 "rows": len(call_keys),
-                "total_calls_count": len(call_keys),
+                "entry_ids": call_keys,
                 "entry_ids_sha256": digest(sorted(call_keys)),
+                "buckets": [
+                    {
+                        "period": window_start.astimezone(
+                            ZoneInfo("Europe/Moscow")
+                        ).date().isoformat(),
+                        "declared_total_calls_count": len(call_keys),
+                        "rows": len(call_keys),
+                        "entry_ids": call_keys,
+                        "entry_ids_sha256": digest(sorted(call_keys)),
+                    }
+                ],
                 "status": "complete",
             }
-        ],
-        "pages_count": 1,
-        "total_calls_count": len(call_keys),
-        "call_keys_sha256": digest(sorted(call_keys)),
-        "complete": True,
-    }
-    official_total["proof_sha256"] = digest(official_total)
+            for _ in [None]
+            if call_keys
+        ),
+        {
+            "offset": len(call_keys),
+            "rows": 0,
+            "entry_ids": [],
+            "entry_ids_sha256": digest([]),
+            "buckets": [],
+            "status": "complete",
+        },
+    ]
+    official_list = calls_runtime.build_mango_official_list_proof(
+        call_ids=call_keys,
+        page_receipts=official_pages,
+        since=window_start,
+        until=window_end,
+    )
     proof = {
-        "schema_version": "mango_exact_dual_enumeration_v2",
+        "schema_version": "mango_exact_dual_enumeration_v3",
         "normalization_version": "mango_rows_call_day_v2",
         "tenant_id": "foton",
         "base_url": calls_runtime.DEFAULT_MANGO_BASE_URL,
@@ -570,7 +686,7 @@ def with_dual_enumeration(
                 ),
             },
         ],
-        "official_total": official_total,
+        "official_list": official_list,
         "comparison": comparison,
         "enumeration_consistency_ok": True,
         "mismatch_reason": "",
@@ -4877,8 +4993,11 @@ def test_strict_dual_proof_and_interval_tampering_fail_validation(
         ("passes_required_float", "strict_dual_enumeration_pass_count_invalid"),
         ("passes_completed_float", "strict_dual_enumeration_pass_count_invalid"),
         ("unique_count_bool", "strict_dual_enumeration_unique_count_mismatch"),
-        ("official_limit_float", "strict_official_total_proof_invalid"),
-        ("official_page_total_bool", "strict_official_total_proof_invalid"),
+        ("official_limit_float", "strict_official_list_proof_invalid"),
+        ("official_observed_bool", "strict_official_list_proof_invalid"),
+        ("official_schema_v1", "strict_official_list_proof_invalid"),
+        ("official_window_mismatch", "strict_official_list_proof_invalid"),
+        ("official_extra_field", "strict_official_list_proof_invalid"),
     ],
 )
 def test_strict_dual_numeric_types_fail_closed(
@@ -4903,10 +5022,23 @@ def test_strict_dual_numeric_types_fail_closed(
         for pass_payload in proof["passes"]:
             pass_payload["normalized_unique_count"] = False
     elif case == "official_limit_float":
-        proof["official_total"]["page_limit"] = 5000.0
+        proof["official_list"]["page_limit"] = 5000.0
+    elif case == "official_schema_v1":
+        proof["official_list"]["schema_version"] = "mango_extended_total_pages_v1"
+    elif case == "official_window_mismatch":
+        request = proof["official_list"]["request"]
+        changed_since = datetime.fromisoformat(request["since_utc"]) + timedelta(
+            seconds=1
+        )
+        request["since_utc"] = changed_since.isoformat()
+        request["start_date"] = changed_since.astimezone(
+            ZoneInfo("Europe/Moscow")
+        ).strftime("%d.%m.%Y %H:%M:%S")
+    elif case == "official_extra_field":
+        proof["official_list"]["unexpected"] = True
     else:
-        proof["official_total"]["pages"][0]["total_calls_count"] = False
-    official = proof["official_total"]
+        proof["official_list"]["observed_count"] = False
+    official = proof["official_list"]
     official_body = {
         key: value for key, value in official.items() if key != "proof_sha256"
     }

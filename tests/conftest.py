@@ -6,6 +6,9 @@ from datetime import datetime
 from typing import Mapping, Sequence
 
 from mango_mvp.productization.mango_office_client import DEFAULT_STATS_FIELDS
+from mango_mvp.customer_timeline.calls_two_processes import (
+    build_mango_official_list_proof,
+)
 
 
 def _digest(value: object) -> str:
@@ -123,26 +126,44 @@ def dual_strict_source(
         "primary_raw_balance_ok": True,
         "verification_raw_balance_ok": True,
         "partition_sha256_different": True,
-        "official_total_equal": True,
+        "official_list_equal": True,
     }
-    official_total = {
-        "schema_version": "mango_extended_total_pages_v1",
-        "page_limit": 5000,
-        "pages": [
+    official_pages = [
+        *(
             {
                 "offset": 0,
                 "rows": len(canonical_keys),
-                "total_calls_count": len(canonical_keys),
+                "entry_ids": canonical_keys,
                 "entry_ids_sha256": _digest(canonical_keys),
+                "buckets": [
+                    {
+                        "period": None,
+                        "declared_total_calls_count": len(canonical_keys),
+                        "rows": len(canonical_keys),
+                        "entry_ids": canonical_keys,
+                        "entry_ids_sha256": _digest(canonical_keys),
+                    }
+                ],
                 "status": "complete",
             }
-        ],
-        "pages_count": 1,
-        "total_calls_count": len(canonical_keys),
-        "call_keys_sha256": _digest(canonical_keys),
-        "complete": True,
-    }
-    official_total["proof_sha256"] = _digest(official_total)
+            for _ in [None]
+            if canonical_keys
+        ),
+        {
+            "offset": len(canonical_keys),
+            "rows": 0,
+            "entry_ids": [],
+            "entry_ids_sha256": _digest([]),
+            "buckets": [],
+            "status": "complete",
+        },
+    ]
+    official_list = build_mango_official_list_proof(
+        call_ids=canonical_keys,
+        page_receipts=official_pages,
+        since=window_start,
+        until=window_end,
+    )
     result["covered_intervals"] = [
         *({**interval, "authority_pass": 1} for interval in rolling),
         *(
@@ -154,7 +175,7 @@ def dual_strict_source(
     result["requests"] = len(result["covered_intervals"])
     result["enumeration_consistency_ok"] = True
     dual_proof = {
-        "schema_version": "mango_exact_dual_enumeration_v2",
+        "schema_version": "mango_exact_dual_enumeration_v3",
         "normalization_version": "mango_rows_call_day_v2",
         "tenant_id": "foton",
         "base_url": "https://app.mango-office.ru",
@@ -180,7 +201,7 @@ def dual_strict_source(
                 ),
             },
         ],
-        "official_total": official_total,
+        "official_list": official_list,
         "comparison": comparison,
         "enumeration_consistency_ok": True,
         "mismatch_reason": "",

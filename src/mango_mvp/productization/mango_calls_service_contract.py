@@ -22,9 +22,9 @@ from mango_mvp.productization.owner_only_io import (
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 READY_MANIFEST_SCHEMA = "mango_calls_ready_v3"
-DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v2"
+DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v3"
 DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v2"
-MANGO_OFFICIAL_TOTAL_SCHEMA = "mango_extended_total_pages_v1"
+MANGO_OFFICIAL_LIST_SCHEMA = "mango_extended_list_pages_v2"
 MANGO_OFFICIAL_PAGE_LIMIT = 5000
 CUTOVER_MANIFEST_SCHEMA = "mango_calls_cutover_v2"
 PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA = (
@@ -175,62 +175,201 @@ def _is_sha256(value: Any) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
 
 
-def _official_total_proof_is_green(
+def _official_list_proof_is_green(
     proof: Any,
     *,
-    expected_count: int,
-    expected_call_keys_sha256: str,
+    expected_call_keys: Sequence[str],
+    expected_since: datetime,
+    expected_until: datetime,
 ) -> bool:
     if not isinstance(proof, Mapping):
         return False
     proof_body = {key: value for key, value in proof.items() if key != "proof_sha256"}
     pages = proof.get("pages")
-    total = proof.get("total_calls_count")
+    request = proof.get("request")
+    canonical_expected = sorted(str(value) for value in expected_call_keys)
+    if len(canonical_expected) != len(set(canonical_expected)):
+        return False
     if not (
-        proof.get("schema_version") == MANGO_OFFICIAL_TOTAL_SCHEMA
+        set(proof)
+        == {
+            "schema_version",
+            "page_limit",
+            "request",
+            "pages",
+            "pages_count",
+            "observed_count",
+            "call_keys",
+            "call_keys_sha256",
+            "terminal_empty_page",
+            "complete",
+            "proof_sha256",
+        }
+        and proof.get("schema_version") == MANGO_OFFICIAL_LIST_SCHEMA
         and type(proof.get("page_limit")) is int
         and proof.get("page_limit") == MANGO_OFFICIAL_PAGE_LIMIT
         and proof.get("proof_sha256") == _canonical_json_sha256(proof_body)
         and proof.get("complete") is True
-        and type(total) is int
-        and total == expected_count
-        and proof.get("call_keys_sha256") == expected_call_keys_sha256
+        and proof.get("terminal_empty_page") is True
+        and type(proof.get("observed_count")) is int
+        and proof.get("observed_count") == len(canonical_expected)
+        and proof.get("call_keys") == canonical_expected
+        and proof.get("call_keys_sha256")
+        == _canonical_json_sha256(canonical_expected)
+        and isinstance(request, Mapping)
+        and set(request)
+        == {
+            "since_utc",
+            "until_utc",
+            "start_date",
+            "end_date",
+            "timezone",
+            "datetime_format",
+        }
         and isinstance(pages, Sequence)
         and not isinstance(pages, (str, bytes))
         and type(proof.get("pages_count")) is int
         and proof.get("pages_count") == len(pages)
         and len(pages) >= 1
+        and len(pages)
+        <= max(
+            1,
+            (len(canonical_expected) + MANGO_OFFICIAL_PAGE_LIMIT - 1)
+            // MANGO_OFFICIAL_PAGE_LIMIT
+            + 1,
+        )
+    ):
+        return False
+    try:
+        since = datetime.fromisoformat(str(request.get("since_utc") or ""))
+        until = datetime.fromisoformat(str(request.get("until_utc") or ""))
+    except ValueError:
+        return False
+    try:
+        canonical_expected_since = datetime.fromtimestamp(
+            int(expected_since.timestamp()), tz=timezone.utc
+        )
+        canonical_expected_until = datetime.fromtimestamp(
+            int(expected_until.timestamp()), tz=timezone.utc
+        )
+    except (AttributeError, OSError, ValueError):
+        return False
+    if (
+        since.tzinfo is None
+        or since.utcoffset() is None
+        or until.tzinfo is None
+        or until.utcoffset() is None
+        or until <= since
+        or expected_since.tzinfo is None
+        or expected_since.utcoffset() is None
+        or expected_until.tzinfo is None
+        or expected_until.utcoffset() is None
+        or canonical_expected_until <= canonical_expected_since
+    ):
+        return False
+    since_utc = datetime.fromtimestamp(int(since.timestamp()), tz=timezone.utc)
+    until_utc = datetime.fromtimestamp(int(until.timestamp()), tz=timezone.utc)
+    if not (
+        request.get("since_utc") == since_utc.isoformat()
+        and request.get("until_utc") == until_utc.isoformat()
+        and since_utc == canonical_expected_since
+        and until_utc == canonical_expected_until
+        and request.get("timezone") == "Europe/Moscow"
+        and request.get("datetime_format") == "dd.mm.YYYY HH:MM:SS"
+        and request.get("start_date")
+        == since_utc.astimezone(MOSCOW).strftime("%d.%m.%Y %H:%M:%S")
+        and request.get("end_date")
+        == until_utc.astimezone(MOSCOW).strftime("%d.%m.%Y %H:%M:%S")
     ):
         return False
     offset = 0
-    for page in pages:
+    observed_ids: list[str] = []
+    for page_index, page in enumerate(pages):
         if not isinstance(page, Mapping):
             return False
         rows = page.get("rows")
+        entry_ids = page.get("entry_ids")
+        buckets = page.get("buckets")
         if not (
-            type(page.get("offset")) is int
+            set(page)
+            == {
+                "offset",
+                "rows",
+                "entry_ids",
+                "entry_ids_sha256",
+                "buckets",
+                "status",
+            }
+            and type(page.get("offset")) is int
             and page.get("offset") == offset
             and type(rows) is int
             and 0 <= rows <= MANGO_OFFICIAL_PAGE_LIMIT
-            and type(page.get("total_calls_count")) is int
-            and page.get("total_calls_count") == total
+            and isinstance(entry_ids, Sequence)
+            and not isinstance(entry_ids, (str, bytes))
+            and list(entry_ids) == [str(value) for value in entry_ids]
+            and all(str(value).strip() for value in entry_ids)
+            and len(entry_ids) == rows
+            and len(entry_ids) == len(set(entry_ids))
             and page.get("status") == "complete"
-            and _is_sha256(page.get("entry_ids_sha256"))
+            and page.get("entry_ids_sha256")
+            == _canonical_json_sha256(sorted(entry_ids))
+            and isinstance(buckets, Sequence)
+            and not isinstance(buckets, (str, bytes))
         ):
             return False
+        if page_index + 1 < len(pages) and rows == 0:
+            return False
+        bucket_rows = 0
+        flattened_bucket_ids: list[str] = []
+        for bucket in buckets:
+            if not isinstance(bucket, Mapping):
+                return False
+            period = bucket.get("period")
+            declared_total = bucket.get("declared_total_calls_count")
+            bucket_entry_ids = bucket.get("entry_ids")
+            bucket_count = bucket.get("rows")
+            if not (
+                set(bucket)
+                == {
+                    "period",
+                    "declared_total_calls_count",
+                    "rows",
+                    "entry_ids",
+                    "entry_ids_sha256",
+                }
+                and (period is None or (isinstance(period, str) and period.strip()))
+                and (
+                    declared_total is None
+                    or (type(declared_total) is int and declared_total >= 0)
+                )
+                and type(bucket_count) is int
+                and bucket_count >= 0
+                and isinstance(bucket_entry_ids, Sequence)
+                and not isinstance(bucket_entry_ids, (str, bytes))
+                and list(bucket_entry_ids)
+                == [str(value) for value in bucket_entry_ids]
+                and all(str(value).strip() for value in bucket_entry_ids)
+                and len(bucket_entry_ids) == bucket_count
+                and bucket.get("entry_ids_sha256")
+                == _canonical_json_sha256(sorted(bucket_entry_ids))
+            ):
+                return False
+            if isinstance(period, str) and period != period.strip():
+                return False
+            bucket_rows += bucket_count
+            flattened_bucket_ids.extend(bucket_entry_ids)
+        if bucket_rows != rows or flattened_bucket_ids != list(entry_ids):
+            return False
+        if set(entry_ids).intersection(observed_ids):
+            return False
+        observed_ids.extend(entry_ids)
         offset += rows
-    if offset != total:
-        return False
-    if total == 0:
-        return len(pages) == 1 and pages[0].get("rows") == 0
-    last_rows = pages[-1].get("rows")
-    if last_rows == 0:
-        return (
-            len(pages) >= 2
-            and pages[-1].get("offset") == total
-            and pages[-2].get("rows") == MANGO_OFFICIAL_PAGE_LIMIT
-        )
-    return type(last_rows) is int and last_rows < MANGO_OFFICIAL_PAGE_LIMIT
+    return bool(
+        pages[-1].get("rows") == 0
+        and pages[-1].get("offset") == len(canonical_expected)
+        and sorted(observed_ids) == canonical_expected
+        and offset == len(canonical_expected)
+    )
 
 
 def _ready_capture_proof_is_green(manifest: Mapping[str, Any]) -> bool:
@@ -382,7 +521,7 @@ def _dual_source_proof_is_green(source: Any) -> bool:
         "primary_raw_balance_ok",
         "verification_raw_balance_ok",
         "partition_sha256_different",
-        "official_total_equal",
+        "official_list_equal",
     }
     if not (
         proof.get("schema_version") == DUAL_ENUMERATION_SCHEMA
@@ -615,10 +754,11 @@ def _dual_source_proof_is_green(source: Any) -> bool:
     computed_comparison["partition_sha256_different"] = (
         pass_facts[0]["partition_sha256"] != pass_facts[1]["partition_sha256"]
     )
-    computed_comparison["official_total_equal"] = _official_total_proof_is_green(
-        proof.get("official_total"),
-        expected_count=pass_facts[0]["normalized_unique_count"],
-        expected_call_keys_sha256=pass_facts[0]["call_keys_sha256"],
+    computed_comparison["official_list_equal"] = _official_list_proof_is_green(
+        proof.get("official_list"),
+        expected_call_keys=pass_facts[0]["call_keys"],
+        expected_since=rolling_since,
+        expected_until=until,
     )
     if dict(comparison) != computed_comparison or not all(
         computed_comparison.values()
@@ -1964,17 +2104,16 @@ def validate_capture_enumeration_evidence(
             computed_comparison["partition_sha256_different"] = pass_facts[0].get(
                 "partition_sha256"
             ) != pass_facts[1].get("partition_sha256")
-            computed_comparison["official_total_equal"] = (
-                _official_total_proof_is_green(
-                    dual_proof.get("official_total"),
-                    expected_count=pass_facts[0].get("normalized_unique_count"),
-                    expected_call_keys_sha256=pass_facts[0].get(
-                        "call_keys_sha256"
-                    ),
+            computed_comparison["official_list_equal"] = (
+                _official_list_proof_is_green(
+                    dual_proof.get("official_list"),
+                    expected_call_keys=pass_facts[0].get("call_keys") or (),
+                    expected_since=rolling_since,
+                    expected_until=source_until,
                 )
             )
-            if not computed_comparison["official_total_equal"]:
-                errors.append("strict_official_total_proof_invalid")
+            if not computed_comparison["official_list_equal"]:
+                errors.append("strict_official_list_proof_invalid")
             if pass_facts[0].get("call_keys") != sorted(
                 set(value for values in normalized_calls.values() for value in values)
             ):

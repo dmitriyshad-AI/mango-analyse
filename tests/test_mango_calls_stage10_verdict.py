@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -8,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import dual_strict_source, dualize_strict_enumeration
+from tests.conftest import (
+    dual_strict_source,
+    dualize_strict_enumeration,
+    ready_capture_proof,
+)
 
 from mango_mvp.productization.mango_calls_service_contract import (
     CALLS_PROCESS_MATCHER_VERSION,
@@ -778,6 +783,16 @@ def _ready_manifest(**extra: object) -> dict[str, object]:
 
 def _strict_ready_manifest_for(verdict: dict[str, object]) -> dict[str, object]:
     source = verdict["mango_enumeration_source"]
+    dual = source.get("dual_enumeration") if isinstance(source, dict) else None
+    if isinstance(source, dict) and isinstance(dual, dict):
+        proof, proof_sha256 = ready_capture_proof(
+            source,
+            zero_by_day={
+                DAY.isoformat(): int(verdict["independent_zero_enumerations"])
+            },
+        )
+    else:
+        proof, proof_sha256 = None, "c" * 64
     return {
         "schema_version": READY_MANIFEST_SCHEMA,
         "created_at_utc": "2026-08-11T09:00:00+00:00",
@@ -794,6 +809,11 @@ def _strict_ready_manifest_for(verdict: dict[str, object]) -> dict[str, object]:
         },
         "mango_enumeration_complete": True,
         "mango_enumeration_source": source,
+        "capture_proof": proof,
+        "capture_proof_sha256": proof_sha256,
+        "capture_proof_run_id": (
+            dual.get("proof_run_id") if isinstance(dual, dict) else "not-proven"
+        ),
         "moscow_dates": [DAY.isoformat()],
         "daily_verdicts": {DAY.isoformat(): verdict},
         "manifest_snapshot": {"end_offset": 1, "sha256": "b" * 64},
@@ -844,6 +864,35 @@ def test_valid_strict_ready_manifest_is_accepted() -> None:
     assert validate_ready_manifest_payload(
         _strict_ready_manifest_for(verdict), require_closure=True
     ) == []
+
+
+def test_ready_capture_proof_rejects_hash_and_semantic_tampering() -> None:
+    verdict = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("complete"),
+            capture_entries=[_capture("complete")],
+            ready_rows=[_ready("complete")],
+            now=NOW,
+        )
+    )
+    manifest = _strict_ready_manifest_for(verdict)
+    manifest["capture_proof_sha256"] = "d" * 64
+    assert "capture_proof_invalid" in validate_ready_manifest_payload(manifest)
+
+    manifest = _strict_ready_manifest_for(verdict)
+    proof = dict(manifest["capture_proof"])
+    proof["api_events_total"] = int(proof["api_events_total"]) + 1
+    manifest["capture_proof"] = proof
+    manifest["capture_proof_sha256"] = hashlib.sha256(
+        json.dumps(
+            proof,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert "capture_proof_invalid" in validate_ready_manifest_payload(manifest)
 
 
 def test_first_empty_day_proof_is_valid_red_manifest_evidence() -> None:

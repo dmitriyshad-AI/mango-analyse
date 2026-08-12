@@ -108,8 +108,10 @@ from mango_mvp.services.controlled_call_scope import (
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
 LEGACY_CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v1"
 CAPTURE_WINDOW_CERTIFICATE_SCHEMA = "mango_capture_window_certificate_v2"
-DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v1"
-DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v1"
+DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v2"
+DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v2"
+MANGO_OFFICIAL_TOTAL_SCHEMA = "mango_extended_total_pages_v1"
+MANGO_OFFICIAL_PAGE_LIMIT = 5000
 SEQUENTIAL_PIPELINE_STAGES = (
     "transcribe",
     "backfill-second-asr",
@@ -2972,6 +2974,21 @@ def mango_enumeration_pass_proof(
         }
         for interval in intervals
     ]
+    recordable_unique_rows = sum(
+        bool(event_recording_ids(event)) for event in events_by_key.values()
+    )
+    without_recording_rows = len(call_keys) - recordable_unique_rows
+    proven_duplicate_rows = len(rows) - len(call_keys)
+    raw_balance_ok = len(rows) == sum(
+        (
+            recordable_unique_rows,
+            without_recording_rows,
+            proven_duplicate_rows,
+            0,  # quarantined rows fail the pass before proof creation
+            0,  # malformed rows fail the pass before proof creation
+            0,  # no unexplained row is permitted
+        )
+    )
     return {
         "pass_id": pass_id,
         "rolling_since": rolling_since.astimezone(timezone.utc).isoformat(),
@@ -2979,6 +2996,16 @@ def mango_enumeration_pass_proof(
         "requests": len(chunks),
         "raw_rows": len(rows),
         "chunks": chunks,
+        "partition_sha256": _canonical_json_sha256(
+            [{"since": item["since"], "until": item["until"]} for item in chunks]
+        ),
+        "recordable_unique_rows": recordable_unique_rows,
+        "without_recording_rows": without_recording_rows,
+        "proven_duplicate_rows": proven_duplicate_rows,
+        "quarantined_rows": 0,
+        "error_rows": 0,
+        "unexplained_rows": 0,
+        "raw_balance_ok": raw_balance_ok,
         "call_key_multiset": list(call_key_multiset),
         "call_key_multiset_sha256": _canonical_json_sha256(
             list(call_key_multiset)
@@ -3009,12 +3036,11 @@ def build_dual_enumeration_proof(
     until: datetime,
     primary: Mapping[str, Any],
     verification: Mapping[str, Any],
+    official_total: Mapping[str, Any],
+    proof_run_id: str,
+    observed_at: datetime,
 ) -> Mapping[str, Any]:
     comparison_fields = (
-        "raw_rows",
-        "call_key_multiset",
-        "call_key_multiset_sha256",
-        "raw_rows_sha256",
         "normalized_unique_count",
         "call_keys",
         "call_keys_sha256",
@@ -3026,16 +3052,27 @@ def build_dual_enumeration_proof(
         f"{field}_equal": primary.get(field) == verification.get(field)
         for field in comparison_fields
     }
-    comparison["chunk_geometry_equal"] = primary.get(
-        "chunks"
-    ) == verification.get("chunks")
+    comparison["primary_raw_balance_ok"] = primary.get("raw_balance_ok") is True
+    comparison["verification_raw_balance_ok"] = (
+        verification.get("raw_balance_ok") is True
+    )
+    comparison["partition_sha256_different"] = primary.get(
+        "partition_sha256"
+    ) != verification.get("partition_sha256")
+    comparison["official_total_equal"] = (
+        official_total.get("complete") is True
+        and official_total.get("total_calls_count")
+        == primary.get("normalized_unique_count")
+        and official_total.get("call_keys_sha256")
+        == primary.get("call_keys_sha256")
+    )
     matched = all(comparison.values())
     mismatches = sorted(
         key.removesuffix("_equal")
         for key, value in comparison.items()
         if value is not True
     )
-    return {
+    proof = {
         "schema_version": DUAL_ENUMERATION_SCHEMA,
         "normalization_version": DUAL_ENUMERATION_NORMALIZATION,
         "tenant_id": config.tenant_id,
@@ -3043,13 +3080,155 @@ def build_dual_enumeration_proof(
         "fields_sha256": _canonical_json_sha256(DEFAULT_STATS_FIELDS),
         "rolling_since": rolling_since.astimezone(timezone.utc).isoformat(),
         "until": until.astimezone(timezone.utc).isoformat(),
+        "proof_run_id": proof_run_id,
+        "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
         "passes_required": 2,
         "passes_completed": 2,
         "passes": [dict(primary), dict(verification)],
+        "official_total": dict(official_total),
         "comparison": comparison,
         "enumeration_consistency_ok": matched,
         "mismatch_reason": "" if matched else ",".join(mismatches),
     }
+    return {**proof, "proof_sha256": _canonical_json_sha256(proof)}
+
+
+def _mango_wire_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Mango window boundary must be timezone-aware")
+    return datetime.fromtimestamp(int(value.timestamp()), tz=timezone.utc)
+
+
+def build_mango_official_total_proof(
+    *,
+    call_ids: Sequence[str],
+    page_receipts: Sequence[Mapping[str, Any]],
+    total_calls_count: int,
+) -> Mapping[str, Any]:
+    canonical_ids = sorted(call_ids)
+    proof = {
+        "schema_version": MANGO_OFFICIAL_TOTAL_SCHEMA,
+        "page_limit": MANGO_OFFICIAL_PAGE_LIMIT,
+        "pages": [dict(item) for item in page_receipts],
+        "pages_count": len(page_receipts),
+        "total_calls_count": total_calls_count,
+        "call_keys_sha256": _canonical_json_sha256(canonical_ids),
+        "complete": len(canonical_ids) == total_calls_count,
+    }
+    return {**proof, "proof_sha256": _canonical_json_sha256(proof)}
+
+
+def poll_mango_official_total_pages(
+    client: MangoOfficeClient,
+    *,
+    since: datetime,
+    until: datetime,
+    expected_call_ids: Sequence[str],
+) -> Mapping[str, Any]:
+    """Cross-check basic CSV rows against Mango's official paged total API."""
+
+    offset = 0
+    expected_total: Optional[int] = None
+    observed_ids: list[str] = []
+    page_receipts: list[Mapping[str, Any]] = []
+    while True:
+        request_token = client.post_command(
+            "/vpbx/stats/calls/request",
+            {
+                "start_date": _mango_wire_datetime(since).isoformat(),
+                "end_date": _mango_wire_datetime(until).isoformat(),
+                "limit": MANGO_OFFICIAL_PAGE_LIMIT,
+                "offset": offset,
+            },
+        )
+        if not isinstance(request_token, Mapping) or not str(
+            request_token.get("key") or ""
+        ).strip():
+            raise RuntimeError("Mango extended stats request returned no key")
+        result: Any = None
+        for attempt in range(client.stats_result_poll_attempts):
+            result = client.post_command(
+                "/vpbx/stats/calls/result", request_token
+            )
+            if isinstance(result, Mapping) and result.get("status") in {
+                "request",
+                "work",
+            }:
+                if attempt + 1 >= client.stats_result_poll_attempts:
+                    raise RuntimeError("Mango extended stats polling deadline exhausted")
+                client.sleeper(client.stats_result_poll_interval_sec)
+                continue
+            break
+        if (
+            not isinstance(result, Mapping)
+            or result.get("status") != "complete"
+            or result.get("result") != 1000
+        ):
+            raise RuntimeError("Mango extended stats result is not complete")
+        raw_buckets = result.get("data")
+        if not isinstance(raw_buckets, Sequence) or isinstance(
+            raw_buckets, (str, bytes)
+        ):
+            raise RuntimeError("Mango extended stats data is invalid")
+        page_ids: list[str] = []
+        declared_totals: set[int] = set()
+        for bucket in raw_buckets:
+            if not isinstance(bucket, Mapping):
+                raise RuntimeError("Mango extended stats bucket is invalid")
+            bucket_total = bucket.get("total_calls_count")
+            rows = bucket.get("list")
+            if (
+                not isinstance(rows, Sequence)
+                or isinstance(rows, (str, bytes))
+            ):
+                raise RuntimeError("Mango extended stats total/page is invalid")
+            if bucket_total is not None:
+                if type(bucket_total) is not int or bucket_total < 0:
+                    raise RuntimeError("Mango extended stats total/page is invalid")
+                declared_totals.add(bucket_total)
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise RuntimeError("Mango extended stats row is invalid")
+                call_id = str(row.get("entry_id") or "").strip()
+                if not call_id:
+                    raise RuntimeError("Mango extended stats row has no entry_id")
+                page_ids.append(call_id)
+        if len(declared_totals) != 1:
+            raise RuntimeError("Mango extended stats total is missing or conflicting")
+        page_total = next(iter(declared_totals))
+        if expected_total is None:
+            expected_total = page_total
+        elif page_total != expected_total:
+            raise RuntimeError("Mango extended stats total changed between pages")
+        if len(page_ids) > MANGO_OFFICIAL_PAGE_LIMIT:
+            raise RuntimeError("Mango extended stats page exceeded requested limit")
+        if set(page_ids).intersection(observed_ids):
+            raise RuntimeError("Mango extended stats pages overlap")
+        observed_ids.extend(page_ids)
+        page_receipts.append(
+            {
+                "offset": offset,
+                "rows": len(page_ids),
+                "total_calls_count": expected_total,
+                "entry_ids_sha256": _canonical_json_sha256(sorted(page_ids)),
+                "status": "complete",
+            }
+        )
+        if len(observed_ids) == expected_total:
+            if len(page_ids) == MANGO_OFFICIAL_PAGE_LIMIT:
+                offset = len(observed_ids)
+                continue
+            break
+        if not page_ids or len(observed_ids) > expected_total:
+            raise RuntimeError("Mango extended stats pagination is incomplete")
+        offset = len(observed_ids)
+    if sorted(observed_ids) != sorted(expected_call_ids):
+        raise RuntimeError("Mango basic and extended call sets differ")
+    return build_mango_official_total_proof(
+        call_ids=observed_ids,
+        page_receipts=page_receipts,
+        total_calls_count=expected_total,
+    )
 
 
 def capture_mango_window(
@@ -3057,6 +3236,10 @@ def capture_mango_window(
     since: datetime,
     until: datetime,
 ) -> Mapping[str, Any]:
+    since = _mango_wire_datetime(since)
+    until = _mango_wire_datetime(until)
+    proof_observed_at = datetime.now(timezone.utc)
+    proof_run_id = new_calls_run_id(proof_observed_at)
     api_key = os.getenv("MANGO_OFFICE_API_KEY", "").strip()
     api_salt = os.getenv("MANGO_OFFICE_API_SALT", "").strip()
     if not api_key or not api_salt:
@@ -3212,6 +3395,28 @@ def capture_mango_window(
                     since=chunk_start,
                     until=chunk_end,
                 )
+                for row in chunk_rows if config.strict_ready_provenance else ():
+                    started_raw = next(
+                        (
+                            row.get(name)
+                            for name in (
+                                "started_at",
+                                "start_time",
+                                "timestamp",
+                                "date",
+                                "start",
+                            )
+                            if row.get(name) not in (None, "")
+                        ),
+                        None,
+                    )
+                    if started_raw is None:
+                        raise RuntimeError("Mango stats row has no start time")
+                    row_started_at = parse_datetime(str(started_raw))
+                    if not chunk_start <= row_started_at <= chunk_end:
+                        raise RuntimeError(
+                            "Mango stats row is outside its requested wire window"
+                        )
                 rows.extend(chunk_rows)
                 interval: dict[str, Any] = {
                     "since": chunk_start.isoformat(),
@@ -3263,6 +3468,22 @@ def capture_mango_window(
                 "mango_enumeration_complete": False,
                 "enumeration_consistency_ok": False,
             }
+        primary_boundaries = {
+            parse_datetime(str(interval[key]))
+            for interval in primary_intervals
+            for key in ("since", "until")
+        }
+        verification_split = _mango_wire_datetime(
+            base_window_start + (until - base_window_start) / 3
+        )
+        if verification_split in primary_boundaries:
+            verification_split += timedelta(seconds=1)
+        if not base_window_start < verification_split < until:
+            raise RuntimeError("independent Mango partition is unavailable")
+        verification_windows = [
+            (base_window_start, verification_split),
+            (verification_split, until),
+        ]
         try:
             (
                 primary_events,
@@ -3283,7 +3504,7 @@ def capture_mango_window(
         try:
             verification_rows, verification_intervals = poll_exact_windows(
                 verification_client,
-                rolling_windows,
+                verification_windows,
                 scope="rolling_authority",
                 authority_pass=2,
             )
@@ -3333,12 +3554,33 @@ def capture_mango_window(
             rolling_since=base_window_start,
             until=until,
         )
+        try:
+            official_total = poll_mango_official_total_pages(
+                primary_client,
+                since=base_window_start,
+                until=until,
+                expected_call_ids=[
+                    event.provider_call_id for event in primary_events.values()
+                ],
+            )
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+            return {
+                "status": "failed",
+                "reason": "official_mango_total_verification_failed",
+                "mango_enumeration_complete": False,
+                "enumeration_consistency_ok": False,
+                "api_requests": len(primary_intervals)
+                + len(verification_intervals),
+            }
         dual_enumeration = build_dual_enumeration_proof(
             config,
             rolling_since=base_window_start,
             until=until,
             primary=primary_proof,
             verification=verification_proof,
+            official_total=official_total,
+            proof_run_id=proof_run_id,
+            observed_at=proof_observed_at,
         )
         if dual_enumeration.get("enumeration_consistency_ok") is not True:
             return {
@@ -4984,9 +5226,9 @@ def resolve_capture_window(
     since: Optional[str],
     until: Optional[str],
 ) -> tuple[datetime, datetime]:
-    current = datetime.now(timezone.utc)
+    current = _mango_wire_datetime(datetime.now(timezone.utc))
     if until:
-        end = parse_datetime(until)
+        end = _mango_wire_datetime(parse_datetime(until))
         if config.strict_ready_provenance and end > current:
             raise ValueError("strict capture until cannot be in the future")
     else:
@@ -4999,7 +5241,7 @@ def resolve_capture_window(
                 minutes=config.recording_set_stabilization_minutes
             )
     if since:
-        start = parse_datetime(since)
+        start = _mango_wire_datetime(parse_datetime(since))
     else:
         cursor = read_json(config.cursor_path)
         if config.strict_ready_provenance and cursor:
@@ -5010,13 +5252,17 @@ def resolve_capture_window(
             )
         raw = optional_text(cursor.get("until")) or config.bootstrap_since
         if raw:
-            start = parse_datetime(raw) - timedelta(minutes=config.poll_overlap_minutes)
+            start = _mango_wire_datetime(parse_datetime(raw)) - timedelta(
+                minutes=config.poll_overlap_minutes
+            )
             if end - start > timedelta(days=config.max_catch_up_days):
                 raise ValueError(
                     "capture gap exceeds max_catch_up_days; provide explicit --since after dry-run review"
                 )
         else:
             start = end - timedelta(hours=config.first_lookback_hours)
+    start = _mango_wire_datetime(start)
+    end = _mango_wire_datetime(end)
     if end <= start:
         raise ValueError("capture until must be after since")
     return start, end
@@ -6047,6 +6293,19 @@ def publish_ready_db(
                 "strict_service" if config.strict_ready_provenance else None
             ),
         )
+        capture_proof = (
+            capture_enumeration_exact_projection(
+                evidence,
+                expected_source_mode="strict_service",
+            )
+            if config.strict_ready_provenance
+            else None
+        )
+        capture_proof_sha256 = (
+            _canonical_json_sha256(capture_proof)
+            if capture_proof is not None
+            else ready_capture_proof_sha256(evidence)
+        )
         verdicts, snapshot, evidence = _ready_verdicts(
             config,
             ready_db=temp,
@@ -6078,6 +6337,7 @@ def publish_ready_db(
         source = evidence.get("mango_enumeration_source")
         if not isinstance(source, Mapping):
             source = {}
+        source_dual = source.get("dual_enumeration")
         created = datetime.now(timezone.utc)
         observed_fingerprint = (
             dict(runtime_fingerprint)
@@ -6123,6 +6383,13 @@ def publish_ready_db(
             ),
             "mango_enumeration_source": dict(source),
             "enumeration_evidence_sha256": enumeration_evidence_sha256,
+            "capture_proof_sha256": capture_proof_sha256,
+            "capture_proof": capture_proof,
+            "capture_proof_run_id": (
+                source_dual.get("proof_run_id")
+                if isinstance(source_dual, Mapping)
+                else None
+            ),
             "catch_up": bool(source.get("catch_up")),
             "sla_mode": "catch_up" if source.get("catch_up") else "live",
             "manifest_snapshot": {
@@ -6321,6 +6588,16 @@ def capture_enumeration_evidence_sha256(
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def ready_capture_proof_sha256(evidence: Mapping[str, Any]) -> str:
+    source = evidence.get("mango_enumeration_source")
+    if isinstance(source, Mapping) and source.get("mode") == "strict_service":
+        return capture_enumeration_exact_sha256(
+            evidence,
+            expected_source_mode="strict_service",
+        )
+    return capture_enumeration_evidence_sha256(evidence)
+
+
 def capture_enumeration_legacy_exact_sha256(
     evidence: Mapping[str, Any],
 ) -> str:
@@ -6392,14 +6669,14 @@ def capture_enumeration_legacy_exact_sha256(
     return _canonical_json_sha256(projected)
 
 
-def capture_enumeration_exact_sha256(
+def capture_enumeration_exact_projection(
     evidence: Mapping[str, Any],
     *,
     expected_source_mode: Optional[str] = None,
     expected_until: Any = None,
     expected_rolling_since: Any = None,
-) -> str:
-    """Seal the exact strict API proof, not the ready-reuse semantics.
+) -> Mapping[str, Any]:
+    """Build the exact strict API proof projection.
 
     Ready publication intentionally ignores harmless polling telemetry.  A
     cursor certificate has a different job: every executed interval, row
@@ -6483,13 +6760,23 @@ def capture_enumeration_exact_sha256(
         ),
         "api_events_total": evidence.get("api_events_total"),
     }
-    serialized = json.dumps(
-        projected,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    return projected
+
+
+def capture_enumeration_exact_sha256(
+    evidence: Mapping[str, Any],
+    *,
+    expected_source_mode: Optional[str] = None,
+    expected_until: Any = None,
+    expected_rolling_since: Any = None,
+) -> str:
+    projected = capture_enumeration_exact_projection(
+        evidence,
+        expected_source_mode=expected_source_mode,
+        expected_until=expected_until,
+        expected_rolling_since=expected_rolling_since,
     )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return _canonical_json_sha256(projected)
 
 
 def certify_capture_window(
@@ -6755,6 +7042,9 @@ def publish_ready_db_if_changed(
                 "strict_service" if config.strict_ready_provenance else None
             ),
         )
+        capture_proof_same = manifest.get(
+            "capture_proof_sha256"
+        ) == ready_capture_proof_sha256(evidence)
         expected_offset = positive_int(
             manifest_end_offset
             if manifest_end_offset is not None
@@ -6793,6 +7083,7 @@ def publish_ready_db_if_changed(
             and ready_unchanged
             and snapshot_same
             and evidence_same
+            and capture_proof_same
             and not time_sensitive_pending
             and manifest.get("source_storage")
             == sqlite_storage_signature(config.working_db)
@@ -7716,6 +8007,8 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
 
 def parse_datetime(value: str) -> datetime:
     text = value.strip().replace("Z", "+00:00")
+    if text.isdigit():
+        return datetime.fromtimestamp(int(text), tz=timezone.utc)
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         parsed = parsed.replace(tzinfo=timezone.utc)

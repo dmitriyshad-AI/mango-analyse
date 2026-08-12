@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import dual_strict_source
+from tests.conftest import dual_strict_source, ready_capture_proof
 
 from mango_mvp.productization import owner_only_io
 from mango_mvp.productization.mango_calls_service_contract import (
@@ -613,8 +613,12 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
         calls_by_day={"2026-08-11": ["call-1"]},
     )
     verdict["mango_enumeration_source"] = enumeration_source
+    capture_proof, capture_proof_sha256 = ready_capture_proof(
+        enumeration_source,
+        zero_by_day={"2026-08-11": 0},
+    )
     manifest = {
-        "schema_version": "mango_calls_ready_v2",
+        "schema_version": "mango_calls_ready_v3",
         "created_at_utc": "2026-08-11T10:00:01+00:00",
         "published_at": "2026-08-11T10:00:02+00:00",
         "status": "ready",
@@ -631,6 +635,11 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
         },
         "mango_enumeration_complete": True,
         "mango_enumeration_source": enumeration_source,
+        "capture_proof": capture_proof,
+        "capture_proof_sha256": capture_proof_sha256,
+        "capture_proof_run_id": enumeration_source["dual_enumeration"][
+            "proof_run_id"
+        ],
         "manifest_snapshot": {"end_offset": 1, "sha256": "b" * 64},
         "provenance_mode": "strict_service",
         "quick_check": "ok",
@@ -1098,6 +1107,40 @@ def test_zero_stage10_rejects_nonempty_manager_rows(tmp_path: Path) -> None:
         independent_zero_enumerations=2,
         closure_ok=True,
     )
+    original_source = manifest["mango_enumeration_source"]
+    zero_source = dual_strict_source(
+        {
+            "mode": "strict_service",
+            "since": original_source["since"],
+            "rolling_since": original_source["rolling_since"],
+            "until": original_source["until"],
+            "cursor": original_source["cursor"],
+            "pages": original_source["pages"],
+            "pagination": original_source["pagination"],
+            "requests": 1,
+            "covered_intervals": [
+                {
+                    "since": original_source["rolling_since"],
+                    "until": original_source["until"],
+                    "result_complete": True,
+                }
+            ],
+            "catch_up": False,
+        },
+        call_keys=[],
+        calls_by_day={},
+    )
+    verdict["mango_enumeration_source"] = zero_source
+    manifest["mango_enumeration_source"] = zero_source
+    capture_proof, capture_proof_sha256 = ready_capture_proof(
+        zero_source,
+        zero_by_day={"2026-08-11": 2},
+    )
+    manifest["capture_proof"] = capture_proof
+    manifest["capture_proof_sha256"] = capture_proof_sha256
+    manifest["capture_proof_run_id"] = zero_source["dual_enumeration"][
+        "proof_run_id"
+    ]
 
     with pytest.raises(RuntimeError, match="Stage10 balance"):
         publisher.build_safe_plan(

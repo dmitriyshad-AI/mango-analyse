@@ -21,9 +21,11 @@ from mango_mvp.productization.owner_only_io import (
 
 
 MOSCOW = ZoneInfo("Europe/Moscow")
-READY_MANIFEST_SCHEMA = "mango_calls_ready_v2"
-DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v1"
-DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v1"
+READY_MANIFEST_SCHEMA = "mango_calls_ready_v3"
+DUAL_ENUMERATION_SCHEMA = "mango_exact_dual_enumeration_v2"
+DUAL_ENUMERATION_NORMALIZATION = "mango_rows_call_day_v2"
+MANGO_OFFICIAL_TOTAL_SCHEMA = "mango_extended_total_pages_v1"
+MANGO_OFFICIAL_PAGE_LIMIT = 5000
 CUTOVER_MANIFEST_SCHEMA = "mango_calls_cutover_v2"
 PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA = (
     "mango_calls_previous_host_shutdown_snapshot_v1"
@@ -173,32 +175,198 @@ def _is_sha256(value: Any) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
 
 
+def _official_total_proof_is_green(
+    proof: Any,
+    *,
+    expected_count: int,
+    expected_call_keys_sha256: str,
+) -> bool:
+    if not isinstance(proof, Mapping):
+        return False
+    proof_body = {key: value for key, value in proof.items() if key != "proof_sha256"}
+    pages = proof.get("pages")
+    total = proof.get("total_calls_count")
+    if not (
+        proof.get("schema_version") == MANGO_OFFICIAL_TOTAL_SCHEMA
+        and type(proof.get("page_limit")) is int
+        and proof.get("page_limit") == MANGO_OFFICIAL_PAGE_LIMIT
+        and proof.get("proof_sha256") == _canonical_json_sha256(proof_body)
+        and proof.get("complete") is True
+        and type(total) is int
+        and total == expected_count
+        and proof.get("call_keys_sha256") == expected_call_keys_sha256
+        and isinstance(pages, Sequence)
+        and not isinstance(pages, (str, bytes))
+        and type(proof.get("pages_count")) is int
+        and proof.get("pages_count") == len(pages)
+        and len(pages) >= 1
+    ):
+        return False
+    offset = 0
+    for page in pages:
+        if not isinstance(page, Mapping):
+            return False
+        rows = page.get("rows")
+        if not (
+            type(page.get("offset")) is int
+            and page.get("offset") == offset
+            and type(rows) is int
+            and 0 <= rows <= MANGO_OFFICIAL_PAGE_LIMIT
+            and type(page.get("total_calls_count")) is int
+            and page.get("total_calls_count") == total
+            and page.get("status") == "complete"
+            and _is_sha256(page.get("entry_ids_sha256"))
+        ):
+            return False
+        offset += rows
+    if offset != total:
+        return False
+    if total == 0:
+        return len(pages) == 1 and pages[0].get("rows") == 0
+    last_rows = pages[-1].get("rows")
+    if last_rows == 0:
+        return (
+            len(pages) >= 2
+            and pages[-1].get("offset") == total
+            and pages[-2].get("rows") == MANGO_OFFICIAL_PAGE_LIMIT
+        )
+    return type(last_rows) is int and last_rows < MANGO_OFFICIAL_PAGE_LIMIT
+
+
+def _ready_capture_proof_is_green(manifest: Mapping[str, Any]) -> bool:
+    proof = manifest.get("capture_proof")
+    if not isinstance(proof, Mapping):
+        return False
+    if manifest.get("capture_proof_sha256") != _canonical_json_sha256(proof):
+        return False
+    source = manifest.get("mango_enumeration_source")
+    proof_source = proof.get("mango_enumeration_source")
+    if not isinstance(source, Mapping) or not isinstance(proof_source, Mapping):
+        return False
+    raw_intervals = source.get("covered_intervals")
+    if not isinstance(raw_intervals, Sequence) or isinstance(
+        raw_intervals, (str, bytes)
+    ):
+        return False
+    intervals = [item for item in raw_intervals if isinstance(item, Mapping)]
+    if len(intervals) != len(raw_intervals):
+        return False
+    source_projection = {
+        key: source.get(key)
+        for key in (
+            "mode",
+            "since",
+            "rolling_since",
+            "until",
+            "cursor",
+            "pages",
+            "pagination",
+            "requests",
+            "catch_up",
+            "enumeration_consistency_ok",
+            "dual_enumeration",
+        )
+    } | {
+        "covered_intervals": [
+            {
+                key: interval.get(key)
+                for key in (
+                    "since",
+                    "until",
+                    "result_complete",
+                    "rows",
+                    "scope",
+                    "authority_pass",
+                )
+            }
+            for interval in intervals
+        ]
+    }
+    if dict(proof_source) != source_projection:
+        return False
+    dual = source.get("dual_enumeration")
+    passes = dual.get("passes") if isinstance(dual, Mapping) else None
+    if not isinstance(passes, Sequence) or len(passes) != 2:
+        return False
+    primary = passes[0]
+    if not isinstance(primary, Mapping):
+        return False
+    call_keys = proof.get("call_keys")
+    calls_by_day = proof.get("calls_by_moscow_day")
+    zero_by_day = proof.get("independent_zero_enumerations_by_day")
+    if (
+        not isinstance(call_keys, Sequence)
+        or isinstance(call_keys, (str, bytes))
+        or list(call_keys) != primary.get("call_keys")
+        or not isinstance(calls_by_day, Mapping)
+        or dict(calls_by_day) != primary.get("calls_by_moscow_day")
+        or not isinstance(zero_by_day, Mapping)
+    ):
+        return False
+    verdicts = manifest.get("daily_verdicts")
+    if not isinstance(verdicts, Mapping):
+        return False
+    for day_key, zero_count in zero_by_day.items():
+        verdict = verdicts.get(day_key)
+        if (
+            type(zero_count) is not int
+            or not isinstance(verdict, Mapping)
+            or verdict.get("independent_zero_enumerations") != zero_count
+        ):
+            return False
+    authoritative_rows = sum(
+        item.get("rows", 0)
+        for item in intervals
+        if item.get("scope") == "rolling_authority"
+        and type(item.get("rows")) is int
+    )
+    auxiliary_rows = sum(
+        item.get("rows", 0)
+        for item in intervals
+        if item.get("scope") == "recovery_auxiliary"
+        and type(item.get("rows")) is int
+    )
+    return bool(
+        proof.get("mango_enumeration_complete")
+        == manifest.get("mango_enumeration_complete")
+        and proof.get("api_requests") == source.get("requests") == len(intervals)
+        and proof.get("api_authoritative_rows_total") == authoritative_rows
+        and proof.get("api_auxiliary_rows_total") == auxiliary_rows
+        and proof.get("api_rows_total") == authoritative_rows + auxiliary_rows
+        and proof.get("api_events_total") == len(call_keys)
+    )
+
+
 def _dual_source_proof_is_green(source: Any) -> bool:
     if not isinstance(source, Mapping):
         return False
     proof = source.get("dual_enumeration")
     if not isinstance(proof, Mapping):
         return False
+    proof_body = {key: value for key, value in proof.items() if key != "proof_sha256"}
+    if proof.get("proof_sha256") != _canonical_json_sha256(proof_body):
+        return False
     passes = proof.get("passes")
     comparison = proof.get("comparison")
     required_comparisons = {
-        "raw_rows_equal",
-        "call_key_multiset_equal",
-        "call_key_multiset_sha256_equal",
-        "raw_rows_sha256_equal",
         "normalized_unique_count_equal",
         "call_keys_equal",
         "call_keys_sha256_equal",
         "calls_by_moscow_day_equal",
         "calls_by_moscow_day_sha256_equal",
         "event_digest_sha256_equal",
-        "chunk_geometry_equal",
+        "primary_raw_balance_ok",
+        "verification_raw_balance_ok",
+        "partition_sha256_different",
+        "official_total_equal",
     }
     if not (
         proof.get("schema_version") == DUAL_ENUMERATION_SCHEMA
         and proof.get("normalization_version")
         == DUAL_ENUMERATION_NORMALIZATION
+        and type(proof.get("passes_required")) is int
         and proof.get("passes_required") == 2
+        and type(proof.get("passes_completed")) is int
         and proof.get("passes_completed") == 2
         and isinstance(passes, Sequence)
         and not isinstance(passes, (str, bytes))
@@ -214,6 +382,7 @@ def _dual_source_proof_is_green(source: Any) -> bool:
         and proof.get("enumeration_consistency_ok") is True
         and source.get("enumeration_consistency_ok") is True
         and proof.get("mismatch_reason") == ""
+        and str(proof.get("proof_run_id") or "").strip()
         and str(proof.get("tenant_id") or "").strip()
         and str(proof.get("base_url") or "").strip()
         and proof.get("fields_sha256")
@@ -221,6 +390,7 @@ def _dual_source_proof_is_green(source: Any) -> bool:
     ):
         return False
     try:
+        _parse_strict_aware_datetime(proof.get("observed_at"))
         rolling_since = _parse_strict_aware_datetime(source.get("rolling_since"))
         until = _parse_strict_aware_datetime(source.get("until"))
         if (
@@ -281,7 +451,12 @@ def _dual_source_proof_is_green(source: Any) -> bool:
                 chunk_until = _parse_strict_aware_datetime(chunk.get("until"))
             except (TypeError, ValueError):
                 return False
-            if chunk_since != chunk_cursor or chunk_since >= chunk_until:
+            if (
+                chunk_since != chunk_cursor
+                or chunk_since >= chunk_until
+                or chunk_since.microsecond
+                or chunk_until.microsecond
+            ):
                 return False
             chunk_cursor = chunk_until
             chunk_rows_total += rows
@@ -294,6 +469,11 @@ def _dual_source_proof_is_green(source: Any) -> bool:
                 }
             )
         if chunk_cursor != until or chunk_rows_total != raw_rows:
+            return False
+        partition_sha256 = _canonical_json_sha256(
+            [{"since": item["since"], "until": item["until"]} for item in canonical_chunks]
+        )
+        if payload.get("partition_sha256") != partition_sha256:
             return False
 
         multiset = payload.get("call_key_multiset")
@@ -320,6 +500,7 @@ def _dual_source_proof_is_green(source: Any) -> bool:
             or len(canonical_multiset) != raw_rows
             or canonical_keys != sorted(set(canonical_keys))
             or sorted(set(canonical_multiset)) != canonical_keys
+            or type(payload.get("normalized_unique_count")) is not int
             or payload.get("normalized_unique_count") != len(canonical_keys)
             or payload.get("call_key_multiset_sha256")
             != _canonical_json_sha256(canonical_multiset)
@@ -327,6 +508,24 @@ def _dual_source_proof_is_green(source: Any) -> bool:
             != _canonical_json_sha256(canonical_keys)
             or not _is_sha256(payload.get("raw_rows_sha256"))
             or not _is_sha256(payload.get("event_digest_sha256"))
+        ):
+            return False
+        balance_fields = (
+            "recordable_unique_rows",
+            "without_recording_rows",
+            "proven_duplicate_rows",
+            "quarantined_rows",
+            "error_rows",
+            "unexplained_rows",
+        )
+        balance = [payload.get(field) for field in balance_fields]
+        if (
+            any(type(value) is not int or value < 0 for value in balance)
+            or balance[0] + balance[1] != len(canonical_keys)
+            or balance[2] != raw_rows - len(canonical_keys)
+            or sum(balance) != raw_rows
+            or any(balance[index] != 0 for index in (3, 4, 5))
+            or payload.get("raw_balance_ok") is not True
         ):
             return False
         canonical_days: dict[str, list[str]] = {}
@@ -358,10 +557,6 @@ def _dual_source_proof_is_green(source: Any) -> bool:
         facts = {
             key: payload.get(key)
             for key in (
-                "raw_rows",
-                "call_key_multiset",
-                "call_key_multiset_sha256",
-                "raw_rows_sha256",
                 "normalized_unique_count",
                 "call_keys",
                 "call_keys_sha256",
@@ -371,16 +566,14 @@ def _dual_source_proof_is_green(source: Any) -> bool:
             )
         }
         facts["chunks"] = canonical_chunks
+        facts["partition_sha256"] = partition_sha256
+        facts["raw_balance_ok"] = payload.get("raw_balance_ok")
         pass_facts.append(facts)
         pass_chunks[pass_number] = canonical_chunks
 
     computed_comparison = {
         f"{field}_equal": pass_facts[0][field] == pass_facts[1][field]
         for field in (
-            "raw_rows",
-            "call_key_multiset",
-            "call_key_multiset_sha256",
-            "raw_rows_sha256",
             "normalized_unique_count",
             "call_keys",
             "call_keys_sha256",
@@ -389,8 +582,19 @@ def _dual_source_proof_is_green(source: Any) -> bool:
             "event_digest_sha256",
         )
     }
-    computed_comparison["chunk_geometry_equal"] = (
-        pass_facts[0]["chunks"] == pass_facts[1]["chunks"]
+    computed_comparison["primary_raw_balance_ok"] = pass_facts[0][
+        "raw_balance_ok"
+    ] is True
+    computed_comparison["verification_raw_balance_ok"] = pass_facts[1][
+        "raw_balance_ok"
+    ] is True
+    computed_comparison["partition_sha256_different"] = (
+        pass_facts[0]["partition_sha256"] != pass_facts[1]["partition_sha256"]
+    )
+    computed_comparison["official_total_equal"] = _official_total_proof_is_green(
+        proof.get("official_total"),
+        expected_count=pass_facts[0]["normalized_unique_count"],
+        expected_call_keys_sha256=pass_facts[0]["call_keys_sha256"],
     )
     if dict(comparison) != computed_comparison or not all(
         computed_comparison.values()
@@ -1407,6 +1611,11 @@ def validate_capture_enumeration_evidence(
     if not isinstance(dual_proof, Mapping):
         errors.append("strict_dual_enumeration_missing")
     else:
+        proof_body = {
+            key: value for key, value in dual_proof.items() if key != "proof_sha256"
+        }
+        if dual_proof.get("proof_sha256") != _canonical_json_sha256(proof_body):
+            errors.append("strict_dual_enumeration_proof_digest_invalid")
         if dual_proof.get("schema_version") != DUAL_ENUMERATION_SCHEMA:
             errors.append("strict_dual_enumeration_schema_invalid")
         if (
@@ -1418,12 +1627,20 @@ def validate_capture_enumeration_evidence(
             errors.append("strict_dual_enumeration_tenant_missing")
         if not str(dual_proof.get("base_url") or "").strip():
             errors.append("strict_dual_enumeration_base_url_missing")
+        if not str(dual_proof.get("proof_run_id") or "").strip():
+            errors.append("strict_dual_enumeration_run_id_missing")
+        try:
+            _parse_strict_aware_datetime(dual_proof.get("observed_at"))
+        except (TypeError, ValueError):
+            errors.append("strict_dual_enumeration_observed_at_invalid")
         if dual_proof.get("fields_sha256") != _canonical_json_sha256(
             DEFAULT_STATS_FIELDS
         ):
             errors.append("strict_dual_enumeration_fields_digest_invalid")
         if (
-            dual_proof.get("passes_required") != 2
+            type(dual_proof.get("passes_required")) is not int
+            or dual_proof.get("passes_required") != 2
+            or type(dual_proof.get("passes_completed")) is not int
             or dual_proof.get("passes_completed") != 2
         ):
             errors.append("strict_dual_enumeration_pass_count_invalid")
@@ -1516,7 +1733,11 @@ def validate_capture_enumeration_evidence(
                     chunk_until = _parse_strict_aware_datetime(
                         chunk.get("until")
                     )
-                    if chunk_since >= chunk_until:
+                    if (
+                        chunk_since >= chunk_until
+                        or chunk_since.microsecond
+                        or chunk_until.microsecond
+                    ):
                         raise ValueError
                 except (TypeError, ValueError):
                     errors.append("strict_dual_enumeration_chunk_window_invalid")
@@ -1546,6 +1767,11 @@ def validate_capture_enumeration_evidence(
                 item[2] for item in parsed_chunks
             ) != raw_rows:
                 errors.append("strict_dual_enumeration_chunk_rows_mismatch")
+            partition_sha256 = _canonical_json_sha256(
+                [{"since": item["since"], "until": item["until"]} for item in canonical_chunks]
+            )
+            if pass_payload.get("partition_sha256") != partition_sha256:
+                errors.append("strict_dual_enumeration_partition_digest_mismatch")
             dual_pass_chunks[index] = canonical_chunks
 
             raw_multiset = pass_payload.get("call_key_multiset")
@@ -1593,8 +1819,29 @@ def validate_capture_enumeration_evidence(
                 errors.append("strict_dual_enumeration_call_keys_invalid")
             if sorted(set(multiset)) != pass_keys:
                 errors.append("strict_dual_enumeration_call_keys_mismatch")
-            if pass_payload.get("normalized_unique_count") != len(pass_keys):
+            if (
+                type(pass_payload.get("normalized_unique_count")) is not int
+                or pass_payload.get("normalized_unique_count") != len(pass_keys)
+            ):
                 errors.append("strict_dual_enumeration_unique_count_mismatch")
+            balance_fields = (
+                "recordable_unique_rows",
+                "without_recording_rows",
+                "proven_duplicate_rows",
+                "quarantined_rows",
+                "error_rows",
+                "unexplained_rows",
+            )
+            balance = [pass_payload.get(field) for field in balance_fields]
+            if raw_rows is not None and (
+                any(type(value) is not int or value < 0 for value in balance)
+                or balance[0] + balance[1] != len(pass_keys)
+                or balance[2] != raw_rows - len(pass_keys)
+                or sum(balance) != raw_rows
+                or any(balance[index] != 0 for index in (3, 4, 5))
+                or pass_payload.get("raw_balance_ok") is not True
+            ):
+                errors.append("strict_dual_enumeration_raw_balance_invalid")
             if pass_payload.get("call_keys_sha256") != _canonical_json_sha256(
                 pass_keys
             ):
@@ -1663,15 +1910,13 @@ def validate_capture_enumeration_evidence(
                     "event_digest_sha256": pass_payload.get(
                         "event_digest_sha256"
                     ),
+                    "partition_sha256": partition_sha256,
+                    "raw_balance_ok": pass_payload.get("raw_balance_ok"),
                     "chunks": canonical_chunks,
                 }
             )
 
         comparison_fields = (
-            "raw_rows",
-            "call_key_multiset",
-            "call_key_multiset_sha256",
-            "raw_rows_sha256",
             "normalized_unique_count",
             "call_keys",
             "call_keys_sha256",
@@ -1686,9 +1931,26 @@ def validate_capture_enumeration_evidence(
                 == pass_facts[1].get(field)
                 for field in comparison_fields
             }
-            computed_comparison["chunk_geometry_equal"] = pass_facts[0].get(
-                "chunks"
-            ) == pass_facts[1].get("chunks")
+            computed_comparison["primary_raw_balance_ok"] = pass_facts[0].get(
+                "raw_balance_ok"
+            ) is True
+            computed_comparison["verification_raw_balance_ok"] = pass_facts[1].get(
+                "raw_balance_ok"
+            ) is True
+            computed_comparison["partition_sha256_different"] = pass_facts[0].get(
+                "partition_sha256"
+            ) != pass_facts[1].get("partition_sha256")
+            computed_comparison["official_total_equal"] = (
+                _official_total_proof_is_green(
+                    dual_proof.get("official_total"),
+                    expected_count=pass_facts[0].get("normalized_unique_count"),
+                    expected_call_keys_sha256=pass_facts[0].get(
+                        "call_keys_sha256"
+                    ),
+                )
+            )
+            if not computed_comparison["official_total_equal"]:
+                errors.append("strict_official_total_proof_invalid")
             if pass_facts[0].get("call_keys") != sorted(
                 set(value for values in normalized_calls.values() for value in values)
             ):
@@ -2287,6 +2549,24 @@ def validate_ready_manifest_payload(
                         errors.append("mango_window_not_fully_covered")
     if manifest.get("mango_enumeration_complete") is not True:
         errors.append("mango_enumeration_incomplete")
+    if not compatibility:
+        if not _is_sha256(manifest.get("capture_proof_sha256")):
+            errors.append("capture_proof_sha256_invalid")
+        if not _ready_capture_proof_is_green(manifest):
+            errors.append("capture_proof_invalid")
+        manifest_source = manifest.get("mango_enumeration_source")
+        manifest_dual = (
+            manifest_source.get("dual_enumeration")
+            if isinstance(manifest_source, Mapping)
+            else None
+        )
+        if (
+            not isinstance(manifest_dual, Mapping)
+            or not str(manifest.get("capture_proof_run_id") or "").strip()
+            or manifest.get("capture_proof_run_id")
+            != manifest_dual.get("proof_run_id")
+        ):
+            errors.append("capture_proof_run_id_invalid")
     daily_verdicts = manifest.get("daily_verdicts")
     moscow_dates = manifest.get("moscow_dates")
     if compatibility and daily_verdicts is None:

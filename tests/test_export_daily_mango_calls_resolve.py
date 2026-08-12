@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import dual_strict_source
+from tests.conftest import dual_strict_source, ready_capture_proof
 from openpyxl import Workbook, load_workbook
 
 from scripts import export_daily_mango_calls_resolve as exporter
@@ -253,8 +253,12 @@ def _seal_ready(
         "consistency_ok": True,
         "closure_ok": True,
     }
+    capture_proof, capture_proof_sha256 = ready_capture_proof(
+        source,
+        zero_by_day={day: 0},
+    )
     manifest = {
-        "schema_version": "mango_calls_ready_v2",
+        "schema_version": "mango_calls_ready_v3",
         "created_at_utc": "2026-07-29T00:00:01+00:00",
         "published_at": "2026-07-29T00:00:02+00:00",
         "status": "ready",
@@ -268,6 +272,9 @@ def _seal_ready(
         "mango_window": {"since": source["since"], "until": source["until"]},
         "mango_enumeration_complete": True,
         "mango_enumeration_source": source,
+        "capture_proof": capture_proof,
+        "capture_proof_sha256": capture_proof_sha256,
+        "capture_proof_run_id": source["dual_enumeration"]["proof_run_id"],
         "manifest_snapshot": {"end_offset": 1, "sha256": "b" * 64},
         "provenance_mode": "strict_service",
         "quick_check": "ok",

@@ -91,10 +91,324 @@ def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_stagin
     )
 
 
+_REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES = (
+    calls_runtime.poll_mango_official_total_pages
+)
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_official_mango_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    def prove(
+        _client: object,
+        *,
+        since: datetime,
+        until: datetime,
+        expected_call_ids: Sequence[str],
+    ) -> Mapping[str, object]:
+        del since, until
+        call_ids = sorted(expected_call_ids)
+        receipt = {
+            "offset": 0,
+            "rows": len(call_ids),
+            "total_calls_count": len(call_ids),
+            "entry_ids_sha256": calls_runtime._canonical_json_sha256(call_ids),
+            "status": "complete",
+        }
+        return calls_runtime.build_mango_official_total_proof(
+            call_ids=call_ids,
+            page_receipts=[receipt],
+            total_calls_count=len(call_ids),
+        )
+
+    monkeypatch.setattr(calls_runtime, "poll_mango_official_total_pages", prove)
+
+
 def create_empty_capture_manifest(config: CallsTwoProcessesConfig) -> None:
     from mango_mvp.productization.capture_staging import CaptureManifestStore
 
     CaptureManifestStore(config.capture_manifest).ensure_exists()
+
+
+def test_official_mango_total_pages_polls_to_complete_and_seals_pages() -> None:
+    requests: list[Mapping[str, object]] = []
+    sleeps: list[float] = []
+
+    class Client:
+        stats_result_poll_attempts = 3
+        stats_result_poll_interval_sec = 0.25
+        sleeper = sleeps.append
+
+        def __init__(self) -> None:
+            self.offset = 0
+            self.result_calls = 0
+
+        def post_command(
+            self, path: str, payload: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            if path.endswith("/request"):
+                requests.append(dict(payload))
+                self.offset = int(payload["offset"])
+                self.result_calls = 0
+                return {"key": f"page-{self.offset}"}
+            self.result_calls += 1
+            if self.offset == 0 and self.result_calls == 1:
+                return {"result": 1000, "status": "work"}
+            ids = ["call-a", "call-b"] if self.offset == 0 else ["call-c"]
+            return {
+                "result": 1000,
+                "status": "complete",
+                "data": [
+                    {
+                        "period": "2026-08-12",
+                        "total_calls_count": 3,
+                        "list": [{"entry_id": value} for value in ids],
+                    }
+                ],
+            }
+
+    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+        Client(),
+        since=datetime(2026, 8, 12, 10, 0, 0, 999999, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
+        expected_call_ids=["call-a", "call-b", "call-c"],
+    )
+
+    assert proof["complete"] is True
+    assert proof["total_calls_count"] == 3
+    assert [page["offset"] for page in proof["pages"]] == [0, 2]
+    assert [request["offset"] for request in requests] == [0, 2]
+    assert requests[0]["limit"] == 5000
+    assert requests[0]["start_date"] == "2026-08-12T10:00:00+00:00"
+    assert sleeps == [0.25]
+
+
+def test_official_mango_total_pages_accepts_proven_empty_window() -> None:
+    class Client:
+        stats_result_poll_attempts = 1
+        stats_result_poll_interval_sec = 0
+        sleeper = staticmethod(lambda _seconds: None)
+
+        def post_command(
+            self, path: str, payload: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            if path.endswith("/request"):
+                return {"key": "empty"}
+            return {
+                "result": 1000,
+                "status": "complete",
+                "data": [
+                    {
+                        "period": "2026-08-12",
+                        "total_calls_count": 0,
+                        "list": [],
+                    }
+                ],
+            }
+
+    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+        Client(),
+        since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
+        expected_call_ids=[],
+    )
+    assert proof["complete"] is True
+    assert proof["total_calls_count"] == 0
+
+
+def test_official_mango_total_accepts_documented_multiblock_shape() -> None:
+    call_ids = [f"call-{index}" for index in range(5)]
+
+    class Client:
+        stats_result_poll_attempts = 1
+        stats_result_poll_interval_sec = 0
+        sleeper = staticmethod(lambda _seconds: None)
+
+        def post_command(
+            self, path: str, payload: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            if path.endswith("/request"):
+                return {"key": "documented-shape"}
+            return {
+                "result": 1000,
+                "status": "complete",
+                "data": [
+                    {
+                        "period": "2026-08-12",
+                        "total_calls_count": 5,
+                        "list": [
+                            {"entry_id": value} for value in call_ids[:3]
+                        ],
+                    },
+                    {
+                        "period": "2026-08-11",
+                        "list": [
+                            {"entry_id": value} for value in call_ids[3:]
+                        ],
+                    },
+                ],
+            }
+
+    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+        Client(),
+        since=datetime(2026, 8, 11, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        expected_call_ids=call_ids,
+    )
+    assert proof["complete"] is True
+    assert proof["total_calls_count"] == 5
+    assert proof["pages"][0]["rows"] == 5
+
+
+@pytest.mark.parametrize("total", [5000, 5001])
+def test_official_mango_total_pages_proves_limit_boundary(total: int) -> None:
+    call_ids = [f"call-{index:05d}" for index in range(total)]
+
+    class Client:
+        stats_result_poll_attempts = 1
+        stats_result_poll_interval_sec = 0
+        sleeper = staticmethod(lambda _seconds: None)
+
+        def __init__(self) -> None:
+            self.offset = 0
+            self.limit = 0
+
+        def post_command(
+            self, path: str, payload: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            if path.endswith("/request"):
+                self.offset = int(payload["offset"])
+                self.limit = int(payload["limit"])
+                return {"key": f"page-{self.offset}"}
+            page = call_ids[self.offset : self.offset + self.limit]
+            return {
+                "result": 1000,
+                "status": "complete",
+                "data": [{
+                    "total_calls_count": total,
+                    "list": [{"entry_id": value} for value in page],
+                }],
+            }
+
+    proof = _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+        Client(),
+        since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
+        expected_call_ids=call_ids,
+    )
+    assert proof["total_calls_count"] == total
+    assert [page["rows"] for page in proof["pages"]] == (
+        [5000, 0] if total == 5000 else [5000, 1]
+    )
+
+
+@pytest.mark.parametrize(
+    "mode", ["changed_total", "overlap", "missing_id", "missing_total"]
+)
+def test_official_mango_total_pages_fail_closed_on_bad_pages(mode: str) -> None:
+    class Client:
+        stats_result_poll_attempts = 1
+        stats_result_poll_interval_sec = 0
+        sleeper = staticmethod(lambda _seconds: None)
+
+        def __init__(self) -> None:
+            self.offset = 0
+
+        def post_command(
+            self, path: str, payload: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            if path.endswith("/request"):
+                self.offset = int(payload["offset"])
+                return {"key": f"page-{self.offset}"}
+            if mode == "missing_total":
+                ids, total = ["call-a"], None
+            elif self.offset == 0:
+                ids, total = ["call-a", "call-b"], 3
+            else:
+                ids = ["call-b"] if mode == "overlap" else ["call-c"]
+                total = 4 if mode == "changed_total" else 3
+            return {
+                "result": 1000,
+                "status": "complete",
+                "data": [{"total_calls_count": total, "list": [
+                    {"entry_id": value} for value in ids
+                ]}],
+            }
+
+    expected = ["call-a", "call-b", "call-d"] if mode == "missing_id" else [
+        "call-a", "call-b", "call-c"
+    ]
+    with pytest.raises(RuntimeError):
+        _REAL_POLL_MANGO_OFFICIAL_TOTAL_PAGES(
+            Client(),
+            since=datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
+            expected_call_ids=expected,
+        )
+
+
+def test_basic_stats_silent_cap_is_blocked_by_official_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace(config_for(tmp_path), strict_ready_provenance=True)
+    rows = [
+        {
+            "entry_id": call_id,
+            "start": str(
+                int(
+                    datetime(
+                        2026, 8, 12, 10, index, tzinfo=timezone.utc
+                    ).timestamp()
+                )
+            ),
+            "finish": str(
+                int(
+                    datetime(
+                        2026, 8, 12, 10, index, 30, tzinfo=timezone.utc
+                    ).timestamp()
+                )
+            ),
+            "records": "[]",
+        }
+        for index, call_id in enumerate(("call-a", "call-b"))
+    ]
+
+    class CappedClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, until: datetime
+        ) -> list[Mapping[str, object]]:
+            return [
+                row
+                for row in rows
+                if since
+                <= calls_runtime.parse_datetime(str(row["start"]))
+                <= until
+            ]
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", CappedClient)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", CappedClient)
+    monkeypatch.setattr(
+        calls_runtime,
+        "poll_mango_official_total_pages",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("official total has call-c")
+        ),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 8, 12, 10, tzinfo=timezone.utc),
+        datetime(2026, 8, 12, 11, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "failed"
+    assert report["reason"] == "official_mango_total_verification_failed"
+    assert not config.capture_manifest.exists()
+    assert not config.cursor_path.exists()
 
 
 def with_dual_enumeration(
@@ -135,6 +449,23 @@ def with_dual_enumeration(
         }
         for interval in rolling
     ]
+    window_start = datetime.fromisoformat(str(source["rolling_since"]))
+    window_end = datetime.fromisoformat(str(source["until"]))
+    split = window_start + (window_end - window_start) / 3
+    verification_chunks = [
+        {
+            "since": window_start.isoformat(),
+            "until": split.isoformat(),
+            "result_complete": True,
+            "rows": raw_rows,
+        },
+        {
+            "since": split.isoformat(),
+            "until": window_end.isoformat(),
+            "result_complete": True,
+            "rows": 0,
+        },
+    ]
 
     def digest(value: object) -> str:
         return hashlib.sha256(
@@ -152,6 +483,16 @@ def with_dual_enumeration(
         "requests": len(chunks),
         "raw_rows": raw_rows,
         "chunks": chunks,
+        "partition_sha256": digest(
+            [{"since": item["since"], "until": item["until"]} for item in chunks]
+        ),
+        "recordable_unique_rows": len(call_keys),
+        "without_recording_rows": 0,
+        "proven_duplicate_rows": raw_rows - len(call_keys),
+        "quarantined_rows": 0,
+        "error_rows": 0,
+        "unexplained_rows": 0,
+        "raw_balance_ok": True,
         "call_key_multiset": multiset,
         "call_key_multiset_sha256": digest(multiset),
         "raw_rows_sha256": digest({"synthetic_rows": multiset}),
@@ -165,44 +506,76 @@ def with_dual_enumeration(
         ),
     }
     comparison = {
-        "raw_rows_equal": True,
-        "call_key_multiset_equal": True,
-        "call_key_multiset_sha256_equal": True,
-        "raw_rows_sha256_equal": True,
         "normalized_unique_count_equal": True,
         "call_keys_equal": True,
         "call_keys_sha256_equal": True,
         "calls_by_moscow_day_equal": True,
         "calls_by_moscow_day_sha256_equal": True,
         "event_digest_sha256_equal": True,
-        "chunk_geometry_equal": True,
+        "primary_raw_balance_ok": True,
+        "verification_raw_balance_ok": True,
+        "partition_sha256_different": True,
+        "official_total_equal": True,
     }
+    official_total = {
+        "schema_version": "mango_extended_total_pages_v1",
+        "page_limit": 5000,
+        "pages": [
+            {
+                "offset": 0,
+                "rows": len(call_keys),
+                "total_calls_count": len(call_keys),
+                "entry_ids_sha256": digest(sorted(call_keys)),
+                "status": "complete",
+            }
+        ],
+        "pages_count": 1,
+        "total_calls_count": len(call_keys),
+        "call_keys_sha256": digest(sorted(call_keys)),
+        "complete": True,
+    }
+    official_total["proof_sha256"] = digest(official_total)
     proof = {
-        "schema_version": "mango_exact_dual_enumeration_v1",
-        "normalization_version": "mango_rows_call_day_v1",
+        "schema_version": "mango_exact_dual_enumeration_v2",
+        "normalization_version": "mango_rows_call_day_v2",
         "tenant_id": "foton",
         "base_url": calls_runtime.DEFAULT_MANGO_BASE_URL,
         "fields_sha256": digest(calls_runtime.DEFAULT_STATS_FIELDS),
         "rolling_since": source["rolling_since"],
         "until": source["until"],
+        "proof_run_id": "synthetic-proof-run-v1",
+        "observed_at": "2026-08-12T00:00:00+00:00",
         "passes_required": 2,
         "passes_completed": 2,
         "passes": [
             {"pass_id": "primary", **pass_payload},
-            {"pass_id": "verification", **pass_payload},
+            {
+                "pass_id": "verification",
+                **pass_payload,
+                "requests": len(verification_chunks),
+                "chunks": verification_chunks,
+                "partition_sha256": digest(
+                    [
+                        {"since": item["since"], "until": item["until"]}
+                        for item in verification_chunks
+                    ]
+                ),
+            },
         ],
+        "official_total": official_total,
         "comparison": comparison,
         "enumeration_consistency_ok": True,
         "mismatch_reason": "",
     }
+    proof["proof_sha256"] = digest(proof)
     source["covered_intervals"] = [
         *(
             {**interval, "authority_pass": 1}
             for interval in rolling
         ),
         *(
-            {**interval, "authority_pass": 2}
-            for interval in rolling
+            {**interval, "scope": "rolling_authority", "authority_pass": 2}
+            for interval in verification_chunks
         ),
         *auxiliary,
     ]
@@ -1492,9 +1865,15 @@ def test_old_local_recovery_is_not_fabricated_as_current_api_enumeration(
             pass
 
         def poll_call_history(
-            self, *, since: datetime, **_: object
+            self, *, since: datetime, until: datetime
         ) -> list[dict[str, object]]:
-            return [{"id": "old-failed"}] if since.year == 2025 else []
+            return [
+                {
+                    "id": "old-failed",
+                    "start": old_event.started_at.isoformat(),
+                    "finish": old_event.ended_at.isoformat(),
+                }
+            ] if since <= old_event.started_at <= until else []
 
     class FakeMapper:
         def from_payload(self, **_: object) -> TelephonyCallEvent:
@@ -2899,7 +3278,7 @@ def test_ready_manifest_rebuilds_when_only_enumeration_evidence_advances(
     ]
 
 
-def test_green_ready_manifest_rebuilds_only_for_semantic_enumeration_change(
+def test_green_ready_manifest_rebuilds_for_each_new_exact_capture_proof(
     tmp_path: Path,
 ) -> None:
     config = config_for(tmp_path)
@@ -3020,6 +3399,37 @@ def test_green_ready_manifest_rebuilds_only_for_semantic_enumeration_change(
         ),
         manifest_end_offset=0,
     )
+    fresh_same_window = evidence(
+        telemetry_churn_source,
+        {"2026-08-08": 2, "2026-08-09": 2},
+        downloaded=123,
+    )
+    fresh_proof = fresh_same_window["mango_enumeration_source"][
+        "dual_enumeration"
+    ]
+    fresh_proof["proof_run_id"] = "synthetic-proof-run-v2"
+    fresh_proof["observed_at"] = "2026-08-12T00:15:00+00:00"
+    fresh_proof["proof_sha256"] = calls_runtime._canonical_json_sha256(
+        {
+            key: value
+            for key, value in fresh_proof.items()
+            if key != "proof_sha256"
+        }
+    )
+    fresh_result = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=fresh_same_window,
+        manifest_end_offset=0,
+    )
+    exact_replay = publish_ready_db_if_changed(
+        config,
+        {"total": 0},
+        changed=False,
+        capture_evidence=fresh_same_window,
+        manifest_end_offset=0,
+    )
 
     assert first["consistency_ok"] is True
     assert semantic_change["consistency_ok"] is True
@@ -3027,9 +3437,20 @@ def test_green_ready_manifest_rebuilds_only_for_semantic_enumeration_change(
     assert first["enumeration_evidence_sha256"] != semantic_change[
         "enumeration_evidence_sha256"
     ]
-    assert telemetry_only["reused"] is True
+    assert telemetry_only["reused"] is False
     assert telemetry_only["enumeration_evidence_sha256"] == semantic_change[
         "enumeration_evidence_sha256"
+    ]
+    assert telemetry_only["capture_proof_sha256"] != semantic_change[
+        "capture_proof_sha256"
+    ]
+    assert fresh_result["reused"] is False
+    assert exact_replay["reused"] is True
+    assert fresh_result["enumeration_evidence_sha256"] == telemetry_only[
+        "enumeration_evidence_sha256"
+    ]
+    assert fresh_result["capture_proof_sha256"] != telemetry_only[
+        "capture_proof_sha256"
     ]
 
 
@@ -3333,6 +3754,7 @@ def _run_synthetic_dual_capture(
     primary_rows: Sequence[Mapping[str, object]],
     verification_rows: Sequence[Mapping[str, object]],
     verification_error: bool = False,
+    inclusive_end: bool = False,
 ) -> tuple[Mapping[str, object], list[TelephonyCallEvent], CallsTwoProcessesConfig]:
     config = replace(
         config_for(tmp_path),
@@ -3349,11 +3771,23 @@ def _run_synthetic_dual_capture(
             self.pass_index = constructed
             constructed += 1
 
-        def poll_call_history(self, **_: object) -> list[Mapping[str, object]]:
+        def poll_call_history(self, **window: object) -> list[Mapping[str, object]]:
             if self.pass_index == 1 and verification_error:
                 raise TimeoutError("synthetic second pass timeout")
             rows = primary_rows if self.pass_index == 0 else verification_rows
-            return [dict(row) for row in rows]
+            since = window["since"]
+            until = window["until"]
+            assert isinstance(since, datetime) and isinstance(until, datetime)
+            return [
+                dict(row)
+                for row in rows
+                if since <= datetime.fromisoformat(str(row["started_at"]))
+                and (
+                    datetime.fromisoformat(str(row["started_at"])) <= until
+                    if inclusive_end
+                    else datetime.fromisoformat(str(row["started_at"])) < until
+                )
+            ]
 
     class Downloader:
         def __init__(self, **_: object) -> None:
@@ -3399,8 +3833,11 @@ def test_strict_dual_enumeration_accepts_reordered_identical_rows(
     )
     assert report["status"] == "ok"
     assert report["enumeration_consistency_ok"] is True
-    assert report["api_requests"] == 2
+    assert report["api_requests"] == 3
     assert report["api_authoritative_rows_total"] == 4
+    assert report["mango_enumeration_source"]["dual_enumeration"][
+        "comparison"
+    ]["partition_sha256_different"] is True
     assert [event.provider_call_id for event in staged] == ["call-a", "call-b"]
     assert report["independent_zero_enumerations_by_day"] == {
         "2026-08-11": 0
@@ -3453,13 +3890,112 @@ def test_strict_conflicting_duplicates_fail_before_write(
     assert not config.capture_manifest.exists()
 
 
+def test_strict_dual_accepts_explained_boundary_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row_a = {
+        **_dual_capture_row("call-a"),
+        "started_at": "2026-08-11T05:00:00+00:00",
+        "ended_at": "2026-08-11T05:01:00+00:00",
+    }
+    row_b = {
+        **_dual_capture_row("call-b"),
+        "started_at": "2026-08-11T05:00:00+00:00",
+        "ended_at": "2026-08-11T05:02:00+00:00",
+    }
+    report, staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[row_a, row_b],
+        verification_rows=[row_a, row_b],
+        inclusive_end=True,
+    )
+
+    proof = report["mango_enumeration_source"]["dual_enumeration"]
+    assert report["status"] == "ok"
+    assert [event.provider_call_id for event in staged] == ["call-a", "call-b"]
+    assert [item["proven_duplicate_rows"] for item in proof["passes"]] == [0, 2]
+    assert proof["comparison"]["partition_sha256_different"] is True
+
+
+def test_strict_rolling_overlap_recovers_late_call_before_explicit_since(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        strict_ready_provenance=True,
+        pending_recording_retry_hours=24,
+        api_window_hours=24,
+    )
+    late_row = {
+        **_dual_capture_row("call-late"),
+        "started_at": "2026-08-11T10:05:00+00:00",
+        "ended_at": "2026-08-11T10:06:00+00:00",
+    }
+    upstream: list[Mapping[str, object]] = []
+
+    class Client:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, until: datetime
+        ) -> list[Mapping[str, object]]:
+            return [
+                row
+                for row in upstream
+                if since <= datetime.fromisoformat(str(row["started_at"])) < until
+            ]
+
+    class Downloader:
+        def __init__(self, **_: object) -> None:
+            pass
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0}
+
+    staged: list[str] = []
+
+    def stage(*, events: Sequence[TelephonyCallEvent], **_: object) -> Summary:
+        staged.extend(event.provider_call_id for event in events)
+        return Summary()
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", Client)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", Downloader)
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    first = capture_mango_window(
+        config,
+        datetime(2026, 8, 11, 9, 55, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+    )
+    upstream.append(late_row)
+    explicit_since = datetime(2026, 8, 11, 10, 10, tzinfo=timezone.utc)
+    second = capture_mango_window(
+        config,
+        explicit_since,
+        datetime(2026, 8, 11, 10, 15, tzinfo=timezone.utc),
+    )
+
+    assert first["call_keys"] == []
+    assert second["status"] == "ok"
+    assert second["call_keys"] == ["call-late"]
+    assert datetime.fromisoformat(
+        second["mango_enumeration_source"]["rolling_since"]
+    ) < datetime.fromisoformat(str(late_row["started_at"])) < explicit_since
+    assert staged == ["call-late"]
+
+
 @pytest.mark.parametrize(
     ("primary_rows", "verification_rows"),
     (
-        (
-            [_dual_capture_row("call-a"), _dual_capture_row("call-a"), _dual_capture_row("call-b", minute=2)],
-            [_dual_capture_row("call-a"), _dual_capture_row("call-b", minute=2), _dual_capture_row("call-b", minute=2)],
-        ),
         (
             [_dual_capture_row("call-a")],
             [_dual_capture_row("call-a", phone="+71111111111")],
@@ -3568,7 +4104,7 @@ def test_strict_empty_full_day_gets_two_same_run_zero_proofs(
     )
 
     assert report["status"] == "ok"
-    assert report["api_requests"] == 2
+    assert report["api_requests"] == 3
     assert report["independent_zero_enumerations_by_day"] == {
         "2026-08-11": 2
     }
@@ -3623,12 +4159,13 @@ def test_strict_auxiliary_recovery_is_polled_once_and_excluded_from_proof(
             constructed += 1
 
         def poll_call_history(
-            self, *, since: datetime, **_: object
+            self, *, since: datetime, until: datetime
         ) -> list[Mapping[str, object]]:
             if since.year == 2025:
                 assert self.pass_index == 0
                 return [old_row]
-            return [current_row]
+            started = datetime.fromisoformat(str(current_row["started_at"]))
+            return [current_row] if since <= started <= until else []
 
     class Downloader:
         def __init__(self, **_: object) -> None:
@@ -3661,7 +4198,7 @@ def test_strict_auxiliary_recovery_is_polled_once_and_excluded_from_proof(
     source = report["mango_enumeration_source"]
     proof = source["dual_enumeration"]
     assert report["status"] == "ok"
-    assert report["api_requests"] == 3
+    assert report["api_requests"] == 4
     assert report["api_authoritative_rows_total"] == 2
     assert report["api_auxiliary_rows_total"] == 1
     assert report["call_keys"] == ["current-call"]
@@ -3701,8 +4238,7 @@ def test_strict_dual_proof_and_interval_tampering_fail_validation(
     digest_errors = calls_runtime.validate_capture_enumeration_evidence(
         changed_digest
     )
-    assert "strict_dual_enumeration_comparison_invalid" in digest_errors
-    assert "strict_dual_enumeration_consistency_mismatch" in digest_errors
+    assert "strict_dual_enumeration_proof_digest_invalid" in digest_errors
 
     changed_geometry = json.loads(json.dumps(report))
     second_interval = next(
@@ -3718,6 +4254,64 @@ def test_strict_dual_proof_and_interval_tampering_fail_validation(
     )
     assert "strict_enumeration_rolling_geometry_invalid" in geometry_errors
     assert "strict_enumeration_pass_chunks_mismatch" in geometry_errors
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("passes_required_float", "strict_dual_enumeration_pass_count_invalid"),
+        ("passes_completed_float", "strict_dual_enumeration_pass_count_invalid"),
+        ("unique_count_bool", "strict_dual_enumeration_unique_count_mismatch"),
+        ("official_limit_float", "strict_official_total_proof_invalid"),
+        ("official_page_total_bool", "strict_official_total_proof_invalid"),
+    ],
+)
+def test_strict_dual_numeric_types_fail_closed(
+    case: str,
+    expected_error: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report, _staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[],
+        verification_rows=[],
+    )
+    changed = json.loads(json.dumps(report))
+    proof = changed["mango_enumeration_source"]["dual_enumeration"]
+    if case == "passes_required_float":
+        proof["passes_required"] = 2.0
+    elif case == "passes_completed_float":
+        proof["passes_completed"] = 2.0
+    elif case == "unique_count_bool":
+        for pass_payload in proof["passes"]:
+            pass_payload["normalized_unique_count"] = False
+    elif case == "official_limit_float":
+        proof["official_total"]["page_limit"] = 5000.0
+    else:
+        proof["official_total"]["pages"][0]["total_calls_count"] = False
+    official = proof["official_total"]
+    official_body = {
+        key: value for key, value in official.items() if key != "proof_sha256"
+    }
+    official["proof_sha256"] = calls_runtime._canonical_json_sha256(
+        official_body
+    )
+    proof_body = {
+        key: value for key, value in proof.items() if key != "proof_sha256"
+    }
+    proof["proof_sha256"] = calls_runtime._canonical_json_sha256(proof_body)
+
+    errors = calls_runtime.validate_capture_enumeration_evidence(changed)
+    assert expected_error in errors
+    from mango_mvp.productization.mango_calls_service_contract import (
+        _dual_source_proof_is_green,
+    )
+
+    assert _dual_source_proof_is_green(
+        changed["mango_enumeration_source"]
+    ) is False
 
 
 def test_v1_single_pass_certificate_is_anchor_only(
@@ -4178,6 +4772,7 @@ def test_pipeline_rejects_shortened_cursor_after_exact_capture_validation(
     )
     requested_since = "2026-08-07T21:00:00+00:00"
     requested_until = "2026-08-09T21:00:00+00:00"
+    requested_until_input = "2026-08-09T21:00:00.654321+00:00"
     complete = with_dual_enumeration({
         "status": "ok",
         "mango_enumeration_complete": True,
@@ -4216,13 +4811,16 @@ def test_pipeline_rejects_shortened_cursor_after_exact_capture_validation(
     captured = run_capture(
         config,
         since=requested_since,
-        until=requested_until,
+        until=requested_until_input,
         capture_runner=lambda *_args: complete,
     )
     assert captured["status"] == "ok"
     cursor = dict(read_json(config.cursor_path))
     assert cursor["capture_window_certificate"]["requested_since"] == (
         requested_since
+    )
+    assert cursor["capture_window_certificate"]["requested_until"] == (
+        requested_until
     )
     with pytest.raises(RuntimeError, match="certificate is invalid"):
         calls_runtime.verified_capture_window(
@@ -4832,7 +5430,13 @@ def test_capture_does_not_trust_or_wait_for_invalid_working_db(
             self, *, since: datetime, until: datetime
         ) -> list[dict[str, object]]:
             api_windows.append((since, until))
-            return [{"id": "must-not-dedupe"}]
+            return [
+                {
+                    "id": "must-not-dedupe",
+                    "start": event.started_at.isoformat(),
+                    "finish": event.started_at.isoformat(),
+                }
+            ] if since <= event.started_at <= until else []
 
     class FakeMapper:
         def from_payload(self, **_: object) -> TelephonyCallEvent:

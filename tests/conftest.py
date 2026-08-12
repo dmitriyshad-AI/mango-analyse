@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Mapping, Sequence
 
 from mango_mvp.productization.mango_office_client import DEFAULT_STATS_FIELDS
@@ -67,12 +68,39 @@ def dual_strict_source(
         }
         for interval in rolling
     ]
+    window_start = datetime.fromisoformat(str(rolling_since))
+    window_end = datetime.fromisoformat(str(result["until"]))
+    split = window_start + (window_end - window_start) / 3
+    verification_chunks = [
+        {
+            "since": window_start.isoformat(),
+            "until": split.isoformat(),
+            "result_complete": True,
+            "rows": len(canonical_keys),
+        },
+        {
+            "since": split.isoformat(),
+            "until": window_end.isoformat(),
+            "result_complete": True,
+            "rows": 0,
+        },
+    ]
     pass_body = {
         "rolling_since": rolling_since,
         "until": result["until"],
         "requests": len(chunks),
         "raw_rows": len(canonical_keys),
         "chunks": chunks,
+        "partition_sha256": _digest(
+            [{"since": item["since"], "until": item["until"]} for item in chunks]
+        ),
+        "recordable_unique_rows": len(canonical_keys),
+        "without_recording_rows": 0,
+        "proven_duplicate_rows": 0,
+        "quarantined_rows": 0,
+        "error_rows": 0,
+        "unexplained_rows": 0,
+        "raw_balance_ok": True,
         "call_key_multiset": canonical_keys,
         "call_key_multiset_sha256": _digest(canonical_keys),
         "raw_rows_sha256": _digest({"synthetic_rows": canonical_keys}),
@@ -86,43 +114,79 @@ def dual_strict_source(
         ),
     }
     comparison = {
-        "raw_rows_equal": True,
-        "call_key_multiset_equal": True,
-        "call_key_multiset_sha256_equal": True,
-        "raw_rows_sha256_equal": True,
         "normalized_unique_count_equal": True,
         "call_keys_equal": True,
         "call_keys_sha256_equal": True,
         "calls_by_moscow_day_equal": True,
         "calls_by_moscow_day_sha256_equal": True,
         "event_digest_sha256_equal": True,
-        "chunk_geometry_equal": True,
+        "primary_raw_balance_ok": True,
+        "verification_raw_balance_ok": True,
+        "partition_sha256_different": True,
+        "official_total_equal": True,
     }
+    official_total = {
+        "schema_version": "mango_extended_total_pages_v1",
+        "page_limit": 5000,
+        "pages": [
+            {
+                "offset": 0,
+                "rows": len(canonical_keys),
+                "total_calls_count": len(canonical_keys),
+                "entry_ids_sha256": _digest(canonical_keys),
+                "status": "complete",
+            }
+        ],
+        "pages_count": 1,
+        "total_calls_count": len(canonical_keys),
+        "call_keys_sha256": _digest(canonical_keys),
+        "complete": True,
+    }
+    official_total["proof_sha256"] = _digest(official_total)
     result["covered_intervals"] = [
         *({**interval, "authority_pass": 1} for interval in rolling),
-        *({**interval, "authority_pass": 2} for interval in rolling),
+        *(
+            {**interval, "scope": "rolling_authority", "authority_pass": 2}
+            for interval in verification_chunks
+        ),
         *auxiliary,
     ]
     result["requests"] = len(result["covered_intervals"])
     result["enumeration_consistency_ok"] = True
-    result["dual_enumeration"] = {
-        "schema_version": "mango_exact_dual_enumeration_v1",
-        "normalization_version": "mango_rows_call_day_v1",
+    dual_proof = {
+        "schema_version": "mango_exact_dual_enumeration_v2",
+        "normalization_version": "mango_rows_call_day_v2",
         "tenant_id": "foton",
         "base_url": "https://app.mango-office.ru",
         "fields_sha256": _digest(DEFAULT_STATS_FIELDS),
         "rolling_since": rolling_since,
         "until": result["until"],
+        "proof_run_id": "synthetic-proof-run-v1",
+        "observed_at": "2026-08-12T00:00:00+00:00",
         "passes_required": 2,
         "passes_completed": 2,
         "passes": [
             {"pass_id": "primary", **pass_body},
-            {"pass_id": "verification", **pass_body},
+            {
+                "pass_id": "verification",
+                **pass_body,
+                "requests": len(verification_chunks),
+                "chunks": verification_chunks,
+                "partition_sha256": _digest(
+                    [
+                        {"since": item["since"], "until": item["until"]}
+                        for item in verification_chunks
+                    ]
+                ),
+            },
         ],
+        "official_total": official_total,
         "comparison": comparison,
         "enumeration_consistency_ok": True,
         "mismatch_reason": "",
     }
+    dual_proof["proof_sha256"] = _digest(dual_proof)
+    result["dual_enumeration"] = dual_proof
     return result
 
 
@@ -150,3 +214,69 @@ def dualize_strict_enumeration(
     result["api_rows_total"] = len(call_keys) * 2 + auxiliary_rows
     result["api_events_total"] = len(call_keys)
     return result
+
+
+def ready_capture_proof(
+    source: Mapping[str, object],
+    *,
+    zero_by_day: Mapping[str, int],
+) -> tuple[dict[str, object], str]:
+    """Build the exact ready-v3 capture projection for strict fixtures."""
+
+    intervals = [dict(item) for item in source["covered_intervals"]]
+    dual = source["dual_enumeration"]
+    primary = dual["passes"][0]
+    authoritative_rows = sum(
+        int(item.get("rows") or 0)
+        for item in intervals
+        if item.get("scope") == "rolling_authority"
+    )
+    auxiliary_rows = sum(
+        int(item.get("rows") or 0)
+        for item in intervals
+        if item.get("scope") == "recovery_auxiliary"
+    )
+    projection = {
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": {
+            key: source.get(key)
+            for key in (
+                "mode",
+                "since",
+                "rolling_since",
+                "until",
+                "cursor",
+                "pages",
+                "pagination",
+                "requests",
+                "catch_up",
+                "enumeration_consistency_ok",
+                "dual_enumeration",
+            )
+        }
+        | {
+            "covered_intervals": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "since",
+                        "until",
+                        "result_complete",
+                        "rows",
+                        "scope",
+                        "authority_pass",
+                    )
+                }
+                for item in intervals
+            ]
+        },
+        "call_keys": list(primary["call_keys"]),
+        "calls_by_moscow_day": dict(primary["calls_by_moscow_day"]),
+        "independent_zero_enumerations_by_day": dict(zero_by_day),
+        "api_requests": source["requests"],
+        "api_rows_total": authoritative_rows + auxiliary_rows,
+        "api_authoritative_rows_total": authoritative_rows,
+        "api_auxiliary_rows_total": auxiliary_rows,
+        "api_events_total": len(primary["call_keys"]),
+    }
+    return projection, _digest(projection)

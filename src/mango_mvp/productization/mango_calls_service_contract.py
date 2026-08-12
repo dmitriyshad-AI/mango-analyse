@@ -7,6 +7,7 @@ import re
 import sqlite3
 import subprocess
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -1613,12 +1614,170 @@ def enumeration_source_covers_day(
     return cursor >= coverage_end
 
 
+_CONTROLLED_CAPTURE_EVIDENCE_KEYS = {
+    "request_sha256",
+    "allowed_call_key",
+    "expected_count",
+    "matched_count",
+    "enumerated_count",
+    "enumerated_other_count",
+    "attempted",
+    "attempted_other",
+    "since",
+    "until",
+}
+
+
+@dataclass(frozen=True)
+class ControlledEnumerationBinding:
+    """Exact owner-authorized request identity for one isolated capture."""
+
+    request_sha256: str
+    source_call_id: str
+    since: datetime
+    until: datetime
+
+
+def controlled_enumeration_evidence_day(
+    enumeration: Any,
+    *,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
+) -> Optional[date]:
+    """Return the one Moscow day proven by an exact controlled capture.
+
+    A normal service enumeration proves day coverage.  The isolated pilot has
+    a deliberately narrower contract: two independent basic passes and the
+    official list endpoint must agree on exactly the one immutable request ID.
+    Keep that exception bound to the complete evidence object; a source window
+    or a loose boolean alone must never weaken service completeness.
+    """
+
+    if not isinstance(enumeration, Mapping) or not isinstance(
+        controlled_binding, ControlledEnumerationBinding
+    ):
+        return None
+    source = enumeration.get("mango_enumeration_source")
+    controlled = enumeration.get("controlled_capture")
+    if (
+        not isinstance(source, Mapping)
+        or source.get("mode") != "strict_service"
+        or source.get("enumeration_consistency_ok") is not True
+        or source.get("cursor") != "not_applicable_stats_request_result"
+        or source.get("pagination") != "not_applicable_stats_request_result"
+        or "pages" not in source
+        or source.get("pages") is not None
+        or not _dual_source_proof_is_green(source)
+        or not isinstance(controlled, Mapping)
+        or set(controlled) != _CONTROLLED_CAPTURE_EVIDENCE_KEYS
+        or not _is_sha256(controlled.get("request_sha256"))
+        or controlled.get("request_sha256")
+        != controlled_binding.request_sha256
+    ):
+        return None
+    call_key = controlled.get("allowed_call_key")
+    if (
+        not isinstance(call_key, str)
+        or not call_key
+        or call_key != call_key.strip()
+        or len(call_key) > 256
+        or any(ord(char) < 32 for char in call_key)
+        or call_key != controlled_binding.source_call_id
+    ):
+        return None
+    expected_counts = {
+        "expected_count": 1,
+        "matched_count": 1,
+        "enumerated_count": 1,
+        "enumerated_other_count": 0,
+        "attempted_other": 0,
+    }
+    if any(
+        type(controlled.get(name)) is not int
+        or controlled.get(name) != expected
+        for name, expected in expected_counts.items()
+    ):
+        return None
+    attempted = controlled.get("attempted")
+    if type(attempted) is not int or attempted not in {0, 1}:
+        return None
+    since_text = controlled.get("since")
+    until_text = controlled.get("until")
+    if (
+        not isinstance(since_text, str)
+        or not isinstance(until_text, str)
+        or source.get("since") != since_text
+        or source.get("rolling_since") != since_text
+        or source.get("until") != until_text
+        or since_text != controlled_binding.since.isoformat()
+        or until_text != controlled_binding.until.isoformat()
+    ):
+        return None
+    try:
+        since = _parse_strict_aware_datetime(since_text)
+        until = _parse_strict_aware_datetime(until_text)
+    except (TypeError, ValueError):
+        return None
+    if (
+        since >= until
+        or since.microsecond
+        or until.microsecond
+        or until - since > timedelta(hours=1)
+        or since.astimezone(MOSCOW).date()
+        != (until - timedelta(microseconds=1)).astimezone(MOSCOW).date()
+    ):
+        return None
+    day = since.astimezone(MOSCOW).date()
+    if (
+        enumeration.get("mango_enumeration_complete") is not True
+        or enumeration.get("call_keys") != [call_key]
+        or enumeration.get("calls_by_moscow_day")
+        != {day.isoformat(): [call_key]}
+        or enumeration.get("independent_zero_enumerations_by_day")
+        != {day.isoformat(): 0}
+        or type(enumeration.get("api_events_total")) is not int
+        or enumeration.get("api_events_total") != 1
+    ):
+        return None
+    return day
+
+
+def enumeration_evidence_covers_day(
+    enumeration: Any,
+    day: date,
+    *,
+    require_full_day: bool = False,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
+) -> bool:
+    """Evaluate service-day or exact controlled-window coverage."""
+
+    source = (
+        enumeration.get("mango_enumeration_source")
+        if isinstance(enumeration, Mapping)
+        else None
+    )
+    if controlled_binding is not None:
+        return bool(
+            not require_full_day
+            and controlled_enumeration_evidence_day(
+                enumeration,
+                controlled_binding=controlled_binding,
+            )
+            == day
+        )
+    if enumeration_source_covers_day(
+        source, day, require_full_day=require_full_day
+    ):
+        return True
+    return False
+
+
 def validate_capture_enumeration_evidence(
     enumeration: Any,
     *,
     expected_source_mode: Optional[str] = None,
     expected_until: Any = None,
     expected_rolling_since: Any = None,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> list[str]:
     """Validate the loss-prevention evidence before it can move runtime state.
 
@@ -1635,6 +1794,16 @@ def validate_capture_enumeration_evidence(
     zero_by_day = enumeration.get("independent_zero_enumerations_by_day")
     source = enumeration.get("mango_enumeration_source")
     source_mode = str(source.get("mode") or "") if isinstance(source, Mapping) else ""
+
+    if (
+        controlled_binding is not None
+        and controlled_enumeration_evidence_day(
+            enumeration,
+            controlled_binding=controlled_binding,
+        )
+        is None
+    ):
+        errors.append("strict_controlled_enumeration_binding_invalid")
 
     if expected_source_mode and source_mode != expected_source_mode:
         errors.append("enumeration_source_mode_mismatch")
@@ -2328,7 +2497,11 @@ def validate_capture_enumeration_evidence(
     evidence_days = set(normalized_calls) | set(normalized_zero)
     for day_key in evidence_days:
         day = date.fromisoformat(day_key)
-        if not enumeration_source_covers_day(source, day):
+        if not enumeration_evidence_covers_day(
+            enumeration,
+            day,
+            controlled_binding=controlled_binding,
+        ):
             errors.append("strict_evidence_day_not_covered")
     fully_covered_days = {
         day
@@ -2361,9 +2534,13 @@ def build_stage10_verdict(
     ready_rows: Sequence[Any],
     now: Optional[datetime] = None,
     pending_sla_hours: int = 72,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> Mapping[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    evidence_schema_ok = not validate_capture_enumeration_evidence(enumeration)
+    evidence_schema_ok = not validate_capture_enumeration_evidence(
+        enumeration,
+        controlled_binding=controlled_binding,
+    )
     latest_capture = _latest_capture_by_call(capture_entries, day)
     ready, ready_duplicate_count = _ready_rows_by_call(ready_rows, day)
     calls_by_day = enumeration.get("calls_by_moscow_day")
@@ -2382,7 +2559,11 @@ def build_stage10_verdict(
     source = enumeration.get("mango_enumeration_source")
     enumeration_complete = bool(
         enumeration.get("mango_enumeration_complete") is True
-        and enumeration_source_covers_day(source, day)
+        and enumeration_evidence_covers_day(
+            enumeration,
+            day,
+            controlled_binding=controlled_binding,
+        )
     )
     zero_by_day = enumeration.get("independent_zero_enumerations_by_day")
     raw_zero_proofs = (
@@ -2623,6 +2804,7 @@ def validate_ready_manifest_payload(
     expected_code_sha: Optional[str] = None,
     expected_host_id: Optional[str] = None,
     allow_compatibility: bool = False,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> list[str]:
     if not isinstance(manifest, Mapping):
         return ["manifest_missing"]
@@ -2715,8 +2897,23 @@ def validate_ready_manifest_payload(
     if not compatibility:
         if not _is_sha256(manifest.get("capture_proof_sha256")):
             errors.append("capture_proof_sha256_invalid")
-        if not _ready_capture_proof_is_green(manifest):
+        ready_capture_proof_green = _ready_capture_proof_is_green(manifest)
+        if not ready_capture_proof_green:
             errors.append("capture_proof_invalid")
+        capture_proof = manifest.get("capture_proof")
+        if controlled_binding is not None:
+            controlled_proof_errors = validate_capture_enumeration_evidence(
+                capture_proof,
+                controlled_binding=controlled_binding,
+            )
+            if controlled_proof_errors:
+                errors.append("controlled_capture_proof_invalid")
+            if (
+                not isinstance(capture_proof, Mapping)
+                or manifest.get("controlled_capture")
+                != capture_proof.get("controlled_capture")
+            ):
+                errors.append("controlled_capture_manifest_mismatch")
         manifest_source = manifest.get("mango_enumeration_source")
         manifest_dual = (
             manifest_source.get("dual_enumeration")
@@ -2730,6 +2927,8 @@ def validate_ready_manifest_payload(
             != manifest_dual.get("proof_run_id")
         ):
             errors.append("capture_proof_run_id_invalid")
+    else:
+        ready_capture_proof_green = False
     daily_verdicts = manifest.get("daily_verdicts")
     moscow_dates = manifest.get("moscow_dates")
     if compatibility and daily_verdicts is None:
@@ -2801,10 +3000,27 @@ def validate_ready_manifest_payload(
             except (TypeError, ValueError):
                 errors.append("daily_verdict_counts_invalid")
                 continue
-            if not enumeration_source_covers_day(
-                raw_verdict.get("mango_enumeration_source"),
-                date.fromisoformat(str(day_key)),
-            ):
+            verdict_day = date.fromisoformat(str(day_key))
+            verdict_source = raw_verdict.get("mango_enumeration_source")
+            capture_proof = manifest.get("capture_proof")
+            if controlled_binding is not None:
+                day_covered = bool(
+                    ready_capture_proof_green
+                    and isinstance(capture_proof, Mapping)
+                    and capture_proof.get("mango_enumeration_source")
+                    == verdict_source
+                    and enumeration_evidence_covers_day(
+                        capture_proof,
+                        verdict_day,
+                        controlled_binding=controlled_binding,
+                    )
+                )
+            else:
+                day_covered = enumeration_source_covers_day(
+                    verdict_source,
+                    verdict_day,
+                )
+            if not day_covered:
                 errors.append("daily_verdict_enumeration_source_invalid")
             if (
                 not compatibility

@@ -28,6 +28,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
+    ControlledEnumerationBinding,
     read_host_id,
     safe_alert_payload,
     sha256_file,
@@ -40,6 +41,9 @@ from mango_mvp.productization.ready_publication import (  # noqa: E402
     inspect_ready_publication,
     ready_publication_lock,
     recover_ready_generation,
+)
+from mango_mvp.services.controlled_call_scope import (  # noqa: E402
+    load_controlled_capture_request,
 )
 from scripts.export_daily_mango_calls_resolve import export_day  # noqa: E402
 from scripts.publish_current_mango_calls_google import (  # noqa: E402
@@ -65,6 +69,38 @@ def _read_config(path: Path) -> Mapping[str, Any]:
             "and match the wrapper snapshot"
         ) from exc
     return payload
+
+
+def _controlled_binding(
+    config: Mapping[str, Any],
+) -> Optional[ControlledEnumerationBinding]:
+    if str(config.get("runtime_authority_mode") or "") != "isolated_controlled":
+        return None
+    if (
+        str(config.get("processing_scope") or "")
+        not in {"controlled_1_prepare", "controlled_1"}
+        or config.get("stage_limit") != 1
+        or config.get("strict_ready_provenance") is not True
+    ):
+        raise RuntimeError("controlled publication config is invalid")
+    request = load_controlled_capture_request(
+        path=Path(str(config.get("controlled_capture_request_path") or "")).expanduser(),
+        expected_sha256=str(
+            config.get("controlled_capture_request_sha256") or ""
+        ),
+        expected_tenant_id=str(config.get("tenant_id") or "foton"),
+        expected_code_sha=str(config.get("expected_code_sha") or ""),
+        expected_host_id=str(config.get("expected_active_host_id") or ""),
+        host_id_path=Path(str(config.get("host_id_path") or "")).expanduser(),
+        project_root=ROOT,
+        expected_pipeline_root=Path(str(config.get("pipeline_root") or "")).expanduser(),
+    )
+    return ControlledEnumerationBinding(
+        request_sha256=request.request_sha256,
+        source_call_id=request.source_call_id,
+        since=request.since,
+        until=request.until,
+    )
 
 
 def _absolute_without_symlink_components(path: Path, *, label: str) -> Path:
@@ -180,6 +216,7 @@ def _ready_manifest(
         require_consistency=False,
         expected_code_sha=expected_code_sha,
         expected_host_id=expected_host_id,
+        controlled_binding=_controlled_binding(config),
     )
     if errors:
         raise RuntimeError("ready manifest rejected: " + ",".join(errors))
@@ -239,6 +276,7 @@ def _current_plan(
             raise RuntimeError("current_google owner/allowlist is incomplete")
         link_path = google.get("link_evidence")
         links = owner_json(Path(str(link_path)).expanduser()) if link_path else {}
+        controlled_binding = _controlled_binding(config)
         rows = load_manager_rows(
             ready_db=ready,
             ready_manifest=manifest_path,
@@ -247,8 +285,14 @@ def _current_plan(
             owner_email=owner_email,
             allowed_emails=[str(value) for value in allowed],
             link_evidence=links,
+            controlled_binding=controlled_binding,
         )
-        plan = build_safe_plan(day=day, rows=rows, ready_manifest=manifest)
+        plan = build_safe_plan(
+            day=day,
+            rows=rows,
+            ready_manifest=manifest,
+            controlled_binding=controlled_binding,
+        )
     output = root / "current" / f"{day.isoformat()}.safe-plan.json"
     atomic_owner_json(output, plan)
     return {
@@ -282,6 +326,7 @@ def _daily_export(
         "sealed_only": sealed_only,
         "tallanto_api_enabled": not offline_only,
         "controlled_preview": controlled_preview,
+        "controlled_binding": _controlled_binding(config),
     }
     for key, argument in (
         ("tallanto_export", "tallanto_export"),

@@ -34,6 +34,7 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
 )
 from mango_mvp.productization.mango_office_client import MangoOfficeClient, MangoOfficeCredentials
 from mango_mvp.productization.mango_calls_service_contract import (
+    ControlledEnumerationBinding,
     has_dual_asr_or_exception,
     parse_aware_datetime,
     read_stable_regular_bytes,
@@ -127,7 +128,11 @@ def consistent_working_snapshot(path: Path):
 
 
 def verify_ready_drop(
-    db: Path, *, require_closure: bool = False, day: date | None = None
+    db: Path,
+    *,
+    require_closure: bool = False,
+    day: date | None = None,
+    controlled_binding: ControlledEnumerationBinding | None = None,
 ) -> dict[str, Any]:
     manifest_path = db.with_suffix(".manifest.json")
     manifest_raw = read_stable_regular_bytes(
@@ -162,18 +167,24 @@ def verify_ready_drop(
     observed = (actual["sha256"], actual["size_bytes"], actual["quick_check"], "ready")
     if expected != observed:
         raise RuntimeError("готовая база и её контрольный файл не совпадают")
-    if require_closure:
+    if require_closure or controlled_binding is not None:
         errors = validate_ready_manifest_payload(
             manifest,
-            require_closure=True,
+            require_closure=require_closure,
             required_day=day,
+            controlled_binding=controlled_binding,
         )
+        if errors:
+            raise RuntimeError(
+                "готовый manifest отклонён: " + ",".join(errors)
+            )
+    if require_closure:
         verdict = (
             (manifest.get("daily_verdicts") or {}).get(day.isoformat())
             if day and isinstance(manifest.get("daily_verdicts"), Mapping)
             else None
         )
-        if errors or not isinstance(verdict, Mapping) or verdict.get("closure_ok") is not True:
+        if not isinstance(verdict, Mapping) or verdict.get("closure_ok") is not True:
             raise RuntimeError(
                 "окончательный пакет требует закрытый строгий ready manifest"
             )
@@ -1341,6 +1352,7 @@ def _export_day_locked(
     current_manager_users: Sequence[Mapping[str, Any]] = (),
     sealed_only: bool = False,
     external_publication_evidence: Path | None = None,
+    controlled_binding: ControlledEnumerationBinding | None = None,
 ) -> Mapping[str, Any]:
     if day >= datetime.now(MOSCOW).date() and not controlled_preview:
         raise ValueError("можно выгружать только завершённые сутки по Москве")
@@ -1394,7 +1406,10 @@ def _export_day_locked(
             raise RuntimeError("доказательство внешней публикации просрочено")
         publication_evidence = evidence
     source_before = verify_ready_drop(
-        ready_db, require_closure=sealed_only, day=day
+        ready_db,
+        require_closure=sealed_only,
+        day=day,
+        controlled_binding=controlled_binding,
     )
     if cloud_output and publication_evidence.get(
         "source_ready_manifest_sha256"
@@ -1463,7 +1478,10 @@ def _export_day_locked(
         stage10_balance=stage10_balance,
     )
     source_after = verify_ready_drop(
-        ready_db, require_closure=sealed_only, day=day
+        ready_db,
+        require_closure=sealed_only,
+        day=day,
+        controlled_binding=controlled_binding,
     )
     if (
         source_before["ready_generation_fingerprint"]
@@ -1657,6 +1675,7 @@ def export_day(
     external_publication_evidence: Path | None = None,
     expected_ready_manifest_sha256: str | None = None,
     controlled_preview: bool = False,
+    controlled_binding: ControlledEnumerationBinding | None = None,
 ) -> Mapping[str, Any]:
     if day >= datetime.now(MOSCOW).date() and not controlled_preview:
         raise ValueError("можно выгружать только завершённые сутки по Москве")
@@ -1686,6 +1705,7 @@ def export_day(
                 current_manager_users=current_manager_users,
                 sealed_only=sealed_only,
                 external_publication_evidence=external_publication_evidence,
+                controlled_binding=controlled_binding,
             )
 
 

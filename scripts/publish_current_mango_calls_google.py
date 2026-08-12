@@ -30,6 +30,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
+    ControlledEnumerationBinding,
     has_dual_asr_or_exception,
     parse_aware_datetime,
     read_stable_regular_bytes,
@@ -239,6 +240,7 @@ def load_manager_rows(
     allowed_emails: Iterable[str],
     link_evidence: Optional[Mapping[str, Any]] = None,
     ready_manifest_payload: Optional[Mapping[str, Any]] = None,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> list[Mapping[str, Any]]:
     manifest = dict(
         ready_manifest_payload
@@ -249,6 +251,7 @@ def load_manager_rows(
         manifest,
         require_closure=False,
         required_day=day,
+        controlled_binding=controlled_binding,
     )
     if errors:
         raise RuntimeError("ready manifest rejected: " + ",".join(errors))
@@ -541,11 +544,13 @@ def build_safe_plan(
     rows: Sequence[Mapping[str, Any]],
     ready_manifest: Mapping[str, Any],
     now: Optional[datetime] = None,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> Mapping[str, Any]:
     errors = validate_ready_manifest_payload(
         ready_manifest,
         require_closure=False,
         required_day=day,
+        controlled_binding=controlled_binding,
     )
     if errors:
         raise RuntimeError("ready manifest rejected: " + ",".join(errors))

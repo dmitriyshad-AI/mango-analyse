@@ -50,6 +50,7 @@ from mango_mvp.productization.capture_staging import (
     stage_capture_events,
 )
 from mango_mvp.productization.mango_calls_service_contract import (
+    ControlledEnumerationBinding,
     DUAL_ENUMERATION_NORMALIZATION,
     DUAL_ENUMERATION_SCHEMA,
     MANGO_OFFICIAL_LIST_SCHEMA,
@@ -59,6 +60,7 @@ from mango_mvp.productization.mango_calls_service_contract import (
     approved_runtime_fingerprint,
     build_stage10_verdict,
     current_git_sha,
+    enumeration_evidence_covers_day,
     enumeration_source_covers_day,
     foreign_host_ids,
     has_dual_asr_or_exception,
@@ -744,6 +746,31 @@ def controlled_capture_request_for_config(
         project_root=Path(__file__).resolve().parents[3],
         expected_pipeline_root=config.pipeline_root,
     )
+
+
+def controlled_enumeration_binding_for_request(
+    request: ControlledCaptureRequest,
+) -> ControlledEnumerationBinding:
+    return ControlledEnumerationBinding(
+        request_sha256=request.request_sha256,
+        source_call_id=request.source_call_id,
+        since=request.since,
+        until=request.until,
+    )
+
+
+def controlled_enumeration_binding_for_config(
+    config: CallsTwoProcessesConfig,
+) -> Optional[ControlledEnumerationBinding]:
+    if (
+        config.runtime_authority_mode != "isolated_controlled"
+        or config.processing_scope not in {"controlled_1_prepare", "controlled_1"}
+    ):
+        return None
+    request = controlled_capture_request_for_config(config)
+    if request is None:
+        raise RuntimeError("controlled enumeration binding is missing")
+    return controlled_enumeration_binding_for_request(request)
 
 
 @contextmanager
@@ -2548,6 +2575,9 @@ def _run_controlled_one_from_request_locked(
                     expected_source_mode="strict_service",
                     expected_until=request.until,
                     expected_rolling_since=request.since,
+                    controlled_binding=(
+                        controlled_enumeration_binding_for_request(request)
+                    ),
                 )
                 capture = certify_capture_window(
                     config,
@@ -6038,6 +6068,9 @@ def read_fully_ready_call_ids(config: CallsTwoProcessesConfig) -> set[str]:
                     manifest,
                     expected_code_sha=config.expected_code_sha,
                     expected_host_id=configured_host_id(config, required=True),
+                    controlled_binding=(
+                        controlled_enumeration_binding_for_config(config)
+                    ),
                 )
                 or manifest.get("sha256") != sha256_file(config.ready_db)
                 or int(manifest.get("size_bytes") or -1)
@@ -6077,6 +6110,9 @@ def trusted_ready_call_ids_for_capture(
                 require_consistency=False,
                 expected_code_sha=config.expected_code_sha,
                 expected_host_id=configured_host_id(config, required=True),
+                controlled_binding=(
+                    controlled_enumeration_binding_for_config(config)
+                ),
             )
         ):
             return set()
@@ -7542,6 +7578,7 @@ def _ready_verdicts(
     # working DB that may advance immediately after backup.
     rows = load_ready_rows(ready_db or config.ready_db)
     evidence: dict[str, Any] = dict(capture_evidence)
+    controlled_binding = controlled_enumeration_binding_for_config(config)
     calls_by_day = evidence.get("calls_by_moscow_day")
     if not isinstance(calls_by_day, Mapping) and not config.strict_ready_provenance:
         inferred: dict[str, list[str]] = {}
@@ -7587,6 +7624,7 @@ def _ready_verdicts(
             enumeration=evidence,
             capture_entries=snapshot["entries"],
             ready_rows=rows,
+            controlled_binding=controlled_binding,
         )
         for day_key in day_keys
     }
@@ -7615,6 +7653,7 @@ def publish_ready_db(
     os.close(descriptor)
     temp = Path(temporary_name)
     source_before = sqlite_storage_signature(config.working_db)
+    controlled_binding = controlled_enumeration_binding_for_config(config)
     try:
         with sqlite3.connect(
             f"file:{config.working_db}?mode=ro", uri=True, timeout=60
@@ -7649,11 +7688,13 @@ def publish_ready_db(
             expected_source_mode=(
                 "strict_service" if config.strict_ready_provenance else None
             ),
+            controlled_binding=controlled_binding,
         )
         capture_proof = (
             capture_enumeration_exact_projection(
                 evidence,
                 expected_source_mode="strict_service",
+                controlled_binding=controlled_binding,
             )
             if config.strict_ready_provenance
             else None
@@ -7773,6 +7814,7 @@ def publish_ready_db(
             ),
             expected_host_id=(host_id if config.strict_ready_provenance else None),
             allow_compatibility=not config.strict_ready_provenance,
+            controlled_binding=controlled_binding,
         )
         if validation_errors:
             raise RuntimeError(
@@ -7806,6 +7848,7 @@ def capture_enumeration_evidence_sha256(
     expected_source_mode: Optional[str] = None,
     expected_until: Any = None,
     expected_rolling_since: Any = None,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> str:
     """Digest semantic day evidence for deterministic ready-generation reuse.
 
@@ -7818,6 +7861,7 @@ def capture_enumeration_evidence_sha256(
         expected_source_mode=expected_source_mode,
         expected_until=expected_until,
         expected_rolling_since=expected_rolling_since,
+        controlled_binding=controlled_binding,
     )
     if validation_errors:
         raise RuntimeError(
@@ -7874,7 +7918,11 @@ def capture_enumeration_evidence_sha256(
         except ValueError:
             covered = full_day_covered = False
         else:
-            covered = enumeration_source_covers_day(source, parsed_day)
+            covered = enumeration_evidence_covers_day(
+                evidence,
+                parsed_day,
+                controlled_binding=controlled_binding,
+            )
             full_day_covered = enumeration_source_covers_day(
                 source, parsed_day, require_full_day=True
             )
@@ -7946,14 +7994,22 @@ def capture_enumeration_evidence_sha256(
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def ready_capture_proof_sha256(evidence: Mapping[str, Any]) -> str:
+def ready_capture_proof_sha256(
+    evidence: Mapping[str, Any],
+    *,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
+) -> str:
     source = evidence.get("mango_enumeration_source")
     if isinstance(source, Mapping) and source.get("mode") == "strict_service":
         return capture_enumeration_exact_sha256(
             evidence,
             expected_source_mode="strict_service",
+            controlled_binding=controlled_binding,
         )
-    return capture_enumeration_evidence_sha256(evidence)
+    return capture_enumeration_evidence_sha256(
+        evidence,
+        controlled_binding=controlled_binding,
+    )
 
 
 def capture_enumeration_legacy_exact_sha256(
@@ -8033,6 +8089,7 @@ def capture_enumeration_exact_projection(
     expected_source_mode: Optional[str] = None,
     expected_until: Any = None,
     expected_rolling_since: Any = None,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> Mapping[str, Any]:
     """Build the exact strict API proof projection.
 
@@ -8047,6 +8104,7 @@ def capture_enumeration_exact_projection(
         expected_source_mode=expected_source_mode,
         expected_until=expected_until,
         expected_rolling_since=expected_rolling_since,
+        controlled_binding=controlled_binding,
     )
     if validation_errors:
         raise RuntimeError(
@@ -8129,12 +8187,14 @@ def capture_enumeration_exact_sha256(
     expected_source_mode: Optional[str] = None,
     expected_until: Any = None,
     expected_rolling_since: Any = None,
+    controlled_binding: Optional[ControlledEnumerationBinding] = None,
 ) -> str:
     projected = capture_enumeration_exact_projection(
         evidence,
         expected_source_mode=expected_source_mode,
         expected_until=expected_until,
         expected_rolling_since=expected_rolling_since,
+        controlled_binding=controlled_binding,
     )
     return _canonical_json_sha256(projected)
 
@@ -8370,6 +8430,9 @@ def verified_capture_window(
             expected_source_mode="strict_service",
             expected_until=requested_until,
             expected_rolling_since=expected_rolling_since,
+            controlled_binding=controlled_enumeration_binding_for_config(
+                config
+            ),
         )
     if certificate.get("enumeration_evidence_sha256") != evidence_sha256:
         raise RuntimeError("capture window certificate evidence changed")
@@ -8388,6 +8451,7 @@ def publish_ready_db_if_changed(
     runtime_fingerprint: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     recover_ready_generation(config.ready_db)
+    controlled_binding = controlled_enumeration_binding_for_config(config)
     manifest_path = config.ready_db.with_suffix(".manifest.json")
     if not changed and config.ready_db.is_file() and manifest_path.is_file():
         manifest = read_json(manifest_path)
@@ -8401,10 +8465,14 @@ def publish_ready_db_if_changed(
             expected_source_mode=(
                 "strict_service" if config.strict_ready_provenance else None
             ),
+            controlled_binding=controlled_binding,
         )
         capture_proof_same = manifest.get(
             "capture_proof_sha256"
-        ) == ready_capture_proof_sha256(evidence)
+        ) == ready_capture_proof_sha256(
+            evidence,
+            controlled_binding=controlled_binding,
+        )
         expected_offset = positive_int(
             manifest_end_offset
             if manifest_end_offset is not None
@@ -8460,6 +8528,7 @@ def publish_ready_db_if_changed(
                     else None
                 ),
                 allow_compatibility=not config.strict_ready_provenance,
+                controlled_binding=controlled_binding,
             )
         ):
             return {**manifest, "reused": True}
@@ -8496,6 +8565,7 @@ def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]
         or manifest.get("schema_version") == READY_MANIFEST_SCHEMA
     )
     if strict_manifest:
+        controlled_binding = controlled_enumeration_binding_for_config(config)
         errors = validate_ready_manifest_payload(
             manifest,
             expected_code_sha=(
@@ -8507,6 +8577,7 @@ def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]
                 else None
             ),
             allow_compatibility=not config.strict_ready_provenance,
+            controlled_binding=controlled_binding,
         )
     else:
         # Compatibility is intentionally available only to direct library
@@ -9006,6 +9077,9 @@ def run_local_watchdog(
                 active_host if config.strict_ready_provenance else None
             ),
             allow_compatibility=not config.strict_ready_provenance,
+            controlled_binding=controlled_enumeration_binding_for_config(
+                config
+            ),
         )
         if manifest
         else ["ready_manifest_missing"]

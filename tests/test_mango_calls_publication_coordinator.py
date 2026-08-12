@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 
@@ -496,6 +497,54 @@ def test_cli_normalizes_exception_to_safe_json(
     assert payload["status"] == "failed"
     assert payload["stop_reason"] == "coordinator_exception:RuntimeError"
     assert "secret detail" not in json.dumps(payload)
+
+
+def test_current_plan_propagates_one_controlled_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = tmp_path / "ready.sqlite"
+    root = tmp_path / "publication"
+    binding = object()
+    manifest = {"daily_verdicts": {DAY.isoformat(): {"consistency_ok": True}}}
+    config = {
+        "current_google": {
+            "owner_email": "owner@example.test",
+            "allowed_emails": ["owner@example.test"],
+        }
+    }
+    observed: list[object] = []
+
+    monkeypatch.setattr(
+        coordinator, "_ready_paths", lambda _config: (tmp_path, ready, tmp_path)
+    )
+    monkeypatch.setattr(
+        coordinator, "ready_publication_lock", lambda _ready: nullcontext()
+    )
+    monkeypatch.setattr(
+        coordinator, "recover_ready_generation", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        coordinator, "_ready_manifest", lambda _config, _ready: manifest
+    )
+    monkeypatch.setattr(
+        coordinator, "_controlled_binding", lambda _config: binding
+    )
+
+    def load_rows(**kwargs: object) -> list[dict[str, object]]:
+        observed.append(kwargs["controlled_binding"])
+        return [{"row": 1}]
+
+    def build_plan(**kwargs: object) -> dict[str, object]:
+        observed.append(kwargs["controlled_binding"])
+        return {"status": "safe"}
+
+    monkeypatch.setattr(coordinator, "load_manager_rows", load_rows)
+    monkeypatch.setattr(coordinator, "build_safe_plan", build_plan)
+
+    result = coordinator._current_plan(config, root, DAY)
+
+    assert result["status"] == "planned"
+    assert observed == [binding, binding]
 
 
 def test_ready_manifest_binds_exact_code_host_and_database(

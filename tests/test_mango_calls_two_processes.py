@@ -4060,6 +4060,184 @@ def test_controlled_capture_filters_before_downloader_and_rejects_extra_call(
     assert downloader_constructed == 1
 
 
+def test_controlled_narrow_enumeration_requires_exact_authorized_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pipeline = tmp_path / "pipeline"
+    since = datetime(2026, 8, 11, 10, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 11, 10, 30, tzinfo=timezone.utc)
+    request = ControlledCaptureRequest(
+        source_call_id="call-a",
+        expected_count=1,
+        since=since,
+        until=until,
+        pipeline_root=pipeline.resolve(strict=False),
+        tenant_id="foton",
+        code_sha="a" * 40,
+        host_id="m1-host",
+        request_path=pipeline / "state" / "request.json",
+        request_sha256="b" * 64,
+    )
+    config = replace(
+        config_for(tmp_path),
+        pipeline_root=pipeline,
+        strict_ready_provenance=True,
+        runtime_authority_mode="isolated_controlled",
+        processing_scope="controlled_1_prepare",
+        stage_limit=1,
+        expected_code_sha="a" * 40,
+        expected_active_host_id="m1-host",
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "controlled_capture_request_for_config",
+        lambda _config: request,
+    )
+    row = _dual_capture_row("call-a")
+
+    class Client:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **window: object) -> list[Mapping[str, object]]:
+            start, end = window["since"], window["until"]
+            observed = datetime.fromisoformat(str(row["started_at"]))
+            return [row] if start <= observed < end else []
+
+    class Summary:
+        failed = 0
+
+        def to_json_dict(self) -> dict[str, object]:
+            return {"downloaded": 0, "failed": 0}
+
+    monkeypatch.setattr(calls_runtime, "MangoOfficeClient", Client)
+    monkeypatch.setattr(calls_runtime, "MangoRecordingDownloader", Client)
+    monkeypatch.setattr(calls_runtime, "stage_capture_events", lambda **_: Summary())
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        since,
+        until,
+        controlled_request=request,
+    )
+    binding = calls_runtime.controlled_enumeration_binding_for_request(request)
+    day = since.astimezone(ZoneInfo("Europe/Moscow")).date()
+
+    assert calls_runtime.validate_capture_enumeration_evidence(report) == [
+        "strict_evidence_day_not_covered"
+    ]
+    assert calls_runtime.validate_capture_enumeration_evidence(
+        report,
+        controlled_binding=binding,
+    ) == []
+    assert calls_runtime.capture_enumeration_exact_sha256(
+        report,
+        expected_source_mode="strict_service",
+        expected_until=until,
+        expected_rolling_since=since,
+        controlled_binding=binding,
+    )
+    verdict = calls_runtime.build_stage10_verdict(
+        day=day,
+        enumeration=report,
+        capture_entries=[],
+        ready_rows=[],
+        controlled_binding=binding,
+    )
+    assert verdict["mango_enumeration_complete"] is True
+    assert verdict["closure_ok"] is False
+
+    missing_marker = json.loads(json.dumps(report))
+    missing_marker.pop("controlled_capture")
+    assert "strict_controlled_enumeration_binding_invalid" in (
+        calls_runtime.validate_capture_enumeration_evidence(
+            missing_marker,
+            controlled_binding=binding,
+        )
+    )
+    wrong_binding = replace(binding, request_sha256="c" * 64)
+    assert "strict_controlled_enumeration_binding_invalid" in (
+        calls_runtime.validate_capture_enumeration_evidence(
+            report,
+            controlled_binding=wrong_binding,
+        )
+    )
+    wrong_count = json.loads(json.dumps(report))
+    wrong_count["controlled_capture"]["enumerated_other_count"] = 1
+    assert "strict_controlled_enumeration_binding_invalid" in (
+        calls_runtime.validate_capture_enumeration_evidence(
+            wrong_count,
+            controlled_binding=binding,
+        )
+    )
+
+
+def test_controlled_binding_rejects_full_day_service_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report, _staged, _config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[_dual_capture_row("call-a")],
+        verification_rows=[_dual_capture_row("call-a")],
+    )
+    binding = calls_runtime.ControlledEnumerationBinding(
+        request_sha256="b" * 64,
+        source_call_id="call-a",
+        since=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 11, 10, 30, tzinfo=timezone.utc),
+    )
+
+    assert calls_runtime.validate_capture_enumeration_evidence(report) == []
+    assert "strict_controlled_enumeration_binding_invalid" in (
+        calls_runtime.validate_capture_enumeration_evidence(
+            report,
+            controlled_binding=binding,
+        )
+    )
+
+
+def test_controlled_ready_manifest_rejects_service_proof_without_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report, _staged, config = _run_synthetic_dual_capture(
+        monkeypatch,
+        tmp_path,
+        primary_rows=[_dual_capture_row("call-a")],
+        verification_rows=[_dual_capture_row("call-a")],
+    )
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            "UPDATE call_records SET source_call_id='call-a', "
+            "started_at='2026-08-11T10:00:00+00:00'"
+        )
+    manifest = publish_ready_db(
+        config,
+        {"total": 1},
+        capture_evidence=report,
+        manifest_end_offset=report["manifest_end_offset"],
+    )
+    binding = calls_runtime.ControlledEnumerationBinding(
+        request_sha256="b" * 64,
+        source_call_id="call-a",
+        since=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 11, 10, 30, tzinfo=timezone.utc),
+    )
+
+    errors = calls_runtime.validate_ready_manifest_payload(
+        manifest,
+        controlled_binding=binding,
+    )
+    assert "controlled_capture_proof_invalid" in errors
+    assert "daily_verdict_enumeration_source_invalid" in errors
+
+
 def test_controlled_full_orchestration_success_replay_and_late_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

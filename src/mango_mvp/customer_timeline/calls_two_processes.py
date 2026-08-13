@@ -5901,6 +5901,14 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
             )
             if isinstance(payload, Mapping):
                 mode = str(payload.get("mode") or "").strip()
+                if (
+                    row.get("resolve_status") == "manual"
+                    and row.get("analysis_status") in {"pending", "manual"}
+                    and not any(row.get(field) for field in lease_fields)
+                ):
+                    # Resolve manual is an intentional per-call terminal hold;
+                    # it must not stop unrelated backlog workers.
+                    continue
                 if has_dual_asr_or_exception(row):
                     raw_resolve_status = row.get("resolve_status")
                     resolve_status = str(raw_resolve_status or "").strip()

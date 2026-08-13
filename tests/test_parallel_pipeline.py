@@ -304,6 +304,22 @@ class ParallelPipelineClaimsTest(unittest.TestCase):
             "fresh",
         )
 
+    def test_missing_one_primary_stereo_channel_is_a_rescue_candidate(self) -> None:
+        payload = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "manager": {"variant_a": "", "physical_channel": "left"},
+            "client": {"variant_a": "да", "physical_channel": "right"},
+        }
+
+        self.assertEqual(
+            TranscribeService.secondary_backfill_state_from_payload(
+                payload,
+                secondary_provider="gigaam",
+            ),
+            "fresh",
+        )
+
     def test_secondary_backfill_rejects_non_text_primary_variant(self) -> None:
         state = TranscribeService.secondary_backfill_state_from_payload(
             {

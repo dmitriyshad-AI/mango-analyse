@@ -654,8 +654,15 @@ class TranscribeService:
 
         needs_backfill = False
         if mode == "stereo":
-            if _slot_has_primary("manager") and _slot_has_primary("client"):
+            manager_has_primary = _slot_has_primary("manager")
+            client_has_primary = _slot_has_primary("client")
+            if manager_has_primary and client_has_primary:
                 needs_backfill = _slot_missing("manager") or _slot_missing("client")
+            elif manager_has_primary != client_has_primary and not secondary_matches:
+                # One silent/failed Whisper channel is exactly a second-ASR
+                # rescue candidate; do not let the pre-worker topology gate
+                # strand it as not_needed.
+                needs_backfill = True
         elif mode == "mono_or_fallback":
             if _slot_has_primary("full"):
                 needs_backfill = _slot_missing("full")

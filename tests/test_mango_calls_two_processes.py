@@ -7882,6 +7882,31 @@ def create_ready_call_db(path: Path) -> None:
     )
 
 
+def test_manual_resolve_row_does_not_block_unrelated_pipeline_work(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status='manual', analysis_status='pending',
+                   analysis_json=NULL
+             WHERE id=1
+            """
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["blocked"] == 0
+    assert result["blocked_reasons"] == {}
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute(
+            "SELECT resolve_status, analysis_status FROM call_records WHERE id=1"
+        ).fetchone() == ("manual", "pending")
+
+
 def test_legacy_asr_without_mode_is_not_skipped_as_fully_ready(
     tmp_path: Path,
 ) -> None:

@@ -1,7 +1,7 @@
 > TAKE 2026-08-12 02:27 | ветка codex/m1-calls-real-service-final-20260812 | codex
 
 Ветка: codex/m1-calls-real-service-final-20260812
-Зоны: scripts/bootstrap_m1_mango_calls.sh, scripts/probe_m1_calls_access.py, scripts/run_mango_calls_process.sh, scripts/run_mango_calls_pipeline.py, scripts/run_mango_calls_publication_coordinator.py, scripts/publish_current_mango_calls_google.py, scripts/export_daily_mango_calls_resolve.py, scripts/install_mango_calls_two_processes_service.py, scripts/check_mango_calls_external_watchdog.py, scripts/relocate_mango_calls_pipeline.py, src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/services/transcribe.py, tests/test_dialogue_format.py, tests/test_controlled_call_scope.py, tests/test_mango_calls_*.py, tests/test_publish_current_mango_calls_google.py, tests/test_export_daily_mango_calls_resolve.py, docs/, tasks/, audits/_inbox/, внешний owner-only runtime M1 только после отдельного подтверждения Дмитрия
+Зоны: scripts/bootstrap_m1_mango_calls.sh, scripts/probe_m1_calls_access.py, scripts/run_mango_calls_process.sh, scripts/run_mango_calls_pipeline.py, scripts/run_mango_calls_publication_coordinator.py, scripts/publish_current_mango_calls_google.py, scripts/export_daily_mango_calls_resolve.py, scripts/install_mango_calls_two_processes_service.py, scripts/check_mango_calls_external_watchdog.py, scripts/relocate_mango_calls_pipeline.py, src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/services/transcribe.py, tests/test_dialogue_format.py, tests/test_controlled_call_scope.py, tests/test_mango_calls_two_processes.py, tests/test_parallel_pipeline.py, tests/test_mango_calls_*.py, tests/test_publish_current_mango_calls_google.py, tests/test_export_daily_mango_calls_resolve.py, docs/, tasks/, audits/_inbox/, внешний owner-only runtime M1 только после отдельного подтверждения Дмитрия
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_calls_two_processes.py tests/test_mango_calls_schedule.py tests/test_mango_calls_m1_bootstrap.py tests/test_mango_calls_stage10_verdict.py tests/test_mango_calls_publication_coordinator.py tests/test_publish_current_mango_calls_google.py tests/test_export_daily_mango_calls_resolve.py tests/test_mango_calls_external_watchdog.py tests/test_relocate_mango_calls_pipeline.py
 Семантический-аудит: да
 
@@ -514,7 +514,15 @@ Whisper, GigaAM, Resolve, Analyze, записи в рабочую Google-таб�
 `2026-08-03 00:00:00 Europe/Moscow`; после догона служба остаётся
 включённой для новых звонков.
 
-До merge/ролей каждый звонок обязан сохранить immutable audio, Whisper A и GigaAM B.
-Производные роли, диалог, Analyze и Google-строка могут быть пересобраны
-без повторного скачивания и ASR. AMO/CRM, Tallanto, production Customer Timeline и
-клиентские сообщения/звонки в полномочия службы не входят.
+Для каждого звонка сохраняются immutable audio и Whisper A. GigaAM B обязателен
+для содержательных, неоднозначных и рискованных звонков, но может не запускаться
+для звонка, который консервативный локальный детектор уверенно признал
+автоответчиком, IVR или иным несодержательным контактом. Любая ошибка или
+неоднозначность детектора означает запуск GigaAM. В сервисном режиме Whisper A
+остаётся основным текстом: GigaAM хранится как независимое rescue-доказательство
+и не подмешивается в итог автоматически; пустой A может быть восстановлен из B.
+
+Производные роли, диалог, Analyze и Google-строка могут быть пересобраны без
+повторного скачивания, а при наличии сохранённых A/B — без повторного ASR.
+AMO/CRM, Tallanto, production Customer Timeline и клиентские сообщения/звонки
+в полномочия службы не входят.

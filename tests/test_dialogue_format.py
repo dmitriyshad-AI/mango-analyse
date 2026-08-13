@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
-from mango_mvp.services.transcribe import TranscribeService
+from mango_mvp.services.transcribe import SecondaryAsrLeaseLost, TranscribeService
 
 
 def make_settings(
@@ -418,6 +418,7 @@ class DialogueFormatTest(unittest.TestCase):
             transcript_text="MANAGER:\nДобрый день.\n\nCLIENT:\nЗдравствуйте.",
             transcript_variants_json=json.dumps({
                 "mode": "stereo", "dialogue_lines": lines, "primary_provider": "mock",
+                "secondary_asr_policy": {"schema": "selective_rescue_v1", "decision": "required"},
                 "manager": {"physical_channel": "left", "variant_a": "Добрый день.", "variant_a_segments": []},
                 "client": {"physical_channel": "right", "variant_a": "Здравствуйте.", "variant_a_segments": []},
             }, ensure_ascii=False),
@@ -437,6 +438,7 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertIn("Giga client", result["transcript_text"])
         self.assertEqual(payload["manager"]["variant_b"], "Giga manager")
         self.assertEqual(payload["client"]["variant_b"], "Giga client")
+        self.assertEqual(payload["secondary_asr_policy"]["decision"], "required")
         self.assertEqual(payload["role_mapping"]["status"], "confirmed")
         self.assertTrue(result["secondary_finalized"])
 
@@ -760,6 +762,8 @@ class DialogueFormatTest(unittest.TestCase):
 
     def test_gigaam_uses_afconvert_fallback_when_ffmpeg_missing(self) -> None:
         service = TranscribeService(make_settings())
+        heartbeats: list[bool] = []
+        service._gigaam_chunk_heartbeat = lambda: heartbeats.append(True)
 
         class FakeModel:
             def transcribe(self, _path: str) -> str:
@@ -789,6 +793,16 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(result["text"], "Привет мир")
         self.assertEqual(result["segments"][0]["start"], 0.0)
         self.assertTrue(result["segments"][0]["approximate"])
+        self.assertEqual(len(heartbeats), 2)
+
+    def test_secondary_lease_loss_is_not_sanitized_as_asr_error(self) -> None:
+        with patch.object(
+            self.service,
+            "_transcribe_file_with_meta",
+            side_effect=SecondaryAsrLeaseLost("secondary_asr_lease_lost"),
+        ):
+            with self.assertRaisesRegex(SecondaryAsrLeaseLost, "secondary_asr_lease_lost"):
+                self.service._try_transcribe_file_with_meta(Path("call.wav"), provider="gigaam")
 
 
 if __name__ == "__main__":

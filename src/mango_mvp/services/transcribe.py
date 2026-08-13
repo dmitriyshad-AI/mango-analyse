@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 from collections import Counter
@@ -23,6 +24,7 @@ from mango_mvp.models import CallRecord
 from mango_mvp.productization.mango_calls_service_contract import (
     has_dual_asr_or_exception,
 )
+from mango_mvp.quality.non_conversation import detect_non_conversation_signals
 from mango_mvp.services.controlled_call_scope import (
     call_artifact_directory,
     controlled_audio_input_path,
@@ -197,7 +199,17 @@ CONFERENCE_RE = re.compile(
     re.I,
 )
 SECONDARY_BACKFILL_MAX_ATTEMPTS = 2
+SELECTIVE_GIGAAM_POLICY = "selective_non_conversation_v1"
+SELECTIVE_GIGAAM_MIN_WPM = 100.0
+SELECTIVE_GIGAAM_AUDIT_PERCENT = 10
+SELECTIVE_GIGAAM_POLICY_HASH = hashlib.sha256(
+    b"selective_non_conversation_v1:skip_only_force_non_conversation:shadow_wpm_100:sample_10"
+).hexdigest()
 TRANSCRIBE_MERGE_PROMPT_VERSION = "v2"
+
+
+class SecondaryAsrLeaseLost(RuntimeError):
+    pass
 
 
 class TranscribeService:
@@ -206,6 +218,7 @@ class TranscribeService:
         self._client: Optional[OpenAI] = None
         self._ollama_client_instance: Optional[OllamaClient] = None
         self._gigaam_model: Any = None
+        self._gigaam_chunk_heartbeat: Optional[Callable[[], None]] = None
         self._provider_invocations: Counter[str] = Counter()
         self._mlx_cache_release_attempts = 0
         self._mlx_cache_release_successes = 0
@@ -335,9 +348,16 @@ class TranscribeService:
 
         fresh_ids: list[int] = []
         retry_ids: list[int] = []
+        policy_changed = False
         for call in done_calls:
+            payload = self._safe_json_dict(call.transcript_variants_json)
+            updated_payload = self._apply_selective_gigaam_policy(call, payload)
+            if updated_payload != payload:
+                call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
+                session.add(call)
+                policy_changed = True
             state = self.secondary_backfill_state_from_payload(
-                self._safe_json_dict(call.transcript_variants_json),
+                updated_payload,
                 secondary_provider=secondary_provider,
             )
             if state == "fresh":
@@ -351,6 +371,8 @@ class TranscribeService:
         if len(candidate_ids) < limit:
             candidate_ids.extend(retry_ids[: limit - len(candidate_ids)])
         if not candidate_ids:
+            if policy_changed:
+                session.commit()
             return []
 
         ids_sql = ",".join(str(int(item)) for item in candidate_ids)
@@ -393,6 +415,148 @@ class TranscribeService:
         ]
         session.commit()
         return ids
+
+    @classmethod
+    def _apply_selective_gigaam_policy(
+        cls,
+        call: CallRecord,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if os.getenv("GIGAAM_POLICY", "all").strip().lower() != SELECTIVE_GIGAAM_POLICY:
+            return payload
+        existing = payload.get("secondary_asr_policy")
+        if isinstance(existing, dict) and existing.get("schema") == SELECTIVE_GIGAAM_POLICY:
+            return payload
+
+        mode = str(payload.get("mode") or "").strip()
+        blocks = ("manager", "client") if mode == "stereo" else ("full",)
+        primary_text = " ".join(
+            str((payload.get(key) or {}).get("variant_a") or "").strip()
+            for key in blocks
+            if isinstance(payload.get(key), dict)
+        ).strip()
+        duration_sec = float(call.duration_sec or 0.0)
+        words = len(WORD_RE.findall(primary_text))
+        wpm = words * 60.0 / duration_sec if duration_sec > 0 else 0.0
+        stable_key = str(call.source_call_id or call.source_filename or call.id or "")
+        bucket = int.from_bytes(hashlib.sha256(stable_key.encode()).digest()[:2], "big") % 100
+        audit_sample = bucket < SELECTIVE_GIGAAM_AUDIT_PERCENT
+        fail_open = not primary_text or duration_sec <= 0 or mode not in {"stereo", "mono_or_fallback"}
+        reasons: list[str] = []
+        should_skip = False
+        if fail_open:
+            reasons.append("invalid_primary_evidence")
+        else:
+            try:
+                signals = detect_non_conversation_signals(
+                    transcript_text=(
+                        f"Менеджер: {str((payload.get('manager') or {}).get('variant_a') or '').strip()}\n"
+                        f"Клиент: {str((payload.get('client') or {}).get('variant_a') or '').strip()}"
+                        if mode == "stereo"
+                        else primary_text
+                    ),
+                    duration_sec=duration_sec,
+                )
+                should_skip = bool(signals.should_force_non_conversation) and not audit_sample
+                reasons.extend(str(item) for item in signals.reason_codes)
+                reasons.append(
+                    "high_confidence_non_conversation"
+                    if signals.should_force_non_conversation
+                    else "gigaam_required_for_contentful_or_ambiguous_call"
+                )
+            except Exception:
+                reasons.append("policy_evaluator_error")
+        if wpm < SELECTIVE_GIGAAM_MIN_WPM:
+            reasons.append("shadow_low_primary_wpm")
+        if audit_sample:
+            reasons.append("shadow_quality_sample")
+            if not fail_open:
+                reasons.append("quality_sample_requires_gigaam")
+
+        evaluated_at = cls._utc_now().isoformat()
+        updated = dict(payload)
+        updated["secondary_asr_policy"] = {
+            "schema": SELECTIVE_GIGAAM_POLICY,
+            "mode": "active_high_confidence_non_conversation_only",
+            "policy_hash": SELECTIVE_GIGAAM_POLICY_HASH,
+            "decision": "skipped" if should_skip else "required",
+            "reason_codes": list(dict.fromkeys(reasons)),
+            "primary_words": words,
+            "duration_sec": round(duration_sec, 3),
+            "primary_wpm": round(wpm, 3),
+            "shadow_low_primary_wpm": wpm < SELECTIVE_GIGAAM_MIN_WPM,
+            "shadow_quality_sample": audit_sample,
+            "evaluated_at": evaluated_at,
+        }
+        if should_skip:
+            updated["dual_asr_exception"] = {
+                "approved": True,
+                "reason": f"{SELECTIVE_GIGAAM_POLICY}:high_confidence_non_conversation",
+                "approved_by": f"owner_policy:{SELECTIVE_GIGAAM_POLICY}",
+                "approved_at": evaluated_at,
+            }
+        else:
+            existing_exception = updated.get("dual_asr_exception")
+            if isinstance(existing_exception, dict):
+                approved_by = str(existing_exception.get("approved_by") or "")
+                reason = str(existing_exception.get("reason") or "")
+                is_old_selective_exception = (
+                    approved_by.startswith("owner_policy:selective_")
+                    or reason.startswith("selective_rescue_v1:")
+                    or reason.startswith("selective_non_conversation_v1:")
+                )
+                if is_old_selective_exception:
+                    updated.pop("dual_asr_exception", None)
+        return updated
+
+    @staticmethod
+    def _begin_secondary_commit_guard(
+        session: Session,
+        *,
+        call_id: int,
+        worker_id: str,
+    ) -> None:
+        """Hold the DB write lock while the owned result is finalized."""
+
+        bind = session.get_bind()
+        if bind.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+        owned = session.scalar(
+            select(CallRecord.id)
+            .where(CallRecord.id == int(call_id))
+            .where(CallRecord.pipeline_stage == "backfill-second-asr")
+            .where(CallRecord.pipeline_worker_id == worker_id)
+            .with_for_update()
+        )
+        if owned is None:
+            session.rollback()
+            raise SecondaryAsrLeaseLost("secondary_asr_lease_lost")
+
+    @staticmethod
+    def _renew_secondary_claim(
+        session: Session,
+        *,
+        call_id: int,
+        worker_id: str,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        result = session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET pipeline_claimed_at = :now,
+                       updated_at = :now
+                 WHERE id = :call_id
+                   AND pipeline_stage = 'backfill-second-asr'
+                   AND pipeline_worker_id = :worker_id
+                """
+            ),
+            {"now": now, "call_id": int(call_id), "worker_id": worker_id},
+        )
+        if result.rowcount != 1:
+            session.rollback()
+            raise SecondaryAsrLeaseLost("secondary_asr_lease_lost")
+        session.commit()
 
     @staticmethod
     def _safe_json_dict(raw: Any) -> Dict[str, Any]:
@@ -453,6 +617,12 @@ class TranscribeService:
             and bool(meta.get("exhausted"))
         ):
             return "exhausted"
+        policy = payload.get("secondary_asr_policy")
+        policy_requires_secondary = bool(
+            isinstance(policy, dict)
+            and policy.get("schema") == SELECTIVE_GIGAAM_POLICY
+            and policy.get("decision") == "required"
+        )
 
         mode = str(payload.get("mode") or "").strip()
         cached_secondary = str(payload.get("secondary_provider") or "").strip()
@@ -490,6 +660,8 @@ class TranscribeService:
             if _slot_has_primary("full"):
                 needs_backfill = _slot_missing("full")
         if not needs_backfill:
+            if policy_requires_secondary:
+                return "retry" if secondary_matches else "fresh"
             return "not_needed"
         if secondary_matches:
             return "retry"
@@ -2722,6 +2894,8 @@ class TranscribeService:
     def _try_transcribe_file_with_meta(self, path: Path, provider: str) -> Dict[str, Any]:
         try:
             result = self._transcribe_file_with_meta(path, provider=provider)
+        except SecondaryAsrLeaseLost:
+            raise
         except Exception as exc:  # noqa: BLE001
             return {"text": "", "segments": None, "error": str(exc)}
         text = str(result.get("text", "")).strip()
@@ -2768,7 +2942,11 @@ class TranscribeService:
                     raise RuntimeError("gigaam chunking produced no chunks")
 
                 for idx, chunk in enumerate(chunks):
+                    if self._gigaam_chunk_heartbeat is not None:
+                        self._gigaam_chunk_heartbeat()
                     chunk_text = str(model.transcribe(str(chunk))).strip()
+                    if self._gigaam_chunk_heartbeat is not None:
+                        self._gigaam_chunk_heartbeat()
                     if not chunk_text:
                         continue
                     normalized_text = " ".join(chunk_text.split())
@@ -2803,7 +2981,11 @@ class TranscribeService:
                 result = subprocess.run(cmd, capture_output=True, text=True, check=False)
                 if result.returncode != 0:
                     raise RuntimeError(f"gigaam transcode failed: {result.stderr.strip()}")
+                if self._gigaam_chunk_heartbeat is not None:
+                    self._gigaam_chunk_heartbeat()
                 chunk_text = str(model.transcribe(str(converted))).strip()
+                if self._gigaam_chunk_heartbeat is not None:
+                    self._gigaam_chunk_heartbeat()
                 if chunk_text:
                     normalized_text = " ".join(chunk_text.split())
                     parts.append(normalized_text)
@@ -3534,6 +3716,13 @@ class TranscribeService:
                 finalized = self._transcribe_call(call)
             finally:
                 call.transcript_variants_json = original_variants
+            finalized_payload = self._safe_json_dict(finalized.get("transcript_variants_json"))
+            if "secondary_asr_policy" in updated_payload:
+                finalized_payload["secondary_asr_policy"] = updated_payload["secondary_asr_policy"]
+                finalized["transcript_variants_json"] = json.dumps(
+                    finalized_payload,
+                    ensure_ascii=False,
+                )
             finalized["secondary_finalized"] = True
             return finalized
 
@@ -3612,9 +3801,13 @@ class TranscribeService:
             }
 
         claim_worker_id = self._pipeline_worker_id("bf")
+        policy = os.getenv("GIGAAM_POLICY", "all").strip().lower()
+        effective_limit = min(limit, 1) if policy == SELECTIVE_GIGAAM_POLICY else limit
         candidate_ids = self._claim_secondary_backfill_batch(
             session,
-            limit=limit,
+            # The permanent selective worker owns one long RNNT call at a time;
+            # default/controlled CLI semantics keep the caller's requested limit.
+            limit=effective_limit,
             worker_id=claim_worker_id,
             secondary_provider=secondary_provider,
         )
@@ -3703,9 +3896,24 @@ class TranscribeService:
             outcome = "success"
             error_text = ""
             try:
+                self._renew_secondary_claim(
+                    session,
+                    call_id=int(call.id),
+                    worker_id=claim_worker_id,
+                )
+                self._gigaam_chunk_heartbeat = lambda: self._renew_secondary_claim(
+                    session,
+                    call_id=int(call.id),
+                    worker_id=claim_worker_id,
+                )
                 result = self._backfill_secondary_only(
                     call,
                     secondary_provider=secondary_provider,
+                )
+                self._begin_secondary_commit_guard(
+                    session,
+                    call_id=int(call.id),
+                    worker_id=claim_worker_id,
                 )
                 result_payload = self._safe_json_dict(result.get("transcript_variants_json"))
                 backfill_state = self.secondary_backfill_state_from_payload(
@@ -3745,6 +3953,28 @@ class TranscribeService:
                 call.pipeline_stage = None
                 call.pipeline_worker_id = None
                 call.pipeline_claimed_at = None
+            except SecondaryAsrLeaseLost as exc:
+                session.rollback()
+                session.expire_all()
+                failed += 1
+                outcome = "lease_lost"
+                error_text = str(exc)
+                _emit_progress(
+                    {
+                        "stage": "backfill_second_asr",
+                        "current": idx,
+                        "total": total,
+                        "success": success,
+                        "failed": failed,
+                        "partial": partial,
+                        "exhausted": exhausted,
+                        "status": outcome,
+                        "call_id": call.id,
+                        "source_filename": call.source_filename,
+                        "error": error_text,
+                    }
+                )
+                continue
             except Exception as exc:  # noqa: BLE001
                 is_exhausted = attempts >= SECONDARY_BACKFILL_MAX_ATTEMPTS
                 failed += 1
@@ -3768,6 +3998,8 @@ class TranscribeService:
                 if is_exhausted:
                     exhausted += 1
                     outcome = "exhausted"
+            finally:
+                self._gigaam_chunk_heartbeat = None
             session.add(call)
             _emit_progress(
                 {

@@ -70,6 +70,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     sqlite_check,
     stage_timeout_deadline,
     terminate_process_group,
+    transcribe_environment,
     worker_command,
     write_json,
 )
@@ -100,6 +101,21 @@ def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_stagin
         expected_active_host_id="m1-host",
         min_free_gib=1,
     )
+
+
+def test_service_transcribe_environment_keeps_whisper_canonical_and_selects_gigaam(
+    tmp_path: Path,
+) -> None:
+    service = replace(config_for(tmp_path), processing_scope="service")
+    controlled = replace(config_for(tmp_path), processing_scope="controlled_1")
+
+    service_env = transcribe_environment(service, {})
+    controlled_env = transcribe_environment(controlled, {})
+
+    assert service_env["DUAL_MERGE_PROVIDER"] == "primary"
+    assert service_env["GIGAAM_POLICY"] == "selective_non_conversation_v1"
+    assert controlled_env["DUAL_MERGE_PROVIDER"] == "rule"
+    assert controlled_env["GIGAAM_POLICY"] == "all"
 
 
 _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES = (

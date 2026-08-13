@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -56,6 +57,253 @@ def _stereo_payload(
 
 
 class ParallelPipelineClaimsTest(unittest.TestCase):
+    def test_selective_gigaam_skips_only_high_confidence_non_conversation(self) -> None:
+        service = TranscribeService(make_settings())
+        call = CallRecord(
+            source_call_id="voicemail-primary",
+            source_filename="voicemail.mp3",
+            duration_sec=20.0,
+        )
+        payload = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "manager": {"variant_a": "Здравствуйте.", "physical_channel": "left"},
+            "client": {
+                "variant_a": "Абонент сейчас не может ответить. Оставьте сообщение после звукового сигнала.",
+                "physical_channel": "right",
+            },
+        }
+
+        with patch.dict(os.environ, {"GIGAAM_POLICY": "selective_non_conversation_v1"}):
+            updated = service._apply_selective_gigaam_policy(call, payload)
+
+        self.assertEqual(updated["secondary_asr_policy"]["decision"], "skipped")
+        self.assertIn(
+            "high_confidence_non_conversation",
+            updated["secondary_asr_policy"]["reason_codes"],
+        )
+        self.assertTrue(updated["dual_asr_exception"]["approved"])
+        self.assertEqual(
+            service.secondary_backfill_state_from_payload(
+                updated,
+                secondary_provider="gigaam",
+            ),
+            "not_needed",
+        )
+
+    def test_selective_gigaam_requires_contentful_call_even_with_high_wpm(self) -> None:
+        service = TranscribeService(make_settings())
+        call = CallRecord(
+            source_call_id="low-primary",
+            source_filename="low.mp3",
+            duration_sec=60.0,
+        )
+        payload = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "manager": {"variant_a": " ".join(["расписание"] * 70)},
+            "client": {"variant_a": " ".join(["оплата"] * 70)},
+            "dual_asr_exception": {
+                "approved": True,
+                "reason": "selective_rescue_v1:primary_text_sufficient",
+                "approved_by": "owner_policy:selective_rescue_v1",
+                "approved_at": "2026-08-01T00:00:00+00:00",
+            },
+        }
+
+        with patch.dict(os.environ, {"GIGAAM_POLICY": "selective_non_conversation_v1"}):
+            updated = service._apply_selective_gigaam_policy(call, payload)
+
+        self.assertEqual(updated["secondary_asr_policy"]["decision"], "required")
+        self.assertIn(
+            "gigaam_required_for_contentful_or_ambiguous_call",
+            updated["secondary_asr_policy"]["reason_codes"],
+        )
+        self.assertNotIn("dual_asr_exception", updated)
+        self.assertEqual(
+            service.secondary_backfill_state_from_payload(
+                updated,
+                secondary_provider="gigaam",
+            ),
+            "fresh",
+        )
+
+    def test_selective_gigaam_quality_sample_still_runs_second_asr(self) -> None:
+        service = TranscribeService(make_settings())
+        payload = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "manager": {"variant_a": "Здравствуйте.", "physical_channel": "left"},
+            "client": {
+                "variant_a": "Абонент недоступен. Оставьте сообщение после звукового сигнала.",
+                "physical_channel": "right",
+            },
+        }
+        updated = payload
+        with patch.dict(os.environ, {"GIGAAM_POLICY": "selective_non_conversation_v1"}):
+            for idx in range(1000):
+                call = CallRecord(
+                    source_call_id=f"quality-sample-{idx}",
+                    duration_sec=20.0,
+                )
+                candidate = service._apply_selective_gigaam_policy(call, payload)
+                if candidate["secondary_asr_policy"]["shadow_quality_sample"]:
+                    updated = candidate
+                    break
+
+        self.assertTrue(updated["secondary_asr_policy"]["shadow_quality_sample"])
+        self.assertEqual(updated["secondary_asr_policy"]["decision"], "required")
+        self.assertNotIn("dual_asr_exception", updated)
+        self.assertEqual(
+            service.secondary_backfill_state_from_payload(
+                updated,
+                secondary_provider="gigaam",
+            ),
+            "fresh",
+        )
+
+    def test_selective_gigaam_preserves_explicit_owner_exception(self) -> None:
+        service = TranscribeService(make_settings())
+        call = CallRecord(source_call_id="owner-approved", duration_sec=60.0)
+        owner_exception = {
+            "approved": True,
+            "reason": "owner approved single-ASR exception",
+            "approved_by": "owner",
+            "approved_at": "2026-08-01T00:00:00+00:00",
+        }
+        payload = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "manager": {"variant_a": "Информация по расписанию курса."},
+            "client": {"variant_a": "Да, я изучу и отвечу позднее."},
+            "dual_asr_exception": owner_exception,
+        }
+
+        with patch.dict(os.environ, {"GIGAAM_POLICY": "selective_non_conversation_v1"}):
+            updated = service._apply_selective_gigaam_policy(call, payload)
+
+        self.assertEqual(updated["dual_asr_exception"], owner_exception)
+        self.assertEqual(
+            service.secondary_backfill_state_from_payload(
+                updated,
+                secondary_provider="gigaam",
+            ),
+            "not_needed",
+        )
+
+    def test_selective_gigaam_policy_is_off_by_default(self) -> None:
+        service = TranscribeService(make_settings())
+        payload = {"mode": "mono_or_fallback", "full": {"variant_a": "текст"}}
+        call = CallRecord(source_call_id="default", duration_sec=60.0)
+
+        with patch.dict(os.environ, {}, clear=True):
+            updated = service._apply_selective_gigaam_policy(call, payload)
+
+        self.assertIs(updated, payload)
+
+    def test_secondary_claim_heartbeat_requires_exact_owner(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_backfill_heartbeat_") as td:
+            db_path = Path(td) / "heartbeat.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                call = CallRecord(
+                    source_file=str(Path(td) / "call.mp3"),
+                    source_filename="call.mp3",
+                    transcription_status="done",
+                    pipeline_stage="backfill-second-asr",
+                    pipeline_worker_id="owner",
+                    pipeline_claimed_at=datetime.now(timezone.utc),
+                )
+                session.add(call)
+                session.commit()
+                call_id = int(call.id)
+
+            with session_factory() as session:
+                TranscribeService._renew_secondary_claim(
+                    session,
+                    call_id=call_id,
+                    worker_id="owner",
+                )
+                with self.assertRaisesRegex(RuntimeError, "secondary_asr_lease_lost"):
+                    TranscribeService._renew_secondary_claim(
+                        session,
+                        call_id=call_id,
+                        worker_id="other",
+                    )
+
+    def test_selective_backfill_claims_only_one_call_per_cycle(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_single_backfill_claim_") as td:
+            db_path = Path(td) / "single.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                dual_transcribe_enabled=True,
+                transcribe_provider="mlx",
+                secondary_transcribe_provider="gigaam",
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            service = TranscribeService(settings)
+            with session_factory() as session:
+                with patch.object(
+                    service,
+                    "_claim_secondary_backfill_batch",
+                    return_value=[],
+                ) as claim:
+                    with patch.dict(
+                        os.environ,
+                        {"GIGAAM_POLICY": "selective_non_conversation_v1"},
+                    ):
+                        service.backfill_secondary_asr(session, limit=10)
+
+        self.assertEqual(claim.call_args.kwargs["limit"], 1)
+
+    def test_default_backfill_preserves_requested_limit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_default_backfill_claim_") as td:
+            db_path = Path(td) / "default.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                dual_transcribe_enabled=True,
+                transcribe_provider="mlx",
+                secondary_transcribe_provider="gigaam",
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            service = TranscribeService(settings)
+            with session_factory() as session:
+                with patch.object(
+                    service,
+                    "_claim_secondary_backfill_batch",
+                    return_value=[],
+                ) as claim:
+                    with patch.dict(os.environ, {"GIGAAM_POLICY": "all"}):
+                        service.backfill_secondary_asr(session, limit=10)
+
+        self.assertEqual(claim.call_args.kwargs["limit"], 10)
+
+    def test_required_policy_claims_empty_primary_fail_open(self) -> None:
+        payload = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "manager": {"variant_a": "", "physical_channel": "left"},
+            "client": {"variant_a": "да", "physical_channel": "right"},
+            "secondary_asr_policy": {
+                "schema": "selective_non_conversation_v1",
+                "decision": "required",
+            },
+        }
+
+        self.assertEqual(
+            TranscribeService.secondary_backfill_state_from_payload(
+                payload,
+                secondary_provider="gigaam",
+            ),
+            "fresh",
+        )
+
     def test_secondary_backfill_rejects_non_text_primary_variant(self) -> None:
         state = TranscribeService.secondary_backfill_state_from_payload(
             {

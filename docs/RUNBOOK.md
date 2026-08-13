@@ -173,6 +173,12 @@ python3 scripts/install_mango_calls_two_processes_service.py \
   --install
 ```
 
+Для первой установки на этом же Mac без переноса чужого cursor
+допустим `--fresh-local-service`. Он работает только вместе с
+`--fast-service`, требует aware `bootstrap_since`, точный code SHA и
+пустой owner-only runtime `0700`. На существующую базу, cursor или
+любой непустой runtime этот режим не распространяется.
+
 Обе команды запрещено выполнять без отдельного разрешения на `launchd` и cutover.
 
 Старый label `com.mango.calls-two-processes` не является действующим

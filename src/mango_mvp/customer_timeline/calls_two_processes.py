@@ -5757,6 +5757,19 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
             ):
                 add_block("terminal_payload_invalid")
                 continue
+            analysis_quality_flags = (
+                analysis.get("quality_flags")
+                if isinstance(analysis, Mapping)
+                else None
+            )
+            terminal_non_conversation = bool(
+                downstream_terminal
+                and row.get("resolve_status") == "skipped"
+                and isinstance(analysis_quality_flags, Mapping)
+                and analysis_quality_flags.get("call_type") == "non_conversation"
+                and analysis_quality_flags.get("secondary_backfill_exhausted")
+                is True
+            )
             if isinstance(payload, Mapping):
                 mode = str(payload.get("mode") or "").strip()
                 if has_dual_asr_or_exception(row):
@@ -5878,6 +5891,12 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
                 if mode in {"stereo", "mono_or_fallback"}:
                     if payload.get("primary_provider") != "mlx":
                         add_block("primary_provider_mismatch")
+                        continue
+                    # A terminal, explicitly classified non-conversation is a
+                    # complete business outcome even when the secondary ASR
+                    # exhausted its retries. It must not block ingestion and
+                    # processing of unrelated calls behind it.
+                    if terminal_non_conversation:
                         continue
                     backfill_state = (
                         TranscribeService.secondary_backfill_state_from_payload(

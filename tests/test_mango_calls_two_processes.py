@@ -8306,6 +8306,46 @@ def test_terminal_analysis_waiting_for_second_asr_is_blocked(
     assert call_db_has_open_work(config.working_db) is False
 
 
+def test_terminal_non_conversation_with_exhausted_secondary_does_not_block(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        raw = connection.execute(
+            "SELECT transcript_variants_json FROM call_records WHERE id=1"
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload["full"]["variant_b"] = ""
+        analysis = {
+            "call_type": "non_conversation",
+            "history_summary": "Содержательного разговора не было.",
+            "quality_flags": {
+                "call_type": "non_conversation",
+                "secondary_backfill_exhausted": True,
+            },
+        }
+        connection.execute(
+            """
+            UPDATE call_records
+               SET transcript_variants_json=?, resolve_status='skipped',
+                   analysis_status='done', analysis_json=?
+             WHERE id=1
+            """,
+            (
+                json.dumps(payload, ensure_ascii=False),
+                json.dumps(analysis, ensure_ascii=False),
+            ),
+        )
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["blocked"] == 0
+    assert result["normalized"] == 0
+    assert result["blocked_reasons"] == {}
+    assert call_db_has_open_work(config.working_db) is False
+
+
 def test_pending_downstream_waiting_for_second_asr_remains_open(
     tmp_path: Path,
 ) -> None:

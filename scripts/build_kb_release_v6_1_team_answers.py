@@ -20,22 +20,27 @@ from scripts.build_kb_distribution_packs import build_distribution_packs
 from scripts.run_kb_semantic_review import run_kb_semantic_review
 
 
-DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/kb_for_bot_review_2026-05-18")
-DEFAULT_RUN_ID = "kb_release_20260520_v6_3_team_answers"
-DEFAULT_SOURCE_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_sources")
-DEFAULT_RELEASE_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers")
-DEFAULT_HANDOFF_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team")
-DEFAULT_BOT_PACK_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack")
-DEFAULT_EMPLOYEE_PACK_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_employee_pack")
-DEFAULT_SMOKE_NOT_RUN = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_smoke_not_run")
+DEFAULT_RUN_ID = "kb_release_20260813_v6_8_owner_approved"
+DEFAULT_SOURCE_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources")
+DEFAULT_SOURCE_ROOT = DEFAULT_SOURCE_OUT
+DEFAULT_RELEASE_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved")
+DEFAULT_HANDOFF_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_handoff")
+DEFAULT_BOT_PACK_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_bot_pack")
+DEFAULT_EMPLOYEE_PACK_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_employee_pack")
+DEFAULT_SMOKE_NOT_RUN = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_smoke_not_run")
 
 
 class SourceValidationError(ValueError):
     pass
 
 
+def portable_path(path: Path) -> str:
+    resolved = path.expanduser().resolve(strict=False)
+    return str(resolved.relative_to(PROJECT_ROOT)) if resolved.is_relative_to(PROJECT_ROOT) else str(resolved)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build KB v6.3 from YAML sources without live smoke runs.")
+    parser = argparse.ArgumentParser(description="Build the current KB release from YAML sources without live smoke runs.")
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--source-out", type=Path, default=DEFAULT_SOURCE_OUT)
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
@@ -57,6 +62,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         out_dir=args.release_out,
         handoff_out_dir=args.handoff_out,
     )
+    build_result = {
+        key: portable_path(Path(value)) if key in {"out_dir", "handoff_out_dir", "snapshot_path"} else value
+        for key, value in build_result.items()
+    }
 
     semantic_report = run_kb_semantic_review(args.handoff_out, out_dir=args.handoff_out)
     copy_if_exists(args.handoff_out / "semantic_review.json", args.release_out / "semantic_review.json")
@@ -73,15 +82,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_diff_summary(args.release_out, args.handoff_out)
 
     result = {
-        "schema_version": "kb_release_v6_3_build_result_v2",
+        "schema_version": "kb_release_build_result_v2",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "run_id": args.run_id,
-        "source_out": str(args.source_out),
-        "release_out": str(args.release_out),
-        "handoff_out": str(args.handoff_out),
-        "bot_pack_out": str(args.bot_pack_out),
-        "employee_pack_out": str(args.employee_pack_out),
-        "source_manifest": str(source_out / "release_manifest.yaml"),
+        "source_out": portable_path(args.source_out),
+        "release_out": portable_path(args.release_out),
+        "handoff_out": portable_path(args.handoff_out),
+        "bot_pack_out": portable_path(args.bot_pack_out),
+        "employee_pack_out": portable_path(args.employee_pack_out),
+        "source_manifest": portable_path(source_out / "release_manifest.yaml"),
         "source_mutation_policy": "read_only_yaml_sources_no_business_patches_in_python",
         "smoke_status": "not_run_by_builder",
         "build_result": dict(build_result),
@@ -113,7 +122,7 @@ def load_release_manifest(source_root: Path) -> dict[str, Any]:
     manifest_path = source_root / "release_manifest.yaml"
     if not manifest_path.exists():
         raise FileNotFoundError(
-            f"Missing {manifest_path}. v6.3 builder reads business overrides from release_manifest.yaml, not Python."
+            f"Missing {manifest_path}. The builder reads business overrides from release_manifest.yaml, not Python."
         )
     manifest = load_yaml(manifest_path)
     if not isinstance(manifest.get("control_numbers"), Mapping):
@@ -183,6 +192,17 @@ def apply_release_manifest(manifest: Mapping[str, Any]) -> None:
         if isinstance(item, Mapping)
     ]
     kb_builder.MANIFEST_MANUAL_DECISION_FACT_OVERRIDES = tuple(manual_overrides)
+    removed_prefixes = [
+        dict(item)
+        for item in as_sequence(manifest.get("remove_fact_key_prefixes"))
+        if isinstance(item, Mapping)
+    ]
+    kb_builder.MANIFEST_REMOVED_FACT_PREFIXES = tuple(removed_prefixes)
+    kb_builder.MANIFEST_REMOVED_PRODUCTS = tuple(
+        dict(item)
+        for item in as_sequence(manifest.get("remove_products"))
+        if isinstance(item, Mapping)
+    )
 
     structured_rules = [
         dict(item)
@@ -226,7 +246,7 @@ def create_not_run_smoke_summaries(root: Path) -> None:
 
 
 def write_diff_summary(release_out: Path, handoff_out: Path) -> None:
-    text = """# DIFF v4 -> v6.3
+    text = """# Current KB release source/build diff
 
 ## Source of truth
 
@@ -245,7 +265,20 @@ def write_diff_summary(release_out: Path, handoff_out: Path) -> None:
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    class UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+    def construct_mapping(loader: UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in result:
+                raise SourceValidationError(f"Duplicate YAML key {key!r} in {path}")
+            result[key] = loader.construct_object(value_node, deep=deep)
+        return result
+
+    UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
+    payload = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader) or {}
     if not isinstance(payload, dict):
         raise ValueError(f"Expected mapping in {path}")
     return payload

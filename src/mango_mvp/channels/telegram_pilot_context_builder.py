@@ -37,7 +37,7 @@ from mango_mvp.channels.pilot_context import (
 from mango_mvp.knowledge_base.fact_registry import (
     classify_fact_types,
     fact_type_from_key,
-    fact_valid_until_ok,
+    fact_runtime_time_ok,
 )
 from mango_mvp.knowledge_base.kc_context import limit_context_chunks
 
@@ -84,6 +84,7 @@ _BLOCKING_STATUSES = {
     "missing",
 }
 _FORBIDDEN_SNIPPET_STATUSES = {"internal_only", "do_not_use"}
+_DATE_ANSWER_FACT_TYPES = {"schedule", "deadline", "camp_lvsh", "camp_city", "camp_zvsh"}
 _TOPIC_REQUIRED_FACT_KEYS = {
     "pricing": ("prices.current",),
     "price": ("prices.current",),
@@ -731,7 +732,7 @@ def _chunk_records(snapshot: Mapping[str, Any], *, active_brand: str = "unknown"
         status = _stable_status(chunk.get("freshness_status"))
         if status in _FORBIDDEN_SNIPPET_STATUSES:
             continue
-        if not fact_valid_until_ok(chunk.get("valid_until")):
+        if not fact_runtime_time_ok(chunk):
             continue
         text = _clean_text(
             chunk.get("text")
@@ -815,6 +816,7 @@ def _select_confirmed_facts(
                 "__fact": fact,
                 "__score": score,
                 "__index": index,
+                "__direct_product_price": _is_direct_product_price(fact),
                 "brand": _clean_text(fact.get("brand")),
                 "fact_key": fact_key,
                 "scopes": scopes,
@@ -904,8 +906,8 @@ def _missing_fact_keys(
             continue
         fact_type = fact_type_from_key(fact_key)
         acceptable_fact_types = _expand_required_fact_types({fact_type}, topic_id="", query="")
-        if fact_type == "location" and required_fact_types & {"camp_lvsh", "camp_city"}:
-            acceptable_fact_types.update({"camp_lvsh", "camp_city"})
+        if fact_type == "location" and required_fact_types & {"camp_lvsh", "camp_city", "camp_zvsh"}:
+            acceptable_fact_types.update({"camp_lvsh", "camp_city", "camp_zvsh"})
         if fact_type == "schedule":
             acceptable_fact_types.update({"course_parameter", "program"})
         if confirmed_fact_types & acceptable_fact_types:
@@ -1081,7 +1083,7 @@ def _record_matches_context(
         return False
     if _record_is_unrequested_special_product(text, query_text):
         return False
-    if _query_asks_for_date(query_text) and not _record_answers_date_question(text):
+    if _query_asks_for_date(query_text) and fact_types & _DATE_ANSWER_FACT_TYPES and not _record_answers_date_question(text):
         return False
     if required_fact_types and fact_types & required_fact_types:
         return True
@@ -1132,7 +1134,7 @@ def _record_matches_retrieval_core(
         return False
     if _record_is_unrequested_special_product(text, query_text):
         return False
-    if _query_asks_for_date(query_text) and not _record_answers_date_question(text):
+    if _query_asks_for_date(query_text) and fact_types & _DATE_ANSWER_FACT_TYPES and not _record_answers_date_question(text):
         return False
     return True
 
@@ -1266,17 +1268,17 @@ def _expand_required_fact_types(required_fact_types: set[str], *, topic_id: str,
     expanded = set(required_fact_types)
     query_text = f"{topic_id} {query}".casefold()
     if "schedule" in expanded:
-        expanded.update({"deadline", "camp_lvsh", "camp_city", "course_parameter", "program"})
+        expanded.update({"deadline", "camp_lvsh", "camp_city", "camp_zvsh", "course_parameter", "program"})
     if "program" in expanded:
-        expanded.update({"course_parameter", "program", "intensive", "camp_lvsh", "camp_city", "teacher"})
+        expanded.update({"course_parameter", "program", "intensive", "camp_lvsh", "camp_city", "camp_zvsh", "teacher"})
     if "documents" in expanded:
         expanded.update({"documents", "tax", "matkap"})
     if "location" in expanded:
         expanded.update({"location", "contact"})
     if "installment" in expanded:
         expanded.update({"installment", "payment_methods", "discount", "course_parameter"})
-    if "лагер" in query_text or "лвш" in query_text or "лш" in query_text or "менделеево" in query_text:
-        expanded.update({"camp_lvsh", "camp_city", "deadline", "price", "location", "program"})
+    if any(marker in query_text for marker in ("лагер", "лвш", "звш", "лш", "менделеево", "зимн")):
+        expanded.update({"camp_lvsh", "camp_city", "camp_zvsh", "deadline", "price", "location", "program"})
     if any(marker in query_text for marker in ("трансфер", "добир", "дорог", "заезд", "из москв", "самостоятельн")):
         expanded.update({"location", "camp_lvsh", "program"})
     return expanded
@@ -1370,7 +1372,7 @@ def _usable_for_precise_answer(record: Mapping[str, Any], *, active_brand: str =
         and _truthy(record.get("allowed_for_client_answer"))
         and not _truthy(record.get("requires_manager_confirmation"))
         and not _truthy(record.get("forbidden_for_client"))
-        and fact_valid_until_ok(record.get("valid_until"))
+        and fact_runtime_time_ok(record)
         and _record_allowed_for_active_brand(record, active_brand=active_brand)
     )
 
@@ -1401,6 +1403,16 @@ def _fact_text(record: Mapping[str, Any]) -> str:
         or record.get("manager_text")
         or record.get("text"),
         max_chars=300,
+    )
+
+
+def _is_direct_product_price(record: Mapping[str, Any]) -> bool:
+    structured = record.get("structured_value") if isinstance(record.get("structured_value"), Mapping) else {}
+    return bool(
+        "price" in _fact_types(record)
+        and structured.get("amount") is not None
+        and _clean_text(record.get("product"))
+        and not all(structured.get(axis) for axis in ("classes", "format", "period"))
     )
 
 

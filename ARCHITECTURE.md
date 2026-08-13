@@ -63,7 +63,7 @@ Wappi
 Текущая база знаний:
 
 ```text
-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/
+product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/
   kb_release_v3_snapshot.json
 ```
 

@@ -38,7 +38,7 @@ cd "$ROOT"
 
 REV_LABEL="${REV_LABEL:-postE1_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl}"
-SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
+SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json}"
 if [[ "$DRY_CHECK" == "1" ]]; then
   OUT="${OUT:-runs/adr003_semantic_reading_e2_dry_check_${REV_LABEL}}"
 elif [[ -n "$RESUME_P_REPORT" ]]; then

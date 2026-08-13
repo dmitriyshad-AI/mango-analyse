@@ -4,11 +4,17 @@ from pathlib import Path
 
 from scripts.build_kb_release_v6_1_team_answers import (
     DEFAULT_SOURCE_OUT,
+    SourceValidationError,
     apply_release_manifest,
+    gold_answers_v3_payload,
+    load_yaml,
     load_release_manifest,
     validate_source_overlay,
 )
 from scripts.build_kb_release_v3_from_claude_handoff import build_post_filter_registry
+
+
+CURRENT_SOURCE_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources")
 
 
 def test_v6_1_builder_uses_release_manifest_and_validates_yaml_sources() -> None:
@@ -17,6 +23,14 @@ def test_v6_1_builder_uses_release_manifest_and_validates_yaml_sources() -> None
     validate_source_overlay(DEFAULT_SOURCE_OUT, manifest)
     assert manifest["source_mutation_policy"] == "read_only_yaml_sources_no_business_patches_in_python"
     assert "gold_answers_v3" in manifest["source_files"]
+
+
+def test_gold_answers_have_one_editable_yaml_source() -> None:
+    payload = gold_answers_v3_payload(CURRENT_SOURCE_OUT)
+    bot_policy = load_yaml(CURRENT_SOURCE_OUT / "facts" / "bot_policy.yaml")
+
+    assert "topics" in payload
+    assert "gold_answers_v3" not in bot_policy
 
 
 def test_v6_1_builder_has_no_business_patch_functions() -> None:
@@ -82,6 +96,35 @@ def test_manifest_manual_override_can_remove_source_fact(monkeypatch) -> None:
 
     assert [item["fact_key"] for item in result] == ["legacy.fact", "kept.fact"]
     assert result[0]["brand"] == "foton"
+
+
+def test_manifest_can_remove_fact_family_by_brand_prefix(monkeypatch) -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as kb_builder
+
+    monkeypatch.setattr(
+        kb_builder,
+        "MANIFEST_REMOVED_FACT_PREFIXES",
+        ({"brand": "unpk", "fact_key_prefix": "summer_2026."},),
+    )
+    facts = [
+        {"brand": "unpk", "fact_key": "summer_2026.price"},
+        {"brand": "unpk", "fact_key": "regular_2026.price"},
+        {"brand": "foton", "fact_key": "summer_2026.price"},
+    ]
+
+    assert kb_builder.remove_manifest_deleted_facts(facts) == facts[1:]
+
+
+def test_yaml_loader_rejects_duplicate_keys(tmp_path) -> None:
+    source = tmp_path / "duplicate.yaml"
+    source.write_text("control_numbers:\n  add: [1]\n  add: [2]\n", encoding="utf-8")
+
+    try:
+        load_yaml(source)
+    except SourceValidationError as exc:
+        assert "Duplicate YAML key 'add'" in str(exc)
+    else:
+        raise AssertionError("duplicate YAML key was silently accepted")
 
 
 def test_post_filter_registry_keeps_installment_terms_brand_scoped() -> None:

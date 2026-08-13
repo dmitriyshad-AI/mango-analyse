@@ -58,6 +58,9 @@ def _fact(
         "allowed_for_client_answer": True,
         "forbidden_for_client": False,
         "internal_only": False,
+        "freshness_check_date": "2026-08-13",
+        "valid_from": "2026-08-13",
+        "valid_until": "2027-05-31",
         "client_safe_text": text,
     }
 

@@ -13,23 +13,22 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.knowledge_base.fact_registry import (
+    evaluate_fact_freshness_sla,
+    fact_runtime_time_ok,
+    fact_valid_until_ok,
+)
+
 
 PRICE_AXES_SELECTOR_ENV = "TELEGRAM_PRICE_AXES_SELECTOR"
 PRICE_AXES_CLEAN_DEFER_ENV = "TELEGRAM_PRICE_AXES_CLEAN_DEFER"
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 PRICE_AXES_SCHEMA_VERSION = "price_axes_catalog_v1_2026_06_21"
-KC_SOURCE_DOCUMENT_ID = "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo"
-KC_SOURCE_TITLE = "База знаний КЦ"
-KC_SOURCE_UPDATED_AT = "2026-06-15T11:23:26.941Z"
-
 FOTON = "foton"
 UNPK = "unpk"
 
 REGULAR_SUBJECTS: tuple[str, ...] = ("math", "physics", "informatics", "russian", "ai")
-UNPK_WEEKEND_SUBJECTS: tuple[str, ...] = ("math", "physics")
-UNPK_WEEKDAY_SUBJECTS: tuple[str, ...] = ("math", "physics", "informatics")
-
 SUBJECT_LABELS: dict[str, str] = {
     "math": "математика",
     "physics": "физика",
@@ -50,26 +49,6 @@ TARIFF_INCLUDES: dict[str, tuple[str, ...]] = {
     "full_immersion": ("все из тарифа «Продвинутый»", "индивидуальные занятия раз в 2 недели"),
 }
 
-UNPK_ONLINE_PRICE_OVERRIDES: tuple[dict[str, Any], ...] = (
-    {
-        "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
-        "schedule": "weekend",
-        "classes": "5-11",
-        "subjects": UNPK_WEEKEND_SUBJECTS,
-        "prices": {"semester": 37000, "year": 59000},
-        "description": "онлайн-курсы по математике и физике для 5-11 классов по выходным",
-    },
-    {
-        "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
-        "schedule": "weekday",
-        "classes": "9 и 11",
-        "subjects": UNPK_WEEKDAY_SUBJECTS,
-        "prices": {"semester": 41800, "year": 69900},
-        "description": "онлайн-курсы для 9 и 11 классов по будням",
-    },
-)
-
-
 @dataclass(frozen=True)
 class PriceAxisEntry:
     entry_id: str
@@ -88,13 +67,13 @@ class PriceAxisEntry:
     grade_values: tuple[int, ...]
     subjects: tuple[str, ...]
     client_safe_text: str
+    valid_from: str = ""
+    valid_until: str = ""
+    freshness_check_date: str = ""
     tariff_id: str = ""
     tariff_title: str = ""
     tariff_includes: tuple[str, ...] = ()
     schedule: str = ""
-    source_document_id: str = ""
-    source_document_title: str = ""
-    source_document_updated_at: str = ""
     structured_value: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,8 +101,6 @@ def _flag_enabled_with_pilot_profile(env_name: str) -> bool:
 def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     entries: list[PriceAxisEntry] = []
     issues: list[dict[str, Any]] = []
-    facts_by_key = {str(fact.get("fact_key") or ""): fact for fact in facts}
-
     for fact in facts:
         if not _fact_is_client_usable(fact):
             continue
@@ -163,20 +140,6 @@ def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, An
         if entry is not None:
             entries.append(entry)
 
-    for override in UNPK_ONLINE_PRICE_OVERRIDES:
-        fact = facts_by_key.get(str(override["source_fact_key"]))
-        if not fact:
-            issues.append({"issue": "unpk_online_source_fact_missing", "fact_key": override["source_fact_key"]})
-            continue
-        if not _fact_is_client_usable(fact):
-            issues.append({"issue": "unpk_online_source_fact_not_client_usable", "fact_key": override["source_fact_key"]})
-            continue
-        source_text = _text(fact.get("client_safe_text") or fact.get("text"))
-        if not source_text:
-            issues.append({"issue": "unpk_online_source_fact_empty_client_safe_text", "fact_key": override["source_fact_key"]})
-            continue
-        entries.extend(_entries_from_unpk_online_override(fact, override))
-
     for fact in facts:
         if not _fact_is_client_usable(fact):
             continue
@@ -186,13 +149,7 @@ def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, An
 
     return {
         "schema_version": PRICE_AXES_SCHEMA_VERSION,
-        "source_snapshot": "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
-        "source_truth": {
-            "title": KC_SOURCE_TITLE,
-            "document_id": KC_SOURCE_DOCUMENT_ID,
-            "updated_at": KC_SOURCE_UPDATED_AT,
-            "note": "КЦ-база подтверждает УНПК-онлайн цены; исходные факты r4.1 содержат эти цены текстом.",
-        },
+        "source_snapshot": "current_runtime_snapshot",
         "rules": {
             "regular_course_price_depends_on": ["brand", "grade", "format", "period"],
             "regular_course_price_does_not_depend_on": ["subject"],
@@ -210,15 +167,15 @@ def _fact_is_client_usable(fact: Mapping[str, Any]) -> bool:
         return False
     if _text(fact.get("freshness_status")) in {"do_not_use", "expired", "superseded"}:
         return False
-    raw_until = _text(fact.get("valid_until"))
-    if raw_until:
-        try:
-            evaluation_day = date.fromisoformat(_text(os.getenv("MANGO_EVALUATION_DATE"))) if os.getenv("MANGO_EVALUATION_DATE") else date.today()
-            if date.fromisoformat(raw_until) < evaluation_day:
-                return False
-        except ValueError:
-            return False
-    return True
+    evaluation_day = _evaluation_day()
+    if evaluation_day is False:
+        return False
+    # Keep a confirmed future tariff in the derived catalog. select_price()
+    # applies valid_from at read time, so no catalog rebuild is needed on day 1.
+    return fact_valid_until_ok(fact.get("valid_until"), today=evaluation_day) and (
+        not _has_freshness_check_date(fact)
+        or evaluate_fact_freshness_sla(fact, today=evaluation_day).within_sla
+    )
 
 
 def select_price(
@@ -233,7 +190,7 @@ def select_price(
     product_code: str = "",
     tariff_id: str = "",
 ) -> dict[str, Any]:
-    entries = _catalog_entries(catalog)
+    entries = [entry for entry in _catalog_entries(catalog) if _entry_runtime_usable(entry)]
     normalized_brand = normalize_brand(brand)
     normalized_format = normalize_format(format)
     normalized_period = normalize_period(period)
@@ -302,6 +259,28 @@ def select_price(
     return {"status": "exact", "entry": exact, "missing_slots": (), "reason": "exact_price_found", "matches": matching}
 
 
+def _evaluation_day() -> date | None | bool:
+    raw = _text(os.getenv("MANGO_EVALUATION_DATE"))
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return False
+
+
+def _has_freshness_check_date(fact: Mapping[str, Any]) -> bool:
+    structured = _mapping(fact.get("structured_value"))
+    return bool(_text(fact.get("freshness_check_date") or fact.get("verified_at") or structured.get("freshness_check_date")))
+
+
+def _entry_runtime_usable(entry: Mapping[str, Any]) -> bool:
+    evaluation_day = _evaluation_day()
+    if evaluation_day is False:
+        return False
+    return fact_runtime_time_ok({**entry, "fact_type": "price"}, today=evaluation_day)
+
+
 def select_price_fact_for_query(
     facts: Sequence[Mapping[str, Any]],
     *,
@@ -365,7 +344,10 @@ def virtual_fact_from_price_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "allowed_for_client_answer": True,
         "usable_for_precise_answer": True,
         "source_id": "f8_price_axes_catalog",
-        "source_title": KC_SOURCE_TITLE,
+        "source_title": "Текущий проверенный снимок базы знаний",
+        "valid_from": _text(entry.get("valid_from")),
+        "valid_until": _text(entry.get("valid_until")),
+        "freshness_check_date": _text(entry.get("freshness_check_date")),
         "structured_value": dict(entry.get("structured_value") or {}),
         "price_axes_entry": dict(entry),
     }
@@ -474,10 +456,11 @@ def _entry_from_regular_fact(
         period=period,
         classes=classes,
         axes=axes,
-        subjects=REGULAR_SUBJECTS,
+        subjects=tuple(str(item) for item in structured.get("subjects") or REGULAR_SUBJECTS),
         source_fact_id=fact_id,
         source_fact_key=fact_key,
         source_kind="regular_structured_price",
+        schedule=_text(structured.get("schedule")),
     )
     return PriceAxisEntry(
         entry_id=_stable_entry_id("regular", fact_id, fmt, period, classes),
@@ -494,74 +477,16 @@ def _entry_from_regular_fact(
         grade_min=axes["grade_min"],
         grade_max=axes["grade_max"],
         grade_values=tuple(axes["grade_values"]),
-        subjects=REGULAR_SUBJECTS,
+        subjects=tuple(str(item) for item in structured.get("subjects") or REGULAR_SUBJECTS),
         client_safe_text=client_safe_text,
-        source_document_id=KC_SOURCE_DOCUMENT_ID,
-        source_document_title=KC_SOURCE_TITLE,
-        source_document_updated_at=KC_SOURCE_UPDATED_AT,
+        valid_from=_text(fact.get("valid_from")),
+        valid_until=_text(fact.get("valid_until")),
+        freshness_check_date=_text(
+            fact.get("freshness_check_date") or structured.get("freshness_check_date")
+        ),
+        schedule=_text(structured.get("schedule")),
         structured_value=structured_value,
     )
-
-
-def _entries_from_unpk_online_override(fact: Mapping[str, Any], override: Mapping[str, Any]) -> list[PriceAxisEntry]:
-    axes = _grade_axes_from_classes(override.get("classes"))
-    if not axes:
-        return []
-    fact_id = _text(fact.get("fact_id") or fact.get("id"))
-    fact_key = _text(fact.get("fact_key") or override.get("source_fact_key"))
-    classes = _text(override.get("classes"))
-    subjects = tuple(str(item) for item in override.get("subjects") or ())
-    schedule = _text(override.get("schedule"))
-    description = _text(override.get("description"))
-    entries: list[PriceAxisEntry] = []
-    for period, amount in sorted((override.get("prices") or {}).items()):
-        normalized_period = normalize_period(str(period))
-        amount_int = _int_or_none(amount)
-        if amount_int is None or not normalized_period:
-            continue
-        client_safe = (
-            f"УНПК МФТИ: {description}, "
-            f"{_period_label(normalized_period)} — {_money(amount_int)}."
-        )
-        structured_value = _entry_structured_value(
-            amount=amount_int,
-            currency="RUB",
-            fmt="online",
-            period=normalized_period,
-            classes=classes,
-            axes=axes,
-            subjects=subjects,
-            source_fact_id=fact_id,
-            source_fact_key=fact_key,
-            source_kind="unpk_online_kc_source_price",
-            schedule=schedule,
-        )
-        entries.append(
-            PriceAxisEntry(
-                entry_id=_stable_entry_id("unpk_online", fact_id, schedule, normalized_period),
-                source_fact_id=fact_id,
-                source_fact_key=fact_key,
-                source_kind="unpk_online_kc_source_price",
-                brand=UNPK,
-                product_code="regular_course",
-                format="online",
-                period=normalized_period,
-                amount=amount_int,
-                currency="RUB",
-                classes=classes,
-                grade_min=axes["grade_min"],
-                grade_max=axes["grade_max"],
-                grade_values=tuple(axes["grade_values"]),
-                subjects=subjects,
-                client_safe_text=client_safe,
-                schedule=schedule,
-                source_document_id=KC_SOURCE_DOCUMENT_ID,
-                source_document_title=KC_SOURCE_TITLE,
-                source_document_updated_at=KC_SOURCE_UPDATED_AT,
-                structured_value=structured_value,
-            )
-        )
-    return entries
 
 
 def _entries_from_m9_m11_tariff_fact(fact: Mapping[str, Any]) -> list[PriceAxisEntry]:
@@ -616,12 +541,14 @@ def _entries_from_m9_m11_tariff_fact(fact: Mapping[str, Any]) -> list[PriceAxisE
                 grade_values=(grade,),
                 subjects=("math",),
                 client_safe_text=client_safe,
+                valid_from=_text(fact.get("valid_from")),
+                valid_until=_text(fact.get("valid_until")),
+                freshness_check_date=_text(
+                    fact.get("freshness_check_date") or structured.get("freshness_check_date")
+                ),
                 tariff_id=tariff_id,
                 tariff_title=title,
                 tariff_includes=includes,
-                source_document_id=KC_SOURCE_DOCUMENT_ID,
-                source_document_title=KC_SOURCE_TITLE,
-                source_document_updated_at=KC_SOURCE_UPDATED_AT,
                 structured_value=structured_value,
             )
         )
@@ -655,7 +582,7 @@ def _entry_structured_value(
         "source_fact_id": source_fact_id,
         "source_fact_key": source_fact_key,
         "source_kind": source_kind,
-        "source_truth": KC_SOURCE_TITLE,
+        "source_truth": "current_runtime_snapshot",
     }
     value.update({key: value for key, value in extra.items() if value not in (None, "", (), [])})
     return value
@@ -729,6 +656,10 @@ def _looks_like_regular_price_fact(fact: Mapping[str, Any]) -> bool:
     fact_key = _text(fact.get("fact_key"))
     if structured.get("do_not_use_as_current_price"):
         return False
+    if structured.get("selector_excluded"):
+        return False
+    if _text(structured.get("product_code")) == "regular_course":
+        return True
     if "early_booking" in fact_key:
         return True
     return "prices_regular_2026_27." in fact_key and not fact_key.endswith(".note_internal")

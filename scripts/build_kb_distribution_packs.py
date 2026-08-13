@@ -14,12 +14,17 @@ from typing import Any
 import yaml
 
 
-DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team")
-DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers")
-DEFAULT_SMOKE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_smoke_not_run")
-DEFAULT_EMPLOYEE_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_employee_pack")
-DEFAULT_BOT_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_handoff")
+DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved")
+DEFAULT_SMOKE_DIR = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_smoke_not_run")
+DEFAULT_EMPLOYEE_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_employee_pack")
+DEFAULT_BOT_OUT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_bot_pack")
 PACK_SCHEMA_VERSION = "kb_distribution_packs_v1"
+
+
+def portable_path(path: Path) -> str:
+    return str(path.relative_to(PROJECT_ROOT)) if path.is_relative_to(PROJECT_ROOT) else str(path)
 
 BRAND_LABELS = {
     "foton": "Фотон",
@@ -112,8 +117,8 @@ def build_distribution_packs(
     )
     return {
         "schema_version": PACK_SCHEMA_VERSION,
-        "employee_pack": str(employees),
-        "bot_pack": str(bot),
+        "employee_pack": portable_path(employees),
+        "bot_pack": portable_path(bot),
         "facts_total": len(facts),
         "client_safe_facts": sum(1 for fact in facts if truthy(fact.get("allowed_for_client_answer"))),
         "employee_files": sorted(path.name for path in employees.iterdir() if path.is_file()),
@@ -389,8 +394,8 @@ def render_smoke_examples() -> str:
 
 Основные проверочные примеры лежат в машинном виде:
 
-- `../kb_release_20260520_v6_3_team_answers_smoke_not_run/`
-- MEGA и малый живой прогон для v6.3 пока не запускались по прямому указанию Дмитрия.
+- `../kb_release_20260813_v6_8_owner_approved_smoke_not_run/`
+- MEGA и малый живой прогон для v6.8 не запускались этим офлайн-сборщиком.
 
 Эти примеры нужны не как финальные скрипты, а как проверка, что ИИ:
 
@@ -548,8 +553,8 @@ def manifest_payload(
         "schema_version": PACK_SCHEMA_VERSION,
         "package_type": package_type,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_release": str(release_dir),
-        "source_full_release": str(full_release_dir),
+        "source_release": portable_path(release_dir),
+        "source_full_release": portable_path(full_release_dir),
         "facts_total": len(facts),
         "client_safe_facts_total": sum(1 for fact in facts if truthy(fact.get("allowed_for_client_answer"))),
         "facts_by_brand": dict(Counter(str(fact.get("brand") or "") for fact in facts)),

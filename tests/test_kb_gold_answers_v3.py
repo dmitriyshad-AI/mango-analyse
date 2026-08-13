@@ -58,6 +58,7 @@ def test_foton_online_year_source_omits_unconfirmed_upper_bound() -> None:
     facts = load_yaml(DEFAULT_SOURCE_OUT / "facts" / "facts_for_bot_FOTON.yaml")
     online_price = facts["prices_regular_2026_27"]["online_5_11_class"]["before_2026_08_01"]
 
-    assert online_price["year"] == 47250
+    assert online_price["year"]["raw_value"] == 47250
+    assert online_price["year"]["valid_until"] == "2026-07-31"
     assert "year_range" not in online_price
     assert "52500" not in str(online_price)

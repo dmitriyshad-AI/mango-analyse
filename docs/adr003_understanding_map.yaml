@@ -1,16 +1,16 @@
-schema_version: adr003_understanding_map_v2_2026_08_12
+schema_version: adr003_understanding_map_v2_2026_08_13
 source:
-  base_repo_head: 0ba2d723aa8d562df2ecb7f4248c494bad14ff29
+  base_repo_head: a3593d74ba857b57bebf10870c7fad0948854a02
   integrated_patch_heads: []
-  working_tree_task: 2026-08-12_TZ_FINAL_REGEX_AND_DEAD_CODE_CLEANUP.md
+  working_tree_task: 2026-08-05_TZ_REFRESH_CURRENT_KB_EXPIRED_FACTS.md
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
-  snapshot_rows: 697
-  snapshot_sha256: 9810c39b7f2cdb2a7482bec0e79528a1ef64a31daf51f2ee87603d33b9623268
+  snapshot_rows: 692
+  snapshot_sha256: 9708b7127aa181bd6d142d738af594a8be2105b849b9efcbd024a86822437c52
   denominator: all_snapshot_rows
   node_kind_counts:
     marker_helper_call: 113
     regex_call: 311
-    string_contains: 147
+    string_contains: 142
     text_table: 126
   regex_symbol_counts:
     re.compile: 140
@@ -31,14 +31,14 @@ source:
   machine_text_table_rule: AST assignments whose uppercase name contains one of TEXT_TABLE_NAME_PARTS
   literal_left_membership_rule: literal string on the left of in/not in; canonical scope additionally requires a text-like
     comparator name
-  literal_left_membership_total: 289
-  literal_left_membership_in_canonical_text_scope: 147
-  literal_left_membership_outside_canonical_text_scope: 142
+  literal_left_membership_total: 282
+  literal_left_membership_in_canonical_text_scope: 142
+  literal_left_membership_outside_canonical_text_scope: 140
 classification_counts:
   1_model_owned_semantics: 239
-  2_verification: 331
+  2_verification: 330
   3_format_hygiene: 32
-  4_technical_parser_or_lookup: 93
+  4_technical_parser_or_lookup: 89
   5_historical_measurement_only: 2
 classes:
   p0_safety_aggregation_floor:
@@ -308,9 +308,6 @@ rows:
   adr003:115c9a820e595745548bb60b:
   - 3_format_hygiene
   - parser_normalization
-  adr003:1249cc9ae2283a2fbaf52c15:
-  - 4_technical_parser_or_lookup
-  - technical_parser_or_lookup
   adr003:131f9a3cff42731fddf36068:
   - 2_verification
   - fact_pii_verification_floor
@@ -653,9 +650,6 @@ rows:
   adr003:3bee61cd182c94f2a632ea87:
   - 2_verification
   - fact_pii_verification_floor
-  adr003:3c3a3b991c10210375d11a08:
-  - 4_technical_parser_or_lookup
-  - technical_parser_or_lookup
   adr003:3c582ccdbf02f3c8ec35ca40:
   - 1_model_owned_semantics
   - legacy_model_owned_semantics
@@ -1073,9 +1067,6 @@ rows:
   adr003:6b2616616eaf2dffa4afd2cc:
   - 2_verification
   - output_claim_pii_floor
-  adr003:6b2e056e39bdf395067edda8:
-  - 4_technical_parser_or_lookup
-  - technical_parser_or_lookup
   adr003:6b8bee8844a140ef8fa06e8b:
   - 1_model_owned_semantics
   - legacy_model_owned_semantics
@@ -1115,9 +1106,6 @@ rows:
   adr003:6faaa425d3a3057f4a89e286:
   - 2_verification
   - pii_prompt_scope_floor
-  adr003:6fda2e410fed7a71a635c05b:
-  - 2_verification
-  - fact_output_verification_floor
   adr003:6ffbfed92f7a2f9f86559cc1:
   - 1_model_owned_semantics
   - legacy_model_owned_semantics
@@ -1137,9 +1125,6 @@ rows:
   - 2_verification
   - internal_metadata_leak_floor
   adr003:71ab5d1f5204609f4da931df:
-  - 4_technical_parser_or_lookup
-  - technical_parser_or_lookup
-  adr003:72c0e5a1b5e4c1f226f29049:
   - 4_technical_parser_or_lookup
   - technical_parser_or_lookup
   adr003:73754392aefb1c39386c7d50:

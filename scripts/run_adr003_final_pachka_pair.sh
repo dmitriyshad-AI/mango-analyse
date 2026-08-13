@@ -20,7 +20,7 @@ cd "$ROOT"
 
 REV_LABEL="${REV_LABEL:-final_pachka_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_final_m1_pachka_99b8169a_20260707.jsonl}"
-SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
+SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json}"
 RUN_ORDER="${RUN_ORDER:-ON_FIRST}"
 if [[ "$RUN_ORDER" != "B_FIRST" && "$RUN_ORDER" != "ON_FIRST" ]]; then
   echo "RUN_ORDER must be B_FIRST or ON_FIRST, got: $RUN_ORDER" >&2

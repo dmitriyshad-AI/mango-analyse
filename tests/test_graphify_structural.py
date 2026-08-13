@@ -30,7 +30,7 @@ def test_prepare_structural_source_is_code_only_and_marks_kb_scopes(tmp_path: Pa
     assert "src/mango_mvp/channels/output_verification_floor.py" in prepared.copied_code_files
     non_code = [path for path in prepared.source_dir.rglob("*") if path.is_file() and path.suffix != ".py"]
     assert non_code == []
-    assert any(item["scope"] == "client_safe_candidate" for item in prepared.indexed_structured_files)
+    assert any("facts_for_bot_" in item["source_path"] for item in prepared.indexed_structured_files)
     assert any(item["scope"] == "manager_only_or_internal" for item in prepared.indexed_structured_files)
     index_text = (prepared.source_dir / "src/mango_mvp/graphify_structural_index.py").read_text(encoding="utf-8")
     assert "graphify_structural_scope_rules" in index_text
@@ -80,7 +80,7 @@ def test_curated_hints_return_raw_sources_for_p0_brand_and_script_questions() ->
     brand_hints = curated_source_hints("Где разделяются бренды Фотон/УНПК и цены?")
     assert "src/mango_mvp/channels/output_verification_floor.py" in brand_hints
     assert any(path.endswith("brand_rules.yaml") for path in brand_hints)
-    assert any(path.endswith("MANAGER_ONLY_FACTS.csv") for path in brand_hints)
+    assert any(path.endswith("facts_registry.jsonl") for path in brand_hints)
 
     script_hints = curated_source_hints("Где описаны безопасные и опасные скрипты?")
     assert "docs/SCRIPT_SAFETY_MATRIX.md" in script_hints

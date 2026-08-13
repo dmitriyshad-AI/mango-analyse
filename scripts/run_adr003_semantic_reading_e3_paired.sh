@@ -38,7 +38,7 @@ cd "$ROOT"
 
 REV_LABEL="${REV_LABEL:-e3_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl}"
-SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
+SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json}"
 PROFILE_READING_CLASSES="$(
   PYTHONPATH="$ROOT/src" python3 - <<'PY'
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import PILOT_PROFILE_DEFAULT_READING_CLASSES

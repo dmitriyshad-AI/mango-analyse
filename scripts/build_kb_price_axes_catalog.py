@@ -9,7 +9,7 @@ from mango_mvp.knowledge_base.price_axes_catalog import build_price_axes_catalog
 
 
 DEFAULT_SNAPSHOT = Path(
-    "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json"
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json"
 )
 DEFAULT_OUTPUT = DEFAULT_SNAPSHOT.with_name("price_axes_catalog.json")
 
@@ -31,7 +31,7 @@ def main() -> int:
     print(f"out={args.out}")
     print(f"entries={len(entries)}")
     print(f"issues={len(issues)}")
-    print("unpk_online_entries=" + str(sum(1 for item in entries if item.get("source_kind") == "unpk_online_kc_source_price")))
+    print("unpk_online_entries=" + str(sum(1 for item in entries if item.get("brand") == "unpk" and item.get("format") == "online")))
     print("tariff_entries=" + str(sum(1 for item in entries if item.get("source_kind") == "foton_m9_m11_tariff_price")))
     print("range_issues=" + str(sum(1 for item in issues if item.get("issue") == "range_not_final_price")))
     print("empty_client_safe_issues=" + str(sum(1 for item in issues if item.get("issue") == "empty_client_safe_text_not_final_price")))

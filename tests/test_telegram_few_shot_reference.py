@@ -87,6 +87,7 @@ def test_few_shot_reference_uses_brand_warm_example_only_with_confirmed_fact(tmp
 
 
 def test_pilot_context_includes_few_shot_reference(monkeypatch, tmp_path):
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-08-13")
     warm = tmp_path / "warm.yaml"
     advanced = tmp_path / "advanced.yaml"
     _write_yaml(
@@ -128,6 +129,9 @@ def test_pilot_context_includes_few_shot_reference(monkeypatch, tmp_path):
                     "usable_for_precise_answer": True,
                     "allowed_for_client_answer": True,
                     "freshness_status": "fresh",
+                    "freshness_check_date": "2026-08-13",
+                    "valid_from": "2026-08-13",
+                    "valid_until": "2027-05-31",
                 }
         ],
         "chunks": [],

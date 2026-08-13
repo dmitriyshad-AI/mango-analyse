@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.channels.fact_retrieval import select_confirmed_facts
 from mango_mvp.knowledge_base.price_axes_catalog import (
     _extract_grade,
@@ -17,6 +19,12 @@ from mango_mvp.knowledge_base.price_axes_catalog import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_PATH = ROOT / "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json"
+CURRENT_SNAPSHOT_PATH = ROOT / "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json"
+
+
+@pytest.fixture(autouse=True)
+def _historical_snapshot_date(monkeypatch) -> None:
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-06-12")
 
 
 def _facts() -> list[dict[str, object]]:
@@ -26,6 +34,15 @@ def _facts() -> list[dict[str, object]]:
 
 def _catalog() -> dict[str, object]:
     return build_price_axes_catalog(_facts())
+
+
+def _current_facts() -> list[dict[str, object]]:
+    snapshot = json.loads(CURRENT_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    return list(snapshot.get("facts") or [])
+
+
+def _current_catalog() -> dict[str, object]:
+    return build_price_axes_catalog(_current_facts())
 
 
 def _entries(catalog: dict[str, object]) -> list[dict[str, object]]:
@@ -93,20 +110,22 @@ def test_price_selector_respects_current_russian_product_line() -> None:
     assert unpk["reason"] == "subject_not_offered"
 
 
-def test_catalog_excludes_superseded_unpk_weekday_prices() -> None:
-    catalog = _catalog()
+def test_catalog_contains_only_owner_approved_unpk_schedule_prices(monkeypatch) -> None:
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-08-13")
+    catalog = _current_catalog()
     entries = _entries(catalog)
     unpk = [
         entry
         for entry in entries
-        if entry.get("brand") == "unpk" and entry.get("source_kind") == "unpk_online_kc_source_price"
+        if entry.get("brand") == "unpk" and entry.get("format") == "online"
     ]
 
-    assert len(unpk) == 2
+    assert len(unpk) == 4
     amounts = {(entry["classes"], entry["schedule"], entry["period"], entry["amount"]) for entry in unpk}
     assert ("5-11", "weekend", "semester", 37000) in amounts
     assert ("5-11", "weekend", "year", 59000) in amounts
-    assert not any(entry["schedule"] == "weekday" for entry in unpk)
+    assert ("9,11", "weekday", "semester", 41800) in amounts
+    assert ("9,11", "weekday", "year", 69900) in amounts
     assert all(entry.get("client_safe_text") for entry in unpk)
     assert all("Фотон" not in str(entry.get("client_safe_text")) for entry in unpk)
 
@@ -150,23 +169,34 @@ def test_selector_returns_exact_regular_price_without_subject_dependency() -> No
     assert result["entry"]["subjects"] == ["math", "physics", "informatics", "russian", "ai"]
 
 
-def test_selector_returns_only_current_unpk_online_price() -> None:
-    result = select_price(_catalog(), brand="УНПК", grade=9, subject="математика", format="онлайн", period="год")
+def test_selector_requires_schedule_when_two_current_unpk_prices_match(monkeypatch) -> None:
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-08-13")
+    result = select_price(_current_catalog(), brand="УНПК", grade=9, subject="математика", format="онлайн", period="год")
+
+    assert result["status"] == "needs_slot"
+    assert result["missing_slots"] == ["schedule"]
+
+
+def test_selector_can_pick_unpk_weekday_price_by_subject(monkeypatch) -> None:
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-08-13")
+    result = select_price(
+        _current_catalog(),
+        brand="УНПК",
+        grade=9,
+        subject="информатика",
+        format="онлайн",
+        period="год",
+        schedule="будни",
+    )
 
     assert result["status"] == "exact"
-    assert result["entry"]["amount"] == 59000
-    assert result["entry"]["schedule"] == "weekend"
+    assert result["entry"]["amount"] == 69900
 
 
-def test_selector_can_pick_unpk_weekday_price_by_subject() -> None:
-    result = select_price(_catalog(), brand="УНПК", grade=9, subject="информатика", format="онлайн", period="год")
-
-    assert result["status"] == "not_found"
-
-
-def test_selector_respects_explicit_unpk_weekday_schedule() -> None:
+def test_selector_respects_explicit_unpk_weekday_schedule(monkeypatch) -> None:
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-08-13")
     result = select_price(
-        _catalog(),
+        _current_catalog(),
         brand="УНПК",
         grade=9,
         subject="математика",
@@ -175,7 +205,8 @@ def test_selector_respects_explicit_unpk_weekday_schedule() -> None:
         schedule="будни",
     )
 
-    assert result["status"] == "not_found"
+    assert result["status"] == "exact"
+    assert result["entry"]["amount"] == 69900
 
 
 def test_catalog_never_resurrects_disallowed_or_expired_fact(monkeypatch) -> None:
@@ -313,7 +344,8 @@ def test_fact_retrieval_clean_defer_is_enabled_by_pilot_profile(monkeypatch) -> 
 
 
 def test_fact_retrieval_clean_defer_keeps_valid_price_facts(monkeypatch) -> None:
-    facts = _facts()
+    facts = _current_facts()
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-08-13")
     query = "УНПК онлайн, математика 5 класс по выходным, семестр сколько?"
 
     monkeypatch.setenv("TELEGRAM_PRICE_AXES_SELECTOR", "1")

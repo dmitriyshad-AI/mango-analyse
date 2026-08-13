@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = ROOT / "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources"
+CURRENT_SOURCE_ROOT = ROOT / "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources"
 RELEASE_ROOT = ROOT / "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1"
 BOT_PACK = ROOT / "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_bot_pack"
 
@@ -64,15 +65,15 @@ def test_pinned_release_and_bot_pack_contain_safe_podlipki_facts() -> None:
     assert "114 000 ₽" not in camp_gold["gold_answer_example"]
 
 
-def test_rebuild_preserves_scope_axes_and_owner_source(tmp_path: Path) -> None:
+def test_current_rebuild_retires_podlipki_sales_but_preserves_owner_source(tmp_path: Path) -> None:
     release = tmp_path / "release"
     handoff = tmp_path / "handoff"
     subprocess.run(
         [
             sys.executable,
             str(ROOT / "scripts/build_kb_release_v6_1_team_answers.py"),
-            "--source-root", str(SOURCE_ROOT),
-            "--source-out", str(SOURCE_ROOT),
+            "--source-root", str(CURRENT_SOURCE_ROOT),
+            "--source-out", str(CURRENT_SOURCE_ROOT),
             "--run-id", "podlipki_rebuild_test",
             "--release-out", str(release),
             "--handoff-out", str(handoff),
@@ -86,9 +87,12 @@ def test_rebuild_preserves_scope_axes_and_owner_source(tmp_path: Path) -> None:
         text=True,
     )
     facts = _facts(release / "facts_registry.jsonl")
-    _assert_podlipki_release(facts)
-    by_key = {(str(fact.get("brand") or ""), str(fact.get("fact_key") or "")): fact for fact in facts}
-    assert by_key[("unpk", "lvsh_mendeleevo_2026.location.name")]["venue"] == "lvsh_mendeleevo"
+    assert not [
+        fact
+        for fact in facts
+        if str(fact.get("fact_key") or "").startswith("lvsh_podlipki_2026.")
+        and fact.get("allowed_for_client_answer") is True
+    ]
     sources = json.loads((release / "source_registry.json").read_text(encoding="utf-8"))["items"]
     source = next(item for item in sources if item.get("source_id") == "owner_google_doc:podlipki_2026")
     assert source["url"].endswith("tab=t.gnwj6o2a1spz")

@@ -1152,7 +1152,9 @@ class AmoWappiDraftLoop:
         # the seven names above without misrepresenting what happened), plus
         # identity_conflict for a contact_id change on an already-paired chat (a
         # widget candidate whose contact disagrees with the persisted pair) -- kept
-        # distinct from pair_missing because a conflict is not an absent pair.
+        # distinct from pair_missing because a conflict is not an absent pair, plus
+        # model_unavailable for a provider generation failure that must be retried
+        # next cycle instead of being written to AMO as a draft.
         message_outcomes: dict[str, str] = {}
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
@@ -1381,6 +1383,33 @@ class AmoWappiDraftLoop:
         route = str(getattr(result, "route", "") or "")
         safety_flags = tuple(str(item) for item in (getattr(result, "safety_flags", ()) or ()))
         draft_text = str(getattr(result, "draft_text", "") or "")
+        result_metadata = getattr(result, "metadata", {})
+        direct_metadata = result_metadata.get("direct_path") if isinstance(result_metadata, Mapping) else None
+        provider_failed = (
+            not manual_review_required
+            and isinstance(direct_metadata, Mapping)
+            and direct_metadata.get("text_composition_source") == "provider_runtime_fallback"
+        )
+        if provider_failed:
+            self.journal.append(
+                {
+                    **_message_event("draft_generation_failed", inbound_new[-1], status="retryable"),
+                    "lead_id": pair.lead_id,
+                    "contact_id": pair.contact_id,
+                    "brand": brand,
+                    "route": route,
+                    "error": "provider_generation_failed",
+                }
+            )
+            message_outcomes.update((item.message_id, "model_unavailable") for item in inbound_new)
+            if not dry_run and too_old:
+                self.state.save()
+            return {
+                "processed": 0,
+                "skipped": len(inbound_new) + skipped_before,
+                "bot_calls": bot_call_count,
+                "message_outcomes": message_outcomes,
+            }
         if not dry_run and not manual_review_required and _memory_provenance_enabled():
             memory_source = (
                 context.get("dialogue_memory_state")

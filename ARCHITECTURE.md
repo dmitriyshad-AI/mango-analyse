@@ -1,6 +1,6 @@
 # Архитектура Mango
 
-## Живой путь черновика
+## Живые пути
 
 ```text
 Wappi
@@ -10,6 +10,13 @@ Wappi
   -> subscription_llm_parts/direct_path.py
   -> subscription_llm_parts/post_layers.py
   -> черновик-заметка в AMO
+
+Telegram Bot API
+  -> scripts/run_telegram_ai_agent.py
+  -> build_pilot_context_payload()
+  -> SubscriptionLlmDraftProvider.build_draft()
+  -> тот же direct_path + post_layers
+  -> ответ клиенту только при route=bot_answer_self_for_pilot и gate=pass
 ```
 
 `src/mango_mvp/channels/pilot_profile_runtime.py::current_draft_path()` возвращает
@@ -59,6 +66,8 @@ Wappi
 5. `manager_only` не повышается последующим слоем.
 6. Wappi-контур создаёт только менеджерский черновик и не отправляет ответ
    клиенту.
+7. Telegram-транспорт не классифицирует смысл повторно и не отправляет клиенту
+   `manager_only`, `blocked`, ошибку провайдера или текст, не прошедший gate.
 
 Текущая база знаний:
 

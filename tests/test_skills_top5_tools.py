@@ -313,6 +313,23 @@ def test_live_truth_rejects_removed_public_bot_from_old_worktree(tmp_path: Path)
     assert snapshot.processes[0].warnings[0] == "forbidden_process marker=run_telegram_public_pilot_bots.py"
 
 
+def test_live_truth_recognizes_thin_telegram_ai_agent(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(live_truth, "_git_value", lambda *_args: "abc")
+    process = ProcessInfo(pid=45, ppid=1, command="python3 scripts/run_telegram_ai_agent.py --brand foton")
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=tmp_path,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: tmp_path,
+        process_started_reader=_fixed_process_start,
+    )
+
+    assert snapshot.status == "PASS"
+    assert snapshot.processes[0].kind == "run_telegram_ai_agent.py"
+
+
 def test_live_truth_uses_process_cwd_for_relative_live_command(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     live = tmp_path / "live"

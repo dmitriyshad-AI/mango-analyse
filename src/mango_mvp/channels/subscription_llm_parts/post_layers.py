@@ -3782,16 +3782,9 @@ def apply_semantic_output_verifier(
                 verifier_meta["finding_codes"] = []
                 verifier_meta["action"] = "pass_after_regen"
                 verifier_meta["fallback_reason"] = "regenerated"
-                route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
+                route = result.route
                 verifier_meta["route_after"] = route
-                flags = result.safety_flags
-                checklist = result.manager_checklist
-                if route != result.route:
-                    flags = tuple(dict.fromkeys([*flags, "semantic_output_verifier_regenerated_for_manager"]))
-                    checklist = tuple(
-                        dict.fromkeys([*checklist, "Смысловой верификатор смягчил текст: оставить как менеджерский черновик."])
-                    )
-                return replace(result, route=route, draft_text=regen_text, safety_flags=flags, manager_checklist=checklist, metadata=metadata)
+                return replace(result, draft_text=regen_text, metadata=metadata)
 
     if needs_regen:
         verifier_meta["fallback_reason"] = SEMANTIC_VERIFIER_DOWNGRADE_REASON

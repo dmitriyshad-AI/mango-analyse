@@ -5,7 +5,7 @@ source:
   working_tree_task: 2026-08-05_TZ_REFRESH_CURRENT_KB_EXPIRED_FACTS.md
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
   snapshot_rows: 692
-  snapshot_sha256: 9708b7127aa181bd6d142d738af594a8be2105b849b9efcbd024a86822437c52
+  snapshot_sha256: 864cc5d9833f8250612fd01ed90f8c9b003b8deb566eaf33c5e92b82cf6f8617
   denominator: all_snapshot_rows
   node_kind_counts:
     marker_helper_call: 113
@@ -22,7 +22,7 @@ source:
     re.sub: 22
   text_table_rows: 126
   text_table_literal_strings: 1252
-  text_table_cyrillic_strings: 755
+  text_table_cyrillic_strings: 756
   text_tables_ge8_cyrillic: 29
   cyrillic_elements_in_ge8_tables: 656
   marker_helper_budget_ceiling: 155
@@ -464,7 +464,7 @@ rows:
   adr003:282d9ec0dee6119444513573:
   - 1_model_owned_semantics
   - legacy_model_owned_semantics
-  adr003:288c14a1396f4b963fc27c42:
+  adr003:7e2547780aec0aa2b396c4e2:
   - 2_verification
   - internal_metadata_leak_floor
   adr003:28ba90571628e38f7d9f1b34:
@@ -794,7 +794,7 @@ rows:
   adr003:4d8627b91b5ffcc252d3ce00:
   - 2_verification
   - output_claim_pii_floor
-  adr003:4f1051c8fdcdb2790355df74:
+  adr003:361a023e00cf7bf8428129ae:
   - 2_verification
   - internal_metadata_leak_floor
   adr003:4f2e6df01b647813c4669e2c:
@@ -839,7 +839,7 @@ rows:
   adr003:52ccb6e7935e6793a2e657e7:
   - 2_verification
   - fact_answer_verification_floor
-  adr003:52f286fd749c3ff164a73065:
+  adr003:1839804517678998b31c8ebf:
   - 2_verification
   - internal_metadata_leak_floor
   adr003:52f4a6b0ba0ea1c1600cd11f:
@@ -2165,7 +2165,7 @@ rows:
   adr003:f3b1dd9680a3c591584669af:
   - 2_verification
   - fact_output_verification_floor
-  adr003:f4469e2bd13372fa792dfe87:
+  adr003:c8ed6293aec1ddc8f620fc0c:
   - 2_verification
   - internal_metadata_leak_floor
   adr003:f4bd618f1e64b05e2b6a69d2:

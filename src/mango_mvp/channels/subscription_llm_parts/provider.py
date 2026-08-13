@@ -786,7 +786,10 @@ class SubscriptionLlmDraftProvider:
                     "is_manager_deferral": True,
                 }
             )
-            result = safe_fallback_draft(reason="codex_binary_not_found", metadata={"direct_path": direct_meta, "codex_bin": self.codex_bin})
+            result = safe_fallback_draft(
+                reason="codex_binary_not_found",
+                metadata={"direct_path": direct_meta, "codex_bin": self.codex_bin},
+            )
         except Exception as exc:  # noqa: BLE001
             direct_meta.update(
                 {
@@ -796,7 +799,10 @@ class SubscriptionLlmDraftProvider:
                     "is_manager_deferral": True,
                 }
             )
-            result = safe_fallback_draft(reason="direct_path_error", metadata={"direct_path": direct_meta, "last_error": str(exc)[:400]})
+            result = safe_fallback_draft(
+                reason="direct_path_error",
+                metadata={"direct_path": direct_meta, "last_error": str(exc)[:400]},
+            )
         else:
             result = _direct_path_prepare_model_result(result)
             result = _direct_path_merge_metadata(result, direct_meta)

@@ -186,6 +186,14 @@
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
     "qualname": "<module>",
+    "target": "INTERNAL_SERVICE_MARKER_RE",
+    "pattern_sha256": "a280c55ac5f65447cc277fa326ce81d00f2f8e75e931e247eb7873825194d4ff",
+    "flags": "re.I | re.M",
+    "pattern_preview": "\\[[^\\]\\n]{0,220}?(?:\\bsource(?:_id)?\\s*[:=]|\\bfreshness\\s*[:=]|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]"
+  },
+  {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
+    "qualname": "<module>",
     "target": "INTERNAL_SAFE_VARIANT_RE",
     "pattern_sha256": "64ec1ac20e8462f89f8a794649589f9f2cbe8daae24d133d72c5bdc2dae8c483",
     "flags": "re.I | re.S",
@@ -682,18 +690,10 @@
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
     "qualname": "<module>",
-    "target": "INTERNAL_SERVICE_MARKER_RE",
-    "pattern_sha256": "3eac63d6ea2058259f919173f8814d04104044f20e6ab121ee66f013ee68b180",
-    "flags": "re.I",
-    "pattern_preview": "\\[[^\\]\\n]{0,220}?(?:\\bsource(?:_id)?\\s*[:=]|\\bfreshness\\s*[:=]|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]"
-  },
-  {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
-    "qualname": "<module>",
     "target": "INTERNAL_SERVICE_TOKEN_RE",
-    "pattern_sha256": "b5df692cafe0119141eec2672e62255cbd80deda89dc9c1b6c280112924987c8",
+    "pattern_sha256": "78cc91984b6c29ecf523553e2b588811cfd8af35c14aff8381c8d25734082ab4",
     "flags": "re.I",
-    "pattern_preview": "\\b(?:source|source_id|fact_id|trace_id|freshness)\\s*[:=]\\s*[^\\s;\\],.]+|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-"
+    "pattern_preview": "\\b(?:source|source_id|fact_id|trace_id|internal_trace_id|freshness|model)\\s*[:=]\\s*[^\\s;\\],]+|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",

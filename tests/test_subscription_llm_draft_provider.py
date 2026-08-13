@@ -525,6 +525,19 @@ def test_draft_text_strips_kb_source_and_freshness_metadata() -> None:
     assert "kc_chunk:" not in strip_internal_service_markers("Ответ kc_chunk:safe_template")
 
 
+@pytest.mark.parametrize(
+    "leaked",
+    (
+        "DEBUG: route=bot_answer_self_for_pilot",
+        '{"safety_flags":["no_auto_send"],"route":"manager_only"}',
+        "Ответ internal_trace_id=run-1 model=gpt-5.5",
+    ),
+)
+def test_machine_runtime_traces_never_remain_in_client_text(leaked: str) -> None:
+    assert draft_has_internal_service_markers(leaked)
+    assert not any(token in strip_internal_service_markers(leaked) for token in ("DEBUG:", "safety_flags", "internal_trace_id", "model="))
+
+
 def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() -> None:
     assert (
         strip_internal_service_markers('Фотон: черновик для ситуации «возражение о стоимости курса»: Это отдельные организации.')
@@ -2823,7 +2836,7 @@ def test_semantic_output_verifier_regen_once_then_full_gate_runs_with_context() 
     assert "brand_leak" in {item["code"] for item in gated.metadata["authoritative_output_gate"]["findings"]}
 
 
-def test_semantic_output_verifier_regens_autonomous_text_but_keeps_manager_route() -> None:
+def test_semantic_output_verifier_regens_and_rechecks_without_lowering_route() -> None:
     base = _semantic_verifier_base_result("Обычная группа — это базовый уровень.", route="bot_answer_self_for_pilot")
     verifier_calls = 0
 
@@ -2849,8 +2862,8 @@ def test_semantic_output_verifier_regens_autonomous_text_but_keeps_manager_route
     assert verifier_calls == 2
     assert checked.metadata["semantic_output_verifier"]["regen_attempted"] is True
     assert checked.metadata["semantic_output_verifier"]["regen_accepted"] is True
-    assert checked.route == "draft_for_manager"
-    assert gated.route == "draft_for_manager"
+    assert checked.route == "bot_answer_self_for_pilot"
+    assert gated.route == "bot_answer_self_for_pilot"
     assert gated.draft_text == "Заочно не буду обещать уровень: менеджер поможет подобрать подходящую группу."
 
 

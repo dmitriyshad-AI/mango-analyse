@@ -12,13 +12,15 @@ SAFE_FALLBACK_DRAFT_TEXT = "Чтобы не ошибиться, передам �
 
 
 INTERNAL_SERVICE_MARKER_RE = re.compile(
-    r"\[[^\]\n]{0,220}?(?:\bsource(?:_id)?\s*[:=]|\bfreshness\s*[:=]|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+|kb_release_[A-Za-z0-9_\-]+|product_data/[^\]\s]+|/Users/[^\]\s]+)[^\]\n]{0,260}\]\s*",
-    re.I,
+    r"\[[^\]\n]{0,220}?(?:\bsource(?:_id)?\s*[:=]|\bfreshness\s*[:=]|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+|kb_release_[A-Za-z0-9_\-]+|product_data/[^\]\s]+|/Users/[^\]\s]+)[^\]\n]{0,260}\]\s*"
+    r"|^\s*(?:DEBUG:\s*route\s*=.*|\{[^\n]{0,400}\"safety_flags\"[^\n]{0,400}\}|"
+    r"(?:manager_checklist|provider_error|safety_flags|internal_trace_id)\s*[:=].*|менеджеру\s*:.*)\s*$",
+    re.I | re.M,
 )
 
 
 INTERNAL_SERVICE_TOKEN_RE = re.compile(
-    r"\b(?:source|source_id|fact_id|trace_id|freshness)\s*[:=]\s*[^\s;\],.]+|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+|kb_release_[A-Za-z0-9_\-]+|product_data/[^\s;\],.]+|/Users/[^\s;\],.]+",
+    r"\b(?:source|source_id|fact_id|trace_id|internal_trace_id|freshness|model)\s*[:=]\s*[^\s;\],]+|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+|kb_release_[A-Za-z0-9_\-]+|product_data/[^\s;\],.]+|/Users/[^\s;\],.]+",
     re.I,
 )
 

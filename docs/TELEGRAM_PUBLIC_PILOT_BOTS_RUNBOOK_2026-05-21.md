@@ -1,5 +1,9 @@
 # Telegram public pilot bots, 2026-05-21
 
+> **АРХИВ. НЕ ВЫПОЛНЯТЬ КОМАНДЫ НИЖЕ.** Старый runner удалён и запрещён
+> решением D-116. Актуальный запуск выполняется только через
+> `scripts/run_telegram_ai_agent.py --brand foton|unpk` из чистого `main`.
+
 ## Что это
 
 Локальный запуск двух Telegram-ботов:

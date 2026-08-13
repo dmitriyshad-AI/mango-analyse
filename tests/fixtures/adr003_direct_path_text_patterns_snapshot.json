@@ -545,7 +545,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "631e9824a28ec98329b67623496fdd0549771161222042d8cd0fce712dc4fd7b",
     "args_preview": "(\"очно\", \"офлайн\")",
-    "lineno": 4046,
+    "lineno": 4041,
     "col_offset": 37,
     "row_id": "adr003:afe47f9d4028dce77085f38f"
   },
@@ -765,7 +765,7 @@
     "symbol": "has_any_marker",
     "args_sha256": "aaf05c2082d6238e85a6996f00e2d3fb22fbfa88b3b4005a1a536b4c55e7a5ea",
     "args_preview": "(\"стоим\", \"цена\", \"цену\", \"прайс\", \"руб\", \"почем\", \"почём\")",
-    "lineno": 4147,
+    "lineno": 4142,
     "col_offset": 56,
     "row_id": "adr003:8b2b324205cda29c03f60552"
   },
@@ -1084,7 +1084,7 @@
     "symbol": "has_marker",
     "args_sha256": "2ee9e615eb08fef587d8f5b40eba573ba0988e3e1903a747d8c58dd4facf7ae3",
     "args_preview": "\"или\"",
-    "lineno": 4046,
+    "lineno": 4041,
     "col_offset": 93,
     "row_id": "adr003:86875486e9e7557e10e81a57"
   },
@@ -1216,7 +1216,7 @@
     "symbol": "has_marker",
     "args_sha256": "71140739c6b136ef6dd73bce96c2681fe4f0f125a0011c50913c262e440a3ef1",
     "args_preview": "\"процент\"",
-    "lineno": 4147,
+    "lineno": 4142,
     "col_offset": 7,
     "row_id": "adr003:bbe50536dd1340da8e3c292a"
   },
@@ -1381,7 +1381,7 @@
     "value_preview": "frozenset({\"live_availability\", \"schedule\", \"address\", \"camp\", \"price_fix\", \"off_topic\", \"other\"})",
     "literal_string_count": 7,
     "cyrillic_string_count": 0,
-    "lineno": 1227,
+    "lineno": 1233,
     "col_offset": 0,
     "row_id": "adr003:0a1c5936825ef07941fdd128"
   },
@@ -1490,19 +1490,6 @@
     "row_id": "adr003:1011bdbc7b7f0393f73dc339"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "INTERNAL_SERVICE_MARKER_RE",
-    "value_sha256": "b8c7d9b2aee3f52547a536d26bc2ce2d2e7a22a319d9436249fe0f021e13dc2b",
-    "value_preview": "re.compile(\n    r\"\\[[^\\]\\n]{0,220}?(?:\\bsource(?:_id)?\\s*[:=]|\\bfreshness\\s*[:=]|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]+|product_data/[^\\]\\s]+|/Users/[^\\]\\s]+)[^\\]\\n]{0,260}\\]\\s*\",\n",
-    "literal_string_count": 1,
-    "cyrillic_string_count": 0,
-    "lineno": 14,
-    "col_offset": 0,
-    "row_id": "adr003:f4469e2bd13372fa792dfe87"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "<module>",
     "node_kind": "text_table",
@@ -1602,7 +1589,7 @@
     "value_preview": "\"semantic_frame_manager_action_gate_v1_2026_07_01\"",
     "literal_string_count": 1,
     "cyrillic_string_count": 0,
-    "lineno": 1645,
+    "lineno": 1651,
     "col_offset": 0,
     "row_id": "adr003:23dc3075a26b52951b057773"
   },
@@ -1615,7 +1602,7 @@
     "value_preview": "0.8",
     "literal_string_count": 0,
     "cyrillic_string_count": 0,
-    "lineno": 1670,
+    "lineno": 1676,
     "col_offset": 0,
     "row_id": "adr003:84bc611e6cd64705f32dfdec"
   },
@@ -1628,7 +1615,7 @@
     "value_preview": "{\"closing\", \"post_payment\", \"support\"}",
     "literal_string_count": 3,
     "cyrillic_string_count": 0,
-    "lineno": 1671,
+    "lineno": 1677,
     "col_offset": 0,
     "row_id": "adr003:93e0fd5c2a36c39b671572af"
   },
@@ -1641,7 +1628,7 @@
     "value_preview": "{\"paid\", \"dispute\"}",
     "literal_string_count": 2,
     "cyrillic_string_count": 0,
-    "lineno": 1672,
+    "lineno": 1678,
     "col_offset": 0,
     "row_id": "adr003:64e979843e63dc607fc5e0e8"
   },
@@ -1698,19 +1685,6 @@
     "row_id": "adr003:b2a198fad90179a103e379f5"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
-    "qualname": "<module>",
-    "node_kind": "text_table",
-    "symbol": "INTERNAL_SERVICE_TOKEN_RE",
-    "value_sha256": "68ba82f1660e87b03c96e6341d5b5a02806fb4b6effad4fb0762132a6db6afee",
-    "value_preview": "re.compile(\n    r\"\\b(?:source|source_id|fact_id|trace_id|freshness)\\s*[:=]\\s*[^\\s;\\],.]+|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]+|product_data/[^\\s;\\],.]+|/Users/[^\\s;\\],.]+\",\n    re",
-    "literal_string_count": 1,
-    "cyrillic_string_count": 0,
-    "lineno": 20,
-    "col_offset": 0,
-    "row_id": "adr003:4f1051c8fdcdb2790355df74"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "<module>",
     "node_kind": "text_table",
@@ -1722,6 +1696,19 @@
     "lineno": 204,
     "col_offset": 0,
     "row_id": "adr003:5c13ec595e084a60384b5ff8"
+  },
+  {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
+    "qualname": "<module>",
+    "node_kind": "text_table",
+    "symbol": "INTERNAL_SERVICE_TOKEN_RE",
+    "value_sha256": "999de0fb7f1f07cddf908c3504e0efe26719d9e4c2df0d5e7e71693b5e27b791",
+    "value_preview": "re.compile(\n    r\"\\b(?:source|source_id|fact_id|trace_id|internal_trace_id|freshness|model)\\s*[:=]\\s*[^\\s;\\],]+|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]+|product_data/[^\\s;\\],.]+|/Use",
+    "literal_string_count": 1,
+    "cyrillic_string_count": 0,
+    "lineno": 22,
+    "col_offset": 0,
+    "row_id": "adr003:361a023e00cf7bf8428129ae"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -1995,6 +1982,19 @@
     "lineno": 137,
     "col_offset": 0,
     "row_id": "adr003:59e10dc81868cb504bc11eca"
+  },
+  {
+    "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
+    "qualname": "<module>",
+    "node_kind": "text_table",
+    "symbol": "INTERNAL_SERVICE_MARKER_RE",
+    "value_sha256": "1aa4912a2af863bc97b86cf6ced4077c9c4315f3fa8668e36b811cc8b243d1cf",
+    "value_preview": "re.compile(\n    r\"\\[[^\\]\\n]{0,220}?(?:\\bsource(?:_id)?\\s*[:=]|\\bfreshness\\s*[:=]|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]+|product_data/[^\\]\\s]+|/Users/[^\\]\\s]+)[^\\]\\n]{0,260}\\]\\s*\"\n ",
+    "literal_string_count": 1,
+    "cyrillic_string_count": 1,
+    "lineno": 14,
+    "col_offset": 0,
+    "row_id": "adr003:c8ed6293aec1ddc8f620fc0c"
   },
   {
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
@@ -3124,7 +3124,7 @@
     "pattern_sha256": "7d9bfba5c375f02ee99a38273a0dcdbbbb7a99f8d461ef47f74ea116c6f8f855",
     "flags": "\"\" | re.I",
     "pattern_preview": "^\\s*клиент\\s+(?:спрашивает|уточняет|интересуется|хочет\\s+понять|просит\\s+уточнить)\\s*(?:,|:|—|-)?\\s*",
-    "lineno": 4030,
+    "lineno": 4025,
     "col_offset": 11,
     "row_id": "adr003:6059a65b88b798b763af143b"
   },
@@ -3176,7 +3176,7 @@
     "pattern_sha256": "87e6c53237aec99f08517049f5c33a02d2f014045fd84768c72ee7f0658f0d0d",
     "flags": "normalized",
     "pattern_preview": "\\bсколько\\b[^.!?\\n]{0,80}\\b(?:стоит|стоим|руб|₽)",
-    "lineno": 4151,
+    "lineno": 4146,
     "col_offset": 11,
     "row_id": "adr003:22c878b06b1534f10a67b1e7"
   },
@@ -3189,7 +3189,7 @@
     "pattern_sha256": "8c8789b6eea58f4fab3eb0f369a7cde25e7efbd52bc0d69c9a9b8bd6ba70b581",
     "flags": "normalized",
     "pattern_preview": "\\bсколько\\b[^.!?\\n]{0,80}\\b(?:выходит|плат[её]ж|в\\s+месяц|за\\s+месяц)",
-    "lineno": 4152,
+    "lineno": 4147,
     "col_offset": 11,
     "row_id": "adr003:e320e2be30a72add24b3efbe"
   },
@@ -3521,7 +3521,7 @@
     "symbol": "In",
     "expression_sha256": "e0f0998b69a356c9e94731d56c9d6f2992f87fe1c9e6992cd430612115ad09bd",
     "expression_preview": "\"очно\" in value",
-    "lineno": 4047,
+    "lineno": 4042,
     "col_offset": 12,
     "row_id": "adr003:f06a7b22b1d008d89375868a"
   },
@@ -3560,7 +3560,7 @@
     "pattern_sha256": "578a86d2167fb4c554a1ed146017e87e7819420337db6b55ec9be5a118485056",
     "flags": "\"\\n\\n\"",
     "pattern_preview": "\\n{3,}",
-    "lineno": 230,
+    "lineno": 232,
     "col_offset": 12,
     "row_id": "adr003:f1e3ecdf9dcfad0dbea0515c"
   },
@@ -3573,7 +3573,7 @@
     "pattern_sha256": "ab0c8b55b6b94b1f0481c30a8b15be44b8f87d7aab9a953e5f74349c3c5b985a",
     "flags": "r\"\\1\"",
     "pattern_preview": "\\s+([,.;:!?])",
-    "lineno": 229,
+    "lineno": 231,
     "col_offset": 12,
     "row_id": "adr003:a01f5e4b93be5affec0d4af5"
   },
@@ -3714,7 +3714,7 @@
     "pattern_sha256": "5e36ade60ccdeda1bb109d4808c5a1ff6de92f89e31be41ecb94e1442565101b",
     "flags": "\" \"",
     "pattern_preview": "[ \\t\\f\\v]+",
-    "lineno": 227,
+    "lineno": 229,
     "col_offset": 13,
     "row_id": "adr003:30baa7e988c5ab78a64e5008"
   },
@@ -4026,7 +4026,7 @@
     "pattern_sha256": "b978065658ecbb2f743c571b5be35cfb0095ad6b760c29f0d856578017e910ad",
     "flags": "low",
     "pattern_preview": "передам|верн[её]тся|ответственн|менеджер|сотрудник|сверит|проверит",
-    "lineno": 3986,
+    "lineno": 3981,
     "col_offset": 16,
     "row_id": "adr003:c1f638641977ce87cbea432d"
   },
@@ -4568,7 +4568,7 @@
     "pattern_sha256": "1ec64f8ef448e5d18a58cbffe9bfd704042d181dc5ed4f07993e10960f47b350",
     "flags": "value",
     "pattern_preview": "менеджер|преподавател|педагог|куратор|пробн",
-    "lineno": 3999,
+    "lineno": 3994,
     "col_offset": 20,
     "row_id": "adr003:70303cee0421d21367ba7658"
   },
@@ -5091,7 +5091,7 @@
     "pattern_sha256": "64ec1ac20e8462f89f8a794649589f9f2cbe8daae24d133d72c5bdc2dae8c483",
     "flags": "re.I | re.S",
     "pattern_preview": "безопасн\\w+\\s+вариант\\s*:\\s*[«\\\"](?P<text>.+?)[»\\\"]\\s*$",
-    "lineno": 84,
+    "lineno": 86,
     "col_offset": 27,
     "row_id": "adr003:b38fecca95cb7b28004a2276"
   },
@@ -5177,12 +5177,12 @@
     "node_kind": "regex_call",
     "symbol": "re.compile",
     "target": "INTERNAL_SERVICE_TOKEN_RE",
-    "pattern_sha256": "b5df692cafe0119141eec2672e62255cbd80deda89dc9c1b6c280112924987c8",
+    "pattern_sha256": "78cc91984b6c29ecf523553e2b588811cfd8af35c14aff8381c8d25734082ab4",
     "flags": "re.I",
-    "pattern_preview": "\\b(?:source|source_id|fact_id|trace_id|freshness)\\s*[:=]\\s*[^\\s;\\],.]+|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-",
-    "lineno": 20,
+    "pattern_preview": "\\b(?:source|source_id|fact_id|trace_id|internal_trace_id|freshness|model)\\s*[:=]\\s*[^\\s;\\],]+|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_",
+    "lineno": 22,
     "col_offset": 28,
-    "row_id": "adr003:52f286fd749c3ff164a73065"
+    "row_id": "adr003:1839804517678998b31c8ebf"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
@@ -5232,7 +5232,7 @@
     "pattern_sha256": "ff903294d14127e8c9ef8a32557cd6861fcce772e4c5f1476a20189b2e905af3",
     "flags": "re.I",
     "pattern_preview": "(?:автономн\\w+\\s+ответ\\s+не\\s+требуется|дополнительн\\w+\\s+ответ\\s+клиенту\\s+сейчас\\s+не\\s+нужен|если\\s+менеджер\\s+решит\\s+ответить|безопасн\\w+\\s+вариант|без\\s+с",
-    "lineno": 78,
+    "lineno": 80,
     "col_offset": 28,
     "row_id": "adr003:8565ae831669171901ab88a2"
   },
@@ -5267,7 +5267,7 @@
     "pattern_sha256": "72743bc877d98e776af3a81d539028be9034772b2f93e6492b0aca2dbb093b48",
     "flags": "",
     "pattern_preview": "(?<!\\d)\\d{5,}(?!\\d)",
-    "lineno": 1341,
+    "lineno": 1347,
     "col_offset": 29,
     "row_id": "adr003:fe78ee134a95da67e4af4d43"
   },
@@ -5316,12 +5316,12 @@
     "node_kind": "regex_call",
     "symbol": "re.compile",
     "target": "INTERNAL_SERVICE_MARKER_RE",
-    "pattern_sha256": "3eac63d6ea2058259f919173f8814d04104044f20e6ab121ee66f013ee68b180",
-    "flags": "re.I",
+    "pattern_sha256": "a280c55ac5f65447cc277fa326ce81d00f2f8e75e931e247eb7873825194d4ff",
+    "flags": "re.I | re.M",
     "pattern_preview": "\\[[^\\]\\n]{0,220}?(?:\\bsource(?:_id)?\\s*[:=]|\\bfreshness\\s*[:=]|source:[A-Za-z0-9_:\\-]+|fact:[A-Za-z0-9_:\\-]+|kc_chunk:[A-Za-z0-9_:\\-]+|kb_release_[A-Za-z0-9_\\-]",
     "lineno": 14,
     "col_offset": 29,
-    "row_id": "adr003:288c14a1396f4b963fc27c42"
+    "row_id": "adr003:7e2547780aec0aa2b396c4e2"
   },
   {
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
@@ -5506,7 +5506,7 @@
     "pattern_sha256": "d3ec60c689d4d8dcad68cce45c02ff027632da590aa2398fa19e3cd6690f5fc0",
     "flags": "re.I",
     "pattern_preview": "^\\s*(?:[^:\\n]{1,80}:\\s*)?(?:черновик\\s+)?для\\s+ситуации\\s+[«\\\"][^»\\\"\\n]{1,160}[»\\\"]\\s*:\\s*",
-    "lineno": 26,
+    "lineno": 28,
     "col_offset": 30,
     "row_id": "adr003:815de4700a0760e2686e38dd"
   },
@@ -5736,7 +5736,7 @@
     "pattern_sha256": "ce8c3f86b6aaf44bef64ce34fbbc7e085f78ade0c728a7d73e7544e2c70ba650",
     "flags": "re.I",
     "pattern_preview": "(?:нет\\s+)?client[-\\s]?safe\\s+факт[^\\n.?!]*(?:[.?!]|$)|\\bclient[-\\s]?safe\\b",
-    "lineno": 45,
+    "lineno": 47,
     "col_offset": 33,
     "row_id": "adr003:1951478c80d84b9d8db2ffde"
   },
@@ -5749,7 +5749,7 @@
     "pattern_sha256": "8253cc911b884505bcaae1a0ec6f47ada422b23dc80f89e0e7f2dbbc8fd934b2",
     "flags": "re.I",
     "pattern_preview": "(?:^|(?<=\\n)|(?<=[.?!]))\\s*(?:заменяю|переписываю|исправляю|меняю)\\s+(?:только\\s+)?(?:этот\\s+|данный\\s+)?(?:абзац|фрагмент|текст|ответ)[^:\\n]{0,160}:\\s*|(?:^|(?",
-    "lineno": 62,
+    "lineno": 64,
     "col_offset": 33,
     "row_id": "adr003:71019cd6f3fcfa32fdd60277"
   },
@@ -5762,7 +5762,7 @@
     "pattern_sha256": "d2c18edc9c21ec13e9a615e807b7f20e52b2bc7229b0d901123421d293c7ecdf",
     "flags": "re.I",
     "pattern_preview": "(?:\\bповторять\\s+(?:их\\s+)?не\\s+нужно\\b|\\bне\\s+упоминай\\w*\\b|\\bесли\\b[^.?!\\n]{0,140}\\bуже\\s+есть\\s+в\\s+диалоге\\b[^.?!\\n]{0,140})",
-    "lineno": 71,
+    "lineno": 73,
     "col_offset": 33,
     "row_id": "adr003:2ecb995eb3643a984a2b3c8d"
   },
@@ -5912,7 +5912,7 @@
     "symbol": "In",
     "expression_sha256": "a89e64fc88d1df9132dc9ab1d96d9d260365497fb2085901ee7256324e585ba5",
     "expression_preview": "'\"dialog_summary\"' in prompt_text",
-    "lineno": 1102,
+    "lineno": 1108,
     "col_offset": 35,
     "row_id": "adr003:446e1bc80a66b033e3fc48f0"
   },
@@ -5975,7 +5975,7 @@
     "pattern_sha256": "efae9ac6b3e4223bcc5532e52387c68fdcd72a4fc2c848a40eaafc75b7ca9c33",
     "flags": "re.I",
     "pattern_preview": "(?:^|(?<=[.?!\\n]))\\s*(?:лимит(?:ы)?\\s+(?:codex|кодекса|сессии|контекста)[^.?!\\n]{0,180}|(?:осталось|остаток)\\s+\\d{1,5}\\s+(?:сообщен\\w+|запрос\\w+|токен\\w+|лимит\\",
-    "lineno": 51,
+    "lineno": 53,
     "col_offset": 35,
     "row_id": "adr003:9d790e3caef9124ee7e570bd"
   },
@@ -6023,7 +6023,7 @@
     "symbol": "In",
     "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
     "expression_preview": "\"онлайн\" in value",
-    "lineno": 4047,
+    "lineno": 4042,
     "col_offset": 36,
     "row_id": "adr003:e6bc6471ea538789d599ace0"
   },
@@ -6193,7 +6193,7 @@
     "pattern_sha256": "27ff052c3242914872590a0aa4edee54d645ad0e319c5f440f8c952a77160fc1",
     "flags": "re.I",
     "pattern_preview": "^\\s*без\\s+(?:обещан\\w+|давлен\\w+)[^:\\n]{0,180}:\\s*",
-    "lineno": 32,
+    "lineno": 34,
     "col_offset": 38,
     "row_id": "adr003:141ad5a88c6bce82651a0077"
   },
@@ -6467,7 +6467,7 @@
     "pattern_sha256": "2d0b6afdf59c6f5810850db7eb22da59f0d26ca5180b3ebab2c8890a83ea343e",
     "flags": "re.I",
     "pattern_preview": "\\s*(?:по\\s+вашей\\s+ситуации\\s+лучше\\s+опираться\\s+на\\s+подтвержд[её]нные\\s+условия,\\s*)?без\\s+обещан\\w+[^:\\n]{0,120}:\\s*",
-    "lineno": 38,
+    "lineno": 40,
     "col_offset": 40,
     "row_id": "adr003:cb1e49588867a32f245c9367"
   },
@@ -6537,7 +6537,7 @@
     "symbol": "In",
     "expression_sha256": "a76ce45400964caf268a76295005eec5d788790fbe2ecb868b9c0a965641d038",
     "expression_preview": "'\"semantic_frame\"' in prompt_text",
-    "lineno": 1101,
+    "lineno": 1107,
     "col_offset": 42,
     "row_id": "adr003:7bc8d7851a0c273431584057"
   },
@@ -7071,7 +7071,7 @@
     "symbol": "In",
     "expression_sha256": "1f38d6faab66e56e71d9ed3ab0a126f1d0892090ef4315c8309f45ad4063e2d4",
     "expression_preview": "\"?\" in value",
-    "lineno": 4047,
+    "lineno": 4042,
     "col_offset": 64,
     "row_id": "adr003:f504752f5f5fdd90860c01f7"
   },
@@ -7573,7 +7573,7 @@
     "pattern_sha256": "0e5bd28434eeed608f5a74b1b1b628bd84fd7c0346867606077ec647426fdcff",
     "flags": "low",
     "pattern_preview": "справит|потян|подойдет|тяжело|посильн|влит|догонять|подберут?\\s+под\\s+реб",
-    "lineno": 3980,
+    "lineno": 3975,
     "col_offset": 7,
     "row_id": "adr003:9f7724798c2aa4eda97f97a6"
   },
@@ -7994,7 +7994,7 @@
     "symbol": "In",
     "expression_sha256": "85da6c5b69f1a4d385f117b972b04734134406cc56ad5b7251ee85816baf3036",
     "expression_preview": "\"ПРЕДЫДУЩАЯ СВОДКА\" in prompt_text",
-    "lineno": 1102,
+    "lineno": 1108,
     "col_offset": 73,
     "row_id": "adr003:5a90be63bdda3312dd0ffc57"
   },
@@ -8194,7 +8194,7 @@
     "pattern_sha256": "30db10e53359394559eab689590f5d77656ad627cd39125f959b314d4510bdfd",
     "flags": "flags",
     "pattern_preview": "high[_-]?risk|p0|refund|complaint|payment[_-]?dispute|legal|zero[_-]?collect|manager[_-]?only",
-    "lineno": 3967,
+    "lineno": 3962,
     "col_offset": 8,
     "row_id": "adr003:6d63c2e8ad825e563f896298"
   },
@@ -8220,7 +8220,7 @@
     "pattern_sha256": "d6b2fffbc6b6644aa50ae1ded67b7fa9cb0567dc2cbc0eb8f9c1ed69bfae669e",
     "flags": "normalized",
     "pattern_preview": "\\b(?:стоим\\w*|цена|цену|цены|ценой|прайс|почем|почём|руб(?:\\.|лей|ля|ль)?)\\b",
-    "lineno": 4150,
+    "lineno": 4145,
     "col_offset": 8,
     "row_id": "adr003:3b1615122afa53f1b1e61641"
   },
@@ -8389,7 +8389,7 @@
     "pattern_sha256": "4ebe01bc8abe032efe6a24dd77a6f6d693522f234bce712a79af4be0416713bf",
     "flags": "value",
     "pattern_preview": "заочно|не\\s+буду\\s+обещ|не\\s+возьмусь|лучше\\s+(?:сверить|подобрать|оценить)|стоит\\s+сверить|на\\s+пробн|без\\s+обещан|уровень\\s+лучше",
-    "lineno": 3992,
+    "lineno": 3987,
     "col_offset": 8,
     "row_id": "adr003:32a8429f5361a4570372d9b4"
   },
@@ -8437,7 +8437,7 @@
     "symbol": "In",
     "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
     "expression_preview": "\"онлайн\" in value",
-    "lineno": 4046,
+    "lineno": 4041,
     "col_offset": 9,
     "row_id": "adr003:2601a8e1f6e8a777b7cfdf3d"
   },

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from mango_mvp.channels.subscription_llm_parts.provider import safe_fallback_draft
 from mango_mvp.channels.dialogue_memory import DIALOG_SUMMARY_ROLLING_ENV, MEMORY_PROVENANCE_ENV
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AiOfficeAmoNoteClient,
@@ -2645,6 +2646,86 @@ def test_client_sends_is_technically_unreachable_across_every_branch(tmp_path: P
     }
     # Only the paired + brand-ok chat ever produces a note; a draft AMO note is not a send:
     assert len(amo.notes) == (0 if dry_run else 1)
+
+
+def test_provider_error_leaves_messages_for_the_next_cycle_instead_of_a_stub_note(tmp_path: Path) -> None:
+    """A model failure is not a draft. The first cycle must write nothing and move nothing, so the
+    second cycle retries the same message. A safety fallback without `error` is a real manager
+    draft, not a failure, and must still be written."""
+
+    class FlakyBot:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def build_draft(self, client_message: str, *, context=None):
+            self.calls += 1
+            if self.calls == 1:
+                return safe_fallback_draft(
+                    reason="timeout",
+                    metadata={"direct_path": {"text_composition_source": "provider_runtime_fallback"}},
+                )
+            return SubscriptionDraftResult(route="manager_only", draft_text="Уточню детали и вернусь с ответом.")
+
+    key = DraftLoopKey("profile-foton", "chat-1")
+    amo = FakeAmo()
+    bot = FlakyBot()
+    loop = _loop(
+        tmp_path,
+        messages=[_message("m1", text="Цена?")],
+        pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")},
+        amo=amo,
+        bot=bot,
+    )
+
+    first = loop.run_once(dry_run=False)
+
+    assert (first["processed"], first["skipped"], first["bot_calls"]) == (0, 1, 1)
+    assert first["message_outcomes"] == {"profile-foton\tchat-1\tm1": "model_unavailable"}
+    assert amo.notes == []
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state["processed"] == []
+    assert state["pending_notes"] == {}
+    assert state["dialogue_memory"] == {}
+    journal = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+    events = [json.loads(line) for line in journal.splitlines() if line.strip()]
+    assert [(item["event"], item["status"]) for item in events] == [("draft_generation_failed", "retryable")]
+    assert events[0]["error"] == "provider_generation_failed"
+    assert "Цена?" not in journal
+    assert "bot_draft_text" not in journal
+
+    second = loop.run_once(dry_run=False)
+
+    assert (second["processed"], second["bot_calls"]) == (1, 1)
+    assert bot.calls == 2
+    assert len(amo.notes) == 1
+    assert amo.notes[0]["draft_text"] == "Уточню детали и вернусь с ответом."
+
+
+def test_deterministic_guard_error_is_a_manager_draft_not_a_retry_loop(tmp_path: Path) -> None:
+    class GuardedBot:
+        def build_draft(self, client_message: str, *, context=None):
+            return SubscriptionDraftResult(
+                route="manager_only",
+                draft_text="Нужно проверить условие вручную.",
+                error="authoritative_output_gate_blocked",
+                metadata={"authoritative_output_gate": {"checked": True, "action": "downgrade_keep_text"}},
+            )
+
+    key = DraftLoopKey("profile-foton", "chat-1")
+    amo = FakeAmo()
+    loop = _loop(
+        tmp_path,
+        messages=[_message("m1", text="Цена?")],
+        pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")},
+        amo=amo,
+        bot=GuardedBot(),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["processed"] == 1
+    assert len(amo.notes) == 1
+    assert amo.notes[0]["draft_text"] == "Нужно проверить условие вручную."
 
 
 def test_wappi_and_amo_client_classes_expose_no_send_capable_method() -> None:

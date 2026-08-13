@@ -765,6 +765,7 @@ def test_controlled_worker_drains_only_target_then_becomes_idle(
         dual_transcribe_enabled=True,
         secondary_transcribe_provider="mock-secondary",
         resolve_llm_provider="none",
+        resolve_accept_score=0,
         analyze_provider="mock",
     )
     original_transcribe = TranscribeService._transcribe_file_with_meta

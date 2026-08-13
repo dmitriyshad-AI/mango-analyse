@@ -3492,13 +3492,6 @@ class TranscribeService:
                 )
             updated_payload["manager"] = manager_block
             updated_payload["client"] = client_block
-            role_mapping = dict(updated_payload.get("role_mapping") or {})
-            role_mapping.update(
-                status="unverified_after_secondary_backfill",
-                confirmed=False,
-                manager_quality_allowed=False,
-            )
-            updated_payload["role_mapping"] = role_mapping
         elif mode == "mono_or_fallback":
             full = payload.get("full")
             if not isinstance(full, dict):
@@ -3520,8 +3513,39 @@ class TranscribeService:
         else:
             raise RuntimeError(f"secondary backfill does not support payload mode={mode or 'empty'}")
 
+        updated_payload["secondary_provider"] = secondary_provider
+        updated_payload["warnings"] = self._merge_warning_lists(
+            payload.get("warnings"), warnings
+        )
+        complete = all(
+            str((updated_payload.get(slot) or {}).get("variant_b") or "").strip()
+            for slot in (("manager", "client") if mode == "stereo" else ("full",))
+        )
+        if complete:
+            configured_secondary = (
+                self._settings.secondary_transcribe_provider or ""
+            ).strip().lower()
+            primary = (self._settings.transcribe_provider or "").strip().lower()
+            if not self._settings.dual_transcribe_enabled or configured_secondary != secondary_provider or primary == secondary_provider:
+                raise RuntimeError("secondary backfill finalization requires matching dual-ASR settings")
+            original_variants = call.transcript_variants_json
+            call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
+            try:
+                finalized = self._transcribe_call(call)
+            finally:
+                call.transcript_variants_json = original_variants
+            finalized["secondary_finalized"] = True
+            return finalized
+
         if mode == "stereo":
             manager_channel = str(manager.get("physical_channel") or "left")
+            role_mapping = dict(updated_payload.get("role_mapping") or {})
+            role_mapping.update(
+                status="unverified_after_secondary_backfill",
+                confirmed=False,
+                manager_quality_allowed=False,
+            )
+            updated_payload["role_mapping"] = role_mapping
             updated_payload["dialogue_lines"] = self._neutralize_role_lines(
                 list(updated_payload.get("dialogue_lines") or []), manager_channel
             )
@@ -3538,11 +3562,6 @@ class TranscribeService:
                 call.transcript_client,
                 call.transcript_text,
             )
-        updated_payload["secondary_provider"] = secondary_provider
-        updated_payload["warnings"] = self._merge_warning_lists(
-            payload.get("warnings"),
-            warnings,
-        )
         return {
             "transcript_manager": output_manager,
             "transcript_client": output_client,
@@ -3633,6 +3652,15 @@ class TranscribeService:
             call.transcript_text = result["transcript_text"]
             call.transcript_variants_json = result.get("transcript_variants_json")
             call.transcription_status = "done"
+            if result.get("secondary_finalized"):
+                call.resolve_status = "pending"
+                call.resolve_attempts = 0
+                call.resolve_json = None
+                call.resolve_quality_score = None
+                call.analysis_status = "pending"
+                call.analyze_attempts = 0
+                call.analysis_json = None
+                call.sync_status = "pending"
             # Secondary backfill should not silently wipe downstream progress.
             if call.resolve_status in {"failed", ""} or call.resolve_status is None:
                 call.resolve_status = "pending"

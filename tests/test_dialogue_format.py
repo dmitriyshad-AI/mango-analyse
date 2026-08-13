@@ -410,31 +410,35 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertTrue(any("Менеджер (Иван): Добрый день." in line for line in lines))
         self.assertTrue(any("Клиент: Здравствуйте." in line for line in lines))
 
-    def test_secondary_backfill_preserves_existing_dialogue_lines(self) -> None:
+    def test_secondary_backfill_recomputes_stereo_final_without_extra_asr(self) -> None:
         lines = ["[00:01.0] Менеджер (Иван): Добрый день.", "[00:02.0] Клиент: Здравствуйте."]
         call = CallRecord(
             source_file="call.mp3", source_filename="call.mp3", channels=2,
             transcript_manager="Добрый день.", transcript_client="Здравствуйте.",
             transcript_text="MANAGER:\nДобрый день.\n\nCLIENT:\nЗдравствуйте.",
             transcript_variants_json=json.dumps({
-                "mode": "stereo", "dialogue_lines": lines,
-                "manager": {"physical_channel": "left", "variant_a": "Добрый день."},
-                "client": {"physical_channel": "right", "variant_a": "Здравствуйте."},
+                "mode": "stereo", "dialogue_lines": lines, "primary_provider": "mock",
+                "manager": {"physical_channel": "left", "variant_a": "Добрый день.", "variant_a_segments": []},
+                "client": {"physical_channel": "right", "variant_a": "Здравствуйте.", "variant_a_segments": []},
             }, ensure_ascii=False),
         )
-        service = TranscribeService(make_settings())
+        service = TranscribeService(replace(make_settings(), dual_transcribe_enabled=True, secondary_transcribe_provider="gigaam"))
+        confirmed = {"status":"confirmed","confirmed":True,"topology":"simple_two_party","left":"manager","right":"client","manager_quality_allowed":True,"evidence":[],"scores":{}}
         with patch("mango_mvp.services.transcribe.split_stereo_to_mono", return_value=(Path("left"), Path("right"), Path("split"))):
             with patch("mango_mvp.services.transcribe.shutil.rmtree"):
-                with patch.object(service, "_try_transcribe_file_with_meta", return_value={"text": "вариант", "segments": []}):
-                    result = service._backfill_secondary_only(call, secondary_provider="gigaam")
-        self.assertEqual(len(result["dialogue_lines"]), len(lines))
-        self.assertTrue(all("Дорожка" in line for line in result["dialogue_lines"]))
-        self.assertIsNone(result["transcript_manager"])
-        self.assertIsNone(result["transcript_client"])
-        self.assertIn("Добрый день.", result["transcript_text"])
-        self.assertIn("Здравствуйте.", result["transcript_text"])
+                with patch.object(service, "_try_transcribe_file_with_meta", side_effect=[{"text":"Giga manager","segments":[]},{"text":"Giga client","segments":[]}]) as asr:
+                    with patch.object(service, "_classify_stereo_call", side_effect=lambda *args, **kwargs: dict(confirmed)):
+                        result = service._backfill_secondary_only(call, secondary_provider="gigaam")
+        self.assertEqual(asr.call_count, 2)
+        self.assertNotIn("CHANNEL_", result["transcript_text"])
         payload = json.loads(str(result["transcript_variants_json"]))
-        self.assertEqual(payload["manager"]["variant_b_segments"], [])
+        self.assertEqual(result["transcript_manager"], payload["manager"]["final"])
+        self.assertEqual(result["transcript_client"], payload["client"]["final"])
+        self.assertIn("Giga client", result["transcript_text"])
+        self.assertEqual(payload["manager"]["variant_b"], "Giga manager")
+        self.assertEqual(payload["client"]["variant_b"], "Giga client")
+        self.assertEqual(payload["role_mapping"]["status"], "confirmed")
+        self.assertTrue(result["secondary_finalized"])
 
     def test_secondary_backfill_follows_swapped_physical_channels(self) -> None:
         call = CallRecord(
@@ -444,6 +448,7 @@ class DialogueFormatTest(unittest.TestCase):
             transcript_variants_json=json.dumps(
                 {
                     "mode": "stereo",
+                    "primary_provider": "mock",
                     "manager": {"physical_channel": "right", "variant_a": "Менеджер"},
                     "client": {"physical_channel": "left", "variant_a": "Клиент"},
                 },
@@ -462,18 +467,19 @@ class DialogueFormatTest(unittest.TestCase):
             return_value=(Path("left"), Path("right"), Path("split")),
         ):
             with patch("mango_mvp.services.transcribe.shutil.rmtree"):
-                with patch.object(
-                    self.service, "_try_transcribe_file_with_meta", side_effect=fake_asr
-                ):
-                    result = self.service._backfill_secondary_only(
+                service = TranscribeService(replace(make_settings(), dual_transcribe_enabled=True, secondary_transcribe_provider="gigaam"))
+                swapped = {"status":"confirmed","confirmed":True,"topology":"simple_two_party","left":"client","right":"manager","manager_quality_allowed":True,"evidence":[],"scores":{}}
+                with patch.object(service, "_try_transcribe_file_with_meta", side_effect=fake_asr):
+                  with patch.object(service, "_classify_stereo_call", side_effect=lambda *args, **kwargs: dict(swapped)):
+                    result = service._backfill_secondary_only(
                         call, secondary_provider="gigaam"
                     )
         payload = json.loads(str(result["transcript_variants_json"]))
         self.assertEqual(seen, [Path("right"), Path("left")])
         self.assertEqual(payload["manager"]["variant_b"], "right")
         self.assertEqual(payload["client"]["variant_b"], "left")
-        self.assertFalse(payload["role_mapping"]["manager_quality_allowed"])
-        self.assertEqual(payload["role_mapping"]["status"], "unverified_after_secondary_backfill")
+        self.assertTrue(payload["role_mapping"]["manager_quality_allowed"])
+        self.assertEqual(payload["role_mapping"]["status"], "confirmed")
 
         malformed = json.loads(call.transcript_variants_json)
         malformed["client"]["physical_channel"] = "right"
@@ -485,6 +491,43 @@ class DialogueFormatTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "one unique left and right"):
                 self.service._backfill_secondary_only(call, secondary_provider="gigaam")
+
+    def test_secondary_backfill_recomputes_mono_final_without_extra_asr(self) -> None:
+        call = CallRecord(
+            source_file="call.mp3", source_filename="call.mp3", channels=1,
+            transcript_text="OLD",
+            transcript_variants_json=json.dumps({
+                "mode":"mono_or_fallback", "primary_provider":"mock",
+                "full":{"physical_channel":"mono", "variant_a":"Whisper text", "variant_a_segments":[]},
+            }),
+        )
+        service = TranscribeService(replace(make_settings(), dual_transcribe_enabled=True, secondary_transcribe_provider="gigaam"))
+        with patch.object(service, "_try_transcribe_file_with_meta", return_value={"text":"GigaAM text","segments":[]}) as asr:
+            result = service._backfill_secondary_only(call, secondary_provider="gigaam")
+        payload = json.loads(str(result["transcript_variants_json"]))
+        self.assertEqual(asr.call_count, 1)
+        self.assertEqual(payload["full"]["variant_b"], "GigaAM text")
+        self.assertEqual(result["transcript_text"], payload["full"]["final"])
+        self.assertNotEqual(result["transcript_text"], "OLD")
+
+    def test_partial_secondary_backfill_stays_unverified(self) -> None:
+        call = CallRecord(
+            source_file="call.mp3", source_filename="call.mp3", channels=2,
+            transcript_variants_json=json.dumps({
+                "mode":"stereo", "primary_provider":"mock",
+                "manager":{"physical_channel":"left", "variant_a":"manager"},
+                "client":{"physical_channel":"right", "variant_a":"client"},
+            }),
+        )
+        service = TranscribeService(replace(make_settings(), dual_transcribe_enabled=True, secondary_transcribe_provider="gigaam"))
+        with patch("mango_mvp.services.transcribe.split_stereo_to_mono", return_value=(Path("left"), Path("right"), Path("split"))):
+          with patch("mango_mvp.services.transcribe.shutil.rmtree"):
+            with patch.object(service, "_try_transcribe_file_with_meta", side_effect=[{"text":"manager B","segments":[]},{"text":"","error":"empty"}]):
+                result = service._backfill_secondary_only(call, secondary_provider="gigaam")
+        payload = json.loads(str(result["transcript_variants_json"]))
+        self.assertNotIn("secondary_finalized", result)
+        self.assertEqual(payload["role_mapping"]["status"], "unverified_after_secondary_backfill")
+        self.assertIn("CHANNEL_LEFT", result["transcript_text"])
 
     def test_echo_fallback_keeps_complex_topology_and_blocks_roles(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_dialogue_echo_") as td:

@@ -529,6 +529,7 @@ def update_dialogue_memory_after_answer(
     dialog_summary: str | None = None,
     memory_llm_fn: Callable[[str], object] | None = None,
     context: Mapping[str, Any] | None = None,
+    answer_is_substantive: bool = True,
 ) -> DialogueMemory:
     current = memory if isinstance(memory, DialogueMemory) else dialogue_memory_from_mapping(memory)
     answer = _clean(answer_text)
@@ -569,13 +570,16 @@ def update_dialogue_memory_after_answer(
     answered = current.answered_questions
     open_question = current.open_question
     unanswered = tuple(current.unanswered_questions)
-    if open_question.text and _answer_closes_question(answer, open_question.kind):
+    if answer_is_substantive and open_question.text and _answer_closes_question(answer, open_question.kind):
         answered = (*answered, open_question.text)[-8:]
         open_question = DialogueQuestion(open_question.text, open_question.kind, True)
         unanswered = tuple(item for item in unanswered if item != current.open_question.text)
     base_handoff = "none" if latch_released else current.handoff_state
     handoff = "required" if p0_latch.active or risks or route == "manager_only" else base_handoff
-    safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
+    safe_parts = (
+        tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
+        if answer_is_substantive else current.safe_answered_parts
+    )
     pending_actions = _pending_manager_actions(commitments)
     proactive_state = _proactive_state_after_answer(current.proactive_state, answer)
     updated = DialogueMemory(

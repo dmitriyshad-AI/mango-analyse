@@ -226,6 +226,12 @@ def test_direct_path_wappi_recent_messages_keeps_summary_and_15_raw_messages() -
     assert recent[0] == older_summary
     assert recent[1:] == raw_messages[-15:]
     assert _direct_path_recent_messages({"client_identity": {"channel": "telegram"}, "recent_messages": raw_messages}, limit=8) == raw_messages[-8:]
+    telegram_recent = _direct_path_recent_messages(
+        {"client_identity": {"channel": "telegram"}, "recent_messages": (older_summary, *raw_messages)},
+        limit=6,
+    )
+    assert telegram_recent[0] == older_summary
+    assert telegram_recent[1:] == raw_messages[-6:]
 
 
 def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path: Path, monkeypatch) -> None:

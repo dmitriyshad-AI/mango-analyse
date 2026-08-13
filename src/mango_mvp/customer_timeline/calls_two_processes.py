@@ -193,6 +193,7 @@ class CallsTwoProcessesConfig:
     pending_recording_retry_hours: int = 72
     recording_set_stabilization_minutes: int = 15
     api_window_hours: int = 12
+    capture_run_span_hours: int = 0
     min_free_gib: float = 40.0
     stale_lock_seconds: int = 30 * 60
     stage_limit: int = 20
@@ -260,6 +261,7 @@ class CallsTwoProcessesConfig:
                 payload.get("recording_set_stabilization_minutes", 15)
             ),
             api_window_hours=int(payload.get("api_window_hours", 12)),
+            capture_run_span_hours=int(payload.get("capture_run_span_hours", 0)),
             min_free_gib=float(payload.get("min_free_gib", 40.0)),
             stale_lock_seconds=int(payload.get("stale_lock_seconds", 30 * 60)),
             stage_limit=int(payload.get("stage_limit", 20)),
@@ -364,6 +366,8 @@ class CallsTwoProcessesConfig:
             raise ValueError("freshness_max_age_minutes must be at least 15")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
             raise ValueError("api_window_hours must be between 1 and 24")
+        if self.capture_run_span_hours < 0 or self.capture_run_span_hours > 24:
+            raise ValueError("capture_run_span_hours must be between 0 and 24")
         if self.pending_recording_retry_hours < 1:
             raise ValueError("pending_recording_retry_hours must be positive")
         if self.recording_set_stabilization_minutes < 0:
@@ -6579,6 +6583,15 @@ def resolve_capture_window(
             start = end - timedelta(hours=config.first_lookback_hours)
     start = _mango_wire_datetime(start)
     end = _mango_wire_datetime(end)
+    if since is None and until is None and config.capture_run_span_hours:
+        # Scheduled historical catch-up must yield certified manifest prefixes
+        # often enough for the downstream ASR worker to make progress.  API
+        # enumeration within this outer slice remains chunked separately by
+        # api_window_hours.
+        end = min(
+            end,
+            start + timedelta(hours=config.capture_run_span_hours),
+        )
     if end <= start:
         raise ValueError("capture until must be after since")
     return start, end

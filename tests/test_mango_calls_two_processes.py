@@ -3732,6 +3732,49 @@ def test_explicit_capture_until_is_not_shifted_by_stabilization(
     assert end == datetime(2026, 8, 11, 12, 30, tzinfo=timezone.utc)
 
 
+def test_automatic_capture_window_can_yield_short_certified_catch_up_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 8, 11, 12, 30, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(calls_runtime, "datetime", FixedDateTime)
+    sliced = replace(
+        config_for(tmp_path),
+        bootstrap_since="2026-08-03T00:00:00+00:00",
+        max_catch_up_days=30,
+        capture_run_span_hours=6,
+    )
+
+    start, end = calls_runtime.resolve_capture_window(
+        sliced,
+        since=None,
+        until=None,
+    )
+
+    assert start == datetime(2026, 8, 2, 23, 30, tzinfo=timezone.utc)
+    assert end == start + timedelta(hours=6)
+
+
+def test_explicit_capture_window_ignores_scheduled_slice_limit(
+    tmp_path: Path,
+) -> None:
+    sliced = replace(config_for(tmp_path), capture_run_span_hours=6)
+
+    start, end = calls_runtime.resolve_capture_window(
+        sliced,
+        since="2026-08-03T00:00:00+00:00",
+        until="2026-08-05T00:00:00+00:00",
+    )
+
+    assert end - start == timedelta(days=2)
+
+
 def test_strict_capture_rejects_future_explicit_until_before_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

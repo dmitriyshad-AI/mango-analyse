@@ -8958,6 +8958,75 @@ def empty_call_counts() -> Mapping[str, Any]:
     }
 
 
+def working_call_backlog(
+    path: Path, *, now: datetime, sla_hours: int
+) -> Mapping[str, Any]:
+    unavailable = {
+        "status": "missing" if not path.is_file() else "invalid",
+        "open": None,
+        "pending": None,
+        "in_progress": None,
+        "pending_over_sla": None,
+        "oldest_pending_age_minutes": None,
+    }
+    if not path.is_file():
+        return unavailable
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA query_only=ON")
+            rows = con.execute(
+                "SELECT started_at, created_at, transcription_status, sync_status, "
+                "transcript_variants_json, resolve_status, analysis_status, analysis_json, "
+                "dead_letter_stage, pipeline_stage, pipeline_worker_id, pipeline_claimed_at, "
+                "analysis_worker_id, analysis_claimed_at FROM call_records "
+                "WHERE COALESCE(dead_letter_stage, '')=''"
+            ).fetchall()
+    except (OSError, sqlite3.DatabaseError):
+        return unavailable
+    current = now.astimezone(timezone.utc)
+    ages: list[float] = []
+    pending = in_progress = 0
+    for raw in rows:
+        row = dict(raw)
+        sync_terminal = str(row.get("sync_status") or "") in {
+            "done", "published", "skipped", "dead"
+        }
+        if ready_row_is_complete(row, now=current) and sync_terminal:
+            continue
+        statuses = {
+            str(row.get(name) or "")
+            for name in (
+                "transcription_status",
+                "resolve_status",
+                "analysis_status",
+                "sync_status",
+            )
+        }
+        pending += bool(statuses & {"pending", "open"})
+        in_progress += bool(
+            "in_progress" in statuses
+            or row.get("pipeline_stage")
+            or row.get("analysis_worker_id")
+        )
+        try:
+            started_at = parse_aware_datetime(
+                row.get("started_at") or row.get("created_at")
+            )
+            age = (current - started_at).total_seconds() / 60
+        except (TypeError, ValueError):
+            age = sla_hours * 60 + 1
+        ages.append(max(0.0, age))
+    return {
+        "status": "ok",
+        "open": len(ages),
+        "pending": pending,
+        "in_progress": in_progress,
+        "pending_over_sla": sum(age > sla_hours * 60 for age in ages),
+        "oldest_pending_age_minutes": round(max(ages), 3) if ages else 0,
+    }
+
+
 def dead_letter_total(counts: Mapping[str, Any]) -> int:
     stages = counts.get("dead_letter_stage")
     if not isinstance(stages, Mapping):
@@ -9287,9 +9356,12 @@ def pipeline_freshness(
             stages[process]["capture_manifest_tail_status"] = tail_status
             stages[process]["capture_recovery_status"] = recovery_status
             stages[process]["capture_recovery_unresolved_count"] = recovery_unresolved_count
-    heartbeat = read_json(config.process_a_heartbeat_path)
-    heartbeat_state: Mapping[str, Any] = {}
-    if heartbeat:
+    def heartbeat_health(
+        path: Path, expected_stages: Sequence[str]
+    ) -> Mapping[str, Any]:
+        heartbeat = read_json(path)
+        if not heartbeat:
+            return {}
         raw_heartbeat = optional_text(heartbeat.get("updated_at"))
         try:
             heartbeat_at = parse_datetime(raw_heartbeat) if raw_heartbeat else None
@@ -9303,20 +9375,49 @@ def pipeline_freshness(
             heartbeat_age is not None
             and 0 <= heartbeat_age <= 90
             and pid_exists(heartbeat_pid)
-            and str(heartbeat.get("stage") or "")
-            in {*SEQUENTIAL_PIPELINE_STAGES, "parallel-pipeline"}
+            and str(heartbeat.get("stage") or "") in expected_stages
         )
-        heartbeat_state = {
+        return {
             "status": "running" if heartbeat_live else "stale_or_dead",
             "age_seconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
             "stage": heartbeat.get("stage"),
         }
-        if heartbeat_live and "process_a" in stages:
-            stages["process_a"] = {
-                **stages["process_a"],
-                "status": "running",
-                "stop_reason": "",
-            }
+    heartbeat_state = heartbeat_health(
+        config.process_a_heartbeat_path,
+        (*SEQUENTIAL_PIPELINE_STAGES, "parallel-pipeline"),
+    )
+    parallel_heartbeats = {
+        label: heartbeat_health(
+            config.pipeline_root / "state" / filename, (stage,)
+        )
+        for label, stage, filename in (
+            ("transcribe", "transcribe", "process_a_transcribe_heartbeat.json"),
+            ("gigaam", "backfill-second-asr", "process_a_gigaam_heartbeat.json"),
+            ("resolve", "resolve", "process_a_resolve_heartbeat.json"),
+            ("analyze", "analyze", "process_a_analyze_heartbeat.json"),
+        )
+    }
+    parallel_live = all(
+        item.get("status") == "running" for item in parallel_heartbeats.values()
+    )
+    if parallel_live:
+        heartbeat_state = {
+            "status": "running",
+            "stage": "parallel-pipeline",
+            "age_seconds": max(
+                float(item["age_seconds"])
+                for item in parallel_heartbeats.values()
+            ),
+            "stages": parallel_heartbeats,
+        }
+    elif any(parallel_heartbeats.values()):
+        heartbeat_state = {**heartbeat_state, "stages": parallel_heartbeats}
+    if heartbeat_state.get("status") == "running" and "process_a" in stages:
+        stages["process_a"] = {
+            **stages["process_a"],
+            "status": "running",
+            "stop_reason": "",
+        }
     ok = all(item["status"] in {"fresh", "running"} for item in stages.values())
     return {
         "schema_version": "mango_calls_freshness_v1",
@@ -9400,19 +9501,26 @@ def run_local_watchdog(
         else None
     )
     today_verdict = today_verdict if isinstance(today_verdict, Mapping) else {}
+    backlog = working_call_backlog(
+        config.working_db,
+        now=current,
+        sla_hours=config.pending_recording_retry_hours,
+    )
     try:
         free_bytes = shutil.disk_usage(config.pipeline_root).free
     except OSError:
         free_bytes = 0
     required_free_bytes = int(config.min_free_gib * 1024**3)
     operational_reasons: list[str] = []
-    if int(today_verdict.get("pending_over_sla") or 0) > 0:
+    if backlog["status"] != "ok":
+        operational_reasons.append("working_backlog_unavailable")
+    elif int(backlog.get("pending_over_sla") or 0) > 0:
         operational_reasons.append("pending_over_sla")
     if (
-        int(today_verdict.get("mango_unique") or 0) > 0
-        and int(today_verdict.get("pending_unique") or 0)
-        == int(today_verdict.get("mango_unique") or 0)
-        and float(today_verdict.get("oldest_pending_age_minutes") or 0) > 60
+        backlog["status"] == "ok"
+        and int(backlog.get("open") or 0) > 0
+        and int(backlog.get("pending") or 0) == int(backlog.get("open") or 0)
+        and float(backlog.get("oldest_pending_age_minutes") or 0) > 60
     ):
         operational_reasons.append("all_calls_pending_over_60_minutes")
     if free_bytes < required_free_bytes:
@@ -9429,11 +9537,29 @@ def run_local_watchdog(
     if (moscow_now.hour, moscow_now.minute) >= (9, 0) and not status_file.is_file():
         operational_reasons.append("daily_status_missing_after_0900")
     p0 = bool(foreign or authority.get("ok") is not True)
+    heartbeat_stages = freshness.get("heavy_heartbeat", {}).get("stages", {})
+    parallel_workers_live = bool(
+        isinstance(heartbeat_stages, Mapping)
+        and set(heartbeat_stages) == {"transcribe", "gigaam", "resolve", "analyze"}
+        and all(
+            isinstance(item, Mapping) and item.get("status") == "running"
+            for item in heartbeat_stages.values()
+        )
+    )
+    manifest_alert_errors = [
+        error
+        for error in manifest_errors
+        if not (
+            parallel_workers_live
+            and not config.ready_db.exists()
+            and error == "ready_manifest_missing"
+        )
+    ]
     status = (
         "p0"
         if p0
         else "alert"
-        if manifest_errors or operational_reasons
+        if manifest_alert_errors or operational_reasons
         else "ok"
         if freshness.get("status") == "fresh"
         else "stale"
@@ -9446,7 +9572,7 @@ def run_local_watchdog(
             if p0
             else ",".join(
                 [
-                    *(("ready_manifest_invalid",) if manifest_errors else ()),
+                    *(("ready_manifest_invalid",) if manifest_alert_errors else ()),
                     *operational_reasons,
                 ]
             )
@@ -9456,9 +9582,10 @@ def run_local_watchdog(
             else ""
         ),
         "foreign_host_count": len(foreign),
-        "pending_over_sla": int(today_verdict.get("pending_over_sla") or 0),
+        "pending_unique": int(backlog.get("open") or 0),
+        "pending_over_sla": int(backlog.get("pending_over_sla") or 0),
         "oldest_pending_age_minutes": float(
-            today_verdict.get("oldest_pending_age_minutes") or 0
+            backlog.get("oldest_pending_age_minutes") or 0
         ),
         "closure_ok": yesterday_verdict.get("closure_ok") is True,
         "free_bytes": free_bytes,
@@ -9473,12 +9600,11 @@ def run_local_watchdog(
         "freshness": freshness,
         "authority": authority,
         "foreign_host_ids": foreign,
+        "working_backlog": backlog,
         "daily": {
             "moscow_day": yesterday.isoformat(),
             "closure_ok": yesterday_verdict.get("closure_ok") is True,
-            "today_pending_over_sla": int(
-                today_verdict.get("pending_over_sla") or 0
-            ),
+            "today_pending_over_sla": int(backlog.get("pending_over_sla") or 0),
             "status_present": status_file.is_file(),
             "manifest_errors": list(manifest_errors),
         },

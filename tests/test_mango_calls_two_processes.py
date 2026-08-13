@@ -7206,6 +7206,152 @@ def test_future_live_pid_heartbeat_cannot_override_failed_process_a(
     )
 
 
+def test_parallel_stage_heartbeats_override_stale_aggregate_and_status(
+    tmp_path: Path,
+) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
+    now = datetime(2026, 8, 14, 2, 0, tzinfo=timezone.utc)
+    write_json(
+        config.process_a_status_path,
+        {
+            "process": "process_a",
+            "status": "partial",
+            "stop_reason": "previous_run_partial",
+            "checked_through": "2026-08-13T20:00:00+00:00",
+            "data_through": "2026-08-13T20:00:00+00:00",
+        },
+    )
+    write_json(
+        config.process_b_status_path,
+        {
+            "process": "process_b",
+            "status": "ok",
+            "checked_through": now.isoformat(),
+            "data_through": now.isoformat(),
+        },
+    )
+    write_json(
+        config.process_a_heartbeat_path,
+        {
+            "updated_at": "2026-08-13T20:00:00+00:00",
+            "pid": os.getpid(),
+            "stage": "parallel-pipeline",
+        },
+    )
+    for stage, filename in (
+        ("transcribe", "process_a_transcribe_heartbeat.json"),
+        ("backfill-second-asr", "process_a_gigaam_heartbeat.json"),
+        ("resolve", "process_a_resolve_heartbeat.json"),
+        ("analyze", "process_a_analyze_heartbeat.json"),
+    ):
+        write_json(
+            config.pipeline_root / "state" / filename,
+            {
+                "updated_at": (now - timedelta(seconds=10)).isoformat(),
+                "pid": os.getpid(),
+                "stage": stage,
+            },
+        )
+
+    report = pipeline_freshness(config, now=now)
+
+    assert report["status"] == "fresh"
+    assert report["stages"]["process_a"]["status"] == "running"
+    assert report["heavy_heartbeat"]["status"] == "running"
+    assert report["heavy_heartbeat"]["age_seconds"] == 10.0
+    assert set(report["heavy_heartbeat"]["stages"]) == {
+        "transcribe", "gigaam", "resolve", "analyze"
+    }
+    write_json(
+        config.pipeline_root / "state" / "process_a_analyze_heartbeat.json",
+        {
+            "updated_at": "2026-08-13T20:00:00+00:00",
+            "pid": os.getpid(),
+            "stage": "analyze",
+        },
+    )
+    degraded = pipeline_freshness(config, now=now)
+    assert degraded["status"] == "stale"
+    assert degraded["stages"]["process_a"]["status"] == "partial"
+
+
+def test_local_watchdog_reads_open_backlog_from_working_sqlite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace(config_for(tmp_path), pending_recording_retry_hours=1)
+    create_ready_call_db(config.working_db)
+    now = datetime(2026, 8, 14, 0, 0, tzinfo=timezone.utc)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("UPDATE call_records SET sync_status='done' WHERE id=1")
+        con.executemany(
+            """
+            INSERT INTO call_records (
+                id, source_call_id, source_filename, source_file, started_at,
+                created_at, transcription_status, sync_status,
+                resolve_status, analysis_status, pipeline_stage,
+                analysis_worker_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    2, "pending", "p.mp3", "/p.mp3",
+                    "2026-08-13T22:00:00+00:00", None,
+                    "pending", "pending", "pending", "pending", None, None,
+                ),
+                (
+                    3, "working", "w.mp3", "/w.mp3",
+                    "2026-08-13T23:30:00+00:00", None,
+                    "done", "done", "done", "in_progress", None, "analyze-1",
+                ),
+                (
+                    4, "open", "o.mp3", "/o.mp3",
+                    "2026-08-13T22:30:00+00:00", None,
+                    "done", "done", "manual", "open", None, None,
+                ),
+            ),
+        )
+    monkeypatch.setattr(
+        calls_runtime,
+        "pipeline_freshness",
+        lambda *_a, **_k: {
+            "status": "fresh",
+            "stages": {},
+            "heavy_heartbeat": {
+                "status": "running",
+                "stages": {
+                    stage: {"status": "running"}
+                    for stage in ("transcribe", "gigaam", "resolve", "analyze")
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        calls_runtime, "cutover_authority_report", lambda *_a: {"ok": True}
+    )
+    monkeypatch.setattr(
+        calls_runtime, "capture_manifest_snapshot", lambda *_a: {"entries": []}
+    )
+    monkeypatch.setattr(
+        calls_runtime, "configured_host_id", lambda *_a, **_k: "m1-host"
+    )
+
+    report = run_local_watchdog(config, now=now)
+
+    assert report["working_backlog"] == {
+        "status": "ok",
+        "open": 3,
+        "pending": 2,
+        "in_progress": 1,
+        "pending_over_sla": 2,
+        "oldest_pending_age_minutes": 120.0,
+    }
+    assert report["safe_alert"]["pending_unique"] == 3
+    assert report["safe_alert"]["pending_over_sla"] == 2
+    assert report["safe_alert"]["oldest_pending_age_minutes"] == 120.0
+    assert "ready_manifest_invalid" not in report["stop_reason"]
+
+
 def test_local_watchdog_raises_p0_for_foreign_manifest_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

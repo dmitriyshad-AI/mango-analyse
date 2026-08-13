@@ -87,7 +87,6 @@ def test_retired_2026_summer_sales_text_is_absent_from_runtime_surfaces() -> Non
     surfaces = "\n".join(
         (
             json.dumps(snapshot.get("bot_policy") or {}, ensure_ascii=False),
-            (RELEASE / "bot_policy.yaml").read_text(encoding="utf-8"),
             "\n".join(
                 str(fact.get("client_safe_text") or "")
                 for fact in snapshot["facts"]

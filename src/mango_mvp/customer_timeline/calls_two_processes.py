@@ -6513,7 +6513,18 @@ def module_probe_command(config: CallsTwoProcessesConfig) -> list[str]:
 
 
 def command_path(config: CallsTwoProcessesConfig) -> str:
-    parts = [str(config.codex_binary.parent), os.environ.get("PATH", "")]
+    # The pinned Codex CLI is a JavaScript launcher.  launchd supplies only a
+    # minimal system PATH, so discover Node from the two conventional local
+    # prefixes and include only its directory ahead of the inherited PATH.
+    node = shutil.which(
+        "node",
+        path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    )
+    parts = [
+        str(config.codex_binary.parent),
+        str(Path(node).parent) if node else "",
+        os.environ.get("PATH", ""),
+    ]
     return os.pathsep.join(part for part in parts if part)
 
 

@@ -6938,6 +6938,29 @@ def test_command_path_includes_codex_binary_directory(tmp_path: Path, monkeypatc
     assert command_path(config).split(os.pathsep)[0] == str(config.codex_binary.parent)
 
 
+def test_command_path_includes_node_for_launchd_codex_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        codex_binary=tmp_path / "codex-package" / "bin" / "codex",
+    )
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(
+        calls_runtime.shutil,
+        "which",
+        lambda name, *, path: "/opt/homebrew/bin/node" if name == "node" else None,
+    )
+
+    assert command_path(config).split(os.pathsep) == [
+        str(config.codex_binary.parent),
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+
+
 def test_pipeline_freshness_marks_old_data_stale(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
     create_empty_capture_manifest(config)

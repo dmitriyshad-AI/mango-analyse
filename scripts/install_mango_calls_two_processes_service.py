@@ -7,9 +7,11 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import stat
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -43,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fast-service",
         action="store_true",
         help="Render split capture/pipeline/watchdog plus demand-only Process B.",
+    )
+    parser.add_argument(
+        "--fresh-local-service",
+        action="store_true",
+        help="Allow the first fast-service install only into an empty local runtime.",
     )
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--out", help="Legacy primary plist path; process B is written next to it.")
@@ -179,6 +186,61 @@ def _validate_process_a_install_authority(
     )
     if report.get("ok") is not True:
         raise RuntimeError("Process A cutover authority validation failed")
+
+
+def _validate_fresh_local_service(
+    config_path: Path,
+    config: dict[str, object],
+    *,
+    expected_config_sha256: str,
+) -> None:
+    raw_since = str(config.get("bootstrap_since") or "")
+    try:
+        since = datetime.fromisoformat(raw_since)
+    except ValueError as exc:
+        raise RuntimeError("fresh local service requires bootstrap_since") from exc
+    if since.tzinfo is None:
+        raise RuntimeError("fresh local service requires aware bootstrap_since")
+    import sys
+
+    src = ROOT / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from mango_mvp.customer_timeline.calls_two_processes import CallsTwoProcessesConfig
+    from mango_mvp.productization.mango_calls_config import strict_service_flags
+
+    if strict_service_flags(config) != (False, False):
+        raise RuntimeError("fresh local service forbids cutover authority flags")
+
+    parsed = CallsTwoProcessesConfig.from_json(
+        config_path, expected_sha256=expected_config_sha256
+    )
+    if (
+        parsed.processing_scope != "service"
+        or not re.fullmatch(r"[0-9a-f]{40}", parsed.expected_code_sha or "")
+    ):
+        raise RuntimeError("fresh local service requires service scope and code SHA")
+    raw_root = parsed.pipeline_root.expanduser().absolute()
+    root = raw_root.resolve(strict=False)
+    owner_local = (Path.home() / ".mango_local").resolve(strict=False)
+    if (
+        raw_root != root
+        or owner_local not in root.parents
+        or root.name in {"", ".", ".."}
+    ):
+        raise RuntimeError("fresh local service runtime must stay under .mango_local")
+    if not os.path.lexists(raw_root):
+        raise RuntimeError("fresh local service runtime must be prepared")
+    info = os.lstat(raw_root)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or raw_root.is_symlink()
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise RuntimeError("fresh local service runtime is unsafe")
+    if any(raw_root.iterdir()):
+        raise RuntimeError("fresh local service runtime is not empty")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -347,6 +409,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError("--process-a-only and --process-b-only are mutually exclusive")
     if args.fast_service and (args.process_a_only or args.process_b_only):
         raise ValueError("--fast-service is mutually exclusive with single-role modes")
+    if args.fresh_local_service and not args.fast_service:
+        raise ValueError("--fresh-local-service requires --fast-service")
     if args.process_b_interval_seconds is not None and not args.process_b_only:
         raise ValueError("process B is demand-only and must not have an interval")
     if not args.install and not args.out and not args.out_dir:
@@ -386,7 +450,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.install and not args.process_b_only:
         if stat.S_IMODE(config_path.stat().st_mode) != 0o600:
             raise RuntimeError("Process A service config must be owner-only 0600")
-        _validate_process_a_install_authority(
+        validator = (
+            _validate_fresh_local_service
+            if args.fresh_local_service
+            else _validate_process_a_install_authority
+        )
+        validator(
             config_path,
             config,
             expected_config_sha256=hashlib.sha256(config_raw).hexdigest(),

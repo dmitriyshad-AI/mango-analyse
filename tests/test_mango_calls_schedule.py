@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import hashlib
 import os
 import plistlib
 import shutil
@@ -1618,6 +1619,85 @@ def test_every_process_a_install_requires_cutover_authority_before_launchctl(
         )
 
     assert launchctl_called is False
+
+
+def test_fresh_local_service_validator_requires_empty_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_path, _env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(
+        bootstrap_since="2026-08-03T00:00:00+03:00",
+        processing_scope="service",
+        runtime_authority_mode="service_cutover",
+        expected_code_sha="a" * 40,
+    )
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    config_path.chmod(0o600)
+    root = Path(config["pipeline_root"])
+    root.mkdir(parents=True, mode=0o700)
+    root.chmod(0o700)
+    installer = _load_installer()
+    digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+    installer._validate_fresh_local_service(
+        config_path, config, expected_config_sha256=digest
+    )
+
+    (root / "existing-state").write_text("occupied", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="runtime is not empty"):
+        installer._validate_fresh_local_service(
+            config_path, config, expected_config_sha256=digest
+        )
+
+
+def test_fresh_local_service_install_uses_fresh_validator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    out_dir = tmp_path / "launchd"
+    installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
+    called: list[str] = []
+    monkeypatch.setattr(
+        installer,
+        "_validate_fresh_local_service",
+        lambda *_args, **_kwargs: called.append("fresh"),
+    )
+    monkeypatch.setattr(
+        installer,
+        "_validate_process_a_install_authority",
+        lambda *_args, **_kwargs: pytest.fail("cutover validator must not run"),
+    )
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1 if command[:2] == ["launchctl", "print"] else 0,
+            stdout="",
+            stderr="",
+        ),
+    )
+
+    assert (
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(out_dir),
+                "--fast-service",
+                "--fresh-local-service",
+                "--install",
+            ]
+        )
+        == 0
+    )
+    assert called == ["fresh"]
 
 
 @pytest.mark.parametrize("mode", [(), ("--process-a-only",)])

@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -2770,6 +2771,45 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     assert len(second) == 4
     assert all(not path.exists() for path in ephemeral_paths)
     assert not list(config.codex_home_root.iterdir())
+
+
+def test_parallel_asr_overlaps_primary_and_secondary_then_runs_tail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        worker_once=True,
+        parallel_asr_enabled=True,
+    )
+    active: set[str] = set()
+    overlap_seen = {"value": False}
+    order: list[str] = []
+    lock = threading.Lock()
+
+    def fake_runner(command, _env, _cwd):
+        stage = command[command.index("--stages") + 1]
+        with lock:
+            active.add(stage)
+            if active == {"transcribe", "backfill-second-asr"}:
+                overlap_seen["value"] = True
+        if stage in {"transcribe", "backfill-second-asr"}:
+            time.sleep(0.05)
+        with lock:
+            active.discard(stage)
+            order.append(stage)
+        return {"rc": 0}
+
+    reports = run_sequential_pipeline_workers(config, {}, fake_runner)
+
+    assert overlap_seen["value"] is True
+    assert set(order[:2]) == {"transcribe", "backfill-second-asr"}
+    assert order[2:] == ["resolve", "analyze"]
+    assert len(reports) == 4
+    assert reports[0]["parallel_asr"] == {
+        "enabled": True,
+        "max_workers": 2,
+        "allows_swap": True,
+    }
 
 
 def test_codex_runtime_anchor_repairs_owned_mode_and_rejects_symlink(

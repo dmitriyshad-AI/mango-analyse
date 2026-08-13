@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -200,6 +201,7 @@ class CallsTwoProcessesConfig:
     poll_seconds: int = 10
     max_idle_cycles: int = 1
     worker_once: bool = False
+    parallel_asr_enabled: bool = False
     freshness_max_age_minutes: int = 90
     manifest_recheck_sleep_sec: float = 2.0
     asr_mode: str = "mlx_dual"
@@ -246,6 +248,9 @@ class CallsTwoProcessesConfig:
         worker_once = payload.get("worker_once", False)
         if not isinstance(worker_once, bool):
             raise ValueError("worker_once must be a boolean")
+        parallel_asr_enabled = payload.get("parallel_asr_enabled", False)
+        if not isinstance(parallel_asr_enabled, bool):
+            raise ValueError("parallel_asr_enabled must be a boolean")
         optional_daily = str(payload.get("foton_daily_dir") or "").strip()
         config = cls(
             pipeline_root=Path(str(payload["pipeline_root"])).expanduser(),
@@ -272,6 +277,7 @@ class CallsTwoProcessesConfig:
             poll_seconds=int(payload.get("poll_seconds", 10)),
             max_idle_cycles=int(payload.get("max_idle_cycles", 1)),
             worker_once=worker_once,
+            parallel_asr_enabled=parallel_asr_enabled,
             freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
             manifest_recheck_sleep_sec=float(payload.get("manifest_recheck_sleep_sec", 2.0)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
@@ -367,6 +373,8 @@ class CallsTwoProcessesConfig:
         guard_customer_timeline_output_path(timeline_db, timeline_root)
         if self.stage_limit < 1 or self.poll_seconds < 1 or self.max_idle_cycles < 1:
             raise ValueError("worker drain settings must be positive")
+        if self.parallel_asr_enabled and self.processing_scope != "service":
+            raise ValueError("parallel_asr_enabled is allowed only in service scope")
         if self.freshness_max_age_minutes < 15:
             raise ValueError("freshness_max_age_minutes must be at least 15")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
@@ -7093,8 +7101,108 @@ def run_sequential_pipeline_workers(
     include_llm: bool = True,
     run_id: Optional[str] = None,
     cycle_deadline: Optional[float] = None,
+    stages_override: Optional[Sequence[str]] = None,
+    heartbeat_path_override: Optional[Path] = None,
+    codex_runtime_override: Optional[Mapping[str, str]] = None,
 ) -> list[Mapping[str, Any]]:
-    stages = pipeline_stages(config, include_llm=include_llm)
+    stages = (
+        tuple(stages_override)
+        if stages_override is not None
+        else pipeline_stages(config, include_llm=include_llm)
+    )
+    if (
+        stages_override is None
+        and config.parallel_asr_enabled
+        and tuple(stages[:2]) == ("transcribe", "backfill-second-asr")
+    ):
+        aggregate_heartbeat = config.process_a_heartbeat_path
+        write_json(
+            aggregate_heartbeat,
+            {
+                "schema_version": "mango_calls_heavy_heartbeat_v1",
+                "stage": "parallel-asr",
+                "pid": os.getpid(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        try:
+            # Build the two isolated runtime homes serially.  The owner-only
+            # ACL checks use native macOS APIs that must not race in threads;
+            # only the long-running model workers execute concurrently.
+            with temporary_codex_runtime(
+                config,
+                label="parallel_transcribe",
+            ) as primary_runtime, temporary_codex_runtime(
+                config,
+                label="parallel_gigaam",
+            ) as secondary_runtime:
+                with ThreadPoolExecutor(
+                    max_workers=2,
+                    thread_name_prefix="mango-asr",
+                ) as pool:
+                    primary = pool.submit(
+                        run_sequential_pipeline_workers,
+                        config,
+                        base_env,
+                        runner,
+                        include_llm=False,
+                        run_id=run_id,
+                        cycle_deadline=cycle_deadline,
+                        stages_override=("transcribe",),
+                        heartbeat_path_override=(
+                            config.pipeline_root
+                            / "state"
+                            / "process_a_transcribe_heartbeat.json"
+                        ),
+                        codex_runtime_override=primary_runtime,
+                    )
+                    secondary = pool.submit(
+                        run_sequential_pipeline_workers,
+                        config,
+                        base_env,
+                        runner,
+                        include_llm=False,
+                        run_id=run_id,
+                        cycle_deadline=cycle_deadline,
+                        stages_override=("backfill-second-asr",),
+                        heartbeat_path_override=(
+                            config.pipeline_root
+                            / "state"
+                            / "process_a_gigaam_heartbeat.json"
+                        ),
+                        codex_runtime_override=secondary_runtime,
+                    )
+                    asr_reports = [*primary.result(), *secondary.result()]
+        finally:
+            aggregate_heartbeat.unlink(missing_ok=True)
+        asr_reports = [
+            {
+                **dict(report),
+                "parallel_asr": {
+                    "enabled": True,
+                    "max_workers": 2,
+                    "allows_swap": True,
+                },
+            }
+            for report in asr_reports
+        ]
+        if any(int(report.get("rc") or 0) != 0 for report in asr_reports):
+            return asr_reports
+        tail_stages = tuple(stages[2:])
+        if not tail_stages:
+            return asr_reports
+        return [
+            *asr_reports,
+            *run_sequential_pipeline_workers(
+                config,
+                base_env,
+                runner,
+                include_llm=include_llm,
+                run_id=run_id,
+                cycle_deadline=cycle_deadline,
+                stages_override=tail_stages,
+            ),
+        ]
     if runner is not run_command:
         reports: list[Mapping[str, Any]] = []
         for stage in stages:
@@ -7104,10 +7212,15 @@ def run_sequential_pipeline_workers(
                 stage=stage,
                 run_id=run_id or new_calls_run_id(datetime.now(timezone.utc)),
             ) as authority_env:
-                with temporary_codex_runtime(
-                    config,
-                    label=stage.replace("-", "_"),
-                ) as codex_runtime:
+                runtime_scope = (
+                    nullcontext(codex_runtime_override)
+                    if codex_runtime_override is not None
+                    else temporary_codex_runtime(
+                        config,
+                        label=stage.replace("-", "_"),
+                    )
+                )
+                with runtime_scope as codex_runtime:
                     stage_report = controlled_stage_report(
                         config,
                         runner(
@@ -7167,7 +7280,7 @@ def run_sequential_pipeline_workers(
             timeout_seconds=config.heavy_stage_timeout_seconds,
             cycle_deadline=heavy_cycle_deadline,
         )
-        heartbeat_path = config.process_a_heartbeat_path
+        heartbeat_path = heartbeat_path_override or config.process_a_heartbeat_path
         proc: subprocess.Popen[str] | None = None
         lifeline_read_fd = -1
         lifeline_write_fd = -1
@@ -7178,9 +7291,13 @@ def run_sequential_pipeline_workers(
             run_id=log_run_id,
         )
         authority_env = authority_scope.__enter__()
-        codex_runtime_scope = temporary_codex_runtime(
-            config,
-            label=label,
+        codex_runtime_scope = (
+            nullcontext(codex_runtime_override)
+            if codex_runtime_override is not None
+            else temporary_codex_runtime(
+                config,
+                label=label,
+            )
         )
         codex_runtime: Mapping[str, str] = {}
         codex_runtime_entered = False
@@ -9082,7 +9199,8 @@ def pipeline_freshness(
             heartbeat_age is not None
             and 0 <= heartbeat_age <= 90
             and pid_exists(heartbeat_pid)
-            and str(heartbeat.get("stage") or "") in SEQUENTIAL_PIPELINE_STAGES
+            and str(heartbeat.get("stage") or "")
+            in {*SEQUENTIAL_PIPELINE_STAGES, "parallel-asr"}
         )
         heartbeat_state = {
             "status": "running" if heartbeat_live else "stale_or_dead",

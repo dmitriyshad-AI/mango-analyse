@@ -43,6 +43,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     new_calls_run_id,
     normalize_unambiguous_legacy_asr_topologies,
     prepare_ingest_inputs,
+    persist_capture_snapshot_to_working_db,
     prepare_codex_home,
     process_lease,
     pipeline_stages,
@@ -2456,6 +2457,50 @@ def test_expired_recording_is_recovered_on_last_bounded_attempt(
     assert report["status"] == "ok"
     assert report["pending_recording_expired"] == 0
     assert store.latest_by_event_key()[pending.event_key].status == "downloaded"
+
+
+def test_persist_capture_snapshot_ingests_without_starting_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_dir.mkdir(parents=True, exist_ok=True)
+    config.working_db.write_bytes(b"existing-db")
+    observed_prepare: list[dict[str, object]] = []
+    observed_commands: list[list[str]] = []
+
+    def fake_prepare(_config: object, **kwargs: object) -> dict[str, object]:
+        observed_prepare.append(dict(kwargs))
+        return {"audio_files": 2, "skipped_total": 0}
+
+    def fake_command(
+        command: Sequence[str],
+        _env: Mapping[str, str],
+        _cwd: Path,
+    ) -> Mapping[str, object]:
+        observed_commands.append(list(command))
+        return {"rc": 0, "command": "ingest", "metrics": {}}
+
+    monkeypatch.setattr(calls_runtime, "prepare_ingest_inputs", fake_prepare)
+    result = persist_capture_snapshot_to_working_db(
+        config,
+        {
+            "manifest_end_offset": 123,
+            "manifest_snapshot_sha256": "a" * 64,
+        },
+        command_runner=fake_command,
+    )
+
+    assert result["status"] == "ok"
+    assert observed_prepare == [
+        {
+            "manifest_end_offset": 123,
+            "expected_manifest_sha256": "a" * 64,
+        }
+    ]
+    assert len(observed_commands) == 1
+    assert "ingest" in observed_commands[0]
+    assert "worker" not in observed_commands[0]
 
 
 def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:

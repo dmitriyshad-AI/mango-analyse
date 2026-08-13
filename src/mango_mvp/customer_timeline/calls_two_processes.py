@@ -642,6 +642,10 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "locks" / "capture.lock"
 
     @property
+    def ingest_lock(self) -> Path:
+        return self.pipeline_root / "locks" / "ingest.lock"
+
+    @property
     def controlled_full_lock(self) -> Path:
         return self.pipeline_root / "locks" / "controlled_full.lock"
 
@@ -1248,6 +1252,86 @@ def working_db_authority_issue(
     )
 
 
+def persist_capture_snapshot_to_working_db(
+    config: CallsTwoProcessesConfig,
+    capture: Mapping[str, Any],
+    *,
+    command_runner: CommandRunner = None,
+) -> Mapping[str, Any]:
+    """Feed a proven capture snapshot to SQLite without starting ASR workers."""
+    command_runner = command_runner or run_command
+    raw_end_offset = capture.get("manifest_end_offset")
+    snapshot_sha256 = optional_text(capture.get("manifest_snapshot_sha256"))
+    if (
+        isinstance(raw_end_offset, bool)
+        or not isinstance(raw_end_offset, int)
+        or raw_end_offset < 0
+        or not re.fullmatch(r"[0-9a-f]{64}", snapshot_sha256)
+    ):
+        return {
+            "status": "failed",
+            "stop_reason": "capture_snapshot_not_proven_for_ingest",
+        }
+    try:
+        with process_lease(
+            config.ingest_lock, stale_seconds=config.stale_lock_seconds
+        ) as lock_info:
+            metadata = dict(
+                prepare_ingest_inputs(
+                    config,
+                    manifest_end_offset=raw_end_offset,
+                    expected_manifest_sha256=snapshot_sha256,
+                )
+            )
+            reports: list[Mapping[str, Any]] = []
+            commands: list[Sequence[str]] = []
+            if not config.working_db.exists():
+                commands.append(cli_command(config, "init-db"))
+            if positive_int(metadata.get("audio_files")) > 0:
+                commands.append(
+                    cli_command(
+                        config,
+                        "ingest",
+                        "--recordings-dir",
+                        str(config.working_audio_dir),
+                        "--metadata-csv",
+                        str(config.metadata_csv),
+                    )
+                )
+            deadline = time.monotonic() + min(
+                15 * 60, config.heavy_stage_timeout_seconds
+            )
+            base_env = worker_environment(config)
+            for command in commands:
+                report = (
+                    run_command(
+                        command,
+                        base_env,
+                        config.working_dir,
+                        deadline=deadline,
+                    )
+                    if command_runner is run_command
+                    else command_runner(command, base_env, config.working_dir)
+                )
+                reports.append(report)
+                if int(report.get("rc", 0)) != 0:
+                    break
+            failed = any(int(item.get("rc", 0)) != 0 for item in reports)
+            return {
+                "status": "failed" if failed else "ok" if commands else "idle",
+                "stop_reason": "capture_ingest_command_failed" if failed else "",
+                "metadata": metadata,
+                "workers": compact_command_reports(reports),
+                "lock": lock_info,
+            }
+    except LockBusy as exc:
+        return {
+            "status": "locked",
+            "stop_reason": "capture_ingest_locked",
+            "lock": exc.metadata,
+        }
+
+
 def run_capture(
     config: CallsTwoProcessesConfig,
     *,
@@ -1257,6 +1341,7 @@ def run_capture(
 ) -> Mapping[str, Any]:
     config.validate()
     reject_controlled_call_broad_operation(config, "capture")
+    persist_to_working_db = capture_runner is None
     capture_runner = capture_runner or capture_mango_window
     started = datetime.now(timezone.utc)
     run_id = new_calls_run_id(started)
@@ -1368,29 +1453,6 @@ def run_capture(
                     "recovered_trailing_manifest_records",
                 )
             )
-            report = finalize_report(
-                config,
-                run_id,
-                "capture",
-                status,
-                (
-                    "capture_manifest_tail_incomplete"
-                    if manifest_tail_incomplete
-                    else "capture_audio_incomplete"
-                    if status == "partial"
-                    else ""
-                ),
-                {
-                    "authority": authority,
-                    "disk": disk,
-                    "capture": capture,
-                    "window": {
-                        "since": window_since.isoformat(),
-                        "until": window_until.isoformat(),
-                    },
-                    "lock": lock_info,
-                },
-            )
             if not manifest_tail_incomplete:
                 write_cursor(config.cursor_path, window_until, capture)
             recovered = positive_int(
@@ -1405,7 +1467,47 @@ def run_capture(
                     expected_count=recovered,
                     expected_incident_sha256=incident_sha,
                 )
-            return report
+            ingest = (
+                persist_capture_snapshot_to_working_db(config, capture)
+                if persist_to_working_db and not manifest_tail_incomplete
+                else {
+                    "status": "skipped",
+                    "stop_reason": (
+                        "capture_manifest_tail_incomplete"
+                        if manifest_tail_incomplete
+                        else "injected_capture_runner"
+                    ),
+                }
+            )
+            ingest_failed = ingest.get("status") == "failed"
+            final_status = "partial" if ingest_failed else status
+            stop_reason = (
+                "capture_ingest_failed"
+                if ingest_failed
+                else "capture_manifest_tail_incomplete"
+                if manifest_tail_incomplete
+                else "capture_audio_incomplete"
+                if status == "partial"
+                else ""
+            )
+            return finalize_report(
+                config,
+                run_id,
+                "capture",
+                final_status,
+                stop_reason,
+                {
+                    "authority": authority,
+                    "disk": disk,
+                    "capture": capture,
+                    "ingest": ingest,
+                    "window": {
+                        "since": window_since.isoformat(),
+                        "until": window_until.isoformat(),
+                    },
+                    "lock": lock_info,
+                },
+            )
     except LockBusy as exc:
         return finalize_report(
             config,

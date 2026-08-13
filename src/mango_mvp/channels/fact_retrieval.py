@@ -26,7 +26,7 @@ KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "installment_terms": ("installment", "dolyami", "payment_options", "rassroch"),
     "trial_class": ("trial", "fragment", "фрагмент", "probn"),
     "trial_online_fragment": ("trial", "fragment", "фрагмент", "online_trial"),
-    "programs": ("program", "camp", "ls_city", "lvsh", "senior_school", "direction", "subject", "olympiad"),
+    "programs": ("program", "camp", "ls_city", "lvsh", "zvsh", "senior_school", "direction", "subject", "olympiad"),
     "availability": ("availability", "seats", "places", "mest"),
     "schedule": ("schedule", "weekly_lessons", "available_schedules", "days", "lesson"),
     "schedule_weekend": ("objection_responses.inconvenient_time", "weekend_slots", "выходн", "слоты"),
@@ -96,7 +96,11 @@ def select_confirmed_facts(
                     "scopes": set(),
                 }
             )
-        elif price_axes_clean_defer_enabled() and price_selector_result.get("status") in {"needs_slot", "not_found"}:
+        elif (
+            price_axes_clean_defer_enabled()
+            and price_selector_result.get("status") in {"needs_slot", "not_found"}
+            and not any(candidate.get("__direct_product_price") is True for candidate in candidates)
+        ):
             return []
 
     answer_facts: list[tuple[int, int, Mapping[str, object]]] = []

@@ -10,7 +10,7 @@ from mango_mvp.knowledge_base.product_existence_axes_catalog import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SNAPSHOT_PATH = ROOT / "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json"
+SNAPSHOT_PATH = ROOT / "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json"
 
 
 def _facts() -> list[dict[str, object]]:
@@ -38,10 +38,10 @@ def test_catalog_proves_unpk_online_olympiad_physics_grade_9_exists() -> None:
     assert "physics" in entry["subjects"]
     assert 9 in entry["grade_values"]
     assert entry["existence_status"] == "exists"
-    assert entry["source_fact_key"].startswith("schedule_2026_27.")
+    assert entry["source_fact_key"].startswith("owner_schedule_2026_27.")
 
 
-def test_catalog_proves_unpk_summer_school_for_grade_5_exists() -> None:
+def test_catalog_does_not_sell_retired_2026_summer_school_for_grade_5() -> None:
     result = verify_product_format_exists(
         _catalog(),
         brand="УНПК",
@@ -49,22 +49,17 @@ def test_catalog_proves_unpk_summer_school_for_grade_5_exists() -> None:
         product_family="летняя школа",
     )
 
-    assert result["status"] == "exists"
-    assert result["entry"]["product_family"] == "camp"
-    assert 5 in result["entry"]["grade_values"]
+    assert result["status"] == "unknown"
 
 
-def test_catalog_returns_not_offered_only_for_explicit_negative_fact() -> None:
+def test_catalog_does_not_broaden_narrow_chemistry_negative_fact() -> None:
     result = verify_product_format_exists(
         _catalog(),
         brand="УНПК",
         subject="химия",
     )
 
-    assert result["status"] == "not_offered"
-    assert result["reason"] == "explicit_not_offered_fact"
-    assert result["entry"]["existence_status"] == "not_offered"
-    assert "Химии сейчас нет" in result["entry"]["client_safe_text"]
+    assert result["status"] == "unknown"
 
 
 def test_catalog_does_not_cross_brands_for_negative_facts() -> None:
@@ -112,6 +107,7 @@ def test_cancelled_shift_does_not_make_all_unpk_camps_not_offered() -> None:
     assert result["status"] == "exists"
     assert result["entry"]["existence_status"] == "exists"
     assert "cancelled" not in result["entry"]["source_fact_key"]
+    assert result["entry"]["source_fact_key"].startswith("owner_2026_08_13.")
 
 
 def test_raw_false_fact_is_not_converted_to_positive_exists() -> None:
@@ -152,7 +148,7 @@ def test_noisy_grade_string_does_not_broaden_to_grade_9() -> None:
     assert result["invalid_slots"] == ["grade"]
 
 
-def test_ordinal_grade_phrase_is_accepted_for_product_existence() -> None:
+def test_retired_summer_school_is_not_reintroduced_by_ordinal_grade() -> None:
     result = verify_product_format_exists(
         _catalog(),
         brand="УНПК",
@@ -160,8 +156,7 @@ def test_ordinal_grade_phrase_is_accepted_for_product_existence() -> None:
         product_family="летняя школа",
     )
 
-    assert result["status"] == "exists"
-    assert 5 in result["entry"]["grade_values"]
+    assert result["status"] == "unknown"
 
 
 def test_arbitrary_word_before_class_is_not_parsed_as_grade() -> None:

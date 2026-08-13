@@ -27,7 +27,7 @@ from mango_mvp.knowledge_base.fact_registry import (  # noqa: E402
 )
 
 
-DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_handoff_for_claude_and_team")
+DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved")
 SEMANTIC_REVIEW_SCHEMA_VERSION = "kb_semantic_review_v1"
 SEMANTIC_REVIEW_RULESET_VERSION = "kb_semantic_rules_2026_07_28"
 
@@ -89,6 +89,15 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def portable_path(path: Path) -> str:
+    return str(path.relative_to(PROJECT_ROOT)) if path.is_relative_to(PROJECT_ROOT) else str(path)
+
+
+def resolve_release_path(path: Path) -> Path:
+    expanded = path.expanduser()
+    return expanded.resolve(strict=False) if expanded.is_absolute() else (PROJECT_ROOT / expanded).resolve(strict=False)
 
 NON_MONEY_PATH_MARKERS = (
     "total_lessons",
@@ -212,7 +221,7 @@ def run_kb_semantic_review(
     out_dir: str | Path | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
-    release_root = Path(release_dir).expanduser().resolve(strict=False)
+    release_root = resolve_release_path(Path(release_dir))
     snapshot = load_snapshot(release_root)
     facts = load_facts(release_root, snapshot)
     approval_queue = load_approval_queue(release_root)
@@ -231,8 +240,8 @@ def run_kb_semantic_review(
         "schema_version": SEMANTIC_REVIEW_SCHEMA_VERSION,
         "reviewer_ruleset_version": SEMANTIC_REVIEW_RULESET_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "release_dir": str(release_root),
-        "snapshot_path": str(release_root / "kb_release_v3_snapshot.json"),
+        "release_dir": portable_path(release_root),
+        "snapshot_path": portable_path(release_root / "kb_release_v3_snapshot.json"),
         # Without these a review cannot be attributed to anything: the same
         # report file survives snapshot rewrites and reviewer upgrades alike.
         "snapshot_sha256": file_sha256(release_root / "kb_release_v3_snapshot.json"),

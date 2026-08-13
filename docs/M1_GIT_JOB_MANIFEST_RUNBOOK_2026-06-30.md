@@ -23,7 +23,7 @@ git fetch yandex
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_job_manifest.py \
   --set product_data/telegram_dynamic_test_sets/pilot_smoke18_2026-06-10.jsonl \
-  --snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json \
+  --snapshot product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json \
   --env-flag TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1 \
   --parallel 4 \
   --max-hours 3 \

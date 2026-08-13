@@ -19,7 +19,7 @@ from typing import Mapping, Sequence
 
 
 SCHEMA_VERSION = "mango_git_job_manifest_v1_2026_06_30"
-DEFAULT_SNAPSHOT = "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json"
+DEFAULT_SNAPSHOT = "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json"
 DEFAULT_OUT_DIR = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests" / "_jobs"
 SAFE_ENV_NAME_RE = re.compile(r"^(TELEGRAM_[A-Z0-9_]+|DIALOGUE_CONTRACT_DEBUG_TRACE)$")
 SAFE_ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/\\-]{0,128}$")

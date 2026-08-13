@@ -75,7 +75,7 @@ DEFAULT_WRITER_LOCK_PATH = Path.home() / ".mango_local" / "draft_loop" / "writer
 STARTUP_MANIFEST_ENV = "DRAFT_LOOP_STARTUP_MANIFEST"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
 LEGACY_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phone_stoplist.json"
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json")
 DEFAULT_CUSTOMER_TIMELINE_DB = Path(
     "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
 )

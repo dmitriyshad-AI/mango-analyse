@@ -262,13 +262,8 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     DISCOUNT_STACKING_SAFE_TEXT,
     EMPLOYEE_PRIVACY_SAFE_TEXT,
     FALSE_INFO_SAFE_TEXT,
-    FOTON_CAMP_INSTALLMENT_SAFE_TEXT,
-    FOTON_CAMP_OVERVIEW_SAFE_TEXT,
-    FOTON_CITY_CAMP_AUGUST_SAFE_TEXT,
     FOTON_DOLYAMI_SAFE_TEXT,
     FOTON_INSTALLMENT_SAFE_TEXT,
-    FOTON_LVSH_DATES_SAFE_TEXT,
-    FOTON_LVSH_PRICE_SAFE_TEXT,
     FOTON_OFFLINE_FREE_TRIAL_GUARD_TEXT,
     FOTON_ONLINE_TRIAL_SAFE_TEXT,
     FOTON_SECOND_SUBJECT_DISCOUNT_TEXT,
@@ -321,20 +316,9 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     TAX_ONLINE_FORM_SAFE_TEXT,
     THIRD_PARTY_PRIVACY_SAFE_TEXT,
     UNKNOWN_TOPIC_FALLBACK_ID,
-    UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT,
-    UNPK_CAMP_OVERVIEW_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
-    UNPK_LVSH_DATES_SAFE_TEXT,
-    UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT,
-    UNPK_LVSH_GRADE_11_SAFE_TEXT,
-    UNPK_LVSH_LIVING_TRANSFER_SAFE_TEXT,
-    UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
-    UNPK_LVSH_PRICE_SAFE_TEXT,
-    UNPK_LVSH_SEATS_SAFE_TEXT,
     UNPK_MONTHLY_SEMESTER_DISCOUNT_TEXT,
     UNPK_SECOND_SUBJECT_DISCOUNT_TEXT,
-    UNPK_TRIAL_SAFE_TEXT,
-    UNPK_ZVSH_WAITLIST_SAFE_TEXT,
     UNSUPPORTED_PROMISE_PATTERNS,
     _BARE_N_POINTS_RE,
     _COMPLAINT_SAFE_VARIANTS,
@@ -663,6 +647,7 @@ DIRECT_PATH_REPLACE_TEXT_GATE_CODES = frozenset(
         "brand_leak",
         "cross_brand",
         "irrelevant_to_question",
+        "derived_product_number",
         "unsupported_product_number",
     }
 )
@@ -3590,7 +3575,8 @@ def build_semantic_output_verifier_prompt(
     return (
         "Ты — смысловой верификатор финального текста бота учебного центра. "
         "Проверяй только смысловые производные, которые плохо ловятся регулярными правилами. "
-        "Не проверяй цены/проценты/бренд/мета и входящий P0: это делает отдельный детерминированный gate. "
+        "Проверяй, что цены, проценты, даты, набор и доступность не противоречат переданным фактам, "
+        "в том числе когда число написано словами. Бренд, мета и входящий P0 проверяет отдельный детерминированный gate. "
         "Единственное выходное P0-правило здесь — обещание денег самим ботом.\n\n"
         "Верни СТРОГО JSON:\n"
         '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis|irrelevant_to_question|p0_money_promise",'
@@ -3599,7 +3585,8 @@ def build_semantic_output_verifier_prompt(
         'Если нарушений нет: {"findings":[]}.\n\n'
         "КЛАССЫ:\n"
         "- derived_product_claim: продукту/курсу/процессу приписано то, чего нет в фактах: назначение группы, "
-        "уровень курса, порядок записи/оплаты, состав программы, материалы, размер группы, что у нас принято.\n"
+        "уровень курса, порядок записи/оплаты, состав программы, материалы, размер группы, цена, дата, "
+        "доступность или открытый/закрытый набор.\n"
         "- invented_generalization: обобщение или соцдоказательство как опора рекомендации клиенту: "
         "«обычно», «большинство», «за год-два», если это не дано в фактах.\n"
         "- individual_diagnosis: бот оценивает конкретного ребёнка: справится/потянет/подойдёт/сможет влиться, "

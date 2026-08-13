@@ -16,7 +16,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCHEDULE_PACK = PROJECT_ROOT / "audits" / "_inbox" / "schedule_vs_tallanto_recheck_20260602_123118"
-DEFAULT_SOURCE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260520_v6_3_team_answers_sources"
+DEFAULT_SOURCE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260603_v6_5_summer_format_cleanup_sources"
 DEFAULT_RELEASE_ID = "kb_release_20260603_v6_5_summer_format_cleanup"
 DEFAULT_FRESHNESS_DATE = "2026-06-02"
 GENERATED_BEGIN = "# BEGIN GENERATED schedule_2026_27 by scripts/derive_kb_schedule_2026_27_sources.py"

@@ -116,7 +116,7 @@
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
-  --release-dir product_data/knowledge_base/kb_release_20260518_v3_handoff_for_claude_and_team \
+  --release-dir product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved \
   --out-dir audits/_inbox/<audit_pack>/semantic_review
 ```
 

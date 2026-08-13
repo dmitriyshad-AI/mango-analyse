@@ -8,10 +8,13 @@ not a live-availability checker and must not be used to claim free seats,
 booking, enrollment, or payment status.
 """
 
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any, Mapping, Sequence
+
+from mango_mvp.knowledge_base.fact_registry import fact_runtime_time_ok
 
 
 PRODUCT_EXISTENCE_SCHEMA_VERSION = "product_existence_axes_catalog_v1_2026_07_02"
@@ -27,6 +30,7 @@ EXISTENCE_FACT_TYPES = {
     "camp_zvsh",
     "intensive",
     "deadline",
+    "schedule",
 }
 EXCLUDED_FACT_TYPES = {
     "discount",
@@ -57,7 +61,7 @@ FORMAT_ALIASES: Mapping[str, tuple[str, ...]] = {
     "offline": ("очно", "очная", "очный", "offline", "москва", "сретенка", "долгопруд"),
 }
 PROGRAM_KIND_ALIASES: Mapping[str, tuple[str, ...]] = {
-    "olympiad": ("олимпиад", "физтех", "рсош", "росатом", "курчатов"),
+    "olympiad": ("олимпиад", "олимп", "физтех", "рсош", "росатом", "курчатов"),
     "camp": ("лагер", "лвш", "выезд", "летн", "смен", "городская школа", "формула физтеха"),
     "regular": ("годов", "регуляр", "обычн", "курс", "группа"),
     "intensive": ("интенсив",),
@@ -80,7 +84,9 @@ class ProductExistenceEntry:
     subjects: tuple[str, ...]
     existence_status: str
     client_safe_text: str
+    valid_from: str
     valid_until: str
+    freshness_check_date: str
     structured_value: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -247,7 +253,9 @@ def _entry_from_fact(fact: Mapping[str, Any]) -> tuple[ProductExistenceEntry | N
         return None, None
     if not _client_safe(fact):
         return None, None
-    if not _valid_until_ok(fact.get("valid_until")):
+    if not _text(fact.get("valid_until")) or not fact_runtime_time_ok(
+        fact, today=_evaluation_day()
+    ):
         return None, {"issue": "stale_or_missing_valid_until", "fact_key": fact_key}
 
     structured = _mapping(fact.get("structured_value"))
@@ -260,6 +268,10 @@ def _entry_from_fact(fact: Mapping[str, Any]) -> tuple[ProductExistenceEntry | N
         return None, None
 
     product_family = normalize_product_family(f"{fact.get('product') or ''} {haystack}")
+    if existence_status == "exists" and product_family == "camp" and not _explicit_camp_fact(
+        fact, structured
+    ):
+        return None, None
     program_kind = normalize_program_kind(haystack)
     if not program_kind and product_family == "camp":
         program_kind = "camp"
@@ -288,7 +300,11 @@ def _entry_from_fact(fact: Mapping[str, Any]) -> tuple[ProductExistenceEntry | N
             subjects=tuple(subjects),
             existence_status=existence_status,
             client_safe_text=text,
+            valid_from=_text(fact.get("valid_from")),
             valid_until=_text(fact.get("valid_until")),
+            freshness_check_date=_text(
+                fact.get("freshness_check_date") or structured.get("freshness_check_date")
+            ),
             structured_value=dict(structured),
         ),
         None,
@@ -299,12 +315,16 @@ def _entry_matches_axes(entry: Mapping[str, Any], axes: Mapping[str, Any]) -> bo
     if entry.get("brand") != axes.get("brand"):
         return False
     grade = axes.get("grade")
+    if entry.get("existence_status") == "not_offered" and entry.get("grade_values") and grade is None:
+        return False
     if grade is not None and grade not in {int(item) for item in (entry.get("grade_values") or ()) if _grade_int(item) is not None}:
         return False
     subject = str(axes.get("subject") or "")
     if subject and subject not in {str(item) for item in (entry.get("subjects") or ())}:
         return False
     fmt = str(axes.get("format") or "")
+    if entry.get("existence_status") == "not_offered" and entry.get("format") and not fmt:
+        return False
     if fmt and entry.get("format") and entry.get("format") != fmt:
         return False
     if fmt and not entry.get("format"):
@@ -335,16 +355,6 @@ def _client_safe(fact: Mapping[str, Any]) -> bool:
     if "allowed_for_client_answer" in fact:
         return fact.get("allowed_for_client_answer") is True
     return bool(_fact_text(fact))
-
-
-def _valid_until_ok(value: Any) -> bool:
-    raw = _text(value)
-    if not raw:
-        return False
-    try:
-        return date.fromisoformat(raw[:10]) >= date.today()
-    except ValueError:
-        return False
 
 
 def _negative_fact(fact: Mapping[str, Any], haystack: str) -> bool:
@@ -384,6 +394,26 @@ def _positive_fact_is_operational_or_payment_like(haystack: str) -> bool:
             "свяжется",
         )
     )
+
+
+def _explicit_camp_fact(fact: Mapping[str, Any], structured: Mapping[str, Any]) -> bool:
+    """Only a dated or explicitly typed camp fact can prove a current camp exists."""
+    product = _text(fact.get("product")).casefold()
+    return bool(
+        structured.get("date_start")
+        or structured.get("program_kind") == "camp"
+        or product.endswith("_2027")
+    )
+
+
+def _evaluation_day() -> date | None:
+    raw = _text(os.getenv("MANGO_EVALUATION_DATE"))
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return date.max
 
 
 def _subjects_from_text(text: str) -> list[str]:

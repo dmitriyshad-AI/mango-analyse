@@ -37,6 +37,7 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     reliable_answerer_step1_active_for_turn,
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import semantic_reading_trace_record
+from mango_mvp.knowledge_base.fact_registry import fact_runtime_time_ok
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_MEMORY_EXPANDED_SHADOW_ENV,
     TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
@@ -668,7 +669,7 @@ def _direct_path_legacy_context_fact_allowed(
         return False
     if value.get("forbidden_for_client") is True or value.get("internal_only") is True:
         return False
-    if "valid_until" in value and not _direct_path_valid_until_ok(value.get("valid_until"), today=evaluation_day):
+    if not fact_runtime_time_ok(value, today=evaluation_day):
         return False
     return True
 
@@ -1872,7 +1873,16 @@ def _direct_path_records_to_fact_pack(
                 "brand": str(fact.get("brand") or ""),
                 "fact_type": str(fact.get("fact_type") or ""),
                 "product": str(fact.get("product") or ""),
+                "valid_from": str(fact.get("valid_from") or ""),
                 "valid_until": str(fact.get("valid_until") or ""),
+                "freshness_check_date": str(
+                    fact.get("freshness_check_date")
+                    or (
+                        fact.get("structured_value", {}).get("freshness_check_date")
+                        if isinstance(fact.get("structured_value"), Mapping)
+                        else ""
+                    )
+                ),
                 "client_safe": "true"
                 if _direct_path_client_safe_snapshot_fact(
                     fact, active_brand=active_brand, today=evaluation_day

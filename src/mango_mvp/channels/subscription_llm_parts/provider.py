@@ -24,6 +24,7 @@ from mango_mvp.knowledge_base.product_existence_axes_catalog import (
     build_product_existence_axes_catalog,
     verify_product_format_exists,
 )
+from mango_mvp.knowledge_base.fact_registry import fact_runtime_time_ok
 
 
 from mango_mvp.channels.subscription_llm_parts.codex_exec import (
@@ -78,7 +79,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_snapshot_path_from_context,
     _direct_path_template_fact_text,
     _direct_path_template_from_fact,
-    _direct_path_valid_until_ok,
     _direct_path_model_p0_enabled,
     _direct_default_manager_enabled,
     _intent_model_led_enabled,
@@ -250,13 +250,8 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     DISCOUNT_STACKING_SAFE_TEXT,
     EMPLOYEE_PRIVACY_SAFE_TEXT,
     FALSE_INFO_SAFE_TEXT,
-    FOTON_CAMP_INSTALLMENT_SAFE_TEXT,
-    FOTON_CAMP_OVERVIEW_SAFE_TEXT,
-    FOTON_CITY_CAMP_AUGUST_SAFE_TEXT,
     FOTON_DOLYAMI_SAFE_TEXT,
     FOTON_INSTALLMENT_SAFE_TEXT,
-    FOTON_LVSH_DATES_SAFE_TEXT,
-    FOTON_LVSH_PRICE_SAFE_TEXT,
     FOTON_OFFLINE_FREE_TRIAL_GUARD_TEXT,
     FOTON_ONLINE_TRIAL_SAFE_TEXT,
     FOTON_SECOND_SUBJECT_DISCOUNT_TEXT,
@@ -310,20 +305,9 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     TAX_ONLINE_FORM_SAFE_TEXT,
     THIRD_PARTY_PRIVACY_SAFE_TEXT,
     UNKNOWN_TOPIC_FALLBACK_ID,
-    UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT,
-    UNPK_CAMP_OVERVIEW_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
-    UNPK_LVSH_DATES_SAFE_TEXT,
-    UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT,
-    UNPK_LVSH_GRADE_11_SAFE_TEXT,
-    UNPK_LVSH_LIVING_TRANSFER_SAFE_TEXT,
-    UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
-    UNPK_LVSH_PRICE_SAFE_TEXT,
-    UNPK_LVSH_SEATS_SAFE_TEXT,
     UNPK_MONTHLY_SEMESTER_DISCOUNT_TEXT,
     UNPK_SECOND_SUBJECT_DISCOUNT_TEXT,
-    UNPK_TRIAL_SAFE_TEXT,
-    UNPK_ZVSH_WAITLIST_SAFE_TEXT,
     UNSUPPORTED_PROMISE_PATTERNS,
     _BARE_N_POINTS_RE,
     _COMPLAINT_SAFE_VARIANTS,
@@ -1879,7 +1863,9 @@ def _semantic_frame_existence_proof_shadow_trace(
         }
 
     fact_key = str(entry.get("source_fact_key") or "").strip()
+    valid_from = str(entry.get("valid_from") or "").strip()
     valid_until = str(entry.get("valid_until") or "").strip()
+    freshness_check_date = str(entry.get("freshness_check_date") or "").strip()
     if not fact_key:
         return {**base, "reason": "empty_source_fact_key", "brand": brand, "proof_status": status}
     fact_metadata = {
@@ -1887,6 +1873,8 @@ def _semantic_frame_existence_proof_shadow_trace(
             "brand": brand,
             "client_safe": "true",
             "valid_until": valid_until,
+            "valid_from": valid_from,
+            "freshness_check_date": freshness_check_date,
             "source": "semantic_frame_existence_proof_shadow",
             "proof_status": status,
             "fact_type": str(entry.get("source_fact_type") or ""),
@@ -1943,20 +1931,22 @@ def _semantic_frame_fresh_client_safe_fact_trace(
         raw = fact_meta.get(key) if isinstance(fact_meta, Mapping) else None
         meta = raw if isinstance(raw, Mapping) else {}
         brand = str(meta.get("brand") or "").strip().casefold()
+        valid_from = str(meta.get("valid_from") or "").strip()
         valid_until = str(meta.get("valid_until") or "").strip()
         client_safe = _semantic_frame_truthy_text(meta.get("client_safe"))
-        valid_until_ok = bool(valid_until) and _direct_path_valid_until_ok(valid_until)
+        validity_window_ok = bool(valid_until) and fact_runtime_time_ok(meta)
         checked.append(
             {
                 "fact_key": key,
                 "brand": brand,
                 "client_safe": "true" if client_safe else "false",
                 "valid_until": valid_until,
-                "valid_until_ok": "true" if valid_until_ok else "false",
+                "valid_from": valid_from,
+                "valid_until_ok": "true" if validity_window_ok else "false",
                 "source": str(meta.get("source") or "wide_fact_pack"),
             }
         )
-        if brand == active_brand and client_safe and valid_until_ok:
+        if brand == active_brand and client_safe and validity_window_ok:
             fresh_checked.append(checked[-1])
     base = {
         **base,

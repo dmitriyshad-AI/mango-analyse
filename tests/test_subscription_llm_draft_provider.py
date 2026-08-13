@@ -105,18 +105,10 @@ def test_tz5_client_safe_literals_do_not_regress_process_decisions() -> None:
     checked = "\n".join(
         (
             subscription_llm.PROMOCODE_SAFE_TEXT,
-            subscription_llm.UNPK_LVSH_SEATS_SAFE_TEXT,
-            subscription_llm.FOTON_LVSH_PRICE_SAFE_TEXT,
-            subscription_llm.UNPK_LVSH_PRICE_SAFE_TEXT,
-            subscription_llm.UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
-            subscription_llm.FOTON_LVSH_DATES_SAFE_TEXT,
-            subscription_llm.UNPK_LVSH_DATES_SAFE_TEXT,
             subscription_llm.CONTRACT_ENTITY_SAFE_TEXT,
             subscription_llm.CROSS_BRAND_GENERIC_SAFE_TEXT,
             subscription_llm.CROSS_BRAND_PLATFORM_SAFE_TEXT,
             subscription_llm.FOTON_ONLINE_TRIAL_SAFE_TEXT,
-            subscription_llm.UNPK_TRIAL_SAFE_TEXT,
-            subscription_llm.UNPK_CAMP_OVERVIEW_SAFE_TEXT,
         )
     )
 
@@ -137,12 +129,6 @@ def test_tz5_client_safe_literals_do_not_regress_process_decisions() -> None:
     assert "учтено в прайсе" in subscription_llm.PROMOCODE_SAFE_TEXT
     assert "SohoLMS" in subscription_llm.CROSS_BRAND_PLATFORM_SAFE_TEXT
     assert "договор-оферта" in subscription_llm.CONTRACT_ENTITY_SAFE_TEXT
-    assert "93 100 ₽" in subscription_llm.FOTON_LVSH_PRICE_SAFE_TEXT
-    assert "98 000 ₽" in subscription_llm.FOTON_LVSH_PRICE_SAFE_TEXT
-    assert "114 000 ₽" in subscription_llm.UNPK_LVSH_PRICE_SAFE_TEXT
-    assert "120 000 ₽" in subscription_llm.UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT
-    assert "20-28 июня" in subscription_llm.FOTON_LVSH_DATES_SAFE_TEXT
-    assert "18-26 июля" in subscription_llm.UNPK_LVSH_DATES_SAFE_TEXT
 
 
 def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -> None:
@@ -2308,6 +2294,8 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
                         "internal_only": False,
+                        "freshness_check_date": "2026-08-13",
+                        "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
                     },
@@ -2317,6 +2305,8 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
                         "internal_only": False,
+                        "freshness_check_date": "2026-08-13",
+                        "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
                     },
@@ -2324,6 +2314,8 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
                         "brand": "unpk",
                         "allowed_for_client_answer": True,
+                        "freshness_check_date": "2026-08-13",
+                        "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
                     },
@@ -2469,6 +2461,33 @@ def test_semantic_output_regen_prompt_forbids_edit_comments() -> None:
     assert "Верни ТОЛЬКО текст ответа клиенту" in prompt
     assert "Заменяю только этот абзац" in prompt
     assert "Остальной текст без изменений" in prompt
+
+
+def test_semantic_output_verifier_prompt_checks_price_written_in_words() -> None:
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text="Реферальная выплата — десять тысяч рублей.",
+        client_message="Сколько выплачивают по реферальной программе?",
+        facts={"owner.referral": "Реферальная выплата — 5 000 рублей."},
+        active_brand="unpk",
+        route="draft_for_manager",
+    )
+
+    assert "в том числе когда число написано словами" in prompt
+    assert "цена, дата" in prompt
+    assert "Не проверяй цены" not in prompt
+
+
+def test_semantic_output_verifier_prompt_checks_closed_enrollment_claim() -> None:
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text="На летнюю школу 2026 можно записаться.",
+        client_message="Можно записаться в летнюю школу?",
+        facts={"owner.summer.closed": "Набор на летние школы 2026 завершён."},
+        active_brand="unpk",
+        route="draft_for_manager",
+    )
+
+    assert "открытый/закрытый набор" in prompt
+    assert "Набор на летние школы 2026 завершён" in prompt
 
 
 def test_semantic_output_verifier_never_unblocks_deterministic_brand_gate() -> None:
@@ -3462,8 +3481,8 @@ def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
     assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
 
 
-DEFAULT_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
-V67_SNAPSHOT_PATH = DEFAULT_SNAPSHOT_PATH
+DEFAULT_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json")
+V67_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 
 
 def _wide_pack_context(
@@ -3622,12 +3641,18 @@ def _write_wave6_snapshot(tmp_path: Path) -> Path:
             },
         ]
     }
+    for fact in snapshot["facts"]:
+        fact.update(
+            freshness_check_date="2026-08-13",
+            valid_from="2026-08-13",
+            valid_until="2027-05-31",
+        )
     path = tmp_path / "wave6_snapshot.json"
     path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     return path
 
 
-def test_direct_path_wide_pack_excludes_expired_unpk_offline_price_pair() -> None:
+def test_direct_path_wide_pack_includes_announced_unpk_offline_price_pair() -> None:
     message = "Сколько стоит очно физика 9 класс?"
     pack = _direct_path_context_fact_pack(
         _wide_pack_context(brand="unpk", message=message),
@@ -3636,8 +3661,8 @@ def test_direct_path_wide_pack_excludes_expired_unpk_offline_price_pair() -> Non
 
     exact_text = _wide_pack_text(pack, pack["exact_keys"])
     assert str(pack["selected_category"]).startswith("pricing")
-    assert "49 000" not in exact_text
-    assert "82 000" not in exact_text
+    assert "49 000" in exact_text
+    assert "82 000" in exact_text
     assert len(pack["facts"]) <= 60
 
 
@@ -3675,6 +3700,7 @@ def test_direct_path_wide_pack_excludes_expired_client_safe_fact(tmp_path) -> No
                 "allowed_for_client_answer": True,
                 "forbidden_for_client": False,
                 "internal_only": False,
+                "freshness_check_date": "2027-01-15",
                 "valid_until": "2026-12-31",
                 "client_safe_text": "Фотон: старая цена — 1 000 ₽.",
             },
@@ -3686,6 +3712,7 @@ def test_direct_path_wide_pack_excludes_expired_client_safe_fact(tmp_path) -> No
                 "allowed_for_client_answer": True,
                 "forbidden_for_client": False,
                 "internal_only": False,
+                "freshness_check_date": "2027-01-15",
                 "valid_until": "2027-08-31",
                 "client_safe_text": "Фотон: новая цена — 2 000 ₽.",
             },
@@ -3726,15 +3753,21 @@ def test_direct_path_wide_pack_schedule_stays_under_limit_and_keeps_exact_block(
 
 def test_direct_path_wide_pack_marks_scope_conflict_as_adjacent() -> None:
     message = "Сколько стоит физика 9 класс?"
+    context = _wide_pack_context(
+        brand="unpk",
+        message=message,
+        known_slots={"format": "очно"},
+        primary_intent="pricing",
+    )
+    context["evaluation_date"] = "2026-08-16"
     pack = _direct_path_context_fact_pack(
-        _wide_pack_context(brand="unpk", message=message, known_slots={"format": "очно"}, primary_intent="pricing"),
+        context,
         client_message=message,
     )
     exact_text = _wide_pack_text(pack, pack["exact_keys"]).casefold()
     adjacent_text = _wide_pack_text(pack, pack["adjacent_keys"]).casefold()
-    assert "очно" in exact_text
-    assert "49 000" not in exact_text
-    assert "82 000" not in exact_text
+    assert "очные курсы" in exact_text
+    assert "82 000" in exact_text
     assert "онлайн" in adjacent_text
 
 
@@ -4135,6 +4168,8 @@ def test_tz110_llm_retrieve_logs_scope_demoted_ids_for_wrong_scope_exact_selecti
             },
         ]
     }
+    for fact in snapshot["facts"]:
+        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "scope_snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
 
@@ -4192,6 +4227,8 @@ def test_tz119_unconfirmed_context_grade_is_soft_scope_not_hard_demotion(tmp_pat
             },
         ]
     }
+    for fact in snapshot["facts"]:
+        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "assumed_scope_snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     prompt_seen = ""
@@ -4251,6 +4288,8 @@ def test_tz119_confirmed_grade_still_scope_demotes_wrong_fact(tmp_path: Path) ->
             }
         ]
     }
+    for fact in snapshot["facts"]:
+        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "confirmed_scope_snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     context = {
@@ -4406,6 +4445,8 @@ def test_wave6_llm_retrieve_supplements_price_and_schedule_for_known_course(tmp_
             },
         ]
     }
+    for fact in snapshot["facts"]:
+        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     context = {
@@ -6654,7 +6695,7 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
 
 
-def test_direct_path_derived_product_number_keeps_text_with_addressed_checklist() -> None:
+def test_direct_path_derived_product_number_replaces_unsupported_amount() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -6675,13 +6716,13 @@ def test_direct_path_derived_product_number_keeps_text_with_addressed_checklist(
 
     gate = result.metadata["authoritative_output_gate"]
     codes = {item["code"] for item in gate["findings"]}
-    assert result.route == "draft_for_manager"
-    assert result.draft_text == "За два предмета выйдет 181 740 ₽, это выгоднее."
-    assert gate["action"] == "downgrade_keep_text"
+    assert result.route in {"draft_for_manager", "manager_only"}
+    assert "181 740" not in result.draft_text
+    assert gate["action"] == "block"
     assert "derived_product_number" in codes
-    assert "direct_path_gate_text_preserved" in result.safety_flags
+    assert "direct_path_gate_text_preserved" not in result.safety_flags
     assert any("Проверьте 181 740 ₽ — вычислено ботом, в прайсе нет." == item for item in result.manager_checklist)
-    assert "derived_product_number" not in subscription_llm.DIRECT_PATH_REPLACE_TEXT_GATE_CODES
+    assert "derived_product_number" in subscription_llm.DIRECT_PATH_REPLACE_TEXT_GATE_CODES
 
 
 def test_direct_path_model_cannot_forge_verified_safety_flag() -> None:
@@ -6710,8 +6751,9 @@ def test_direct_path_model_cannot_forge_verified_safety_flag() -> None:
 
     gate = result.metadata["authoritative_output_gate"]
     assert "price_safe_template_applied" not in source.safety_flags
-    assert result.route == "draft_for_manager"
-    assert gate["action"] == "downgrade_keep_text"
+    assert result.route in {"draft_for_manager", "manager_only"}
+    assert "181 740" not in result.draft_text
+    assert gate["action"] == "block"
     assert "derived_product_number" in {item["code"] for item in gate["findings"]}
 
 
@@ -6837,7 +6879,7 @@ def test_direct_path_real_manager_gold_pack_lints_examples() -> None:
     payload = yaml.safe_load(DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH.read_text(encoding="utf-8"))
     examples = payload["examples"]
 
-    assert len(examples) == 12
+    assert len(examples) == 9
     assert payload["source"] == "real_manager_tg"
     for item in examples:
         assert item["mission_gold"] is True
@@ -7196,6 +7238,8 @@ def test_direct_path_legacy_context_filters_unsafe_upstream_facts() -> None:
                     "allowed_for_client_answer": True,
                     "forbidden_for_client": False,
                     "internal_only": False,
+                    "freshness_check_date": "2026-08-13",
+                    "valid_from": "2026-08-13",
                     "valid_until": "2027-08-31",
                     "client_safe_text": "Фотон: безопасный факт для клиента.",
                 },

@@ -154,6 +154,8 @@ FORBIDDEN_KEYS = {
 }
 CLIENT_SAFE_PATH_MARKERS = ("refund_presale_policy",)
 MANIFEST_MANUAL_DECISION_FACT_OVERRIDES: tuple[Mapping[str, Any], ...] = ()
+MANIFEST_REMOVED_FACT_PREFIXES: tuple[Mapping[str, Any], ...] = ()
+MANIFEST_REMOVED_PRODUCTS: tuple[Mapping[str, Any], ...] = ()
 MANIFEST_STRUCTURED_METADATA_RULES: tuple[Mapping[str, Any], ...] = ()
 MANIFEST_FACT_SCOPE_AXES_FILE = ""
 INTERNAL_PATH_MARKERS = {
@@ -321,6 +323,10 @@ def build_kb_release_v3(
     team_root.mkdir(parents=True, exist_ok=True)
 
     handoff = load_handoff(handoff_root)
+    if isinstance(handoff.get("gold_answers_v3"), Mapping):
+        bot_policy = dict(handoff["bot_policy"])
+        bot_policy["gold_answers_v3"] = dict(handoff["gold_answers_v3"])
+        handoff["bot_policy"] = bot_policy
     sources = build_source_registry(handoff_root)
     source_lookup = {str(source["source_id"]): source for source in sources}
     post_filter = build_post_filter_registry(handoff)
@@ -352,8 +358,8 @@ def build_kb_release_v3(
         )
     )
     facts.extend(build_policy_facts(handoff, source_lookup))
-    facts = remove_manifest_deleted_facts(facts)
     facts.extend(build_manual_decision_facts(source_lookup))
+    facts = remove_manifest_deleted_facts(facts)
     facts = attach_source_details(dedupe_facts(facts), source_lookup=source_lookup)
     facts = ensure_fact_refresh_dates(facts)
     facts = enrich_phase2_structured_metadata(facts)
@@ -371,6 +377,7 @@ def build_kb_release_v3(
         bot_policy=normalize_bot_policy(handoff["bot_policy"]),
     )
     quality = build_quality_report(snapshot, approval_queue=approval_queue)
+    quality["run_id"] = run_id
     snapshot["quality_summary"] = {
         "quality_passed": quality["quality_passed"],
         "blocking_failures": quality["blocking_failures"],
@@ -427,7 +434,7 @@ def build_source_registry(handoff_root: Path) -> list[dict[str, Any]]:
                 "source_id": meta["source_id"],
                 "source_kind": meta["kind"],
                 "title": str(meta.get("title") or f"{meta['filename']} (Claude layer v3)"),
-                "path": str(path),
+                "path": str(path.relative_to(PROJECT_ROOT)) if path.is_relative_to(PROJECT_ROOT) else str(path),
                 "url": str(meta.get("url") or ""),
                 "sha256": sha,
                 "source_sha256": sha,
@@ -436,7 +443,9 @@ def build_source_registry(handoff_root: Path) -> list[dict[str, Any]]:
                 "source_status": "read" if path.exists() else "missing",
                 "source_role": "claude_v3_handoff_source",
                 "read_status": "read" if path.exists() else "missing",
-                "usable_for_precise_answer": key.startswith("facts_for_bot"),
+                "usable_for_precise_answer": bool(
+                    meta.get("usable_for_precise_answer", key.startswith("facts_for_bot"))
+                ),
                 "requires_manager_confirmation": False,
             }
         )
@@ -666,7 +675,8 @@ def make_fact(
         for key, override_value in structured_value_overrides.items():
             if override_value is not None and str(override_value).strip():
                 structured_value[str(key)] = override_value
-    structured_value["freshness_check_date"] = FRESHNESS_CHECK_DATE
+    fact_freshness_date = str(structured_value.get("freshness_check_date") or FRESHNESS_CHECK_DATE)
+    structured_value["freshness_check_date"] = fact_freshness_date
     fact_text = render_fact_text(path, value, brand=brand, fact_type=fact_type, structured_value=structured_value)
     route_policy = infer_route_policy(path, fact_type=fact_type, status=status, internal_only=internal_only)
     risk_level = infer_risk_level(path, fact_type=fact_type)
@@ -722,9 +732,9 @@ def make_fact(
         "freshness_status": freshness,
         "verification_status": status,
         "structured_value": structured_value,
-        "valid_from": "",
+        "valid_from": str(structured_value.get("valid_from") or ""),
         "valid_until": structured_value.get("valid_until", ""),
-        "freshness_check_date": FRESHNESS_CHECK_DATE,
+        "freshness_check_date": fact_freshness_date,
         "verified_by": "",
         "verified_at": "",
         "owner_role": owner_role_for_fact(path, fact_type),
@@ -952,13 +962,37 @@ def manifest_removed_fact_keys() -> set[tuple[str, str]]:
 
 def remove_manifest_deleted_facts(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     removed = manifest_removed_fact_keys()
-    if not removed:
+    removed_prefixes = tuple(
+        (
+            normalize_brand(str(item.get("brand") or "")),
+            str(item.get("fact_key_prefix") or "").strip(),
+        )
+        for item in MANIFEST_REMOVED_FACT_PREFIXES
+        if isinstance(item, Mapping)
+        and normalize_brand(str(item.get("brand") or ""))
+        and str(item.get("fact_key_prefix") or "").strip()
+    )
+    removed_products = {
+        (normalize_brand(str(item.get("brand") or "")), str(item.get("product") or "").strip())
+        for item in MANIFEST_REMOVED_PRODUCTS
+        if isinstance(item, Mapping)
+        and normalize_brand(str(item.get("brand") or ""))
+        and str(item.get("product") or "").strip()
+    }
+    if not removed and not removed_prefixes and not removed_products:
         return [dict(fact) for fact in facts]
-    return [
-        dict(fact)
-        for fact in facts
-        if (normalize_brand(str(fact.get("brand") or "")), str(fact.get("fact_key") or "")) not in removed
-    ]
+    kept: list[dict[str, Any]] = []
+    for fact in facts:
+        brand = normalize_brand(str(fact.get("brand") or ""))
+        fact_key = str(fact.get("fact_key") or "")
+        if (brand, fact_key) in removed:
+            continue
+        if (brand, str(fact.get("product") or "").strip()) in removed_products:
+            continue
+        if any(brand == prefix_brand and fact_key.startswith(prefix) for prefix_brand, prefix in removed_prefixes):
+            continue
+        kept.append(dict(fact))
+    return kept
 
 
 def make_manual_fact(
@@ -1330,6 +1364,7 @@ def build_chunks(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "text": text,
                 "fact_types": list(fact.get("fact_types") or [fact.get("fact_type")]),
                 "freshness_status": fact.get("freshness_status"),
+                "freshness_check_date": fact.get("freshness_check_date"),
                 "valid_from": fact.get("valid_from"),
                 "valid_until": fact.get("valid_until"),
                 "bot_permission": "bot_answer_self_or_draft" if fact.get("allowed_for_client_answer") else "internal_or_manager_only",
@@ -1801,9 +1836,13 @@ def write_outputs(
     (team_root / "claude_handoff_response.md").write_text(render_claude_handoff_response(snapshot, quality), encoding="utf-8")
 
 
+def release_label(payload: Mapping[str, Any]) -> str:
+    return str(payload.get("run_id") or DEFAULT_RUN_ID)
+
+
 def render_quality_report_md(quality: Mapping[str, Any]) -> str:
     lines = [
-        "# QUALITY_REPORT kb_release_20260518_v3",
+        f"# QUALITY_REPORT {release_label(quality)}",
         "",
         f"quality_passed: `{quality.get('quality_passed')}`",
         "",
@@ -1831,8 +1870,8 @@ def render_quality_report_md(quality: Mapping[str, Any]) -> str:
 def render_readme(snapshot: Mapping[str, Any], quality: Mapping[str, Any]) -> str:
     summary = snapshot.get("summary") or {}
     return (
-        "# kb_release_20260518_v3\n\n"
-        "V3 база знаний собрана из `claude_to_codex_v3_handoff_2026-05-17`.\n\n"
+        f"# {release_label(snapshot)}\n\n"
+        "Каноническая база знаний собрана из проверенных YAML-источников.\n\n"
         "Главные правила: каждый числовой бизнес-факт развернут в отдельную запись, "
         "`forbidden_to_say` вынесен в post-filter, внутренние номера лицензий не попадают в `client_safe_text`.\n\n"
         f"- facts_total: `{summary.get('facts_total')}`\n"
@@ -1844,8 +1883,8 @@ def render_readme(snapshot: Mapping[str, Any], quality: Mapping[str, Any]) -> st
 
 def render_team_handoff_readme(snapshot: Mapping[str, Any], quality: Mapping[str, Any]) -> str:
     return (
-        "# Handoff kb_release_20260518_v3\n\n"
-        "Папка содержит v3 snapshot, facts_registry, source_registry, approval queue и quality report.\n\n"
+        f"# Handoff {release_label(snapshot)}\n\n"
+        "Папка содержит snapshot, facts_registry, source_registry, approval queue и quality report.\n\n"
         "Сборка не запускала ASR, Resolve+Analyze, live write в AMO/CRM/Tallanto и не меняла `stable_runtime`.\n\n"
         f"Quality passed: `{quality.get('quality_passed')}`.\n"
         f"Facts: `{(snapshot.get('summary') or {}).get('facts_total')}`.\n"

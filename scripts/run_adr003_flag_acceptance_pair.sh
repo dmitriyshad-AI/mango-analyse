@@ -34,7 +34,7 @@ esac
 PACKAGE_ID="${PACKAGE_ID:-adr003_flag_acceptance}"
 REV_LABEL="${REV_LABEL:-${PACKAGE_ID}_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-}"
-SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
+SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json}"
 if [[ -z "$SCEN" ]]; then
   echo "SCEN is required" >&2
   exit 2

@@ -56,36 +56,18 @@ CODE_SUFFIXES = {
     ".ps1",
 }
 
-KB_V65_STRUCTURAL_PATHS = (
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/facts_registry.csv",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/facts_registry.jsonl",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/source_registry.csv",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/source_registry.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/knowledge_chunks.csv",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/post_filter_registry.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/quality_report.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/semantic_review.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/v6_1_build_result.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/manifest.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/bot_fact_index.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/bot_gold_answers.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/bot_template_registry.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/client_safe_facts_foton.jsonl",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/client_safe_facts_unpk.jsonl",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/manager_only_or_internal_facts.jsonl",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/source_registry.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_bot_pack/post_filter_registry.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/manifest.json",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_FOTON.csv",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_UNPK.csv",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/MANAGER_ONLY_FACTS.csv",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/release_manifest.yaml",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/bot_policy.yaml",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_internal_only.yaml",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_for_bot_FOTON.yaml",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_for_bot_UNPK.yaml",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/brand_rules.yaml",
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/gold_answers_v3.yaml",
+KB_CURRENT_STRUCTURAL_PATHS = (
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/post_filter_registry.json",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/quality_report.json",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/semantic_review.json",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/v6_1_build_result.json",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/release_manifest.yaml",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/bot_policy.yaml",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/facts_internal_only.yaml",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/facts_for_bot_FOTON.yaml",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/facts_for_bot_UNPK.yaml",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/brand_rules.yaml",
+    "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/gold_answers_v3.yaml",
 )
 
 STRUCTURAL_SOURCE_DATA_PATHS: tuple[str, ...] = ()
@@ -158,10 +140,8 @@ CURATED_QUERY_HINTS: tuple[Mapping[str, Any], ...] = (
         "terms": ("бренд", "фотон", "унпк", "foton", "unpk", "сравн", "цен", "price", "brand"),
         "paths": (
             "src/mango_mvp/channels/output_verification_floor.py",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/brand_rules.yaml",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_FOTON.csv",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_UNPK.csv",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/MANAGER_ONLY_FACTS.csv",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/brand_rules.yaml",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/facts_registry.jsonl",
         ),
         "guidance": "Бренды/цены не сравнивать по карте; проверять client-safe и manager-only границы в сырье.",
     },
@@ -169,8 +149,8 @@ CURATED_QUERY_HINTS: tuple[Mapping[str, Any], ...] = (
         "terms": ("распис", "групп", "час", "связ", "schedule", "hours"),
         "paths": (
             "src/mango_mvp/channels/fact_retrieval.py",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_for_bot_FOTON.yaml",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_for_bot_UNPK.yaml",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/facts_for_bot_FOTON.yaml",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/facts_for_bot_UNPK.yaml",
         ),
         "guidance": "Расписание и часы связи считать фактами из сырья, не из графового вывода.",
     },
@@ -201,17 +181,15 @@ CURATED_QUERY_HINTS: tuple[Mapping[str, Any], ...] = (
             "src/mango_mvp/graphify_structural.py",
             "ARCHITECTURE.md",
             "D1_audit_backlog/GRAPHIFY_TZ25_pilot_questions_2026-06-14.md",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/gold_answers_v3.yaml",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/gold_answers_v3.yaml",
         ),
         "guidance": "Cloud semantic layer не запускался; пересказ прозы/gold answers по карте запрещён, читать только сырой источник.",
     },
     {
         "terms": ("client_safe", "manager_only", "internal_only", "forbidden_for_client", "манаг", "внутрен"),
         "paths": (
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_FOTON.csv",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_UNPK.csv",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/MANAGER_ONLY_FACTS.csv",
-            "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_internal_only.yaml",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/facts_registry.jsonl",
+            "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved_sources/facts/facts_internal_only.yaml",
             "src/mango_mvp/graphify_structural.py",
         ),
         "guidance": "MANAGER_ONLY/internal_only не считать client-safe даже при совпадении похожих фактов.",
@@ -346,7 +324,7 @@ def summarize_structured_file(path: Path, clean_root: Path) -> dict[str, Any]:
 
 def list_structured_files(clean_root: Path) -> list[Path]:
     files: list[Path] = []
-    for rel in (*KB_V65_STRUCTURAL_PATHS, *STRUCTURAL_SOURCE_DATA_PATHS):
+    for rel in (*KB_CURRENT_STRUCTURAL_PATHS, *STRUCTURAL_SOURCE_DATA_PATHS):
         path = clean_root / rel
         if path.exists() and path.is_file():
             files.append(path)
@@ -395,7 +373,7 @@ def generated_structural_index(structured: Sequence[Mapping[str, Any]], raw_labe
         '"""',
         "",
         f"GRAPHIFY_STRUCTURAL_REVISION = {revision!r}",
-        f"KB_V65_STRUCTURAL_SOURCE_COUNT = {len(structured)!r}",
+        f"KB_CURRENT_STRUCTURAL_SOURCE_COUNT = {len(structured)!r}",
         f"RAW_LABEL_NODE_COUNT = {len(raw_labels)!r}",
         "",
     ]
@@ -404,7 +382,7 @@ def generated_structural_index(structured: Sequence[Mapping[str, Any]], raw_labe
         ident = sanitize_identifier(rel)
         lines.extend(
             [
-                f"def kb_v65_source_{ident}():",
+                f"def kb_current_source_{ident}():",
                 f"    return {dict(item)!r}",
                 "",
             ]

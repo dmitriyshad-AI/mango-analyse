@@ -64,9 +64,10 @@ def test_kb_v67_client_safe_texts_do_not_regress_to_removed_process_terms():
         assert phrase not in all_client_text
 
 
-def test_kb_v67_r4_1_is_default_snapshot_now():
+def test_owner_approved_v68_is_default_snapshot_now():
     runner = (PROJECT_ROOT / "scripts" / "run_amo_wappi_draft_loop.py").read_text(encoding="utf-8")
-    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" in runner
+    assert "kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json" in runner
+    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" not in runner
     assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" not in runner
     assert "kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json" not in runner
     assert "kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json" not in runner

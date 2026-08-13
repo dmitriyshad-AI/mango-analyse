@@ -250,21 +250,61 @@ def evaluate_fact_freshness_sla(fact: Mapping[str, Any], *, today: date | None =
         return FactFreshnessSLA(fact_id, fact_key, fact_type, sla_class, sla_days, checked_raw, None, False, FRESHNESS_SLA_STATUS_UNKNOWN)
     reference_today = today if today is not None else datetime.now(timezone.utc).date()
     age_days = (reference_today - checked_date).days
-    within = age_days <= sla_days
+    within = 0 <= age_days <= sla_days
     status = FRESHNESS_SLA_STATUS_OK if within else FRESHNESS_SLA_STATUS_STALE
     return FactFreshnessSLA(fact_id, fact_key, fact_type, sla_class, sla_days, checked_raw, age_days, within, status)
 
 
 def fact_valid_until_ok(value: Any, *, today: date | None = None) -> bool:
     """Return whether an owner-set business expiry still permits the fact."""
-    raw = str(value or "").strip()
-    if not raw:
+    return fact_validity_window_ok(valid_until=value, today=today)
+
+
+def fact_validity_window_ok(
+    *, valid_from: Any = "", valid_until: Any = "", today: date | None = None
+) -> bool:
+    """Return whether an owner-set business validity window permits the fact."""
+    reference_day = today or date.today()
+    raw_from = str(valid_from or "").strip()
+    if raw_from:
+        try:
+            if date.fromisoformat(raw_from[:10]) > reference_day:
+                return False
+        except ValueError:
+            return False
+    raw_until = str(valid_until or "").strip()
+    if not raw_until:
         return True
     try:
-        valid_until = date.fromisoformat(raw[:10])
+        last_day = date.fromisoformat(raw_until[:10])
     except ValueError:
         return False
-    return valid_until >= (today or date.today())
+    return last_day >= reference_day
+
+
+def fact_runtime_time_ok(fact: Mapping[str, Any], *, today: date | None = None) -> bool:
+    """Return whether a fact is in its business window and, when dated, within SLA.
+
+    Legacy callers may provide an inline fact without freshness metadata.  Keep
+    that established contract; immutable KB releases always carry a check date
+    and therefore still pass through the strict SLA gate.
+    """
+    window_ok = fact_validity_window_ok(
+        valid_from=fact.get("valid_from"),
+        valid_until=fact.get("valid_until"),
+        today=today,
+    )
+    structured = fact.get("structured_value")
+    structured_map = structured if isinstance(structured, Mapping) else {}
+    has_check_date = bool(
+        str(
+            fact.get("freshness_check_date")
+            or fact.get("verified_at")
+            or structured_map.get("freshness_check_date")
+            or ""
+        ).strip()
+    )
+    return window_ok and (not has_check_date or evaluate_fact_freshness_sla(fact, today=today).within_sla)
 
 
 _W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}

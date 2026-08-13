@@ -265,7 +265,7 @@ OWNER50_PRICE_AXES_CATALOG_DEFAULT_PATH = (
     Path(__file__).resolve().parents[3]
     / "product_data"
     / "knowledge_base"
-    / "kb_release_20260612_v6_7_staging_r4_1"
+    / "kb_release_20260813_v6_8_owner_approved"
     / "price_axes_catalog.json"
 )
 

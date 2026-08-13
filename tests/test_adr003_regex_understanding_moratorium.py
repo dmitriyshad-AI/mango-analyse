@@ -770,8 +770,8 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
 def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
     rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
-    assert len(rows) == 697
-    assert len({row["row_id"] for row in rows}) == 697
+    assert len(rows) == 692
+    assert len({row["row_id"] for row in rows}) == 692
     assert {row["node_kind"] for row in rows} == {
         "marker_helper_call",
         "regex_call",
@@ -805,10 +805,10 @@ def test_adr003_understanding_map_classifies_every_canonical_snapshot_row() -> N
     mapped = _understanding_map_rows()
 
     source = payload["source"]
-    assert source["base_repo_head"] == "0ba2d723aa8d562df2ecb7f4248c494bad14ff29"
+    assert source["base_repo_head"] == "a3593d74ba857b57bebf10870c7fad0948854a02"
     assert source["integrated_patch_heads"] == []
-    assert source["working_tree_task"] == "2026-08-12_TZ_FINAL_REGEX_AND_DEAD_CODE_CLEANUP.md"
-    assert source["snapshot_rows"] == len(snapshot_rows) == 697
+    assert source["working_tree_task"] == "2026-08-05_TZ_REFRESH_CURRENT_KB_EXPIRED_FACTS.md"
+    assert source["snapshot_rows"] == len(snapshot_rows) == 692
     assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
     assert source["node_kind_counts"] == {
         kind: sum(row["node_kind"] == kind for row in snapshot_rows)
@@ -835,13 +835,13 @@ def test_adr003_understanding_map_classifies_every_canonical_snapshot_row() -> N
         row["node_kind"] == "marker_helper_call" for row in snapshot_rows
     )
     membership_rows = _literal_left_membership_snapshot(UNDERSTANDING_MAP_PATH.parents[1])
-    assert source["literal_left_membership_total"] == len(membership_rows) == 289
+    assert source["literal_left_membership_total"] == len(membership_rows) == 282
     assert source["literal_left_membership_in_canonical_text_scope"] == sum(
         row["in_canonical_text_scope"] for row in membership_rows
-    ) == 147
+    ) == 142
     assert source["literal_left_membership_outside_canonical_text_scope"] == sum(
         not row["in_canonical_text_scope"] for row in membership_rows
-    ) == 142
+    ) == 140
 
     assert set(mapped) == set(snapshot_by_id)
     assert {row["bucket"] for row in mapped.values()} == {

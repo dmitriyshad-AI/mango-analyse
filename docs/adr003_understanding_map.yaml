@@ -1,43 +1,45 @@
-schema_version: adr003_understanding_map_v1_2026_07_31
+schema_version: adr003_understanding_map_v2_2026_08_12
 source:
-  base_repo_head: 81105c085b4f18c365e47a985501590301654d75
+  base_repo_head: 0ba2d723aa8d562df2ecb7f4248c494bad14ff29
   integrated_patch_heads: []
-  working_tree_task: 2026-08-11_TZ_REMOVE_UNREACHABLE_SEMANTIC_OBSERVERS.md
+  working_tree_task: 2026-08-12_TZ_FINAL_REGEX_AND_DEAD_CODE_CLEANUP.md
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
-  snapshot_rows: 701
-  snapshot_sha256: 05be9ab19bd57bde44dd67edbf4123b4348966b999c60e182d20579e4763660f
+  snapshot_rows: 697
+  snapshot_sha256: 9810c39b7f2cdb2a7482bec0e79528a1ef64a31daf51f2ee87603d33b9623268
   denominator: all_snapshot_rows
   node_kind_counts:
     marker_helper_call: 113
-    regex_call: 313
-    string_contains: 148
-    text_table: 127
+    regex_call: 311
+    string_contains: 147
+    text_table: 126
   regex_symbol_counts:
     re.compile: 140
     re.findall: 11
     re.fullmatch: 2
     re.match: 5
-    re.search: 130
+    re.search: 128
     re.split: 3
     re.sub: 22
-  text_table_rows: 127
-  text_table_literal_strings: 1253
+  text_table_rows: 126
+  text_table_literal_strings: 1252
   text_table_cyrillic_strings: 755
   text_tables_ge8_cyrillic: 29
   cyrillic_elements_in_ge8_tables: 656
   marker_helper_budget_ceiling: 155
   marker_helper_actual_snapshot_rows: 113
-  scope: D1 assigns only bucket 2 and bucket 3; bucket 1 and bucket 4 remain for the parallel owner.
+  scope: 'Полная классификация: модельная семантика, проверка выхода, формат, технический парсинг или исторический измеритель.'
   machine_text_table_rule: AST assignments whose uppercase name contains one of TEXT_TABLE_NAME_PARTS
   literal_left_membership_rule: literal string on the left of in/not in; canonical scope additionally requires a text-like
     comparator name
-  literal_left_membership_total: 290
-  literal_left_membership_in_canonical_text_scope: 148
+  literal_left_membership_total: 289
+  literal_left_membership_in_canonical_text_scope: 147
   literal_left_membership_outside_canonical_text_scope: 142
 classification_counts:
-  2_verification: 262
-  3_format_hygiene: 27
-  unassigned_for_parallel_owner: 412
+  1_model_owned_semantics: 239
+  2_verification: 331
+  3_format_hygiene: 32
+  4_technical_parser_or_lookup: 93
+  5_historical_measurement_only: 2
 classes:
   p0_safety_aggregation_floor:
     bucket: 2_verification
@@ -156,3183 +158,2115 @@ classes:
     - tests/test_answer_safety_classifier.py
     evidence_cases:
     - tests/test_semantic_roles.py::test_tax_deduction_return_word_is_not_payment_refund
+  legacy_model_owned_semantics:
+    bucket: 1_model_owned_semantics
+    meaning: До основной модели определяет намерение, тему, действие или отбор фактов; подлежит переносу к существующей модели.
+    keep: false
+  fact_output_verification_floor:
+    bucket: 2_verification
+    meaning: После модельного решения проверяет опору, область факта, маршрут или безопасное понижение; смысл запроса не выбирает.
+    keep: true
+    evidence_tests:
+    - tests/test_output_verification_floor_regressions.py
+    evidence_cases:
+    - tests/test_output_verification_floor_regressions.py::test_verify_output_blocks_named_entity_not_in_current_facts
+  technical_parser_or_lookup:
+    bucket: 4_technical_parser_or_lookup
+    meaning: Разбирает явное структурное значение или протокол и не выбирает бизнес-смысл свободного текста.
+    keep: true
+  historical_measurement_only:
+    bucket: 5_historical_measurement_only
+    meaning: Не участвует в рабочем ответе и остаётся только частью воспроизводимого исторического измерителя.
+    keep: true
 rows:
-- row_id: adr003:9c236f065bebb3a20ffb643e
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/actions.py
-  lineno: 20
-  col_offset: 0
-  node_kind: text_table
-  symbol: COMMERCIAL_REVIEW_MARKERS
-  display_symbol: COMMERCIAL_REVIEW_MARKERS
-  content_hash_kind: value_sha256
-  content_sha256: 282148a002b2fa029eafbbf5136a09118da902cd4f0f38ddabb5eb4dacf16135
-- row_id: adr003:2243ec6ea4691dfd58e6b1ce
-  bucket: 2_verification
-  class: p0_safety_aggregation_floor
-  path: src/mango_mvp/channels/answer_safety_classifier.py
-  lineno: 133
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 914b378fd70942d2c64d7256f42b98dd88b44b6a97db812ba9890429c1f6a69a
-- row_id: adr003:4907848ea8b34775c145325e
-  bucket: 2_verification
-  class: p0_safety_aggregation_floor
-  path: src/mango_mvp/channels/answer_safety_classifier.py
-  lineno: 136
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 546458d4fce3693f85983bae5f1fb00baf0b03ed4d586e1c71f08d1eee1c1ddb
-- row_id: adr003:d77c9be24125a8d7093879bb
-  bucket: 2_verification
-  class: p0_safety_aggregation_floor
-  path: src/mango_mvp/channels/answer_safety_classifier.py
-  lineno: 139
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 2fc04596d91ea9ebf11e5d0d49db79b4606fee189f663d249f56954e606a6929
-- row_id: adr003:5cc7f4b9ba7bdf5029fb8a89
-  bucket: 2_verification
-  class: p0_safety_aggregation_floor
-  path: src/mango_mvp/channels/answer_safety_classifier.py
-  lineno: 142
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 67b043c0e2f03e28f4caa5783276169bcd7c0f75c3c3e6ab14f48a62682e7a75
-- row_id: adr003:cd0c06b1bdae3857203cada0
-  bucket: 2_verification
-  class: p0_safety_aggregation_floor
-  path: src/mango_mvp/channels/answer_safety_classifier.py
-  lineno: 145
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: cc1c78dba2f3836e14e39a0e7939cf6d029b4d4e35adb58729a8dde14209d68c
-- row_id: adr003:453f61a69211082f3d951ac3
-  bucket: 2_verification
-  class: p0_safety_aggregation_floor
-  path: src/mango_mvp/channels/answer_safety_classifier.py
-  lineno: 148
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 66f9ee58448f05364e3bb3e70b72a4b92e9e4af821fdd0af60cebc7a8b2ac1a0
-- row_id: adr003:fcc434cb55b328b585b137ed
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 126
-  col_offset: 0
-  node_kind: text_table
-  symbol: CURRENT_TERMS_FORBIDDEN_PROMISES
-  display_symbol: CURRENT_TERMS_FORBIDDEN_PROMISES
-  content_hash_kind: value_sha256
-  content_sha256: aaf63cfcb3181e87176c966ff0d87b46dff98088785a9c07bfe7935297bbaeda
-- row_id: adr003:053b775285500f9a2a0ab8f6
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 134
-  col_offset: 0
-  node_kind: text_table
-  symbol: CURRENT_TERMS_FORBIDDEN_PROMISES_RU
-  display_symbol: CURRENT_TERMS_FORBIDDEN_PROMISES_RU
-  content_hash_kind: value_sha256
-  content_sha256: 9832206fd331160c5cc86c3ee51541e19a71a472af5b78260da8e97632f50ec3
-- row_id: adr003:758902c0ce3e1c06fc67abeb
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 163
-  col_offset: 37
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ce64d9866fe1a8a713af833b5363c5f9c99f338eec59a9cff1bd0503920dfb1f
-- row_id: adr003:402729888e93a4c67590ee9f
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 631
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CONTACT_REQUEST_ANSWER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 441e42987f174a2e140851a3b03dd0cdc7e97fb8d2e4ef3dbad2c710a667a756
-- row_id: adr003:68a176732712dcd3132f8d1d
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 928
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: f1af19b01a1a02129f13be3e02d8db0f92650ccf79120c06582339b7d29b0c27
-- row_id: adr003:115c9a820e595745548bb60b
-  bucket: 3_format_hygiene
-  class: parser_normalization
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 969
-  col_offset: 14
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: raw
-  content_hash_kind: pattern_sha256
-  content_sha256: 7b7259ecbad3a4d2d6a21ce4347318e84d93fbc6ca5d50ce6886b5e4d06a6d86
-- row_id: adr003:9614a87212cbf1eb547ab145
-  bucket: 3_format_hygiene
-  class: parser_normalization
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 970
-  col_offset: 14
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: raw
-  content_hash_kind: pattern_sha256
-  content_sha256: c36e4eb686017e1e1dbd92f47974b6aa3a40fb736597b5b7d40383c281bdb99a
-- row_id: adr003:0394101cebe862d96a5a987d
-  bucket: 3_format_hygiene
-  class: parser_normalization
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 1108
-  col_offset: 52
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: b39969bb65b33ab91b561030c80942074b2d76345fcc425a672dd0ba4201f198
-- row_id: adr003:3f09a4fb40ef8a0bf8a0a27c
-  bucket: 3_format_hygiene
-  class: parser_normalization
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 1111
-  col_offset: 52
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: b39969bb65b33ab91b561030c80942074b2d76345fcc425a672dd0ba4201f198
-- row_id: adr003:8491309624fe5688eb09fae6
-  bucket: 3_format_hygiene
-  class: parser_normalization
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 1397
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: a2cad88fa1b48e0862f4ed6a9c8e2b0e9660ab67766b21a16a211389674d3ebc
-- row_id: adr003:9203058e5b45f792e7a0f72e
-  bucket: 3_format_hygiene
-  class: parser_normalization
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 1414
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.fullmatch
-  display_symbol: match
-  content_hash_kind: pattern_sha256
-  content_sha256: f7d08aa963431dc72ef1b063820e108d50ee2a4c38b7761ea0376f5d9730cedf
-- row_id: adr003:00c939bc5a48bca9e4399dcc
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2088
-  col_offset: 11
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 3b1cf10199a0f70c06b672f59e4c0903ea3bb845152497a3fb604dac3082687b
-- row_id: adr003:d6c994f353bbd46c9efd7629
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2331
-  col_offset: 28
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 20a8b5b2085befa49b19dc7bdf130c4f331f4b5c78a4dad59ab6288414fdf08f
-- row_id: adr003:f29a5f71af7fceb8daa0fe55
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2331
-  col_offset: 64
-  node_kind: string_contains
-  symbol: NotIn
-  display_symbol: NotIn
-  content_hash_kind: expression_sha256
-  content_sha256: 4426bee3af9cfd903ae0b916d0a3abaabc20dc7616d974c2cec2f859c3eaf535
-- row_id: adr003:a65be749c53050666a7bd278
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2331
-  col_offset: 102
-  node_kind: string_contains
-  symbol: NotIn
-  display_symbol: NotIn
-  content_hash_kind: expression_sha256
-  content_sha256: 7a7a5819cfd4ca2a616431820e3975fe8dc72332109e739841a40cbe070d3c22
-- row_id: adr003:9b179548b8be3f278a369eb1
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2333
-  col_offset: 38
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 5f43da5cfc9e03f2df5a8423b96aad450fe402ede497c816692deb9080dc7a1d
-- row_id: adr003:8c82fecbe979513b6c6ae01e
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2333
-  col_offset: 58
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: b7583e370a216e249bbb43f384498d38e87347d5765bb40c8b09df9a723a868d
-- row_id: adr003:4c989af34690e71d8f4764b9
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2335
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 9f006b5240bbdd89cd10695c7c9c56b1598d5c1847cb619dea0ef3b830c5d02a
-- row_id: adr003:f7091676161d78246cb68461
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2335
-  col_offset: 26
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: e02b60e855f0c5df9b0b77e872c9cfe7282def8193159ca363d0689d5e453f06
-- row_id: adr003:c4c6b1a57f7f17f74f8b1b8c
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2337
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 4e78ca1fe36e61c313cc5229d637fcf737581db7404db45918916e91cfe66cb0
-- row_id: adr003:63afd80b0a187296a9d78f6c
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2337
-  col_offset: 30
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 179671b410a68ba951e935c5e84045476d3c46a8181ff328008c2e6ea8bf6b39
-- row_id: adr003:e31e03aef82d134513200234
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2339
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: a0e4ca116c773b24731b2f916247ce2469bac326961511306b7a017907651a1e
-- row_id: adr003:34bb5f1d6e45c4d17554ef6a
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2339
-  col_offset: 36
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 8eacc91f6d6310bb4a4d8f367681d94347f90a7cec58204ef45fe5e2cba27bea
-- row_id: adr003:20a36b45ccd2eb0c79321b93
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2341
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 0d4f86d4bb0164e87c6793e4b479c3c1c3dc50955ad0fdbe31cbc98e7c7a7bb7
-- row_id: adr003:9235d872f7658cfcde07b5ab
-  bucket: 2_verification
-  class: memory_safety_floor
-  path: src/mango_mvp/channels/dialogue_memory.py
-  lineno: 2341
-  col_offset: 48
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 96dd1d375f489a5f5c39aa36411b3d662cc1ff2216df34f74638fea2054f0a10
-- row_id: adr003:874975f0e59edab467e8cd44
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 20
-  col_offset: 12
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: REFUND_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 5d70e4690c1ea1fbbba795c101f94fe0b52791eb6e24f6f7c82352d4b5198d03
-- row_id: adr003:b4d1aabefe4307ad09320184
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 55
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: LEGAL_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 36e8fb819c941e75c5296a4c7321c2d8f46aa51bfa7e9a00f80bfafa1e1c49e2
-- row_id: adr003:b76e502bec3532d2dc8ba5c5
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 77
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: COMPLAINT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 874b95229dcf817371d2c56a567700ffab7ae08da2ac67dd90c3a7ef4072920f
-- row_id: adr003:588e09e5fd99e27ba4d224ee
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 83
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: QUALITY_COMPLAINT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 006393e52aca7e480e6731ff473e98a03cfeeadfe5af440da9109f5fea7e4ad9
-- row_id: adr003:b3a7b021a2e2a0707aa28917
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 94
-  col_offset: 0
-  node_kind: text_table
-  symbol: _CHILD_CONTEXT_PATTERN
-  display_symbol: _CHILD_CONTEXT_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: ffb1b889c6be6f838a5c55b7ebe7e012f2998bbff08cfd459f5c0affbe434b85
-- row_id: adr003:da4328af7234c8a0b470c0a6
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 95
-  col_offset: 0
-  node_kind: text_table
-  symbol: _CHILD_INCIDENT_PATTERN
-  display_symbol: _CHILD_INCIDENT_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: ea64409914c3b18ea872d8c6897d47fb0f0171a31db5151552132abab005fb12
-- row_id: adr003:20630e10be44402d90600c3a
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 99
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CHILD_INCIDENT_COMPLAINT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: a1c96f10a43c30f37b935834ba683e49a2e1ca00c137b39c9a435d1ec773e8da
-- row_id: adr003:2a566d5e9e0bae2d69a61e1e
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 104
-  col_offset: 32
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CHILD_COMPLAINT_ESCALATION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 96d30e8f2f84787eea1c7b3288b8dded6bcc8b2b8cbeb081822860e86cbcf6f7
-- row_id: adr003:6419327850fe8352caf5a7dd
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 109
-  col_offset: 0
-  node_kind: text_table
-  symbol: _CHILD_SAFETY_RISK_PATTERN
-  display_symbol: _CHILD_SAFETY_RISK_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: 27ee08c6ebd5c34d3c6f247a11db5fbb1f9ebe1f1ee27134bd76b6a39441c895
-- row_id: adr003:d8203492c08f8e72e0edb890
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 114
-  col_offset: 28
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CHILD_SAFETY_COMPLAINT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2341e6a81cf5f909b4d00273b18a6feb109c3f406cf332664b32c9aa14528b8c
-- row_id: adr003:a7e57a6c511d0b41b5075ddb
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 124
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: SERVICE_COMPLAINT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: e756074c1a64575029180c29118c660629dbbfad7f5d20b454223fff50ccffb5
-- row_id: adr003:3ce4824b484e92614c42e0d3
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 132
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: REPUTATION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 68e8b1fa4cfe78ac70337a47dce73f32eb46cab59cff77244d2ad1830d1dbfc8
-- row_id: adr003:59e10dc81868cb504bc11eca
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 137
-  col_offset: 0
-  node_kind: text_table
-  symbol: _PAYMENT_MOVED_PATTERN
-  display_symbol: _PAYMENT_MOVED_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: 95034409cdab5c3dc0ce1e1221e25e186772b67ed087904dcd14a52220998dd3
-- row_id: adr003:564e3118309ee700faf79370
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 144
-  col_offset: 0
-  node_kind: text_table
-  symbol: _PAYMENT_RESULT_ACCESS_TARGET_PATTERN
-  display_symbol: _PAYMENT_RESULT_ACCESS_TARGET_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: dd2e04a548b77ae10047c3c5af38eeff013c14654cc82fca1545735654cfe308
-- row_id: adr003:bcba6b8a0ad9373883010f47
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 145
-  col_offset: 0
-  node_kind: text_table
-  symbol: _PAYMENT_RESULT_GENERIC_TARGET_PATTERN
-  display_symbol: _PAYMENT_RESULT_GENERIC_TARGET_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: 00a45006d17cca100a73e4b1a06475c8544fbd98046dc492ac1b0d5335669676
-- row_id: adr003:b8bc3a5665eb95f19fcc5561
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 148
-  col_offset: 0
-  node_kind: text_table
-  symbol: _PAYMENT_RESULT_MISS_PATTERN
-  display_symbol: _PAYMENT_RESULT_MISS_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: ce15653c1f27cb79376f34706a7d3bd04c864c51445bccf81c8abca854f3fc7f
-- row_id: adr003:20efc2cdbc30b27e965f6241
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 149
-  col_offset: 0
-  node_kind: text_table
-  symbol: _PAYMENT_RESULT_MISSING_PATTERN
-  display_symbol: _PAYMENT_RESULT_MISSING_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: 3d09d9fde3a9149e17b3c91ceae231d00723298789e0e961ee34810c1eb40cdc
-- row_id: adr003:451c53c434f2a8a341d93929
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 156
-  col_offset: 0
-  node_kind: text_table
-  symbol: _PAYMENT_DUPLICATE_CHARGE_PATTERN
-  display_symbol: _PAYMENT_DUPLICATE_CHARGE_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: a332b0a6ac1d30e45f7afe331dfce1a758e313951c8dc5aec8c7eaafb2868de4
-- row_id: adr003:ed2f9c2223c3b2357b2369ed
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 164
-  col_offset: 21
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PAYMENT_DISPUTE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 3b4e18bdce86fe1067f08ac2ea8668bfc90edbc5c75771257a661981e28a1dc6
-- row_id: adr003:41f53aa82de805b52d2f546a
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 175
-  col_offset: 24
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: SOFT_NEGATIVE_ONLY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 514442d91fd87a6e31daed7629a700264d0a27446de83811a43ac07c82518831
-- row_id: adr003:7a3b5e6bbeb39bfbf1ad8daa
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 180
-  col_offset: 0
-  node_kind: text_table
-  symbol: P0_HARD_TEXT_MARKERS
-  display_symbol: P0_HARD_TEXT_MARKERS
-  content_hash_kind: value_sha256
-  content_sha256: d04ecc0c8ba8bb42d35ec76949851b21ba9d65e2a1c41e96d19de498c371cfe9
-- row_id: adr003:420af536427fbde043ce5b07
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 309
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: ffa6ad1a4eee7082fd6a48debdf4d669e8a50ebf5ae801d7d4df73b2e43ba2f2
-- row_id: adr003:23488c28c40501c33e840c9d
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 309
-  col_offset: 146
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: daf242006f70dba5757fba694656b37a53b06d4f01ad7fd0bd6306a60eea3191
-- row_id: adr003:93daa93d801d71dfceb3c0e1
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 315
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: b5d8840ce017643b29a9f0e90b15bd09a6a625f91bcfcb938f8c4c2ebbc7e40e
-- row_id: adr003:c7c0201dab7726619e232247
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 315
-  col_offset: 129
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 3383be56c5c3130db0684cad6dca63ef70608d83912b06de530d24b790287e0f
-- row_id: adr003:d66af05603879d38c69743aa
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 321
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 7d13106b01494b181e090557682bb1a2d1826ed401dc970b0574246788587dfa
-- row_id: adr003:b57a9b7bb35157f4205c0504
-  bucket: 2_verification
-  class: p0_recall_floor
-  path: src/mango_mvp/channels/p0_recall_spec.py
-  lineno: 321
-  col_offset: 87
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: dbd317658ad307d406c3726f08286c9aa01d673509f75447063b3ef929a11373
-- row_id: adr003:1d433962c1e5576900da3c1d
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 137
-  col_offset: 0
-  node_kind: text_table
-  symbol: REFUND_DEMAND
-  display_symbol: REFUND_DEMAND
-  content_hash_kind: value_sha256
-  content_sha256: 7ee9fb44113904381cc1f88dfba8b5698f6df6936f69a3e2d34254d1e87cc04c
-- row_id: adr003:1e3df5863c13e21935b0c5d2
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 191
-  col_offset: 0
-  node_kind: text_table
-  symbol: REFUND_POLICY_PROCESS_MARKERS
-  display_symbol: REFUND_POLICY_PROCESS_MARKERS
-  content_hash_kind: value_sha256
-  content_sha256: 737d89d2cd8fa31adb9e69acb75c8a7f738c8c338762e1d5224e6721a28334b8
-- row_id: adr003:c349c6941b8e3b5b794ad7a6
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 558
-  col_offset: 7
-  node_kind: marker_helper_call
-  symbol: has_any_marker
-  display_symbol: has_any_marker
-  content_hash_kind: args_sha256
-  content_sha256: f5c01ca58e8ee82c0b8989fbc86e19a15ef814f809ad1678453286c5a7f8231d
-- row_id: adr003:174decb151747a1ec74c524d
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 560
-  col_offset: 7
-  node_kind: marker_helper_call
-  symbol: has_any_marker
-  display_symbol: has_any_marker
-  content_hash_kind: args_sha256
-  content_sha256: ffe19841a1bfc403dff30a23040ec33a896d7f7f142eb8dd1e6055650e34c5bc
-- row_id: adr003:aa345c299f4d181430a6fbe0
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 562
-  col_offset: 11
-  node_kind: marker_helper_call
-  symbol: has_any_marker
-  display_symbol: has_any_marker
-  content_hash_kind: args_sha256
-  content_sha256: 855caadf9277a3e5eff15953ee33b76a69d3c3208e031edf6fa143095afdce00
-- row_id: adr003:b64ae201cd64838b790d446a
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 567
-  col_offset: 11
-  node_kind: marker_helper_call
-  symbol: has_marker
-  display_symbol: has_marker
-  content_hash_kind: args_sha256
-  content_sha256: 73d032db3f539bbeac9bff9a28e1921632d816f400e68159446bcfb42940f956
-- row_id: adr003:390977b306719b135e257e52
-  bucket: 2_verification
-  class: refund_semantic_safety_floor
-  path: src/mango_mvp/channels/semantic_roles.py
-  lineno: 569
-  col_offset: 14
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: negated
-  content_hash_kind: pattern_sha256
-  content_sha256: e86ccb1876eab0fa56cd4ff1aea32c96fb0171b10606589ec3d4dd28b0758c67
-- row_id: adr003:f4469e2bd13372fa792dfe87
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 14
-  col_offset: 0
-  node_kind: text_table
-  symbol: INTERNAL_SERVICE_MARKER_RE
-  display_symbol: INTERNAL_SERVICE_MARKER_RE
-  content_hash_kind: value_sha256
-  content_sha256: b8c7d9b2aee3f52547a536d26bc2ce2d2e7a22a319d9436249fe0f021e13dc2b
-- row_id: adr003:288c14a1396f4b963fc27c42
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 14
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_SERVICE_MARKER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 3eac63d6ea2058259f919173f8814d04104044f20e6ab121ee66f013ee68b180
-- row_id: adr003:4f1051c8fdcdb2790355df74
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 20
-  col_offset: 0
-  node_kind: text_table
-  symbol: INTERNAL_SERVICE_TOKEN_RE
-  display_symbol: INTERNAL_SERVICE_TOKEN_RE
-  content_hash_kind: value_sha256
-  content_sha256: 68ba82f1660e87b03c96e6341d5b5a02806fb4b6effad4fb0762132a6db6afee
-- row_id: adr003:52f286fd749c3ff164a73065
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 20
-  col_offset: 28
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_SERVICE_TOKEN_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: b5df692cafe0119141eec2672e62255cbd80deda89dc9c1b6c280112924987c8
-- row_id: adr003:815de4700a0760e2686e38dd
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 26
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_SCAFFOLD_PREFIX_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d3ec60c689d4d8dcad68cce45c02ff027632da590aa2398fa19e3cd6690f5fc0
-- row_id: adr003:141ad5a88c6bce82651a0077
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 32
-  col_offset: 38
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 27ff052c3242914872590a0aa4edee54d645ad0e319c5f440f8c952a77160fc1
-- row_id: adr003:cb1e49588867a32f245c9367
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 38
-  col_offset: 40
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2d0b6afdf59c6f5810850db7eb22da59f0d26ca5180b3ebab2c8890a83ea343e
-- row_id: adr003:1951478c80d84b9d8db2ffde
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 45
-  col_offset: 33
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_CLIENT_SAFE_JARGON_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ce8c3f86b6aaf44bef64ce34fbbc7e085f78ade0c728a7d73e7544e2c70ba650
-- row_id: adr003:9d790e3caef9124ee7e570bd
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 51
-  col_offset: 35
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_RUNTIME_LIMIT_JARGON_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: efae9ac6b3e4223bcc5532e52387c68fdcd72a4fc2c848a40eaafc75b7ca9c33
-- row_id: adr003:71019cd6f3fcfa32fdd60277
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 62
-  col_offset: 33
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_REGEN_EDIT_COMMENT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 8253cc911b884505bcaae1a0ec6f47ada422b23dc80f89e0e7f2dbbc8fd934b2
-- row_id: adr003:2ecb995eb3643a984a2b3c8d
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 71
-  col_offset: 33
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_CLIENT_INSTRUCTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d2c18edc9c21ec13e9a615e807b7f20e52b2bc7229b0d901123421d293c7ecdf
-- row_id: adr003:8565ae831669171901ab88a2
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 78
-  col_offset: 28
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_MANAGER_DRAFT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ff903294d14127e8c9ef8a32557cd6861fcce772e4c5f1476a20189b2e905af3
-- row_id: adr003:b38fecca95cb7b28004a2276
-  bucket: 2_verification
-  class: internal_metadata_leak_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 84
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: INTERNAL_SAFE_VARIANT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 64ec1ac20e8462f89f8a794649589f9f2cbe8daae24d133d72c5bdc2dae8c483
-- row_id: adr003:30baa7e988c5ab78a64e5008
-  bucket: 3_format_hygiene
-  class: output_whitespace_normalization
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 227
-  col_offset: 13
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: 5e36ade60ccdeda1bb109d4808c5a1ff6de92f89e31be41ecb94e1442565101b
-- row_id: adr003:a01f5e4b93be5affec0d4af5
-  bucket: 3_format_hygiene
-  class: output_whitespace_normalization
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 229
-  col_offset: 12
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: value
-  content_hash_kind: pattern_sha256
-  content_sha256: ab0c8b55b6b94b1f0481c30a8b15be44b8f87d7aab9a953e5f74349c3c5b985a
-- row_id: adr003:f1e3ecdf9dcfad0dbea0515c
-  bucket: 3_format_hygiene
-  class: output_whitespace_normalization
-  path: src/mango_mvp/channels/subscription_llm_parts/contracts.py
-  lineno: 230
-  col_offset: 12
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: value
-  content_hash_kind: pattern_sha256
-  content_sha256: 578a86d2167fb4c554a1ed146017e87e7819420337db6b55ec9be5a118485056
-- row_id: adr003:44ab10303a1676bc0df1a679
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 162
-  col_offset: 26
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _BOT_SAFE_SERVICE_ID_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: dc09c736e0bb00493827b807e61a2d2c9501092ca44943a9b787592e8d2c3637
-- row_id: adr003:0359f08ad94fd98464739f2d
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 166
-  col_offset: 35
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _BOT_SAFE_MEMORY_EXACT_DETAIL_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d3d33da2fd74d878af958e1c531e53d848bf61d3d2f3960cd58725582c7eaf50
-- row_id: adr003:8e484e62704b9b3ad079ac88
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 177
-  col_offset: 32
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _BOT_SAFE_MEMORY_INJECTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d78aa0f42adc143e5383aee700f50a4967ec4b0faaf6d6de62faf24b0b3d2d41
-- row_id: adr003:ce69bc274627b53af32058a5
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 188
-  col_offset: 0
-  node_kind: text_table
-  symbol: _DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE
-  display_symbol: _DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE
-  content_hash_kind: value_sha256
-  content_sha256: bd87a306843ac279ed2f1a71c25dfcf7c0764b340907901906dcf4bdb7398b85
-- row_id: adr003:abfa1699d005f0e26a89dda3
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 188
-  col_offset: 41
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: a872fd003d591465ae316ac79718a3ec132e65a447b9512deef26e3a954a621d
-- row_id: adr003:5c13ec595e084a60384b5ff8
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 204
-  col_offset: 0
-  node_kind: text_table
-  symbol: _DIRECT_PATH_SCOPE_OVERCLAIM_SENTENCE_PATTERN
-  display_symbol: _DIRECT_PATH_SCOPE_OVERCLAIM_SENTENCE_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: 30e9de18cf79c52b2db639b4e95be945ae9237acacc82bc706eb555341ff184e
-- row_id: adr003:6904b43f99e39f35b7c85e8c
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3044
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_PROMPT_SENSITIVE_KEY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d92903015cb6928b7da423b7c577ed1762c798bfe4f3c6441d421f0fabc14c40
-- row_id: adr003:ae315911eb76538c06612c08
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3049
-  col_offset: 35
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_PROMPT_CHILD_NAME_KEY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: dab3fcf7d53c84c3c3d22571a6fd8261ecedf87f3976bb0468a0ba8a7851b361
-- row_id: adr003:538f3c464edbdc718a2932ef
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3051
-  col_offset: 36
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_PROMPT_PARENT_NAME_KEY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: f3c87747c1e70e2d76045e9978e491a9aba20b438d26e8d3633fa3dd2ace2977
-- row_id: adr003:5dcb401eb3a034b4d24403a1
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3934
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: b6f049fb8c5d0f174f0d083c846505fb35782a04c4c89af4b5bbe15429632ff8
-- row_id: adr003:d18640f2da6ea186605addac
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3945
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: b6f049fb8c5d0f174f0d083c846505fb35782a04c4c89af4b5bbe15429632ff8
-- row_id: adr003:4ced2944e75a04f2201e9d27
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3993
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:38f3c23c5973cb48cf4fb736
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3994
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 7c41d20df03da97db0eb9994819b63243b0782b41983e0b987d4ccbc060cbbe0
-- row_id: adr003:e524b363607ec3ed077f7ab1
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 3998
-  col_offset: 24
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 29f0846e23a510af5011ebd092bc6c980eb73351f7ee9ffa05691b0ff6365106
-- row_id: adr003:334281c758d356584985cc04
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4000
-  col_offset: 24
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 3afbb793c6d1ee66c928423ee16b7ae51f4fd945c03afc6b1172f43c22edfcbb
-- row_id: adr003:daf646e3cd0766e75ac12444
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4021
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:78824c5b7d4fcd2adcd48fc5
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4101
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 8f7f364b4d93b22fd839d8d910e3af8fdc3ac536a12c76b18b72217243db93c5
-- row_id: adr003:82845755b3a6b43aea829642
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4145
-  col_offset: 20
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:fb73cbe77ecd90d9e40cec31
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4157
-  col_offset: 18
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: grade_match
-  content_hash_kind: pattern_sha256
-  content_sha256: 61d5af589ef506cc0b8094dcef9b1c7207542768e7dde2f13bb92daef0435fe7
-- row_id: adr003:f0af1432e854516b541a11df
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4232
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: a6ab176c6784ff1b4ca840ca678f2bfc3beabfe24a13f88bdcafee0dd6a9d4f2
-- row_id: adr003:bd4314f40c351ebf9d346338
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4253
-  col_offset: 36
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 8bbcef81e0c5fb01ced4b6d03ba2d78dd3607445c7b2a980f834483f9b7ab4f0
-- row_id: adr003:eb0c249a0b9dbea15279a5b5
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4286
-  col_offset: 25
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: protected_text
-  content_hash_kind: pattern_sha256
-  content_sha256: 9e88f4a4e63ceaa15010391c21333c97d7b79cf0739b6951be9d237c62be79b9
-- row_id: adr003:4c9f3caada1c67f73c70a0dc
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4317
-  col_offset: 18
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: 0d23c03b14601f31f355c0581a6d1b69152aa19b7776fcedc95741676b27df5f
-- row_id: adr003:cebcdcafb6340bb0058482f5
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4428
-  col_offset: 28
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _PARTIAL_PHONE_CONTEXT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ef387657c30bf9ab0ac8e4888ccaaae86dd78edb3ff1279ac52463600e3a38c5
-- row_id: adr003:6d8d0f97623a45f3cd683b5d
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4433
-  col_offset: 35
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_CHILD_IDENTITY_PROMPT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: f52ab8a535be7bed5c4e9ed27fdf0834bdd6297c7a558f366323634667e0c668
-- row_id: adr003:6faaa425d3a3057f4a89e286
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4441
-  col_offset: 36
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_PARENT_IDENTITY_PROMPT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: dca4fcc33b0b6260bd323dea930aa56e9a9295c287119b3c06d3f939ab544137
-- row_id: adr003:d7a9d80213ae4b284dbd59fb
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4447
-  col_offset: 13
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: digits
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:46bbdf0c6017a26b7fcb1e9c
-  bucket: 2_verification
-  class: pii_prompt_scope_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/direct_path.py
-  lineno: 4453
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: candidate_digits
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:4ba51b778d5241a5cf99320d
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 58
-  col_offset: 18
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRICE_AMOUNT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 1e4b5237ec109ceb5677f28846838833cf853e6c99edc883ac8752eeb990de17
-- row_id: adr003:0eb17137fff9eeb7895c8a7d
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 60
-  col_offset: 19
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CONCRETE_FACT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: aa723dc2ca1dfade0409af178d03601c96092cb7d0f46edf00ce6783789a96fb
-- row_id: adr003:d7b8bda454c829cef4a36762
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 417
-  col_offset: 21
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PROMOCODE_DRAFT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: f3f6f777afb60a87f76ea1b444485608de2c19d1648fe267e7fb597450cb86b8
-- row_id: adr003:f888befd4c921542c43a31c6
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 453
-  col_offset: 0
-  node_kind: text_table
-  symbol: HIGH_RISK_MARKERS
-  display_symbol: HIGH_RISK_MARKERS
-  content_hash_kind: value_sha256
-  content_sha256: 6c45df153ab498f2a2988507f7fa97bfb6f361392f66b3aef9e9fa53ddcb6e5b
-- row_id: adr003:09105c47826e7d44a787abd1
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 465
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: COMBINED_NON_RISK_INPUT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: dc434ade20377c99bf16d248f1c700f1128c3d2327d36852225257a50b4cc9a5
-- row_id: adr003:0eb6576edc3bfcfc3beff9d3
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 471
-  col_offset: 28
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: RESULT_GUARANTEE_INPUT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 13a6bf6be2a779c6c22c05cc2ee561138826608d07eaef8dfee032994d3e5979
-- row_id: adr003:470b12b26d1869c3d8ea00a2
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 481
-  col_offset: 31
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: ADMISSION_GUARANTEE_INPUT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 0dd107a46f023cb508154b5b26dcc3febb92ced6b4bfd1026089b54967734e6d
-- row_id: adr003:e45a4d51827aadbbe07d65b3
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 491
-  col_offset: 26
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PAYMENT_CONFIRMATION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: c5425e27a722a4a6ad488033ebe63647eeb7d5b4e857618a78b53f50f2c2ee00
-- row_id: adr003:05e3278469254332a5b1c1a9
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 498
-  col_offset: 24
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: FUTURE_PRICE_INPUT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: e81c90a31beca83de2e327743b539df683312f7a9e3aa9f25b13e3c1230a73b5
-- row_id: adr003:8796b19f5c367303be071ad9
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 504
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRECISE_CONDITION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 7c7cb4c2895ada2355c9331e0008e96f7927ab4e8464e55d6b59f9937afb65c3
-- row_id: adr003:c9bed3cd48657ad07e752122
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 509
-  col_offset: 0
-  node_kind: text_table
-  symbol: BRAND_FORBIDDEN_TERMS
-  display_symbol: BRAND_FORBIDDEN_TERMS
-  content_hash_kind: value_sha256
-  content_sha256: fc42745e49da97a93b6ea72f8f4627f9ce9374ee6c06bf7857c9fbaf3bc90f80
-- row_id: adr003:9d49b68350c06c363fc172df
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 514
-  col_offset: 0
-  node_kind: text_table
-  symbol: BRAND_OUTPUT_MARKERS
-  display_symbol: BRAND_OUTPUT_MARKERS
-  content_hash_kind: value_sha256
-  content_sha256: 8b7305f0b34ca6ecaada1a00160667045b07e007e1389fddf63ca4cf1efa6e7e
-- row_id: adr003:9bb38d5da23840b0f48cfbd2
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 519
-  col_offset: 20
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _BARE_N_POINTS_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 45b6b7d0f3fa8c83f668a7e850cc9db1ee9e7e5c4b7134de09ec0ebcc28fe788
-- row_id: adr003:4d53bca425ad4d6494d3939c
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 521
-  col_offset: 31
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _N_POINTS_PROMISE_CONTEXT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d33d4eb340da8cd661133e3a6015519445bc0b48913cdb82fa38dd84aa89a794
-- row_id: adr003:fa0ac738b89e6ad398dc24a8
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 530
-  col_offset: 0
-  node_kind: text_table
-  symbol: UNSUPPORTED_PROMISE_PATTERNS
-  display_symbol: UNSUPPORTED_PROMISE_PATTERNS
-  content_hash_kind: value_sha256
-  content_sha256: 501caea7ada71fccf9a3f9a103d37c3dca76db17cca3f20f7ee1e06daf1a10c9
-- row_id: adr003:1f0e5a08ae22abc3ed6df648
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 531
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: a070b45657a91897db0e99240da02dc061a2c8d8cb2b18d7913a95e07d9886fb
-- row_id: adr003:9ec69f8b98998cc035ff8a0b
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 532
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: 206cd2830d1b1fa3fbb7bb21cb8cf25a2d425873e7188adae9f4daf8cdc456a2
-- row_id: adr003:0474c7a328d5f51a222e933c
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 534
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: 26c635b1ee4aa4b2c3a1e6d51c34ee6291f2e4238a86466492edfce0c0bdfc08
-- row_id: adr003:2db92c753a3a0f545283cade
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 535
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: 5facc89f168f01e1bd7815ea7c147cc792e61f0250bc5cdcbd5398fbed489ee1
-- row_id: adr003:4c021cb522380f83a439389f
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 1025
-  col_offset: 21
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 367074dd0e070ef0c1bb0684ac26660492230d560517eb9da1e58be00deb2510
-- row_id: adr003:4ce0bcab9b22582f86d7297b
-  bucket: 2_verification
-  class: brand_money_promise_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
-  lineno: 1026
-  col_offset: 20
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1910dc38e12ea9a3d2924268588f969a4aee113546e69004c0671be184ee32a0
-- row_id: adr003:06c51ad7a6a35bf2ddf4f05a
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 443
-  col_offset: 0
-  node_kind: text_table
-  symbol: _MANAGER_CONTACT_PROMISE_PATTERNS
-  display_symbol: _MANAGER_CONTACT_PROMISE_PATTERNS
-  content_hash_kind: value_sha256
-  content_sha256: c91f10903d17773d6ff6bc78ff99410be8f04e179d928c1629178c5594ba7ae0
-- row_id: adr003:eee3b972601d4cd4c26e1fcb
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 444
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: 20cce4a8fe9da7111b21f6a208b599f780539dc4356a4797624aa87a7a22b420
-- row_id: adr003:b890801ca3d6ef84ef3e32d1
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 445
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: 140e4aeb1318c07ef30feaeb8c75560ef3a67b15df611e255dde545422b4cdb5
-- row_id: adr003:32feae9089673a3fbe4d3bb3
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 446
-  col_offset: 4
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: re.compile
-  content_hash_kind: pattern_sha256
-  content_sha256: d69909cfcbcd6986ffb4313a61d023d8ccf914991cd0e14fae5c2c472bf69014
-- row_id: adr003:aff9925b7eae884afeed394b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 496
-  col_offset: 0
-  node_kind: text_table
-  symbol: PRESALE_SOURCE_ID_TOKEN_PATTERN
-  display_symbol: PRESALE_SOURCE_ID_TOKEN_PATTERN
-  content_hash_kind: value_sha256
-  content_sha256: 1b48c5c50891720d04d6d2bbeff2fdf2ea340e3d72899c6968777b9a9d1568b5
-- row_id: adr003:4f94c1c64653d36b7449c6e9
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 507
-  col_offset: 0
-  node_kind: text_table
-  symbol: PRESALE_SOURCE_ID_PHRASE_RE
-  display_symbol: PRESALE_SOURCE_ID_PHRASE_RE
-  content_hash_kind: value_sha256
-  content_sha256: 4f6c7b4a735f95c7aaddc228418e70efe2a391a010e9a435a65130e0f26dc11e
-- row_id: adr003:88e889bfa0261180298f28e1
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 507
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_SOURCE_ID_PHRASE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 58bf0c00fc65fcdd017aba7495d9b07a0e0283db57168cc7346da5079b9e3e26
-- row_id: adr003:7ee94ed89a4f281b5c928839
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 514
-  col_offset: 0
-  node_kind: text_table
-  symbol: PRESALE_SOURCE_ID_TOKEN_RE
-  display_symbol: PRESALE_SOURCE_ID_TOKEN_RE
-  content_hash_kind: value_sha256
-  content_sha256: 96b08279474d20132eed26711c6061b6098d9ae9e606089c44ce5578156f757f
-- row_id: adr003:4f9226e12b41131b6d22f585
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 514
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_SOURCE_ID_TOKEN_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 6230792bedea5b7418a63e96e50730895a99a034bc7b96a8c3a3afe3a6f1bc6a
-- row_id: adr003:78e6cf5a423c881eedb04a7d
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 520
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: DRAFT_PLACEHOLDER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 32a0d382a8702ef7f8ed1f89a3c8d09cc6f54248e2eb1d98b8e8635a8213767a
-- row_id: adr003:df3d40e89abc8708ecfc0945
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 526
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_CLIENT_TEXT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: c72dc326a3958753cfec2e0bd1569747a7e54d543470b7dcd498ae597588d8e2
-- row_id: adr003:59bfd7a822c7d24ab81ef201
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 532
-  col_offset: 32
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_META_LINE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 4ba41bb3188baee408556a18c895de9196339602fcc00eeaba7c1f81e0425884
-- row_id: adr003:ade1ff234a1f581cd6fec7d1
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 540
-  col_offset: 26
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_RU_META_LINE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 7ef40bc82e79879cd97f133f2e15618510d2cb731966e6da11e1f6133109b5b9
-- row_id: adr003:1d12f89b2290b3777136a0f0
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 549
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_OPTION_LINE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 1c4509ee1e537360259a4ade32dfd8d0630f2e9451347424b8741a568353f5ff
-- row_id: adr003:e79df0d9f34deff66107edcd
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 552
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_PLACEHOLDER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2b3688b3d0e3139f1aa891c0a9386c02adad1d8150f4e85be7a2ab3eed72c61e
-- row_id: adr003:bfe3696743f043371df433eb
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 558
-  col_offset: 41
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 11632ed39d6a6b8bd7abb7b8fd883d3715af860c3275c1f80818afe9d4feff79
-- row_id: adr003:0a0a0adf6b3d5457b952bbf5
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 566
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_MANAGER_TAG_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 3755ceca4132f7f5429b62a340dbe8ead70469a2efaede8bfe3e5431914a5652
-- row_id: adr003:4aaf515bf96cb14c9fa4d2c4
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 569
-  col_offset: 46
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_MANAGER_TAG_INSTRUCTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ac77cd7c29c4e8a7afa6c96607285483c1b1a625004525c87b2e415aa3789fa4
-- row_id: adr003:d4dc356ef21ff7899cdf6272
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 575
-  col_offset: 37
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_SEPARATOR_LINE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 0aa61a70915d18e7cb21050e98ce70317be47467d2d23c37a018fe98d87484de
-- row_id: adr003:2d782311381da3d6dffc9c05
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 578
-  col_offset: 0
-  node_kind: text_table
-  symbol: OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE
-  display_symbol: OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE
-  content_hash_kind: value_sha256
-  content_sha256: f7284483eba9d57b5b060edace911a6f0833fbce80bfc2f1bb94b2ec987b58bc
-- row_id: adr003:ceaf980d0911a94e928e7bb2
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 578
-  col_offset: 38
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2ca4fac0deb3b92e88118157ed53654770eb53dc794ebc2b4db274e9dbe04ac4
-- row_id: adr003:5880ccea2a659ff87e5bddac
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 584
-  col_offset: 22
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: COSMETIC_OPENING_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d858f60d6eb1ceed7fee412f2811ca122624b22dde97313469614e3871199802
-- row_id: adr003:93ab4ef239c65c1ba45ea3fd
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 591
-  col_offset: 0
-  node_kind: text_table
-  symbol: MANAGER_ACTION_PROMISE_ACTOR_RE
-  display_symbol: MANAGER_ACTION_PROMISE_ACTOR_RE
-  content_hash_kind: value_sha256
-  content_sha256: aac18e4362a9aa3efeb274a417c94e31c49cd676d1db621d62aab8b9fbfefc63
-- row_id: adr003:e48b2a9e75261feb93391758
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 591
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: MANAGER_ACTION_PROMISE_ACTOR_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 4a912c16e9663be4acb54aa370dfef9223c1121565587def02fe4092daac924c
-- row_id: adr003:4c7510fe76d211766240ffac
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 594
-  col_offset: 0
-  node_kind: text_table
-  symbol: MANAGER_ACTION_PROMISE_ACTION_RE
-  display_symbol: MANAGER_ACTION_PROMISE_ACTION_RE
-  content_hash_kind: value_sha256
-  content_sha256: 8c6ba77f50e288e93e670a6776c1c3422ce8a9959fb86923bc7ce1730af11f15
-- row_id: adr003:6b2616616eaf2dffa4afd2cc
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 594
-  col_offset: 35
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: MANAGER_ACTION_PROMISE_ACTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 1fff418013b7e59e9451cc39de1541c906f1dfb2a61e0155161c22a0046e69f1
-- row_id: adr003:ef4d3cfe3ea175eee5ad234b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 600
-  col_offset: 0
-  node_kind: text_table
-  symbol: MANAGER_ACTION_PROMISE_DEADLINE_RE
-  display_symbol: MANAGER_ACTION_PROMISE_DEADLINE_RE
-  content_hash_kind: value_sha256
-  content_sha256: ba99f6823a807d560bc669391cae5fdf9a3ca1ecae186160d345bba96f7ac34c
-- row_id: adr003:f80b013b74c9ce2af8e10dba
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 600
-  col_offset: 37
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: MANAGER_ACTION_PROMISE_DEADLINE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ef11b886a8b298d97b00bbf0faa216abbbc5b63827dd898182055349bd065d65
-- row_id: adr003:ea856b28e30bf19b9eded49b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 608
-  col_offset: 28
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: DERIVED_PRODUCT_NUMBER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 041523711ed377671a0cf2448c55b0cb98c1d9b574e0742895256fc1c6a8bec1
-- row_id: adr003:4d8627b91b5ffcc252d3ce00
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 674
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: FOLLOWUP_DEADLINE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 6cfe047f03c5372d099c40bc0ebfed3d8646c74b78a37049f93f5666934f8cc2
-- row_id: adr003:b2ec47492a2c417dab51af96
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 691
-  col_offset: 25
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: SCHEDULE_ASSUMPTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2e669c283512db6e6aa651db66e9954cebe7397223e723536840f0d566192d78
-- row_id: adr003:ac5b93d3357470cf05711513
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 704
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: OFFLINE_VISIT_INVITATION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 9c7cf8fd9b69a1b50d405618605ccb9a94abbb201b6be5185075ab8eaef74f82
-- row_id: adr003:5e18cca57fbd9d36b94cb00a
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 712
-  col_offset: 0
-  node_kind: text_table
-  symbol: CONTENT_DELIVERY_ACTION_RE
-  display_symbol: CONTENT_DELIVERY_ACTION_RE
-  content_hash_kind: value_sha256
-  content_sha256: 41b10ca42ddff7dbd7c57826995aa3c7185b7b6968dc17e28b3a46a6bee6ecff
-- row_id: adr003:a09fe3e446e24fd2fae6e355
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 712
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CONTENT_DELIVERY_ACTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 7f65733a6e2cf424322a2163837b632fa42c2330b8086e68d0fdfdea504f6824
-- row_id: adr003:754fcf72d6abb6ae46222c79
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 726
-  col_offset: 35
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: BOT_SAFE_MEMORY_CONCRETE_STEP_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 5757214a47c801e40d2f2d8ac15cc0a72b43df13307273ffdf76f66fcedaed8a
-- row_id: adr003:1a4672e130f45a15f289ff7f
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 749
-  col_offset: 0
-  node_kind: text_table
-  symbol: NEXT_STEP_SOFT_ACTION_RE_FRAGMENT
-  display_symbol: NEXT_STEP_SOFT_ACTION_RE_FRAGMENT
-  content_hash_kind: value_sha256
-  content_sha256: 6a9b41da793212e5168d04f47d37ded20fa640eb64b6f6cb2a81ed949a1554c4
-- row_id: adr003:6b91da4ae1d034e8eaa5d05e
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 753
-  col_offset: 42
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 80d17be11f80807cd2cd34497a3b2487a34e38b7d9b9f5e18bd18a0cf3afa6be
-- row_id: adr003:342cd0b804bd84f6029f5e88
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 764
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: UNSAFE_FUTURE_COMMITMENT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2a779f6975b4fca64af91b41f54af88c9143355bafe330dc4aa0e38d4e687055
-- row_id: adr003:b6f8918b7bfebe0619af6e04
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 783
-  col_offset: 36
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: SAFE_FUTURE_COMMITMENT_CONTEXT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 05bd3d959059eb60967571ce847a7d855a7009342a097cee20bb0e08f40ae4a3
-- row_id: adr003:320b78df028d569ab81912d8
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 795
-  col_offset: 43
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: BOT_SAFE_MEMORY_RISKY_NEXT_STEP_FRAME_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 8239c82c42e46cfabe7e3ec66fc9952ce55cb604c0ba5766cd033f9fda5960f5
-- row_id: adr003:82ad6e0fef7dfe660d042904
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 814
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: bff210329a3a5a210c979af474a2afbc6233aaa1d2794b16b2a5d0dd8bb719b9
-- row_id: adr003:e1b0cad12a9b6f5cbaeec967
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 814
-  col_offset: 39
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 6862942e4e68de6ea91507fa34e4c68d209e694b19888973b0f71189d8d35e39
-- row_id: adr003:d5facc6f89f8b9860963b44d
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 814
-  col_offset: 71
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 72abda940131d459dd5beb96b365129f053a9fb7f4710a93079df1bb830dcdd6
-- row_id: adr003:3f427448884466e263794c0f
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 814
-  col_offset: 96
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 53a6095eb4b0a82fbd6a1913aa50d0c15c02e80c1cadbd1d9eaa3f2bb8c1ad22
-- row_id: adr003:37789852ac2caf3c67fab891
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 816
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: fcc9b93c37369d363b35048b5ddbb61e9191c9e4781b0a2682179782454093d7
-- row_id: adr003:5de9e90b6993f2a21b8b130c
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 816
-  col_offset: 30
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: fc3af0eaba5f3cf7bc21652c51f6e210742482be7dbc8cf2e3c45483cb6f1750
-- row_id: adr003:06a3ad09db74fc7f2cb4fd84
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 818
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 472a026154a861e3de8b42895e56dfc0a49d6dd0199769c071381c5e1e55ee10
-- row_id: adr003:ce4ca9973a762af3bf11e8c1
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 818
-  col_offset: 33
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 392edfbec238797be05b88fb6d743343138d3a519bede8429434c97fbb49cee8
-- row_id: adr003:29affa09f2ba6376690c8df5
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 818
-  col_offset: 60
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: b70a7d9e2a6ef886a118a0435c3c64c78a667b4a225274258007048ed1c61bd7
-- row_id: adr003:fa9b158031479797085495f2
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1166
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _INTERNAL_CLIENT_PLACEHOLDER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: bb864d7742a54f34ad12ccb10282a9f37ae33eac731e02beed6ac3139757b4ca
-- row_id: adr003:70acad8f75a0e04f18ff1758
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1240
-  col_offset: 19
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _A2_FAKE_DONE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 09ae9c1df0529989a28c98cf36816dbc81d6add858bba022d90d4b1b955bad55
-- row_id: adr003:445f40a1d1de51df6f98890b
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1246
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _A2_EMOJI_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: a5dcdc67dd83c518d7766309babbf255c628d105f7013524da789261696e9415
-- row_id: adr003:f03ebd2791257618cb6587c7
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1656
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1c4509ee1e537360259a4ade32dfd8d0630f2e9451347424b8741a568353f5ff
-- row_id: adr003:7d89070b222d148e43499444
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1753
-  col_offset: 23
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_NAME_PAIR_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 637dd0242534a74889090eb1062056e55d3ac090ff6c90d279d5653130a4de15
-- row_id: adr003:f62e52965f722e55ac6377ca
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1756
-  col_offset: 0
-  node_kind: text_table
-  symbol: _CLIENT_NAME_MARKER_RE
-  display_symbol: _CLIENT_NAME_MARKER_RE
-  content_hash_kind: value_sha256
-  content_sha256: dc029540ed9071c9a56153b294ed0d0543c0e1244d9b8d79bf6e2707f858ef8a
-- row_id: adr003:c80561a2142f71a3aba39e79
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1756
-  col_offset: 25
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_NAME_MARKER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 8599eaf5c90613abbe30c9b953b3aee173904e668386519f0a412440fa49447e
-- row_id: adr003:b9216d2ad5fba68480eb7fcf
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1763
-  col_offset: 0
-  node_kind: text_table
-  symbol: _CLIENT_SELF_NAME_MARKER_RE
-  display_symbol: _CLIENT_SELF_NAME_MARKER_RE
-  content_hash_kind: value_sha256
-  content_sha256: 02f5c9f86cd9a7f9956781a1e443db806c3c59f45433a66997e15f3377147a0b
-- row_id: adr003:e51ad38dcaa29f1dc52d9ce2
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1763
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_SELF_NAME_MARKER_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 325794fb99f3309f9ac4e8a610f45a1c72c94c4d77e921fca2c2410a0b892e3f
-- row_id: adr003:3a833b1b4efef667b7444a61
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1823
-  col_offset: 30
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_PII_CONFIRMATION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: ed142582fbcda289269bc4493a63ae8bdd375ee4ca33b9db82c399f0622a2aee
-- row_id: adr003:9f28bb2f9a29de6d2d625f83
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1889
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: value
-  content_hash_kind: pattern_sha256
-  content_sha256: 54b3f7cd1d5f0c4eab09075888e3ed03bcfebef9b9304e0425c1b0a8524d1134
-- row_id: adr003:82b318062dd6701060abf9fe
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1929
-  col_offset: 26
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_PII_NAME_KEY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: bfae1f5e661ffb2ad9ee6c4ccc16f74cc1f61508665c1ab8dbf3700ea1afd200
-- row_id: adr003:29e8159cdb6317c7b75215be
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1932
-  col_offset: 32
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_PII_CHILD_NAME_KEY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: dab3fcf7d53c84c3c3d22571a6fd8261ecedf87f3976bb0468a0ba8a7851b361
-- row_id: adr003:08ce2ee54f684c0999aad23a
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 1935
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: PRESALE_PII_PHONE_KEY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: dadcc12e39ab5e27a05c700fd2816de6f86342c3e362e404dc8ff32246cfc381
-- row_id: adr003:cbce912552b6986b638462dc
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2026
-  col_offset: 50
-  node_kind: regex_call
-  symbol: re.match
-  display_symbol: re.match
-  content_hash_kind: pattern_sha256
-  content_sha256: c58bacd161deb0ab54d1c6752fdebc50b2f2946729e167c9ffd5a6b39b59e82d
-- row_id: adr003:462c06aacef09f3dce2d893e
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2052
-  col_offset: 32
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _DRAFT_PERSON_NAME_CONTEXT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 393920deed7d56735837834ea829d17b5929e22f8e0deb79fc2ec0e0a04ec0d9
-- row_id: adr003:c52e4bbeffc24d7c4548cd57
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2089
-  col_offset: 54
-  node_kind: regex_call
-  symbol: re.match
-  display_symbol: re.match
-  content_hash_kind: pattern_sha256
-  content_sha256: c58bacd161deb0ab54d1c6752fdebc50b2f2946729e167c9ffd5a6b39b59e82d
-- row_id: adr003:91bcdb9a20041b913ece993b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2190
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 54b3f7cd1d5f0c4eab09075888e3ed03bcfebef9b9304e0425c1b0a8524d1134
-- row_id: adr003:1c40de1c08b9f2767e466afd
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2208
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: fa2c06f47937241d7f93467c62ca2057e6905146c6dfeb03bc2e00c01a224b42
-- row_id: adr003:228c2ba163e185248b99c616
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2259
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.fullmatch
-  display_symbol: re.fullmatch
-  content_hash_kind: pattern_sha256
-  content_sha256: 436a3a18c176b00c56427dd364e15e004d0b66315e6df76674dcdb9b968c0197
-- row_id: adr003:c9ce982cd9de808004c2b4a0
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2261
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: d343762e06eff874f79487b4ce4dc9d2b38f3116d516b8f67b2f659ead3831ac
-- row_id: adr003:a22f8c8296fb8436fe2f787e
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2425
-  col_offset: 20
-  node_kind: regex_call
-  symbol: re.split
-  display_symbol: re.split
-  content_hash_kind: pattern_sha256
-  content_sha256: 5791e78c2701f2d37fc80386d23119994646041a8202df885cc6c0accaaded61
-- row_id: adr003:68e00f75ee237f412cfb4139
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2464
-  col_offset: 20
-  node_kind: regex_call
-  symbol: re.split
-  display_symbol: re.split
-  content_hash_kind: pattern_sha256
-  content_sha256: 5791e78c2701f2d37fc80386d23119994646041a8202df885cc6c0accaaded61
-- row_id: adr003:f3091f1f2abd14c6aa0f5dbb
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2584
-  col_offset: 13
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: digits
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:67b504af23a1b9927cfcc13d
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2587
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: haystack
-  content_hash_kind: pattern_sha256
-  content_sha256: b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f
-- row_id: adr003:f4bd618f1e64b05e2b6a69d2
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2687
-  col_offset: 26
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 88d1979dba8c6fcdb8a53fb10c3696845f796ab21bfa5f9ecb60725c53573099
-- row_id: adr003:d784b04682de9ac84c7f0042
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2688
-  col_offset: 18
-  node_kind: regex_call
-  symbol: re.findall
-  display_symbol: numbers
-  content_hash_kind: pattern_sha256
-  content_sha256: c1cd989ae717aa4179786e1f5285d2a984dd44a947ee54fc83090e476b6aa935
-- row_id: adr003:6caa8ee31941de8aad344ddc
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2703
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 5e2676c45ed46dad6ba2d1863008422bf809b7649489500b484115cde275033e
-- row_id: adr003:0544334a40679153ea5b076b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2764
-  col_offset: 23
-  node_kind: marker_helper_call
-  symbol: has_any_marker
-  display_symbol: has_any_marker
-  content_hash_kind: args_sha256
-  content_sha256: fbf690c7a526a2dcf75c0a45cd1bac1e4dd7fb424f5724556cf314ca08b12a42
-- row_id: adr003:3b0fda15bab60e26ab334dd1
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2765
-  col_offset: 27
-  node_kind: marker_helper_call
-  symbol: has_any_marker
-  display_symbol: has_any_marker
-  content_hash_kind: args_sha256
-  content_sha256: cf0d29b048b2c05a7bccd8654ad6567f7ff3cbbe2df020725e033410a0c50fb0
-- row_id: adr003:0583f84f0be1c21b5180f60b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 2885
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: f5005982fbc29d3169d9896d00401ba5691250d05287e7aa96203984ae21c08b
-- row_id: adr003:02c0d7cd9a80b58df526a0fe
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3167
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CONTACT_DATA_EVIDENCE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d027e591584d0d366ad433c95abfdbaf44019ad06c995e1dc0c6fb47a038ab6f
-- row_id: adr003:a0e8d57eddd8e56b8e46de3b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3174
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: CLIENT_CONTACT_FACT_EVIDENCE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2eb63bc0fedff55d4cb3936d61398cf0243087bff1f22531ce66f176a95812bc
-- row_id: adr003:b712a3275ba5424f0f61e27a
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3184
-  col_offset: 36
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: UNCONFIRMED_CONTACT_DATA_CLAIM_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: f8a206270e4a1eb97a4813e58db8a87162d0b15c225a4678a8edf5b01ccd4c41
-- row_id: adr003:217259208ab2907b284d0935
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3202
-  col_offset: 26
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: NO_MEMORY_STEP_FRAME_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: b16570f8f49a8ae35d765eec0a73e885650fdabc3a4b508fc024c4f4aa939ec8
-- row_id: adr003:e977f74f224346763598d060
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3285
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.match
-  display_symbol: re.match
-  content_hash_kind: pattern_sha256
-  content_sha256: 19b6339d21b18526fba431ebc909495d2c4bc6896ccfbea7ed9fbead8f60feed
-- row_id: adr003:d0d9c5b39f9fdd0208504aec
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3396
-  col_offset: 7
-  node_kind: string_contains
-  symbol: NotIn
-  display_symbol: NotIn
-  content_hash_kind: expression_sha256
-  content_sha256: baae1c9ca412f100e9c45d526070222332d98e688cbea06b091a48e946dc8472
-- row_id: adr003:524f2ef7daf72579bac8297b
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3396
-  col_offset: 41
-  node_kind: string_contains
-  symbol: NotIn
-  display_symbol: NotIn
-  content_hash_kind: expression_sha256
-  content_sha256: 5417759b50ce7af8c943bcd1a3edd4f91d015ac0812260df6552b319f8d9ca3c
-- row_id: adr003:c6d7cb54c605b4ee5cd12315
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3398
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 997adf8dc4956151630f2590b678be8caa6d7a7e18fd1055ed378dc351649a1f
-- row_id: adr003:6d63c2e8ad825e563f896298
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3981
-  col_offset: 8
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 30db10e53359394559eab689590f5d77656ad627cd39125f959b314d4510bdfd
-- row_id: adr003:9f7724798c2aa4eda97f97a6
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 3994
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 0e5bd28434eeed608f5a74b1b1b628bd84fd7c0346867606077ec647426fdcff
-- row_id: adr003:c1f638641977ce87cbea432d
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4000
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: b978065658ecbb2f743c571b5be35cfb0095ad6b760c29f0d856578017e910ad
-- row_id: adr003:32a8429f5361a4570372d9b4
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4006
-  col_offset: 8
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 4ebe01bc8abe032efe6a24dd77a6f6d693522f234bce712a79af4be0416713bf
-- row_id: adr003:70303cee0421d21367ba7658
-  bucket: 2_verification
-  class: output_claim_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4013
-  col_offset: 20
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1ec64f8ef448e5d18a58cbffe9bfd704042d181dc5ed4f07993e10960f47b350
-- row_id: adr003:6059a65b88b798b763af143b
-  bucket: 3_format_hygiene
-  class: output_format_hygiene
-  path: src/mango_mvp/channels/subscription_llm_parts/post_layers.py
-  lineno: 4044
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: re.sub
-  content_hash_kind: pattern_sha256
-  content_sha256: 7d9bfba5c375f02ee99a38273a0dcdbbbb7a99f8d461ef47f74ea116c6f8f855
-- row_id: adr003:fe78ee134a95da67e4af4d43
-  bucket: 2_verification
-  class: semantic_frame_pii_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/provider.py
-  lineno: 1277
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _SEMANTIC_FRAME_LONG_ID_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 72743bc877d98e776af3a81d539028be9034772b2f93e6492b0aca2dbb093b48
-- row_id: adr003:6449c2657291363456a497aa
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 27
-  col_offset: 0
-  node_kind: text_table
-  symbol: _FACETS
-  display_symbol: _FACETS
-  content_hash_kind: value_sha256
-  content_sha256: afc1dccb6a07c382c645eb6276eb27c1bc37519791256e9c2d5909a443cd87c5
-- row_id: adr003:cf3b08d9dc132e49ed1c29cf
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 40
-  col_offset: 0
-  node_kind: text_table
-  symbol: _VENUE_SENSITIVE_FACETS
-  display_symbol: _VENUE_SENSITIVE_FACETS
-  content_hash_kind: value_sha256
-  content_sha256: f17a057da8d8e81d2fccfab7a2ba52dfeea19c5e02c83dc92d7a67490fb01ca5
-- row_id: adr003:4fdbbee8de023f3ad1108d6c
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 42
-  col_offset: 0
-  node_kind: text_table
-  symbol: _FACET_PATTERNS
-  display_symbol: _FACET_PATTERNS
-  content_hash_kind: value_sha256
-  content_sha256: b2a09275593182f920341e418a27b3cafd577330c718f39aa5f50c8281831d59
-- row_id: adr003:c83f947a2bf3a7f0e9e7f806
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 54
-  col_offset: 0
-  node_kind: text_table
-  symbol: _FACT_FACET_PATTERNS
-  display_symbol: _FACT_FACET_PATTERNS
-  content_hash_kind: value_sha256
-  content_sha256: e98928d8cbd30dc6e4241a256ec09b3e79b41416396af784153036aa32298d12
-- row_id: adr003:ed9c063d3b0863d39f1ffe09
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 66
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _AVAILABILITY_PROMISE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 8fa2bb540f959ece57bb69393a40406f7d27e82e41df347aae3ce1be072f9572
-- row_id: adr003:52ccb6e7935e6793a2e657e7
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 77
-  col_offset: 19
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _HANDOFF_ONLY_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 309a87b7a8a60d1721f6cf7c3b9189b0a613752ff6afcf953b1e438012ce3b20
-- row_id: adr003:ea85f0ac3f6926a07c9f61d0
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 83
-  col_offset: 18
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _MISSING_ACK_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 1de2e6eca4c4341070497afc3c8b2bc13b2e7747a3f8806b2499825f454cc989
-- row_id: adr003:a17c41a025bac759b28061ab
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 89
-  col_offset: 16
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_REFUND_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 199771e200f5c65a3e1b52ef6d1bfa1ec1126e66edbdf72ef7b8f970ded2d3b7
-- row_id: adr003:7b7cc9e01e9a3a4c7976dcbc
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 90
-  col_offset: 19
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_COMPLAINT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: d733d920bfb83e9e3eb2e8c5b7fe6ab51448ee0dee7c1fd6b697c5dd68c7e56c
-- row_id: adr003:972e12435ab91b122ec247fa
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 91
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_LEGAL_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 97c27375be53e2dc74aa71ad425d1ea6b59486d5af4fbad928bc9e34f0089fdf
-- row_id: adr003:4c011e0440d6c6e1665f839f
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 92
-  col_offset: 17
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_PAYMENT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 2eb0c78e2dc1d30222c90af63cd842c9c751eaeb4a1980d2c58a0c3def7f1de1
-- row_id: adr003:49a05e1dd4ccc88f5d6d7049
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 93
-  col_offset: 24
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_ACCESS_PROBLEM_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 51af454bf4d4cfd7d1fa9ff943a3e6d278af221ed5a7aaf5afc3eff6b435591d
-- row_id: adr003:9e0edd3cde732e9fecf03b35
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 99
-  col_offset: 14
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_FLAG_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: de0130aef1f67e490fc3cbd2ad16c2409735bc7e953652719f6b6f1c9c546750
-- row_id: adr003:d7bab281ad95bab4659e2d34
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 100
-  col_offset: 12
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _FOTON_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: bdb77b35a404bddbf3bc95e24e9d8ff55d6624313a3c31aeaeb5b523782d5f56
-- row_id: adr003:bd5d4593ed05fc213ab19411
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 101
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _UNPK_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 566d4c0d99d0e45a669a44bebb3d7d99c1202258f64d6d699259a3277ec439e8
-- row_id: adr003:2002c944343edffa1e4d828f
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 149
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2
-- row_id: adr003:467163d8f10b96feb0b2c50e
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 282
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2
-- row_id: adr003:6abf895821fcbce7f7f9375d
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 439
-  col_offset: 12
-  node_kind: string_contains
-  symbol: NotIn
-  display_symbol: NotIn
-  content_hash_kind: expression_sha256
-  content_sha256: fded79d6085e28ee6419a1c60c2de027cf4846a9c69f7b246a5b48c9ee623bb0
-- row_id: adr003:6e696ee5a76bd68ea0e87983
-  bucket: 2_verification
-  class: fact_answer_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py
-  lineno: 565
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2
-- row_id: adr003:938d2845e2eb682c9f79fcb9
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 179
-  col_offset: 46
-  node_kind: regex_call
-  symbol: re.match
-  display_symbol: re.match
-  content_hash_kind: pattern_sha256
-  content_sha256: 9d0c639374e4e7fee280d5bd48d087fa8e2dd79e7ea698cfdc69d72375c7be79
-- row_id: adr003:8d3570f98b14867ed2a74fc1
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 187
-  col_offset: 15
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _A2_PHONE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 0ca4bf2a1e6d1b8fce5c68c92b7b0db0830ce2528bd8a5d768ac5b8753aed767
-- row_id: adr003:131f9a3cff42731fddf36068
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 190
-  col_offset: 19
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _CLIENT_EMAIL_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: f41d100abc6de078cf062cca35473818a6884e92777fa7c4247c8d30a7972c27
-- row_id: adr003:e7c5abff143eb7f77772cb04
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 303
-  col_offset: 8
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 176e9df75cebf242528fd1d5795a80db6b7b909b86f37e22d8768f9cbe54e3a7
-- row_id: adr003:133c9535f6db39c4c7f35302
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 303
-  col_offset: 39
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: cfdc7f5b96052439e1fd1e80d8a30f481b26070221279460ea31cfb98a4af94c
-- row_id: adr003:088d9df8c38158f7f566d5de
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 303
-  col_offset: 68
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: cc091521b972b0fef0eaf664a9601f9af13bbc9315e6fd067b3ed7fd4ed59e30
-- row_id: adr003:3e37bf7e40a9590830989025
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 307
-  col_offset: 8
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 7633643883594f69f8f8cdd59710255ab47810054f2b3d54dbe90a65e4405bcf
-- row_id: adr003:2fc242e5ac59f9a2524d7265
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 307
-  col_offset: 39
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 96eb1a68f681af86baf856e8a533d1dea3689e6ca8c016ca1c59b83e2b8694a9
-- row_id: adr003:7ef3747a840c40263ac86c34
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 307
-  col_offset: 68
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: cc091521b972b0fef0eaf664a9601f9af13bbc9315e6fd067b3ed7fd4ed59e30
-- row_id: adr003:5434bc4ff4da5acab352fa58
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 324
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: bbaebc9560b74c75f59d3ba8c9a6e4f2e6c6520e7e42b3d50cac82bb52ca0a90
-- row_id: adr003:3382e731c8d970c7dc13cfe2
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 326
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: f15a49be34fb34705eb12c3b887febfbaff016dfbef6337ac68cac6bc00b106b
-- row_id: adr003:626f32cadf596a03c9d86dce
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 328
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 60d5a6f807333f9c0f8a1a6b81ec7ce427f3afaa58e3e821ea374b39e5b38c31
-- row_id: adr003:a7918123a92b9251fcbf84ea
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 330
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 6a31abea6cbc671ac369d603c6e665e12fa09fe8a79bff5a0ce562a746c6d7ba
-- row_id: adr003:905de135a01b7455462d06dd
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 332
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 47a333e626b20be886a40a3c10a037bf976ef02ab47cd11826e61c778344f4db
-- row_id: adr003:e8753458bd096ec35426a20c
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 334
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1835fef84f348ea564ee94e1006e2ed61dae68ad00cab0db1fd96a6dc68889d6
-- row_id: adr003:58c9a807b5e618c9022880b4
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 342
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: a070b45657a91897db0e99240da02dc061a2c8d8cb2b18d7913a95e07d9886fb
-- row_id: adr003:9a02701a1d14906868efb53d
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 344
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 6407640a7b319c0aa51fdca172445eb04c389ef9879dbfd17ee83e9a7329f072
-- row_id: adr003:f1a77fd428c9ca27783a0a61
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 346
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 45b6b7d0f3fa8c83f668a7e850cc9db1ee9e7e5c4b7134de09ec0ebcc28fe788
-- row_id: adr003:70543baba50384d254e708ad
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 353
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: e617797ec848bab0eddeb0ea10c4d51700398d803b6e600404b019f2e1296d7d
-- row_id: adr003:3bee61cd182c94f2a632ea87
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 355
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: b223e78532599280656db7d9019a306dd37952968d78068e9c13cb598a92aa9e
-- row_id: adr003:d57c1f1e548c40f356369db5
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 357
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: c26ca990fbb4e2070fbb068d1bbea827205b3bf50c1e3f4daa35d6bea2947e5a
-- row_id: adr003:90ab1eee939e55cb9337bd2e
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 359
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 22f5fa4f0920774e7bbaf4f2425410a1890f97c32e5a0a1170d5ed7434f84704
-- row_id: adr003:0a27fcad9d3101ff3b3121e7
-  bucket: 2_verification
-  class: fact_pii_verification_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 361
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 633a2b23578a44b829fd236392e0ea0b2b066a91c15758ff8dbe6169bafe19ba
-- row_id: adr003:8d6a082b1dc597ad43f216bf
-  bucket: 3_format_hygiene
-  class: fact_text_normalization
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 587
-  col_offset: 7
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 26c1ea267ea2b19ce16c8ddbf75d0a24e077e86f903aaa104a45e6e17d2221c2
-- row_id: adr003:322433b6c90955cb5588a9ef
-  bucket: 3_format_hygiene
-  class: fact_text_normalization
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 639
-  col_offset: 14
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: cleaned
-  content_hash_kind: pattern_sha256
-  content_sha256: 97e2f4c128f51b4b0f0777e32fc13d6ce86194662b85e7d723beb9ca2b63bc48
-- row_id: adr003:f7582156e706bb83575ac472
-  bucket: 3_format_hygiene
-  class: fact_text_normalization
-  path: src/mango_mvp/channels/subscription_llm_parts/support.py
-  lineno: 645
-  col_offset: 14
-  node_kind: regex_call
-  symbol: re.sub
-  display_symbol: cleaned
-  content_hash_kind: pattern_sha256
-  content_sha256: a3deb9b406046187f2c6f52d1cfb81f772d8f54edefd35ca0bc16ddb8adfe314
-- row_id: adr003:5d382481644bbc4374b5263c
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 45
-  col_offset: 21
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _REFUND_PROMISE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 5c03ef0ccc0bbb5ef3fdd3b2eec550f929ecdfb27b124cff031ab6bad81b443b
-- row_id: adr003:c281b467d9a01f7af428ca70
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 52
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _SALES_OR_PAYMENT_NUDGE_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 14dc0101479b154d3d8d2c16b7dc38dac4ee01a0044026fcc311c0070eda9fa5
-- row_id: adr003:941e95a18a83da5a3c37e542
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 61
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _P0_DETAIL_COLLECTION_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: bde7e4765df36e84a480dd4f414ec49be900a7012b62755e2187c0678e8d9395
-- row_id: adr003:e569de81c68e6952781f2698
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 72
-  col_offset: 34
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _POSTPAYMENT_CONTEXT_HANDOFF_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 23058f3a1e4210077b038ca49725d777203c26e59beefcd6350b2b37c8d77b0f
-- row_id: adr003:51c3f3de13a38d815c973dfc
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 77
-  col_offset: 19
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _ROUTE_REFUND_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 625ebb70dcd81ab8324f8ce995ae439fc93ced2cf3b2456c26a235101787f169
-- row_id: adr003:e893efeafd6d338461f554e3
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 81
-  col_offset: 27
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _ROUTE_LEGAL_CONTRACT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 41d3d54f4c9cf302ceaf2540e7877fef8ebaea1e0feb03c3e602908de37bb937
-- row_id: adr003:b06de4885f3c884737bcc6ff
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 85
-  col_offset: 29
-  node_kind: regex_call
-  symbol: re.compile
-  display_symbol: _PRESALE_REFUND_CONTEXT_RE
-  content_hash_kind: pattern_sha256
-  content_sha256: 9b91ef69830f502c0a3fbea2c6461f5abe577c1a8a627513369fbbf827343640
-- row_id: adr003:9387bf473520b482ee09a402
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 125
-  col_offset: 0
-  node_kind: text_table
-  symbol: _SEMANTIC_FRAME_TAX_ACTIONS
-  display_symbol: _SEMANTIC_FRAME_TAX_ACTIONS
-  content_hash_kind: value_sha256
-  content_sha256: 1730f6757295ccd873a73e4f78fd9c09eb7348fb18e283a63d5c8ffc16ae9923
-- row_id: adr003:14b31abfccb9c1a446f16a2a
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 126
-  col_offset: 0
-  node_kind: text_table
-  symbol: _SEMANTIC_FRAME_REFUND_ACTIONS
-  display_symbol: _SEMANTIC_FRAME_REFUND_ACTIONS
-  content_hash_kind: value_sha256
-  content_sha256: 467c60bec2ff44765fa2c3afdcc9991757f905760de4348b746b37323bbfd73e
-- row_id: adr003:9ceeb8b334e3112a094a94e3
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 138
-  col_offset: 0
-  node_kind: text_table
-  symbol: _SEMANTIC_FRAME_STRUCTURED_ACTIONS
-  display_symbol: _SEMANTIC_FRAME_STRUCTURED_ACTIONS
-  content_hash_kind: value_sha256
-  content_sha256: ae0e7c000b95a94823c06ce04eda80257e6da15c9978f1ec25de52e982566248
-- row_id: adr003:ee4fae57ddbdc744f4b72607
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 285
-  col_offset: 48
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 0b4bc1efbcb53f4f501ed176ad8f600b734d111ad068e33c9c69c1d89a76d69a
-- row_id: adr003:8e653d29acbc58c4c980ab70
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 298
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 1fc397dc31f1b3be70d35c99ffbd916f0d2ccf8cd8962bfae2f3b5247a365bbd
-- row_id: adr003:bacea261985d280ec2d9d45d
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 373
-  col_offset: 7
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 8320dd43add420e65d5909cd88586cf6d2b565aa43aaa3003225ebc8122c5d33
-- row_id: adr003:d31abe232a0a69ea2dbf422f
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 434
-  col_offset: 29
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: 5d3e7de359c6ee02f6ef6b8eab4ac3f9f68a6e0c1cf45ec1e56f3ae72a0b686b
-- row_id: adr003:a64d48535c2fdc21ea0244b1
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 434
-  col_offset: 57
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: a8c543b9f295d16bf6e9a7416352d901824fa9a6abe563f1652d8abb8bb5abc5
-- row_id: adr003:adf7c07c92ec6a962c864b64
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 730
-  col_offset: 11
-  node_kind: regex_call
-  symbol: re.search
-  display_symbol: re.search
-  content_hash_kind: pattern_sha256
-  content_sha256: 528d1a2215119c9bbf8ebcb5e5e1588710e36411a1de0e270491017bb0db2dc4
-- row_id: adr003:7d9faa35a68784646f55debb
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 737
-  col_offset: 76
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: b67c9aa2857910e9bc8b93fd5e5d40fc1e4a23b5fb560b74d8f1a31e302283e3
-- row_id: adr003:d013d51f2f5f13baf038982e
-  bucket: 2_verification
-  class: p0_output_hygiene_floor
-  path: src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
-  lineno: 739
-  col_offset: 39
-  node_kind: string_contains
-  symbol: In
-  display_symbol: In
-  content_hash_kind: expression_sha256
-  content_sha256: b53a8953474462e724bca5c75816cd29de23d2cb65f166d3cbde2488c3069051
+  adr003:00c939bc5a48bca9e4399dcc:
+  - 2_verification
+  - memory_safety_floor
+  adr003:00f5cc6c8b49eea8775893e3:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:01c14040b3e38ac3c3f2451c:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:024cf09226f1b890a4ecf20d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:02c0d7cd9a80b58df526a0fe:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:0359f08ad94fd98464739f2d:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:0394101cebe862d96a5a987d:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:03efd4dd9a033896ae898c3e:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:046571488fb99e19a29f799e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:0474c7a328d5f51a222e933c:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:053b775285500f9a2a0ab8f6:
+  - 2_verification
+  - memory_safety_floor
+  adr003:0544334a40679153ea5b076b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:0583f84f0be1c21b5180f60b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:05e3278469254332a5b1c1a9:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:063f288b20798591d486d1ab:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:06a3ad09db74fc7f2cb4fd84:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:06c51ad7a6a35bf2ddf4f05a:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:06f86d60d9e8d73de7c94885:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:071aa8eeebcb83540900dbdc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:072cfe9d3e38e78ab8c96ffc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:07b71fe45a1d074e045d4d43:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:08374bcda1d368dae602c18d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:088d9df8c38158f7f566d5de:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:08ce2ee54f684c0999aad23a:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:09105c47826e7d44a787abd1:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:09662dfd4b05cce061c1af2d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:09b2f107b59e12b42f4cbac2:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:0a0a0adf6b3d5457b952bbf5:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:0a1c5936825ef07941fdd128:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:0a27fcad9d3101ff3b3121e7:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:0b4b37a3a52314b74f1f9aa2:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:0ca610dc63bfeff27f7d45df:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:0cddb8d98bd233e62804f24b:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:0d1c6db682e17e165250114c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:0d6545361e68d70fa7395156:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:0e19ba028720d926bba2c2c3:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:0eb17137fff9eeb7895c8a7d:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:0eb6576edc3bfcfc3beff9d3:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:0f49f6580a220474ead7e9e4:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:1011bdbc7b7f0393f73dc339:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:101a0af5d8f5d84e606c1592:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:1114e4a799a2861938e136cd:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:115c9a820e595745548bb60b:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:1249cc9ae2283a2fbaf52c15:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:131f9a3cff42731fddf36068:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:133c9535f6db39c4c7f35302:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:13b3745bb2f9a0ec747fde42:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:13b561198d1f8996a2f027bd:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:14089ec76ef6929d5e77afa7:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:141ad5a88c6bce82651a0077:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:1494cfdc7fdef54aee82b059:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:14b31abfccb9c1a446f16a2a:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:14febeb6dff1a52ff55897ed:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:16712e02bff04654e0a645a8:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:1688e850d699d59546ef0275:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:16c64710f3a3f0591d328cab:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:171dd38888f94c7754000b5c:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:174decb151747a1ec74c524d:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:17678584b9f88f25f2b74979:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:190bd0ab79c58911a7f23413:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:192a8678da20bb188cc00fa6:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:1951478c80d84b9d8db2ffde:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:1a3a4c4811d63958c25aa8b8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:1a4672e130f45a15f289ff7f:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:1bee665e3515a9d7c9759d35:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:1c40de1c08b9f2767e466afd:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:1d12f89b2290b3777136a0f0:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:1d15baa7ef08f87872da31b8:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:1d433962c1e5576900da3c1d:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:1e3df5863c13e21935b0c5d2:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:1e80ac1c892b61c644bff462:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:1f0e5a08ae22abc3ed6df648:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:1fd68dfdb0bd5ca1cf1d085d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2002c944343edffa1e4d828f:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:201ccf16e644c35f2ec74a60:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:20630e10be44402d90600c3a:
+  - 2_verification
+  - p0_recall_floor
+  adr003:20a36b45ccd2eb0c79321b93:
+  - 2_verification
+  - memory_safety_floor
+  adr003:20d484b7061d8bf8e3082358:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:20efc2cdbc30b27e965f6241:
+  - 2_verification
+  - p0_recall_floor
+  adr003:214bec80ffbecefb3bf355e6:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:217259208ab2907b284d0935:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:2243ec6ea4691dfd58e6b1ce:
+  - 2_verification
+  - p0_safety_aggregation_floor
+  adr003:228c2ba163e185248b99c616:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:22c6f36ee43667101e52dfff:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:22c878b06b1534f10a67b1e7:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:230bd85c1551190b5df272ad:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:23488c28c40501c33e840c9d:
+  - 2_verification
+  - p0_recall_floor
+  adr003:2359fae3ccf5a6618864f425:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2362057498483d0e28ed84e6:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:23dc3075a26b52951b057773:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:247c6891032266ad6216b939:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:248364c2c3c2aabdb4f061f9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2601a8e1f6e8a777b7cfdf3d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:261e74a5f3cbba7c4bc17e57:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:26a37b2bb23f1a16da02e3c2:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:282d9ec0dee6119444513573:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:288c14a1396f4b963fc27c42:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:28ba90571628e38f7d9f1b34:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:2926855ccb46729f325c5cfc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:29912a56e9f8be6c9c1783a8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:29affa09f2ba6376690c8df5:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:29e8159cdb6317c7b75215be:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:2a1d893fc081956d58c7ec00:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:2a566d5e9e0bae2d69a61e1e:
+  - 2_verification
+  - p0_recall_floor
+  adr003:2aafc8ef027f4e40c988efcc:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:2b8c78ce6dcab50e9af12e4d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:2c862236655df2613c743fb0:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2cb93d378c6e80897369ad31:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:2d572a7aaf19c712a5c55fd6:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2d582454e545d2443354e91c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2d782311381da3d6dffc9c05:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:2db92c753a3a0f545283cade:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:2dde9d415803003d20fe7be2:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2e174196f4088560f5bee257:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2e67012fc09120b81cd2f1ba:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2e71fad05607064ea2d6663e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2ec4a111ada776ce5c4d2f4b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2ecb995eb3643a984a2b3c8d:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:2f22da3c265d3817614dbf7e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2f6d00f47423ecda6ca481d9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:2fc242e5ac59f9a2524d7265:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:3030cadb486ea98895402224:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:305e2290619755954572b7e7:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:307cd80c68100a5732e70e36:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:30baa7e988c5ab78a64e5008:
+  - 3_format_hygiene
+  - output_whitespace_normalization
+  adr003:30f06e2e65144dd4abba25ef:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:31ea8e546cf541ce4602afe9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:31fb35ff4f88e27b6826c40d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:320b78df028d569ab81912d8:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:322433b6c90955cb5588a9ef:
+  - 3_format_hygiene
+  - fact_text_normalization
+  adr003:32a8429f5361a4570372d9b4:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:32feae9089673a3fbe4d3bb3:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:333d20ba5540c7fd8a6556a5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:334281c758d356584985cc04:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:3346a68f418e092e9796f3f4:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:3382e731c8d970c7dc13cfe2:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:342cd0b804bd84f6029f5e88:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:34bb5f1d6e45c4d17554ef6a:
+  - 2_verification
+  - memory_safety_floor
+  adr003:34cd79fd1f45a37f7af1fc35:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:35453b59163b23c334c8c454:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:364364b31499d7f107957874:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:365da41c77d18485565f31af:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:37789852ac2caf3c67fab891:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:37899242ca799d2df7c49b26:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:389e3793feeeb11c93af9ff2:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:38f3c23c5973cb48cf4fb736:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:39037e2527fa4ec65849ba76:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:390977b306719b135e257e52:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:3939672b02de13b340d9311d:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:399f77b94d454886c477554f:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:39fdf925596209465921b761:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3a833b1b4efef667b7444a61:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:3ade1350c1d29cd2596f16f3:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3ae2fbbd8ef1ef29d3c11cf7:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:3b0fda15bab60e26ab334dd1:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:3b1615122afa53f1b1e61641:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:3b53cd1fb1902c1df7ef070d:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:3bee61cd182c94f2a632ea87:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:3c3a3b991c10210375d11a08:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:3c582ccdbf02f3c8ec35ca40:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3c9298303d9d54d7eebe3053:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3ce4824b484e92614c42e0d3:
+  - 2_verification
+  - p0_recall_floor
+  adr003:3d746312462850bf43864567:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3e1c8d9d5698d2e366ad8e6b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3e37bf7e40a9590830989025:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:3e7d8a5464f0bb1502649579:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:3f09a4fb40ef8a0bf8a0a27c:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:3f427448884466e263794c0f:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:4024c329e23ddce19de224d5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:402729888e93a4c67590ee9f:
+  - 2_verification
+  - memory_safety_floor
+  adr003:4088d42205bb79db06a35efd:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:41aec0a56624326e9921f00b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:41f53aa82de805b52d2f546a:
+  - 2_verification
+  - p0_recall_floor
+  adr003:41fd6474dd50ac003e997921:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:420af536427fbde043ce5b07:
+  - 2_verification
+  - p0_recall_floor
+  adr003:434d8833d12bce66888dc599:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:43c53a2010b8a945e08c0268:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:445f40a1d1de51df6f98890b:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:446e1bc80a66b033e3fc48f0:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:44ab10303a1676bc0df1a679:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:44f11ae560b21cfbfc874348:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:451c53c434f2a8a341d93929:
+  - 2_verification
+  - p0_recall_floor
+  adr003:453f61a69211082f3d951ac3:
+  - 2_verification
+  - p0_safety_aggregation_floor
+  adr003:457f5328ad67212126cf028d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:4596f699d32fd4f27eb02eb5:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:4602313553a356fc16e61764:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:462c06aacef09f3dce2d893e:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:467163d8f10b96feb0b2c50e:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:46bbdf0c6017a26b7fcb1e9c:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:470b12b26d1869c3d8ea00a2:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:47c46fadd1e9a400be645604:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:47fa47080ea92807323162a2:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:48c654cb88f5a1d3ca5f3bda:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:4907848ea8b34775c145325e:
+  - 2_verification
+  - p0_safety_aggregation_floor
+  adr003:49a05e1dd4ccc88f5d6d7049:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:4aaf515bf96cb14c9fa4d2c4:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:4ba51b778d5241a5cf99320d:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:4c011e0440d6c6e1665f839f:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:4c021cb522380f83a439389f:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:4c7510fe76d211766240ffac:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:4c989af34690e71d8f4764b9:
+  - 2_verification
+  - memory_safety_floor
+  adr003:4c9f3caada1c67f73c70a0dc:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:4cd4e26d8c693482194718d9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:4ce0bcab9b22582f86d7297b:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:4ced2944e75a04f2201e9d27:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:4d53bca425ad4d6494d3939c:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:4d8627b91b5ffcc252d3ce00:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:4f1051c8fdcdb2790355df74:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:4f2e6df01b647813c4669e2c:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:4f5cfe0c2e0198af55389491:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:4f9226e12b41131b6d22f585:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:4f94c1c64653d36b7449c6e9:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:4fb552ac54b2155a36425ae4:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:4fdbbee8de023f3ad1108d6c:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:50aac00cf018cad829fed76d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:50ccc7faaae2c8c1f52db171:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:51c3f3de13a38d815c973dfc:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:5235e584fbd81dcdd9e01b60:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:524f2ef7daf72579bac8297b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:527ded95a65db7825aaf7291:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:52961bc675b5703d4139e080:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:52ccb6e7935e6793a2e657e7:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:52f286fd749c3ff164a73065:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:52f4a6b0ba0ea1c1600cd11f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:538f3c464edbdc718a2932ef:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:53c34d02c0b56883ecf1b745:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:541b38711af7290011cd8158:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:5434bc4ff4da5acab352fa58:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:54426c494ce6c803aba0bdb3:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:54f9c11b83403b57c3f36ebf:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:54fda5db9af2635575c75077:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:55337f3a16f6fcbe2eb5babb:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:5581820b0207699d1fb5bac3:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:564e3118309ee700faf79370:
+  - 2_verification
+  - p0_recall_floor
+  adr003:56643aef36559f0a9bfec2e2:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5683febf55c840856d4fe79d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:56b412eff6a3173d8ce21406:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:57cb649f0dfbb787a68fa6b8:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:5880ccea2a659ff87e5bddac:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:588e09e5fd99e27ba4d224ee:
+  - 2_verification
+  - p0_recall_floor
+  adr003:58c9a807b5e618c9022880b4:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:59bfd7a822c7d24ab81ef201:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:59e10dc81868cb504bc11eca:
+  - 2_verification
+  - p0_recall_floor
+  adr003:59f8d4bd19fe3d67d47bb593:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5a90be63bdda3312dd0ffc57:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:5b21b90c985ba650e227fbad:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:5b22c9fdfd5f2ee0e58d56be:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5c13ec595e084a60384b5ff8:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:5c3257d48f5105011f7831af:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5cc7f4b9ba7bdf5029fb8a89:
+  - 2_verification
+  - p0_safety_aggregation_floor
+  adr003:5cce292546d73fac16046dc1:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5d1feddaac6bb7a8bd1e6010:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5d382481644bbc4374b5263c:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:5d9070b493c7c0fbbf6f5a2f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5da90d1356c162a9f480ce65:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5dbf9f18d26841033c3b031f:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:5dcb401eb3a034b4d24403a1:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:5de0169774363a7f438a5ce2:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5de9e90b6993f2a21b8b130c:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:5e18cca57fbd9d36b94cb00a:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:5e61a744f740f23232bec04e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5ede747d1777d807a274a152:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:5f03dcdb48cd5b99d48bd5fc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5fbb0c1e396a9362c4891dc8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:5febd57a976804ea752b1a7c:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:5ff4e633a91d2c0f81a05a68:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:6059a65b88b798b763af143b:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:61811eef766ed79c353ddd04:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:618c33408b6d3197fa96776c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:61bf08fbe8ac1e2c398a5ba0:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:626f32cadf596a03c9d86dce:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:62bdf64f5a4c624e02b5ba5b:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:62e128f6a43ebb6a3fab3313:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6358dc577a17e2ec60dab0f5:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:63afd80b0a187296a9d78f6c:
+  - 2_verification
+  - memory_safety_floor
+  adr003:6419327850fe8352caf5a7dd:
+  - 2_verification
+  - p0_recall_floor
+  adr003:6449c2657291363456a497aa:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:645efaf6670ebe60c2236bbb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:64e979843e63dc607fc5e0e8:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:65233087b78e632e3be79b6a:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:6766448d438b9a9e55ebaf8c:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:6782912392ea9ddb71bc61d9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:67b504af23a1b9927cfcc13d:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:683164ac64dfdad1d634f8ea:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:683bc00b7851a3d9b0012214:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:688a92cf1ce927789262a97b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:68a176732712dcd3132f8d1d:
+  - 2_verification
+  - memory_safety_floor
+  adr003:68e00f75ee237f412cfb4139:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:6904b43f99e39f35b7c85e8c:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:69334b5f6cf5b8597150988e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:695322d2e006cffd67c29cb0:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:6a0bb22cec4bf9ebefdc4941:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:6a16c3266752e7bee16211bb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6a282df7b530c02d70293912:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6a44400a1e25ab902eabbde8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6a5cb7fb690974537fabac03:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:6abf895821fcbce7f7f9375d:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:6b2616616eaf2dffa4afd2cc:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:6b2e056e39bdf395067edda8:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:6b8bee8844a140ef8fa06e8b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6b91da4ae1d034e8eaa5d05e:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:6bbabf3304cc99cb21579507:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:6bd0c08d94d0a87a0ab3aa8f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6caa8ee31941de8aad344ddc:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:6d63c2e8ad825e563f896298:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:6d8d0f97623a45f3cd683b5d:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:6e0562098685aa97e06d539a:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:6e10a10828c9abc00243f38c:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:6e53d8c90a1fc9d5f84f6a59:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6e696ee5a76bd68ea0e87983:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:6ee6bd6d89341e943f6e4cfa:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:6faaa425d3a3057f4a89e286:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:6fda2e410fed7a71a635c05b:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:6ffbfed92f7a2f9f86559cc1:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:70303cee0421d21367ba7658:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:70543baba50384d254e708ad:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:70acad8f75a0e04f18ff1758:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:70f87edf11c3c8214c902544:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:71019cd6f3fcfa32fdd60277:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:71ab5d1f5204609f4da931df:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:72c0e5a1b5e4c1f226f29049:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:73754392aefb1c39386c7d50:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:73ceccb4f074506afadba797:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:754fcf72d6abb6ae46222c79:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:758902c0ce3e1c06fc67abeb:
+  - 2_verification
+  - memory_safety_floor
+  adr003:7619bd5c224d23786903388e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:76414c1c3c161bbc9980ed6e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:766db57584c03b8cebfe1404:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7696f5461f71d422beee9ccb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:76fac11b5a026abc56d1f3ca:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:774750a34088af97751dd0bc:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:78824c5b7d4fcd2adcd48fc5:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:78e6cf5a423c881eedb04a7d:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:7a3b5e6bbeb39bfbf1ad8daa:
+  - 2_verification
+  - p0_recall_floor
+  adr003:7b1fd27aabcb7b581291b09d:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:7b2936b4eeaaae0e6dbf641c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7b29f3f69076fd9724d391ec:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7b737884d8fa574821c796cd:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:7b7cc9e01e9a3a4c7976dcbc:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:7bc8d7851a0c273431584057:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:7bf8a4bc5993119f83ae70bf:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7bfe55f3634a2dd477ae3b50:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7d0b0de1612694b8af0b8560:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7d7ac6bced61384746ab69bb:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:7d89070b222d148e43499444:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:7d9faa35a68784646f55debb:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:7e457449535c5946ecd6d6e0:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:7e9368b6278c841efdc620da:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:7ee94ed89a4f281b5c928839:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:7ef3747a840c40263ac86c34:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:8034932fac0b677de514e03d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8141d52cb4e8a7409f800fd9:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:815de4700a0760e2686e38dd:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:82845755b3a6b43aea829642:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:82ad6e0fef7dfe660d042904:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:82b318062dd6701060abf9fe:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:82ca84d0acc761fb4e478be6:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:833e884d3b4fcdfcb7991a6f:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:8491309624fe5688eb09fae6:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:84bc611e6cd64705f32dfdec:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:851d85adfdaadce93513e487:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:8565ae831669171901ab88a2:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:860a97bb50bed485d79413e4:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:865ce30ed8ca68ea7303f599:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:86875486e9e7557e10e81a57:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:869ded2e3b1f63bf82b0a9c7:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:874975f0e59edab467e8cd44:
+  - 2_verification
+  - p0_recall_floor
+  adr003:879177775b62481e52c16725:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8796b19f5c367303be071ad9:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:88133d44fc713d96f2d5dc88:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8854f961c777532bf6e255bc:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:88b465e1f9498933e55b76e5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:88cf911b193280e28ffef2e1:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:88e16680b6e7959e6efbafc6:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:88e889bfa0261180298f28e1:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:8a3abccf7ba89425a976bdaa:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8a50d8ca0190d9c4d105f317:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8b2b324205cda29c03f60552:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:8b6fd9ac4a895d62c065dfdb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8ba72c87793661a7e8cdc491:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8c2ef1149e5469e511d6687c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8c52802930636a73902a8bcc:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:8c82fecbe979513b6c6ae01e:
+  - 2_verification
+  - memory_safety_floor
+  adr003:8cbfe91ddd489ac133778f56:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:8d3570f98b14867ed2a74fc1:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:8d6a082b1dc597ad43f216bf:
+  - 3_format_hygiene
+  - fact_text_normalization
+  adr003:8e12ee43ac8cc125b64556ba:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:8e484e62704b9b3ad079ac88:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:8e653d29acbc58c4c980ab70:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:90165d286c13cb1147959c42:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:905de135a01b7455462d06dd:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:90ab1eee939e55cb9337bd2e:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:9102331dcffa9a163c651734:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:91b088c475d47ba1fe1629a8:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:91bcdb9a20041b913ece993b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:9203058e5b45f792e7a0f72e:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:921849177293cbc67672e6b4:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:92339f9a434c47c248394b46:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9235d872f7658cfcde07b5ab:
+  - 2_verification
+  - memory_safety_floor
+  adr003:927b2b45a4809c68f1dcab6e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:92a7398658d8f4cb2d677ac0:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:92eae2c43016b844915e3cf9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9387bf473520b482ee09a402:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:938d2845e2eb682c9f79fcb9:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:93ab4ef239c65c1ba45ea3fd:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:93daa93d801d71dfceb3c0e1:
+  - 2_verification
+  - p0_recall_floor
+  adr003:93e0fd5c2a36c39b671572af:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:941e95a18a83da5a3c37e542:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:94e53684d75329fc1de76e4f:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:95b58ea740cb313e779d3a07:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:95baac853fe9d18a8af21bc6:
+  - 5_historical_measurement_only
+  - historical_measurement_only
+  adr003:9614a87212cbf1eb547ab145:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:963246945e7265df07452f4b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:972e12435ab91b122ec247fa:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:97392dc8fbcea6968231ee7d:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:9749b65d909281130529f95e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:99f1c96c081439d2b2737d9f:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:9a02701a1d14906868efb53d:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:9a50af996d82d57f0fee2ac3:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9af9a3fc9a67cbe533787f64:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:9b179548b8be3f278a369eb1:
+  - 2_verification
+  - memory_safety_floor
+  adr003:9b2e6a781bf63dc6460008ed:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9bb38d5da23840b0f48cfbd2:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:9bcd46e681f0e57f6234f58c:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:9bd64aa99b41872fceacb8fc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9c236f065bebb3a20ffb643e:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:9c8ca53333e7fcf74aedd2b7:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9cd11cb568ef771d5f7a9035:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9ceeb8b334e3112a094a94e3:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:9d49b68350c06c363fc172df:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:9d790e3caef9124ee7e570bd:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:9d91a677af9d202172244ecf:
+  - 5_historical_measurement_only
+  - historical_measurement_only
+  adr003:9e0edd3cde732e9fecf03b35:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:9e95316930dc07c15a33a2eb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:9ec69f8b98998cc035ff8a0b:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:9f28bb2f9a29de6d2d625f83:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:9f7724798c2aa4eda97f97a6:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:9fb51e26539203ae56503dc0:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:9fcbefc4ea346b798dac91e0:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:a01f5e4b93be5affec0d4af5:
+  - 3_format_hygiene
+  - output_whitespace_normalization
+  adr003:a063caba6e8b141dad297139:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a065ef62ccdb398402360500:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:a090f5fdce2b3580a3aba778:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a09fe3e446e24fd2fae6e355:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:a0e8d57eddd8e56b8e46de3b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:a0e9f73300f4cd2c9efd3cc3:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:a17c41a025bac759b28061ab:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:a227f91ad7c2ede256f1f9cd:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a22f8c8296fb8436fe2f787e:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:a242ba77f43e36ddd189b825:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a39e0fc2a0135976160467c5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a53d4df8a9ce1e8df56a81b8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a61514949c15e4ecabd650b9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a64d48535c2fdc21ea0244b1:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:a65be749c53050666a7bd278:
+  - 2_verification
+  - memory_safety_floor
+  adr003:a67013724368d421805f629e:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:a71573e60928e0344e03062e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a783afeb3e71aaa648468271:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:a7918123a92b9251fcbf84ea:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:a7e57a6c511d0b41b5075ddb:
+  - 2_verification
+  - p0_recall_floor
+  adr003:a878023ed2dcace7e761fa4c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a8b7de4754ad37cf5db2f519:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a995743c34a4aafda7bce7f6:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:a9f9403fae7ababbef68b3cb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:aa345c299f4d181430a6fbe0:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:aa905cfdb7ac17015c157686:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:aa9a85d08968a16da915d28f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ab26aa706f67f4e7698bac9b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:abfa1699d005f0e26a89dda3:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:ac5b93d3357470cf05711513:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:acde548f6a3fce3bd51d0566:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ad1eca08e36991d0e1912ca4:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ad43c8c8d0a160b37ddcaa4a:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ada026e50ab99419acac6205:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ade1ff234a1f581cd6fec7d1:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:adf7c07c92ec6a962c864b64:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:adfd9b503dd63156688a75ad:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:ae1e174283e9fa78c3a4ea81:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:ae315911eb76538c06612c08:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:afe47f9d4028dce77085f38f:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:aff9925b7eae884afeed394b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:b06c9b168e7b8a4e58e9dc5d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:b06de4885f3c884737bcc6ff:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:b08e9c41c5a7bb8dab158db8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b0dfe868f384b4bd54a1a66a:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:b2330902258245bee72edc47:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b2a198fad90179a103e379f5:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:b2ec47492a2c417dab51af96:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:b38fecca95cb7b28004a2276:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:b3a7b021a2e2a0707aa28917:
+  - 2_verification
+  - p0_recall_floor
+  adr003:b4d1aabefe4307ad09320184:
+  - 2_verification
+  - p0_recall_floor
+  adr003:b57a9b7bb35157f4205c0504:
+  - 2_verification
+  - p0_recall_floor
+  adr003:b64ae201cd64838b790d446a:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:b6f8918b7bfebe0619af6e04:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:b712a3275ba5424f0f61e27a:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:b715b5f0b00c7607d1ecadc2:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:b76e502bec3532d2dc8ba5c5:
+  - 2_verification
+  - p0_recall_floor
+  adr003:b7aec1cef8b722c332e98722:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b7b4d65f12b1700cf5f48a5f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b7e08c5f026bb0521ea50797:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b834feaea52e141fedfd5e48:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b890801ca3d6ef84ef3e32d1:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:b8bc3a5665eb95f19fcc5561:
+  - 2_verification
+  - p0_recall_floor
+  adr003:b8c32f6573a00ee653836ecd:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:b9216d2ad5fba68480eb7fcf:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:b9cfe6ae85ba962d2fb5e4af:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:ba14f56656f91b7ab290f336:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:ba52a546033cec18c6f2d803:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:bacea261985d280ec2d9d45d:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:bb3b7a341829585cb032bcbb:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:bb419ecf1f8d1b2489aacfdf:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:bbe50536dd1340da8e3c292a:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:bcba6b8a0ad9373883010f47:
+  - 2_verification
+  - p0_recall_floor
+  adr003:bd4314f40c351ebf9d346338:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:bd5d4593ed05fc213ab19411:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:be4587f930f7b073a425f413:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:bf2d5f27a45890a39be07597:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:bf5107986c6d5863fa910c4d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:bfe3696743f043371df433eb:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:c032e5a0ba6d9de0e967bd01:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c06993a1d43dd2822da8eeb5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c1039870c7d4e4904e704d94:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c14f4805c29cea2e2a8c267f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c16692514fe04358e8bd1259:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c1c9b7c09b631801aa5da2eb:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c1f638641977ce87cbea432d:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:c242de436cbe9064cc242245:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:c26742986304685c6862fb5b:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:c281b467d9a01f7af428ca70:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:c30759b2fafede7473fa2d71:
+  - 3_format_hygiene
+  - parser_normalization
+  adr003:c349c6941b8e3b5b794ad7a6:
+  - 2_verification
+  - refund_semantic_safety_floor
+  adr003:c3f43495e0a86cafac8c181f:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:c4c35e968a7275600df61a86:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c4c6b1a57f7f17f74f8b1b8c:
+  - 2_verification
+  - memory_safety_floor
+  adr003:c4e75c62dbb59b4f21fd4779:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c52e4bbeffc24d7c4548cd57:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:c6cdee80153292c71d60645b:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:c6d7cb54c605b4ee5cd12315:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:c7c0201dab7726619e232247:
+  - 2_verification
+  - p0_recall_floor
+  adr003:c80561a2142f71a3aba39e79:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:c83f947a2bf3a7f0e9e7f806:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:c84e42214d920a9dcf5f0c85:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:c96b246ae20b0ff4776904cb:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:c9bed3cd48657ad07e752122:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:c9ce982cd9de808004c2b4a0:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:ca060db286e694ab3630d63c:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:ca91bb4a57d54300fb033aff:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:cb1e49588867a32f245c9367:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:cbce912552b6986b638462dc:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:cc9e374bb62af974baa41e80:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:ccdc85295eb3adbd1eaf588f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:cd0c06b1bdae3857203cada0:
+  - 2_verification
+  - p0_safety_aggregation_floor
+  adr003:ce36078cad18819e4e49e7fb:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:ce4ca9973a762af3bf11e8c1:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:ce69bc274627b53af32058a5:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:ceaf980d0911a94e928e7bb2:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:cebcdcafb6340bb0058482f5:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:cf3b08d9dc132e49ed1c29cf:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:cf653bd9f17a3fbbd7825669:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d013d51f2f5f13baf038982e:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:d0371a22626704529657636b:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d06a64e7d649c8ad6bfd3e4a:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d0d9c5b39f9fdd0208504aec:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:d18640f2da6ea186605addac:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:d22c1b2b5e0a97e76dcec59a:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:d2f04b42b78af6398023fe7c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d31abe232a0a69ea2dbf422f:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:d34638e87e04ecbfc226f083:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d46f026c683b9b5410269434:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:d4dc356ef21ff7899cdf6272:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:d5608e39262cc38051532a66:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d57c1f1e548c40f356369db5:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:d59bd99320fdbf3e3333508f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d5facc6f89f8b9860963b44d:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:d66af05603879d38c69743aa:
+  - 2_verification
+  - p0_recall_floor
+  adr003:d678360196db92fa1bc7cb02:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d6ad9b9f314f48243d23b153:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:d6c994f353bbd46c9efd7629:
+  - 2_verification
+  - memory_safety_floor
+  adr003:d70fa00bcc5c52acda170885:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:d77c9be24125a8d7093879bb:
+  - 2_verification
+  - p0_safety_aggregation_floor
+  adr003:d784b04682de9ac84c7f0042:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:d7a9d80213ae4b284dbd59fb:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:d7af18ab4268057c3369a65e:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:d7b8bda454c829cef4a36762:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:d7bab281ad95bab4659e2d34:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:d8203492c08f8e72e0edb890:
+  - 2_verification
+  - p0_recall_floor
+  adr003:d8301080acc28297f2c166bd:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:d8ba389b9a5922606554c4b7:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:da4328af7234c8a0b470c0a6:
+  - 2_verification
+  - p0_recall_floor
+  adr003:da8e84f4b686230a1e0c3cdc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:daf646e3cd0766e75ac12444:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:db3392d377e72d503ac7903b:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:db4bde65b861b7a9959ccfe6:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:db99a78352e379cfe6a5e97f:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:dbcb27246be37aede859cfcc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:dd50016a500ca174d6c5df3b:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:dd61e07f1ac34a2e6db01417:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ddf3bd9afe6d4440d72c4c38:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:df0e73534f8c8f3a76472c78:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:df3d40e89abc8708ecfc0945:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:df49bb88292e62e18cd01cc8:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:df87d5b71bfea06c2576b480:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e0255d6b11e375d7aba98208:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:e0f7a526bf14c7493890dddf:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e16dba6dab6e7a31b20912cc:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:e1b0cad12a9b6f5cbaeec967:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:e20e95dd45f1daf030dd5108:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:e31e03aef82d134513200234:
+  - 2_verification
+  - memory_safety_floor
+  adr003:e320e2be30a72add24b3efbe:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:e387aa05b324564b8e40940e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e45a4d51827aadbbe07d65b3:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:e48b2a9e75261feb93391758:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:e4a8d0709e9f3304e73c4fb7:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e4b35d3123c52c7545082a90:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e4ca97af972b1396c5e384e5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e51ad38dcaa29f1dc52d9ce2:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:e524b363607ec3ed077f7ab1:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:e569de81c68e6952781f2698:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:e5bea38a2df7edda3aa9449b:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:e613f454043d9f898f8b4135:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:e6bc6471ea538789d599ace0:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:e724a11359b91568149ff946:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:e79df0d9f34deff66107edcd:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:e7c5abff143eb7f77772cb04:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:e7f8630082360afd66484a25:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e8753458bd096ec35426a20c:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:e893efeafd6d338461f554e3:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:e8ea3608f0c9318ff14de64e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e91b04da5f46ae5db95850e1:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:e977f74f224346763598d060:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:e98077122bff6302c9d2b9ce:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:e9bbd4c9c799639d62884732:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ea4fd90c636097cacedb0c7d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:ea64953c59953eb2b7e73ef4:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ea856b28e30bf19b9eded49b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:ea85f0ac3f6926a07c9f61d0:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:eab1b29fa5572d49d1897fc5:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:eb0c249a0b9dbea15279a5b5:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:eb5a66b0899c30b8c939636d:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:eb9cdc518f75d18f08d0baa9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ebfb8897cc354a0ab4fc9e93:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:ecfbedcdac78a4de829f65cb:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:ed2f9c2223c3b2357b2369ed:
+  - 2_verification
+  - p0_recall_floor
+  adr003:ed9c063d3b0863d39f1ffe09:
+  - 2_verification
+  - fact_answer_verification_floor
+  adr003:ee2048a3d6f1a01150bda298:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:ee4fae57ddbdc744f4b72607:
+  - 2_verification
+  - p0_output_hygiene_floor
+  adr003:ee6e216cf66a6b05c5b914de:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:ee9f9c26c4d302daed8d3f2d:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:eee3b972601d4cd4c26e1fcb:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:ef4d3cfe3ea175eee5ad234b:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:f03ebd2791257618cb6587c7:
+  - 3_format_hygiene
+  - output_format_hygiene
+  adr003:f05ea384509d226ca18c2e24:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f068479a2245b657d0c7851e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f06a7b22b1d008d89375868a:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:f07733b19684d2e85513f374:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:f0af1432e854516b541a11df:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:f0f0a52e5b33fe8abb1b6f76:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f149bd0cd1de2714d9fe1c5b:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:f1a77fd428c9ca27783a0a61:
+  - 2_verification
+  - fact_pii_verification_floor
+  adr003:f1e3ecdf9dcfad0dbea0515c:
+  - 3_format_hygiene
+  - output_whitespace_normalization
+  adr003:f20e0e43ecb79cfd8fa7fa31:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f29a5f71af7fceb8daa0fe55:
+  - 2_verification
+  - memory_safety_floor
+  adr003:f2f52feda12c51f6b428dcc9:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f3091f1f2abd14c6aa0f5dbb:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:f30b63a9e17cccc0f9544260:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f385afe9a68dc183d1ba557e:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f3b1dd9680a3c591584669af:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:f4469e2bd13372fa792dfe87:
+  - 2_verification
+  - internal_metadata_leak_floor
+  adr003:f4bd618f1e64b05e2b6a69d2:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:f4f4d63cdc79d7998add969c:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f504752f5f5fdd90860c01f7:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:f54609c90a69b3b51705cf47:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f54807f1149f82f6992b2005:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f62d0e387d1c2984cd475fd3:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f62e52965f722e55ac6377ca:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:f7091676161d78246cb68461:
+  - 2_verification
+  - memory_safety_floor
+  adr003:f72149a2611020e182d2d3e0:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:f7582156e706bb83575ac472:
+  - 3_format_hygiene
+  - fact_text_normalization
+  adr003:f7ee1e52e51de2530571d6e3:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:f80b013b74c9ce2af8e10dba:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:f812eb5a4ef799409f60b814:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:f888befd4c921542c43a31c6:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:fa0ac738b89e6ad398dc24a8:
+  - 2_verification
+  - brand_money_promise_floor
+  adr003:fa0b8a2b729c1eea60cea13d:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:fa26fb149e79136a17e402c5:
+  - 2_verification
+  - fact_output_verification_floor
+  adr003:fa33d0dcefe7bb1f6d917603:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:fa9b158031479797085495f2:
+  - 2_verification
+  - output_claim_pii_floor
+  adr003:fab77b75e6de666d5c15b866:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:fb67612b3c877db531c5f919:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:fb73cbe77ecd90d9e40cec31:
+  - 2_verification
+  - pii_prompt_scope_floor
+  adr003:fbf5337670e94ce00078a566:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:fc8a8bc5b2fc840322ac2453:
+  - 4_technical_parser_or_lookup
+  - technical_parser_or_lookup
+  adr003:fcc434cb55b328b585b137ed:
+  - 2_verification
+  - memory_safety_floor
+  adr003:fd7e3ecdbfea02a90d96c3fc:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:fe4d1e674c1b9a55cd71a021:
+  - 1_model_owned_semantics
+  - legacy_model_owned_semantics
+  adr003:fe78ee134a95da67e4af4d43:
+  - 2_verification
+  - semantic_frame_pii_floor
+  adr003:ffde13321305c51b06d3a5f4:
+  - 2_verification
+  - fact_output_verification_floor

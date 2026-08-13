@@ -4,9 +4,6 @@ from typing import Sequence
 
 from mango_mvp.channels.text_signals import has_any_marker, normalize_signal_text
 
-
-FACT_SCOPE_SPEC_SCHEMA_VERSION = "fact_scope_spec_v1_2026_05_24"
-
 SCOPE_FAMILIES: dict[str, frozenset[str]] = {
     "matkap_process": frozenset({"matkap_process", "tax_deduction"}),
     "tax_deduction": frozenset({"matkap_process", "tax_deduction"}),

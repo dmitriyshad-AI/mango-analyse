@@ -1003,7 +1003,7 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     if args.ai_office_env_file.expanduser().exists():
         load_env_file(args.ai_office_env_file)
     ensure_canonical_pilot_profile(warn=stderr_warning)
-    raise_for_failed_selfcheck(pilot_profile_selfcheck())
+    raise_for_failed_selfcheck(pilot_profile_selfcheck(require=True, require_all_default_on=True))
     config = build_config(args)
     ai_office_config = AiOfficeClientConfig.from_env()
     wappi_config = WappiClientConfig.from_env()

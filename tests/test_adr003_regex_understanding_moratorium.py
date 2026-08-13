@@ -36,7 +36,7 @@ DIRECT_PATH_PATTERN_FILES = (
     "src/mango_mvp/channels/telegram_pilot_context_builder.py",
 )
 INLINE_RE_FUNCTIONS = frozenset({"search", "match", "fullmatch", "findall", "finditer", "split", "sub", "subn"})
-MARKER_HELPER_NAMES = frozenset({"has_marker", "has_any_marker", "has_word_marker", "has_exact_word"})
+MARKER_HELPER_NAMES = frozenset({"has_marker", "has_any_marker", "has_word_marker"})
 TEXT_TABLE_NAME_PARTS = (
     "ACTION",
     "ALIAS",
@@ -54,12 +54,6 @@ TEXT_TABLE_NAME_PARTS = (
     "TOPIC",
 )
 
-CONTENT_HASH_FIELDS = {
-    "marker_helper_call": "args_sha256",
-    "regex_call": "pattern_sha256",
-    "string_contains": "expression_sha256",
-    "text_table": "value_sha256",
-}
 TEXT_LIKE_EXPR_PARTS = (
     "client",
     "draft",
@@ -596,14 +590,17 @@ def _literal_left_membership_snapshot(repo: Path) -> list[dict[str, Any]]:
 
 def _understanding_map_rows(path: Path = UNDERSTANDING_MAP_PATH) -> dict[str, dict[str, str]]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    rows = payload.get("rows") or []
-    assert isinstance(rows, list), "ADR-003 understanding map rows must be a list"
+    rows = payload.get("rows") or {}
+    assert isinstance(rows, dict), "ADR-003 understanding map rows must be a compact row_id mapping"
     result: dict[str, dict[str, str]] = {}
-    for item in rows:
-        assert isinstance(item, dict), "ADR-003 understanding map row must be a mapping"
-        row_id = str(item.get("row_id") or "")
-        assert row_id and row_id not in result, f"duplicate or empty understanding-map row_id: {row_id}"
-        result[row_id] = {str(key): str(value) for key, value in item.items()}
+    for row_id, item in rows.items():
+        assert isinstance(item, list) and len(item) == 2, f"invalid compact understanding-map row: {row_id}"
+        bucket, class_name = item
+        result[str(row_id)] = {
+            "row_id": str(row_id),
+            "bucket": str(bucket),
+            "class": str(class_name),
+        }
     return result
 
 
@@ -773,8 +770,8 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
 def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
     rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
-    assert len(rows) == 701
-    assert len({row["row_id"] for row in rows}) == 701
+    assert len(rows) == 697
+    assert len({row["row_id"] for row in rows}) == 697
     assert {row["node_kind"] for row in rows} == {
         "marker_helper_call",
         "regex_call",
@@ -801,17 +798,17 @@ def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_id
             assert int(row["literal_string_count"]) >= int(row["cyrillic_string_count"]) >= 0
 
 
-def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> None:
+def test_adr003_understanding_map_classifies_every_canonical_snapshot_row() -> None:
     snapshot_rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
     snapshot_by_id = {row["row_id"]: row for row in snapshot_rows}
     payload = yaml.safe_load(UNDERSTANDING_MAP_PATH.read_text(encoding="utf-8"))
     mapped = _understanding_map_rows()
 
     source = payload["source"]
-    assert source["base_repo_head"] == "81105c085b4f18c365e47a985501590301654d75"
+    assert source["base_repo_head"] == "0ba2d723aa8d562df2ecb7f4248c494bad14ff29"
     assert source["integrated_patch_heads"] == []
-    assert source["working_tree_task"] == "2026-08-11_TZ_REMOVE_UNREACHABLE_SEMANTIC_OBSERVERS.md"
-    assert source["snapshot_rows"] == len(snapshot_rows) == 701
+    assert source["working_tree_task"] == "2026-08-12_TZ_FINAL_REGEX_AND_DEAD_CODE_CLEANUP.md"
+    assert source["snapshot_rows"] == len(snapshot_rows) == 697
     assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
     assert source["node_kind_counts"] == {
         kind: sum(row["node_kind"] == kind for row in snapshot_rows)
@@ -838,24 +835,27 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
         row["node_kind"] == "marker_helper_call" for row in snapshot_rows
     )
     membership_rows = _literal_left_membership_snapshot(UNDERSTANDING_MAP_PATH.parents[1])
-    assert source["literal_left_membership_total"] == len(membership_rows) == 290
+    assert source["literal_left_membership_total"] == len(membership_rows) == 289
     assert source["literal_left_membership_in_canonical_text_scope"] == sum(
         row["in_canonical_text_scope"] for row in membership_rows
-    ) == 148
+    ) == 147
     assert source["literal_left_membership_outside_canonical_text_scope"] == sum(
         not row["in_canonical_text_scope"] for row in membership_rows
     ) == 142
 
-    assert set(mapped) <= set(snapshot_by_id)
-    assert {row["bucket"] for row in mapped.values()} == {"2_verification", "3_format_hygiene"}
-    assert sum(row["bucket"] == "2_verification" for row in mapped.values()) >= 110
-    assert payload["classification_counts"]["2_verification"] == sum(
-        row["bucket"] == "2_verification" for row in mapped.values()
-    )
-    assert payload["classification_counts"]["3_format_hygiene"] == sum(
-        row["bucket"] == "3_format_hygiene" for row in mapped.values()
-    )
-    assert payload["classification_counts"]["unassigned_for_parallel_owner"] == len(snapshot_rows) - len(mapped)
+    assert set(mapped) == set(snapshot_by_id)
+    assert {row["bucket"] for row in mapped.values()} == {
+        "1_model_owned_semantics",
+        "2_verification",
+        "3_format_hygiene",
+        "4_technical_parser_or_lookup",
+        "5_historical_measurement_only",
+    }
+    assert payload["classification_counts"] == {
+        bucket: sum(row["bucket"] == bucket for row in mapped.values())
+        for bucket in sorted({row["bucket"] for row in mapped.values()})
+    }
+    assert sum(payload["classification_counts"].values()) == len(snapshot_rows)
     classes = payload["classes"]
     for class_name, class_spec in classes.items():
         for evidence_path in class_spec.get("evidence_tests", []):
@@ -869,15 +869,7 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
                 source_text = (UNDERSTANDING_MAP_PATH.parents[1] / evidence_path).read_text(encoding="utf-8")
                 assert f"def {test_name}(" in source_text
     for row_id, map_row in mapped.items():
-        source_row = snapshot_by_id[row_id]
         assert classes[map_row["class"]]["bucket"] == map_row["bucket"]
-        for key in ("path", "lineno", "col_offset", "node_kind"):
-            assert str(map_row[key]) == str(source_row[key])
-        assert map_row["symbol"] == source_row["symbol"]
-        assert map_row["display_symbol"] == (source_row.get("target") or source_row["symbol"])
-        hash_kind = CONTENT_HASH_FIELDS[source_row["node_kind"]]
-        assert map_row["content_hash_kind"] == hash_kind
-        assert map_row["content_sha256"] == source_row[hash_kind]
 
 
 def test_adr003_understanding_map_keeps_money_p0_traps_in_verification_floor() -> None:

@@ -401,8 +401,8 @@ def test_safe_transport_allows_amo_events_get_only() -> None:
         raise AssertionError("AMO events POST must be denied")
 
 
-def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+def test_build_runner_requires_canonical_profile(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, "")
     monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
     monkeypatch.setattr(runner, "load_env_file", lambda _path: {})
     profiles = {"profile-foton": DraftLoopProfile("profile-foton", "foton", "telegram")}
@@ -438,14 +438,28 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
         shared_phone_stoplist=tmp_path / "stoplist.json",
     )
 
-    built = runner.build_runner(args)
-    assert built["context_builder"] is built["trusted_auto_customer_context_builder"]
-    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
+    with pytest.raises(SystemExit, match="pilot_gold_profile_disabled"):
+        runner.build_runner(args)
 
     monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
-    runner.build_runner(args)
+    built = runner.build_runner(args)
+    assert built["context_builder"] is built["trusted_auto_customer_context_builder"]
     assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == "pilot_gold_v1"
-    os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
+
+
+def test_build_runner_rejects_disabled_model_intent_in_canonical_profile(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, "")
+    monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+    monkeypatch.setenv("TELEGRAM_INTENT_MODEL_LED", "0")
+    monkeypatch.setattr(runner, "load_env_file", lambda _path: {})
+
+    args = argparse.Namespace(
+        env_file=tmp_path / ".env",
+        ai_office_env_file=tmp_path / ".env.ai",
+    )
+
+    with pytest.raises(SystemExit, match="profile_default_flag_disabled:TELEGRAM_INTENT_MODEL_LED"):
+        runner.build_runner(args)
 
 
 def test_widget_resolver_accepts_one_contact_with_multiple_leads(monkeypatch) -> None:
@@ -596,8 +610,8 @@ def test_widget_resolver_max_dialog_fails_closed_on_corrupt_stoplist(monkeypatch
 def test_build_runner_loads_and_forwards_shared_phone_stoplist(monkeypatch, tmp_path: Path) -> None:
     stoplist_path = tmp_path / "stoplist.json"
     stoplist_path.write_text(json.dumps({"phones": ["+7 999 000-00-00"]}), encoding="utf-8")
-    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
-    monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, "")
+    monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
     monkeypatch.setattr(runner, "load_env_file", lambda _path: {})
     profiles = {"profile-foton": DraftLoopProfile("profile-foton", "foton", "telegram")}
     monkeypatch.setattr(runner, "build_config", lambda _args: SimpleNamespace(state_path=tmp_path / "state.json", profiles=profiles))

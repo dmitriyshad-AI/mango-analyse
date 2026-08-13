@@ -137,7 +137,8 @@ def test_semantic_frame_prompt_names_its_only_deterministic_consumer() -> None:
     assert "SemanticFrame:" not in off_prompt
     assert '"semantic_frame"' in profile_prompt
     assert "SemanticFrame:" in profile_prompt
-    assert "только как запрет стереть содержательный ответ" in profile_prompt
+    assert "requested_action станет следующим шагом" in profile_prompt
+    assert "не переопределяет смысл вопроса" in profile_prompt
     assert '"semantic_frame"' in on_prompt
     assert "SemanticFrame:" in on_prompt
     assert "не меняй из-за него route, draft_text" in on_prompt

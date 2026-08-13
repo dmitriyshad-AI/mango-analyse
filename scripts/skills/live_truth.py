@@ -26,7 +26,6 @@ import scripts.wappi_draft_loop_ops as wappi_ops
 FORBIDDEN_PROCESS_MARKERS = ("run_telegram_public_pilot_bots.py",)
 PROCESS_MARKERS = (
     "run_amo_wappi_draft_loop.py",
-    "m1_watcher.py",
     *FORBIDDEN_PROCESS_MARKERS,
 )
 DEFAULT_DAILY_DIR = Path.home() / "Claude Projects" / "Foton" / "_daily"

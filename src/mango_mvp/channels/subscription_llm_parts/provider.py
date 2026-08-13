@@ -81,6 +81,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_valid_until_ok,
     _direct_path_model_p0_enabled,
     _direct_default_manager_enabled,
+    _intent_model_led_enabled,
     _p0_model_led_enabled,
     _presale_prompt_child_name_value,
     _looks_like_russian_surname,
@@ -187,6 +188,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     build_direct_path_slot_topic_shadow_metadata,
     _direct_path_retriever_ids,
     _direct_path_llm_retrieve_fact_pack,
+    _retriever_model_driven_enabled,
     _direct_path_wide_fact_pack,
     _direct_path_context_fact_pack,
     _direct_path_recent_messages,
@@ -201,7 +203,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_gold_real_enabled,
     _direct_path_gold_pack_path,
     _load_direct_path_gold_real_examples,
-    _direct_path_topic_hints,
     _direct_path_select_gold_real_examples,
     _direct_path_gold_prompt_block,
     _build_direct_path_prompt,
@@ -562,6 +563,80 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
 _Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _model_owned_direct_path_context(
+    context: Optional[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    if not (
+        isinstance(context, Mapping)
+        and _intent_model_led_enabled(context)
+        and _llm_retrieve_enabled(context)
+        and _retriever_model_driven_enabled(context)
+    ):
+        return context
+
+    cleaned = dict(context)
+    for key in (
+        "answer_contract",
+        "confirmed_facts",
+        "conversation_intent_plan",
+        "conversation_intent_plan_internal",
+        "dialogue_contract_pipeline",
+        "facts_context",
+        "gold_answer_context",
+        "gold_answers_v3",
+        "knowledge_snippets",
+        "missing_facts",
+        "planner_intent",
+        "required_fact_keys",
+    ):
+        cleaned.pop(key, None)
+
+    memory = cleaned.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        clean_memory = dict(memory)
+        for key in (
+            "current_message_roles",
+            "handoff_state",
+            "held_state",
+            "message_type",
+            "open_question",
+            "primary_intent",
+            "risk_flags",
+            "sales_stage",
+            "topic",
+            "topic_focus",
+            "topic_id",
+        ):
+            clean_memory.pop(key, None)
+        cleaned["dialogue_memory_view"] = clean_memory
+
+    rop_policy = cleaned.get("rop_policy")
+    if isinstance(rop_policy, Mapping):
+        clean_policy = dict(rop_policy)
+        for key in ("active_topics", "fact_scope", "required_fact_keys", "topic_id"):
+            clean_policy.pop(key, None)
+        cleaned["rop_policy"] = clean_policy
+    return cleaned
+
+
+def _activate_inline_semantic_frame(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    frame = metadata.get("semantic_frame")
+    if not (isinstance(frame, Mapping) and frame.get("source") == "inline"):
+        return result
+    active = {**frame, "mode": "active"}
+    metadata["semantic_frame"] = active
+    metadata["semantic_frame_shadow"] = active
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        metadata["direct_path"] = {
+            **direct,
+            "semantic_frame": active,
+            "semantic_frame_shadow": active,
+        }
+    return replace(result, metadata=metadata)
+
+
 class SubscriptionLlmDraftProvider:
     def __init__(
         self,
@@ -611,7 +686,12 @@ class SubscriptionLlmDraftProvider:
         *,
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
+        model_context = _model_owned_direct_path_context(context)
+        model_owned_semantics = model_context is not context
+        context = model_context
         direct_result = self._build_direct_path_draft(client_message, context=context)
+        if model_owned_semantics:
+            direct_result = _activate_inline_semantic_frame(direct_result)
         scrubbed = scrub_direct_path_p0_text(
             direct_result,
             context=context,
@@ -1308,12 +1388,12 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any], *, sour
         }
     else:
         product = {"raw_text": _direct_path_semantic_frame_safe_text(requested_product, limit=160)}
-    mode = str(raw.get("mode") or "shadow").strip().casefold()
-    if mode not in {"shadow", "active"}:
-        mode = "shadow"
     frame_source = str(source or raw.get("source") or "").strip().casefold()
     if frame_source not in {"inline", "posthoc"}:
         frame_source = ""
+    mode = str(raw.get("mode") or "shadow").strip().casefold()
+    if mode not in {"shadow", "active"}:
+        mode = "shadow"
     frame = {
         "schema_version": SEMANTIC_FRAME_SCHEMA_VERSION,
         "legacy_schema_version": SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION,

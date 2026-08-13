@@ -4735,18 +4735,20 @@ def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled
     assert "оплаченная смена/курс/запись" in on_prompt
 
 
-def test_intent_model_led_requires_explicit_opt_in() -> None:
+def test_intent_model_led_is_part_of_canonical_profile(monkeypatch) -> None:
+    monkeypatch.delenv(subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(subscription_llm.INTENT_MODEL_LED_ENV, raising=False)
     assert subscription_llm._intent_model_led_enabled({}) is False
     assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "1"}) is True
     assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "0"}) is False
-    assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "true"}) is False
+    assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "true"}) is True
     assert subscription_llm._intent_model_led_enabled({"intent_model_led": "1"}) is True
-    assert subscription_llm.INTENT_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.INTENT_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert (
         subscription_llm._intent_model_led_enabled(
             {subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION}
         )
-        is False
+        is True
     )
     assert (
         subscription_llm._intent_model_led_enabled(
@@ -4759,7 +4761,9 @@ def test_intent_model_led_requires_explicit_opt_in() -> None:
     )
 
 
-def test_intent_model_led_prompt_block_is_flagged_only() -> None:
+def test_intent_model_led_prompt_block_is_part_of_profile(monkeypatch) -> None:
+    monkeypatch.delenv(subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(subscription_llm.INTENT_MODEL_LED_ENV, raising=False)
     context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
 
     off_prompt = subscription_llm._build_direct_path_prompt("Привезу ребёнка сразу на место.", context=context)
@@ -4817,6 +4821,47 @@ def test_direct_path_payload_parses_model_intent_metadata() -> None:
     assert signal["confidence"] == 0.82
 
 
+def test_canonical_path_activates_inline_semantic_frame() -> None:
+    parsed = _normalize_direct_path_payload(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Менеджер проверит наличие и поможет с записью.",
+            "semantic_frame": {
+                "intent": "запись в действующую группу",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.94,
+            },
+        },
+        include_semantic_frame_shadow=True,
+    )
+    result = subscription_provider._activate_inline_semantic_frame(parsed)
+
+    frame = result.metadata["semantic_frame"]
+    assert frame["source"] == "inline"
+    assert frame["mode"] == "active"
+    assert frame["requested_action"] == "check_availability"
+
+
+def test_canonical_activation_updates_direct_path_aliases() -> None:
+    parsed = _normalize_direct_path_payload(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Менеджер проверит наличие.",
+            "semantic_frame": {"requested_action": "check_availability"},
+        },
+        include_semantic_frame_shadow=True,
+    )
+    frame = parsed.metadata["semantic_frame"]
+    parsed = replace(parsed, metadata={"semantic_frame": frame, "direct_path": {"semantic_frame": frame}})
+
+    result = subscription_provider._activate_inline_semantic_frame(parsed)
+
+    assert result.metadata["direct_path"]["semantic_frame"]["mode"] == "active"
+    assert result.metadata["direct_path"]["semantic_frame_shadow"]["mode"] == "active"
+
+
 def test_direct_path_provider_does_not_reapply_legacy_intent_plan() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -4857,6 +4902,115 @@ def test_direct_path_provider_does_not_reapply_legacy_intent_plan() -> None:
     assert result.topic_id == "theme:013_schedule"
     assert "conversation_intent_plan_live_availability" not in result.safety_flags
     assert "intent_model_led" not in result.metadata
+
+
+def test_model_owned_context_removes_legacy_semantic_preselection_but_keeps_safety_state() -> None:
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": "/tmp/read-only-snapshot.json",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        "conversation_intent_plan": {"primary_intent": "live_availability"},
+        "conversation_intent_plan_internal": {"keyword_signals": ["место"]},
+        "dialogue_contract_pipeline": {
+            "planner_intent": "pricing",
+            "retrieved_facts": {"legacy": "неверно выбранный факт"},
+        },
+        "planner_intent": "pricing",
+        "answer_contract": {"route_bias": "draft_for_manager"},
+        "confirmed_facts": {"legacy": "неверно выбранный факт"},
+        "facts_context": {"required_fact_keys": ["availability.current"]},
+        "required_fact_keys": ["availability.current"],
+        "dialogue_memory_view": {
+            "known_slots": {"grade": "8"},
+            "topic_focus": {"primary_intent": "live_availability"},
+            "open_question": {"kind": "live_availability", "text": "Привезу на место?"},
+            "p0_latch": {"active": True, "kind": "complaint"},
+        },
+        "rop_policy": {
+            "topic_id": "theme:026_camp_general",
+            "required_fact_keys": ["availability.current"],
+            "autonomy_policy": {"allow_autonomous": True},
+        },
+    }
+
+    cleaned = subscription_provider._model_owned_direct_path_context(context)
+
+    assert cleaned is not context
+    for key in (
+        "answer_contract",
+        "confirmed_facts",
+        "conversation_intent_plan",
+        "conversation_intent_plan_internal",
+        "dialogue_contract_pipeline",
+        "facts_context",
+        "planner_intent",
+        "required_fact_keys",
+    ):
+        assert key not in cleaned
+    assert cleaned["snapshot_path"] == context["snapshot_path"]
+    assert cleaned["dialogue_memory_view"] == {
+        "known_slots": {"grade": "8"},
+        "p0_latch": {"active": True, "kind": "complaint"},
+    }
+    assert cleaned["rop_policy"] == {"autonomy_policy": {"allow_autonomous": True}}
+
+    rollback = {**context, LLM_RETRIEVE_ENV: "0"}
+    assert subscription_provider._model_owned_direct_path_context(rollback) is rollback
+
+
+def test_model_owned_provider_uses_model_selected_fact_not_legacy_keyword_fact(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathRetrieverProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Менеджер подберёт расписание по классу и формату.",
+            topic_id="theme:013_schedule",
+        ),
+        retriever_payload={
+            "needed_facts": [
+                {
+                    "theme": "schedule",
+                    "fact_type": "schedule",
+                    "brand": "foton",
+                    "why_needed": "клиент спрашивает о времени занятий",
+                    "importance": "required",
+                }
+            ],
+            "exact_ids": ["foton.schedule"],
+            "adjacent_ids": [],
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+        subscription_llm.ROUTE_RUBRIC_ENV: "0",
+        BOT_GOLD_REAL_ENV: "0",
+        "conversation_intent_plan": {
+            "primary_intent": "pricing",
+            "topic_id": "legacy_wrong_topic_marker",
+            "required_fact_keys": ["prices.current"],
+        },
+        "dialogue_contract_pipeline": {
+            "planner_intent": "format",
+            "retrieved_facts": {"legacy.wrong": "PIPELINE_WRONG_FACT_MARKER"},
+        },
+        "planner_intent": "format",
+        "confirmed_facts": {"legacy.wrong": "LEGACY_WRONG_FACT_MARKER"},
+        "dialogue_memory_view": {
+            "topic_focus": {"primary_intent": "pricing", "topic_id": "legacy_wrong_topic_marker"},
+        },
+    }
+
+    provider.build_draft("По каким дням занятия?", context=context)
+
+    assert provider.retriever_calls == 1
+    assert provider.calls == 1
+    assert "legacy_wrong_topic_marker" not in provider.last_retriever_prompt
+    assert "LEGACY_WRONG_FACT_MARKER" not in provider.last_prompt
+    assert "PIPELINE_WRONG_FACT_MARKER" not in provider.last_prompt
+    assert "Фотон: расписание подбирается по классу и формату." in provider.last_prompt
 
 
 def test_p0_model_led_filters_confusion_complaint_without_touching_off() -> None:
@@ -5336,8 +5490,7 @@ def test_direct_path_model_p0_latches_next_neutral_turn() -> None:
     )
     context = {
         "active_brand": "foton",
-        DIRECT_PATH_ENV: "1",
-        subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
     }
     first = first_provider.build_draft("Нужна помощь по спорной ситуации с оплатой.", context=context)
     memory = build_dialogue_memory(

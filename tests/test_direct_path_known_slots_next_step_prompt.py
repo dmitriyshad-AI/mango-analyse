@@ -221,6 +221,23 @@ def test_questionnaire_gold_is_suppressed_when_qualification_slots_known() -> No
     assert all(item["topic"] != "course_pick" for item in on_examples)
 
 
+def test_gold_examples_do_not_classify_client_message() -> None:
+    context = {"active_brand": "foton", BOT_GOLD_REAL_ENV: "1"}
+
+    course_examples = _direct_path_select_gold_real_examples(
+        "Какие условия обучения на курсе?",
+        context=context,
+        active_brand="foton",
+    )
+    unrelated_examples = _direct_path_select_gold_real_examples(
+        "Другой вопрос без маркеров",
+        context=context,
+        active_brand="foton",
+    )
+
+    assert [item["id"] for item in course_examples] == [item["id"] for item in unrelated_examples]
+
+
 @pytest.mark.parametrize("case_id", ["07", "13", "15", "21", "17"])
 def test_measurement_cases_keep_active_step_priority_over_questionnaire_gold(case_id: str) -> None:
     context = _bot_safe_context(

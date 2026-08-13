@@ -2,7 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from scripts import build_job_manifest
+from scripts import build_job_manifest, build_mango_clean_bundle
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -120,3 +120,24 @@ def test_temporary_repo_ignores_hostile_parent_git_context(tmp_path, monkeypatch
     assert isolated != sentinel
     assert _git(isolated, "rev-parse", "HEAD")
     assert _git(sentinel, "rev-parse", "HEAD") == sentinel_head
+
+
+def test_clean_bundle_manifest_hashes_payload_and_is_written_last(tmp_path):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    payload = bundle / "payload.txt"
+    payload.write_text("payload\n", encoding="utf-8")
+
+    manifest_path = build_mango_clean_bundle.write_bundle_manifest(
+        bundle, "bundle-id", "deadbeef"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["file_count"] == 1
+    assert manifest["files"] == [
+        {
+            "path": "payload.txt",
+            "size": payload.stat().st_size,
+            "sha256": build_mango_clean_bundle.sha256_file(payload),
+        }
+    ]

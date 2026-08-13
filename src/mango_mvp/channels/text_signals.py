@@ -25,11 +25,3 @@ def has_marker(text: object, marker: str) -> bool:
 
 def has_any_marker(text: object, markers: Sequence[str]) -> bool:
     return any(has_marker(text, marker) for marker in markers)
-
-
-def has_exact_word(text: object, word: str) -> bool:
-    value = normalize_signal_text(text)
-    needle = normalize_signal_text(word)
-    if not needle or re.search(rf"[^{_WORD_CHARS}]", needle):
-        return False
-    return bool(re.search(rf"(?<![{_WORD_CHARS}]){re.escape(needle)}(?![{_WORD_CHARS}])", value))

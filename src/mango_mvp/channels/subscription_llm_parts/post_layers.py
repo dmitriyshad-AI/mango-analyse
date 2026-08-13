@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
-import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -222,7 +220,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_gold_real_enabled,
     _direct_path_gold_pack_path,
     _load_direct_path_gold_real_examples,
-    _direct_path_topic_hints,
     _direct_path_select_gold_real_examples,
     _direct_path_gold_prompt_block,
     _build_direct_path_prompt,
@@ -828,7 +825,11 @@ def _direct_path_preblocked_result(
     fact_pack: Optional[Mapping[str, Any]] = None,
 ) -> Optional[SubscriptionDraftResult]:
     pilot_config = _direct_path_pilot_config(context)
-    p0_reason = None if _p0_model_led_enabled(context) else dialogue_contract_p0_pre_gate(client_message, context=context)
+    if _p0_model_led_enabled(context):
+        latch = classify_answer_safety(client_message=client_message, context=context, include_text_signals=False)
+        p0_reason = latch.primary_risk if latch.p0_required else None
+    else:
+        p0_reason = dialogue_contract_p0_pre_gate(client_message, context=context)
     if p0_reason:
         text, kind = _direct_path_p0_text(p0_reason, context)
         p0_guard_key = {

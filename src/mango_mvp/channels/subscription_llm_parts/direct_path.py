@@ -6,7 +6,6 @@ import re
 import subprocess
 from dataclasses import replace
 from datetime import date
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -3461,28 +3460,6 @@ def _load_direct_path_gold_real_examples(path: Optional[Path] = None) -> tuple[M
         result.append(dict(item))
     return tuple(result)
 
-def _direct_path_topic_hints(client_message: str, context: Optional[Mapping[str, Any]]) -> set[str]:
-    hints: set[str] = set()
-    normalized_message = str(client_message or "").casefold().replace("ё", "е")
-    if (
-        "услов" in normalized_message
-        and any(marker in normalized_message for marker in ("обуч", "занят", "курс", "программ", "подготов"))
-    ):
-        hints.add("course_pick")
-    if isinstance(context, Mapping):
-        for container_key in ("conversation_intent_plan", "planner_intent", "dialogue_contract_pipeline"):
-            container = context.get(container_key)
-            if not isinstance(container, Mapping):
-                continue
-            for key in ("primary_intent", "planner_intent", "intent", "topic", "subvariant"):
-                value = str(container.get(key) or "").strip().casefold()
-                if value:
-                    hints.add(value)
-            required = container.get("required_fact_keys")
-            if isinstance(required, Sequence) and not isinstance(required, (str, bytes, bytearray)):
-                hints.update(str(item or "").casefold() for item in required if str(item or "").strip())
-    return hints
-
 def _direct_path_select_gold_real_examples(
     client_message: str,
     *,
@@ -3504,27 +3481,8 @@ def _direct_path_select_gold_real_examples(
         ]
         if not examples:
             return ()
-    hints = _direct_path_topic_hints(client_message, context)
-    scored: list[tuple[int, str, Mapping[str, Any]]] = []
-    for item in examples:
-        topic = str(item.get("topic") or "").strip().casefold()
-        score = 2 if topic and topic in hints else 0
-        if topic == "course_pick" and any(hint in {"pricing", "schedule", "teacher"} for hint in hints):
-            score = max(score, 1)
-        scored.append((score, str(item.get("id") or ""), item))
-    scored.sort(key=lambda row: (-row[0], row[1]))
-    selected = [item for score, _, item in scored if score > 0][:limit]
-    if not selected:
-        selected = [item for _, _, item in scored[:2]]
-    elif len(selected) < min(2, limit):
-        selected_ids = {str(item.get("id") or "") for item in selected}
-        for _, _, item in scored:
-            if str(item.get("id") or "") in selected_ids:
-                continue
-            selected.append(item)
-            if len(selected) >= min(2, limit):
-                break
-    return tuple(selected)
+    # Style examples must not classify the request before the model does.
+    return tuple(examples[: min(2, max(0, limit))])
 
 def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str:
     if not examples:
@@ -3687,10 +3645,21 @@ def _build_direct_path_prompt(
             '  "model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|off_topic|other", "scope": "", "sense": "", "confidence": 0.0, "reason": "кратко"},\n'
         )
     if _semantic_frame_shadow_enabled(context):
+        model_owned_semantics = (
+            _intent_model_led_enabled(context)
+            and _llm_retrieve_enabled(context)
+            and _retriever_model_driven_enabled(context)
+        )
         semantic_frame_instruction = (
-            "SemanticFrame: дополнительно заполни поле semantic_frame. Сам не меняй из-за него route, draft_text, "
-            "safety_flags, manager_checklist и другие поля ответа: после ответа модели детерминированный слой использует "
-            "open_question_unanswered только как запрет стереть содержательный ответ косметическим завершением. "
+            "SemanticFrame: дополнительно заполни поле semantic_frame. "
+            + (
+                "requested_action станет следующим шагом в заметке менеджеру; route и draft_text должны быть согласованы с ним. "
+                "После ответа детерминированный слой может только понизить небезопасный маршрут или очистить опасный текст, "
+                "но не переопределяет смысл вопроса. "
+                if model_owned_semantics
+                else "Сам не меняй из-за него route, draft_text, safety_flags и другие поля ответа: это теневое измерение. "
+            )
+            + "open_question_unanswered запрещает стереть содержательный ответ косметическим завершением. "
             "Опиши смысл всей ситуации с учётом текущей реплики, последних реплик, известных слотов и фактов. "
             "intent — главный смысл вопроса; risk_class — safe|p0|manager_action|missing_facts|unknown; "
             "deal_stage — cold|interest|qualification|offer|closing|post_payment|support|unknown; "

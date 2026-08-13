@@ -124,6 +124,7 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_MODEL_P0_ENV,
     P0_MODEL_CLASSES_V2_ENV,
     P0_MODEL_LED_ENV,
+    INTENT_MODEL_LED_ENV,
     DIRECT_P0_TEXT_HYGIENE_ENV,
     "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX",
     PROSE_MODEL_LED_ENV,
@@ -460,11 +461,12 @@ def _p0_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
 
 
 def _intent_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (INTENT_MODEL_LED_ENV, "intent_model_led", "intent_model_led_enabled", "model_intent_enabled"):
-            if key in context:
-                return str(context.get(key) or "").strip() == "1"
-    return str(os.getenv(INTENT_MODEL_LED_ENV) or "").strip() == "1"
+    explicit = _explicit_truthy_setting(
+        context,
+        INTENT_MODEL_LED_ENV,
+        aliases=("intent_model_led", "intent_model_led_enabled", "model_intent_enabled"),
+    )
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, INTENT_MODEL_LED_ENV)
 
 
 def _prose_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

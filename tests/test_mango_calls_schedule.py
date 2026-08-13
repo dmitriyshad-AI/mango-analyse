@@ -281,6 +281,8 @@ def test_fast_service_renders_exact_publication_schedule_without_execute(
         assert plists[label]["ProgramArguments"][-1] == command
         assert "--execute" not in json.dumps(plists[label])
     assert all(payload["Umask"] == 63 for payload in plists.values())
+    assert plists["com.mango.calls-capture"]["StartInterval"] == 300
+    assert "StartCalendarInterval" not in plists["com.mango.calls-capture"]
     assert plists["com.mango.calls-pipeline"]["StartInterval"] == 60
     assert "StartCalendarInterval" not in plists["com.mango.calls-pipeline"]
     assert {

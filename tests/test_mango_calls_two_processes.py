@@ -2773,7 +2773,7 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     assert not list(config.codex_home_root.iterdir())
 
 
-def test_parallel_asr_overlaps_primary_and_secondary_then_runs_tail(
+def test_parallel_pipeline_overlaps_all_independent_stages(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = replace(
@@ -2790,10 +2790,9 @@ def test_parallel_asr_overlaps_primary_and_secondary_then_runs_tail(
         stage = command[command.index("--stages") + 1]
         with lock:
             active.add(stage)
-            if active == {"transcribe", "backfill-second-asr"}:
+            if active == set(SEQUENTIAL_PIPELINE_STAGES):
                 overlap_seen["value"] = True
-        if stage in {"transcribe", "backfill-second-asr"}:
-            time.sleep(0.05)
+        time.sleep(0.05)
         with lock:
             active.discard(stage)
             order.append(stage)
@@ -2802,12 +2801,12 @@ def test_parallel_asr_overlaps_primary_and_secondary_then_runs_tail(
     reports = run_sequential_pipeline_workers(config, {}, fake_runner)
 
     assert overlap_seen["value"] is True
-    assert set(order[:2]) == {"transcribe", "backfill-second-asr"}
-    assert order[2:] == ["resolve", "analyze"]
+    assert set(order) == set(SEQUENTIAL_PIPELINE_STAGES)
     assert len(reports) == 4
-    assert reports[0]["parallel_asr"] == {
+    assert reports[0]["parallel_pipeline"] == {
         "enabled": True,
-        "max_workers": 2,
+        "max_workers": 4,
+        "stages": list(SEQUENTIAL_PIPELINE_STAGES),
         "allows_swap": True,
     }
 

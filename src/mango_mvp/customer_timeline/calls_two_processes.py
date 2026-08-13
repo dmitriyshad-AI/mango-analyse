@@ -7113,96 +7113,89 @@ def run_sequential_pipeline_workers(
     if (
         stages_override is None
         and config.parallel_asr_enabled
-        and tuple(stages[:2]) == ("transcribe", "backfill-second-asr")
+        and tuple(stages) == SEQUENTIAL_PIPELINE_STAGES
     ):
         aggregate_heartbeat = config.process_a_heartbeat_path
         write_json(
             aggregate_heartbeat,
             {
                 "schema_version": "mango_calls_heavy_heartbeat_v1",
-                "stage": "parallel-asr",
+                "stage": "parallel-pipeline",
                 "pid": os.getpid(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         try:
-            # Build the two isolated runtime homes serially.  The owner-only
+            # Build the isolated runtime homes serially.  The owner-only
             # ACL checks use native macOS APIs that must not race in threads;
-            # only the long-running model workers execute concurrently.
+            # only the long-running stage workers execute concurrently.
             with temporary_codex_runtime(
                 config,
                 label="parallel_transcribe",
             ) as primary_runtime, temporary_codex_runtime(
                 config,
                 label="parallel_gigaam",
-            ) as secondary_runtime:
+            ) as secondary_runtime, temporary_codex_runtime(
+                config,
+                label="parallel_resolve",
+            ) as resolve_runtime, temporary_codex_runtime(
+                config,
+                label="parallel_analyze",
+            ) as analyze_runtime:
+                stage_runtimes = {
+                    "transcribe": primary_runtime,
+                    "backfill-second-asr": secondary_runtime,
+                    "resolve": resolve_runtime,
+                    "analyze": analyze_runtime,
+                }
                 with ThreadPoolExecutor(
-                    max_workers=2,
-                    thread_name_prefix="mango-asr",
+                    max_workers=len(stages),
+                    thread_name_prefix="mango-stage",
                 ) as pool:
-                    primary = pool.submit(
-                        run_sequential_pipeline_workers,
-                        config,
-                        base_env,
-                        runner,
-                        include_llm=False,
-                        run_id=run_id,
-                        cycle_deadline=cycle_deadline,
-                        stages_override=("transcribe",),
-                        heartbeat_path_override=(
-                            config.pipeline_root
-                            / "state"
-                            / "process_a_transcribe_heartbeat.json"
-                        ),
-                        codex_runtime_override=primary_runtime,
-                    )
-                    secondary = pool.submit(
-                        run_sequential_pipeline_workers,
-                        config,
-                        base_env,
-                        runner,
-                        include_llm=False,
-                        run_id=run_id,
-                        cycle_deadline=cycle_deadline,
-                        stages_override=("backfill-second-asr",),
-                        heartbeat_path_override=(
-                            config.pipeline_root
-                            / "state"
-                            / "process_a_gigaam_heartbeat.json"
-                        ),
-                        codex_runtime_override=secondary_runtime,
-                    )
-                    asr_reports = [*primary.result(), *secondary.result()]
+                    futures = {
+                        stage: pool.submit(
+                            run_sequential_pipeline_workers,
+                            config,
+                            base_env,
+                            runner,
+                            include_llm=True,
+                            run_id=run_id,
+                            cycle_deadline=cycle_deadline,
+                            stages_override=(stage,),
+                            heartbeat_path_override=(
+                                config.pipeline_root
+                                / "state"
+                                / (
+                                    "process_a_"
+                                    + stage.replace("backfill-second-asr", "gigaam")
+                                    .replace("-", "_")
+                                    + "_heartbeat.json"
+                                )
+                            ),
+                            codex_runtime_override=stage_runtimes[stage],
+                        )
+                        for stage in stages
+                    }
+                    stage_reports = [
+                        report
+                        for stage in stages
+                        for report in futures[stage].result()
+                    ]
         finally:
             aggregate_heartbeat.unlink(missing_ok=True)
-        asr_reports = [
+        stage_reports = [
             {
                 **dict(report),
-                "parallel_asr": {
+                "parallel_pipeline": {
                     "enabled": True,
-                    "max_workers": 2,
+                    "max_workers": len(stages),
+                    "stages": list(stages),
                     "allows_swap": True,
                 },
             }
-            for report in asr_reports
+            for report in stage_reports
         ]
-        if any(int(report.get("rc") or 0) != 0 for report in asr_reports):
-            return asr_reports
-        tail_stages = tuple(stages[2:])
-        if not tail_stages:
-            return asr_reports
-        return [
-            *asr_reports,
-            *run_sequential_pipeline_workers(
-                config,
-                base_env,
-                runner,
-                include_llm=include_llm,
-                run_id=run_id,
-                cycle_deadline=cycle_deadline,
-                stages_override=tail_stages,
-            ),
-        ]
+        return stage_reports
     if runner is not run_command:
         reports: list[Mapping[str, Any]] = []
         for stage in stages:
@@ -9200,7 +9193,7 @@ def pipeline_freshness(
             and 0 <= heartbeat_age <= 90
             and pid_exists(heartbeat_pid)
             and str(heartbeat.get("stage") or "")
-            in {*SEQUENTIAL_PIPELINE_STAGES, "parallel-asr"}
+            in {*SEQUENTIAL_PIPELINE_STAGES, "parallel-pipeline"}
         )
         heartbeat_state = {
             "status": "running" if heartbeat_live else "stale_or_dead",

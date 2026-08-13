@@ -2705,13 +2705,23 @@ def test_known_processed_ids_only_accept_successful_downloads(tmp_path: Path) ->
     assert calls == {"call-ready"}
 
 
-def test_worker_command_is_drain_and_never_sync(tmp_path: Path) -> None:
+def test_worker_command_is_drain_by_default_and_never_sync(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     command = worker_command(config, "resolve,analyze")
     assert "--poll-sec" in command
     assert "--max-idle-cycles" in command
     assert command[command.index("--stage-limit") + 1] == "20"
+    assert "--once" not in command
     assert "sync" not in command
+
+
+def test_worker_command_can_run_one_bounded_stage_batch(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), worker_once=True, stage_limit=10)
+
+    command = worker_command(config, "transcribe")
+
+    assert command[command.index("--stage-limit") + 1] == "10"
+    assert command[-1] == "--once"
 
 
 def test_calls_runtime_requires_flex_codex_service_tier(tmp_path: Path) -> None:
@@ -9599,6 +9609,49 @@ def test_process_a_runs_workers_for_existing_open_db_work_without_reingest(
     assert report["counters"]["metadata"]["db_open_work"] is True
     assert any("worker" in command for command in commands)
     assert not any(" init-db" in command or " ingest" in command for command in commands)
+
+
+def test_process_a_bounded_round_reports_streaming_without_sealing_drop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(
+        config_for(tmp_path), min_free_gib=1, worker_once=True, stage_limit=10
+    )
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute(
+            "UPDATE call_records SET transcription_status='pending', "
+            "analysis_status='pending'"
+        )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.prepare_ingest_inputs",
+        lambda _config: {"audio_files": 0, "skipped_total": 0},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.publish_ready_db_if_changed",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an incomplete bounded round must not seal a ready drop"
+        ),
+    )
+
+    report = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=lambda *_args: {"rc": 0},
+    )
+
+    assert report["status"] == "ok"
+    assert report["stop_reason"] == "streaming_work_remaining"
+    assert report["downstream_ready"] is False
+    assert report["counters"]["drop"] == {
+        "status": "streaming",
+        "reason": "open_work_remaining",
+        "batch_limit": 10,
+    }
 
 
 def test_process_a_stops_heavy_prelude_after_init_failure(

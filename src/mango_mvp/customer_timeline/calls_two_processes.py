@@ -199,6 +199,7 @@ class CallsTwoProcessesConfig:
     stage_limit: int = 20
     poll_seconds: int = 10
     max_idle_cycles: int = 1
+    worker_once: bool = False
     freshness_max_age_minutes: int = 90
     manifest_recheck_sleep_sec: float = 2.0
     asr_mode: str = "mlx_dual"
@@ -242,6 +243,9 @@ class CallsTwoProcessesConfig:
         require_cutover_authority, strict_ready_provenance = strict_service_flags(
             payload
         )
+        worker_once = payload.get("worker_once", False)
+        if not isinstance(worker_once, bool):
+            raise ValueError("worker_once must be a boolean")
         optional_daily = str(payload.get("foton_daily_dir") or "").strip()
         config = cls(
             pipeline_root=Path(str(payload["pipeline_root"])).expanduser(),
@@ -267,6 +271,7 @@ class CallsTwoProcessesConfig:
             stage_limit=int(payload.get("stage_limit", 20)),
             poll_seconds=int(payload.get("poll_seconds", 10)),
             max_idle_cycles=int(payload.get("max_idle_cycles", 1)),
+            worker_once=worker_once,
             freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
             manifest_recheck_sleep_sec=float(payload.get("manifest_recheck_sleep_sec", 2.0)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
@@ -3413,8 +3418,17 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
+            streaming_in_progress = bool(
+                config.worker_once and not skip_workers and remaining_open_work
+            )
             drop = (
-                publish_ready_db_if_changed(
+                {
+                    "status": "streaming",
+                    "reason": "open_work_remaining",
+                    "batch_limit": config.stage_limit,
+                }
+                if streaming_in_progress
+                else publish_ready_db_if_changed(
                     config,
                     db_counts,
                     changed=bool(
@@ -3451,9 +3465,12 @@ def run_process_a(
                 "lock": lock_info,
             }
             balance_green = bool(
-                isinstance(drop, Mapping)
-                and drop.get("status") == "ready"
-                and drop.get("consistency_ok") is True
+                streaming_in_progress
+                or (
+                    isinstance(drop, Mapping)
+                    and drop.get("status") == "ready"
+                    and drop.get("consistency_ok") is True
+                )
             )
             capture_partial = capture.get("status") == "partial"
             report = finalize_report(
@@ -3462,7 +3479,9 @@ def run_process_a(
                 "process_a",
                 "ok" if balance_green and not capture_partial else "partial",
                 (
-                    ""
+                    "streaming_work_remaining"
+                    if streaming_in_progress and not capture_partial
+                    else ""
                     if balance_green and not capture_partial
                     else "capture_partial"
                     if capture_partial
@@ -7438,7 +7457,7 @@ def parse_worker_stage_metrics(path: Path, stage: str) -> Mapping[str, Any]:
 
 
 def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
-    return cli_command(
+    command = cli_command(
         config,
         "worker",
         "--stages",
@@ -7450,6 +7469,9 @@ def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
         "--max-idle-cycles",
         str(config.max_idle_cycles),
     )
+    if config.worker_once:
+        command.append("--once")
+    return command
 
 
 def stage_subprocess_command(

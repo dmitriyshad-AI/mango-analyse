@@ -283,7 +283,9 @@ def test_fast_service_renders_exact_publication_schedule_without_execute(
     assert all(payload["Umask"] == 63 for payload in plists.values())
     assert plists["com.mango.calls-pipeline"]["StartCalendarInterval"] == [
         {"Minute": 7},
+        {"Minute": 22},
         {"Minute": 37},
+        {"Minute": 52},
     ]
     assert {
         plists[label]["ProgramArguments"][-1]

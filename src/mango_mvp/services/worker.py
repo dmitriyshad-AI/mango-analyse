@@ -107,6 +107,12 @@ def _run_worker_with_lifeline(
         dual_transcribe_enabled=False,
         secondary_transcribe_provider=None,
     )
+    primary_transcribe_service = (
+        TranscribeService(primary_only_settings) if "transcribe" in selected_stages else None
+    )
+    secondary_transcribe_service = (
+        TranscribeService(settings) if "backfill-second-asr" in selected_stages else None
+    )
 
     cycles = 0
     idle_cycles = 0
@@ -128,14 +134,16 @@ def _run_worker_with_lifeline(
             "stages": list(selected_stages),
         }
         if "transcribe" in selected_stages:
+            assert primary_transcribe_service is not None
             with session_factory() as session:
-                cycle_payload["transcribe"] = TranscribeService(primary_only_settings).run(
+                cycle_payload["transcribe"] = primary_transcribe_service.run(
                     session,
                     limit=stage_limit,
                 )
         if "backfill-second-asr" in selected_stages:
+            assert secondary_transcribe_service is not None
             with session_factory() as session:
-                cycle_payload["backfill-second-asr"] = TranscribeService(settings).backfill_secondary_asr(
+                cycle_payload["backfill-second-asr"] = secondary_transcribe_service.backfill_secondary_asr(
                     session,
                     limit=stage_limit,
                 )

@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -203,6 +203,7 @@ class CallsTwoProcessesConfig:
     max_idle_cycles: int = 1
     worker_once: bool = False
     parallel_asr_enabled: bool = False
+    gigaam_worker_count: int = 1
     freshness_max_age_minutes: int = 90
     manifest_recheck_sleep_sec: float = 2.0
     asr_mode: str = "mlx_dual"
@@ -279,6 +280,7 @@ class CallsTwoProcessesConfig:
             max_idle_cycles=int(payload.get("max_idle_cycles", 1)),
             worker_once=worker_once,
             parallel_asr_enabled=parallel_asr_enabled,
+            gigaam_worker_count=int(payload.get("gigaam_worker_count", 1)),
             freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
             manifest_recheck_sleep_sec=float(payload.get("manifest_recheck_sleep_sec", 2.0)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
@@ -376,6 +378,14 @@ class CallsTwoProcessesConfig:
             raise ValueError("worker drain settings must be positive")
         if self.parallel_asr_enabled and self.processing_scope != "service":
             raise ValueError("parallel_asr_enabled is allowed only in service scope")
+        if self.gigaam_worker_count < 1 or self.gigaam_worker_count > 4:
+            raise ValueError("gigaam_worker_count must be between 1 and 4")
+        if self.gigaam_worker_count > 1 and (
+            not self.parallel_asr_enabled or self.processing_scope != "service"
+        ):
+            raise ValueError(
+                "multiple GigaAM workers require parallel service processing"
+            )
         if self.freshness_max_age_minutes < 15:
             raise ValueError("freshness_max_age_minutes must be at least 15")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
@@ -7226,7 +7236,8 @@ def run_sequential_pipeline_workers(
     if (
         stages_override is None
         and config.parallel_asr_enabled
-        and tuple(stages) == SEQUENTIAL_PIPELINE_STAGES
+        and "transcribe" in stages
+        and "backfill-second-asr" in stages
     ):
         aggregate_heartbeat = config.process_a_heartbeat_path
         write_json(
@@ -7242,54 +7253,72 @@ def run_sequential_pipeline_workers(
             # Build the isolated runtime homes serially.  The owner-only
             # ACL checks use native macOS APIs that must not race in threads;
             # only the long-running stage workers execute concurrently.
-            with temporary_codex_runtime(
-                config,
-                label="parallel_transcribe",
-            ) as primary_runtime, temporary_codex_runtime(
-                config,
-                label="parallel_gigaam",
-            ) as secondary_runtime, temporary_codex_runtime(
-                config,
-                label="parallel_resolve",
-            ) as resolve_runtime, temporary_codex_runtime(
-                config,
-                label="parallel_analyze",
-            ) as analyze_runtime:
-                stage_runtimes = {
-                    "transcribe": primary_runtime,
-                    "backfill-second-asr": secondary_runtime,
-                    "resolve": resolve_runtime,
-                    "analyze": analyze_runtime,
+            worker_specs: list[tuple[str, str, int]] = []
+            for stage in stages:
+                if stage == "backfill-second-asr":
+                    worker_specs.extend(
+                        (f"gigaam_{index}", stage, index)
+                        for index in range(1, config.gigaam_worker_count + 1)
+                    )
+                else:
+                    worker_specs.append((stage.replace("-", "_"), stage, 1))
+            parallel_run_id = re.sub(
+                r"[^A-Za-z0-9_.-]",
+                "_",
+                run_id or new_calls_run_id(datetime.now(timezone.utc)),
+            )
+            with ExitStack() as runtime_stack:
+                worker_runtimes = {
+                    worker_key: runtime_stack.enter_context(
+                        temporary_codex_runtime(
+                            config,
+                            label=f"parallel_{worker_key}",
+                        )
+                    )
+                    for worker_key, _stage, _instance in worker_specs
                 }
                 with ThreadPoolExecutor(
-                    max_workers=len(stages),
+                    max_workers=len(worker_specs),
                     thread_name_prefix="mango-stage",
                 ) as pool:
                     stop_parallel_workers = threading.Event()
                     futures = {
-                        stage: pool.submit(
+                        worker_key: pool.submit(
                             run_sequential_pipeline_workers,
                             config,
-                            base_env,
+                            (
+                                {
+                                    **base_env,
+                                    "MANGO_GIGAAM_WORKER_INDEX": str(instance),
+                                    "MANGO_GIGAAM_WORKER_COUNT": str(
+                                        config.gigaam_worker_count
+                                    ),
+                                }
+                                if stage == "backfill-second-asr"
+                                else base_env
+                            ),
                             runner,
                             include_llm=True,
-                            run_id=run_id,
+                            run_id=f"{parallel_run_id}-{worker_key}",
                             cycle_deadline=cycle_deadline,
                             stages_override=(stage,),
                             heartbeat_path_override=(
                                 config.pipeline_root
                                 / "state"
                                 / (
-                                    "process_a_"
-                                    + stage.replace("backfill-second-asr", "gigaam")
-                                    .replace("-", "_")
+                                    "process_a_gigaam_heartbeat.json"
+                                    if stage == "backfill-second-asr" and instance == 1
+                                    else f"process_a_gigaam_{instance}_heartbeat.json"
+                                    if stage == "backfill-second-asr"
+                                    else "process_a_"
+                                    + stage.replace("-", "_")
                                     + "_heartbeat.json"
                                 )
                             ),
-                            codex_runtime_override=stage_runtimes[stage],
+                            codex_runtime_override=worker_runtimes[worker_key],
                             stop_event=stop_parallel_workers,
                         )
-                        for stage in stages
+                        for worker_key, stage, instance in worker_specs
                     }
 
                     def stop_peers_on_failure(future: Any) -> None:
@@ -7307,8 +7336,8 @@ def run_sequential_pipeline_workers(
                         future.add_done_callback(stop_peers_on_failure)
                     stage_reports = [
                         report
-                        for stage in stages
-                        for report in futures[stage].result()
+                        for worker_key, _stage, _instance in worker_specs
+                        for report in futures[worker_key].result()
                     ]
         finally:
             aggregate_heartbeat.unlink(missing_ok=True)
@@ -7317,8 +7346,9 @@ def run_sequential_pipeline_workers(
                 **dict(report),
                 "parallel_pipeline": {
                     "enabled": True,
-                    "max_workers": len(stages),
+                    "max_workers": len(worker_specs),
                     "stages": list(stages),
+                    "gigaam_workers": config.gigaam_worker_count,
                     "allows_swap": True,
                 },
             }
@@ -9411,21 +9441,69 @@ def pipeline_freshness(
             "status": "running" if heartbeat_live else "stale_or_dead",
             "age_seconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
             "stage": heartbeat.get("stage"),
+            "pid": heartbeat_pid,
         }
     heartbeat_state = heartbeat_health(
         config.process_a_heartbeat_path,
         (*SEQUENTIAL_PIPELINE_STAGES, "parallel-pipeline"),
     )
+    gigaam_worker_heartbeats = [
+        heartbeat_health(
+            config.pipeline_root
+            / "state"
+            / (
+                "process_a_gigaam_heartbeat.json"
+                if index == 1
+                else f"process_a_gigaam_{index}_heartbeat.json"
+            ),
+            ("backfill-second-asr",),
+        )
+        for index in range(1, config.gigaam_worker_count + 1)
+    ]
+    if any(gigaam_worker_heartbeats):
+        gigaam_pids = [
+            positive_int(item.get("pid")) for item in gigaam_worker_heartbeats
+        ]
+        gigaam_ages = [
+            float(item["age_seconds"])
+            for item in gigaam_worker_heartbeats
+            if item.get("age_seconds") is not None
+        ]
+        gigaam_heartbeat: Mapping[str, Any] = {
+            "status": (
+                "running"
+                if all(
+                    item.get("status") == "running"
+                    for item in gigaam_worker_heartbeats
+                )
+                and len(set(gigaam_pids)) == config.gigaam_worker_count
+                and all(gigaam_pids)
+                else "stale_or_dead"
+            ),
+            "age_seconds": max(gigaam_ages) if gigaam_ages else None,
+            "stage": "backfill-second-asr",
+            "expected_workers": config.gigaam_worker_count,
+            "workers": {
+                str(index): item
+                for index, item in enumerate(gigaam_worker_heartbeats, start=1)
+            },
+        }
+    else:
+        gigaam_heartbeat = {}
     parallel_heartbeats = {
-        label: heartbeat_health(
-            config.pipeline_root / "state" / filename, (stage,)
-        )
-        for label, stage, filename in (
-            ("transcribe", "transcribe", "process_a_transcribe_heartbeat.json"),
-            ("gigaam", "backfill-second-asr", "process_a_gigaam_heartbeat.json"),
-            ("resolve", "resolve", "process_a_resolve_heartbeat.json"),
-            ("analyze", "analyze", "process_a_analyze_heartbeat.json"),
-        )
+        "transcribe": heartbeat_health(
+            config.pipeline_root / "state" / "process_a_transcribe_heartbeat.json",
+            ("transcribe",),
+        ),
+        "gigaam": gigaam_heartbeat,
+        "resolve": heartbeat_health(
+            config.pipeline_root / "state" / "process_a_resolve_heartbeat.json",
+            ("resolve",),
+        ),
+        "analyze": heartbeat_health(
+            config.pipeline_root / "state" / "process_a_analyze_heartbeat.json",
+            ("analyze",),
+        ),
     }
     parallel_live = all(
         item.get("status") == "running" for item in parallel_heartbeats.values()

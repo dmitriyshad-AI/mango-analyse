@@ -2793,6 +2793,33 @@ def test_calls_runtime_requires_flex_codex_service_tier(tmp_path: Path) -> None:
         config.validate()
 
 
+def test_multiple_gigaam_workers_require_parallel_service_scope(tmp_path: Path) -> None:
+    disabled = replace(config_for(tmp_path), gigaam_worker_count=2)
+    controlled = replace(
+        config_for(tmp_path),
+        processing_scope="controlled_1",
+        parallel_asr_enabled=True,
+        gigaam_worker_count=2,
+    )
+
+    with pytest.raises(ValueError, match="multiple GigaAM workers require"):
+        disabled.validate()
+    with pytest.raises(ValueError, match="parallel_asr_enabled is allowed only"):
+        controlled.validate()
+
+
+@pytest.mark.parametrize("count", [0, 5])
+def test_gigaam_worker_count_is_bounded(tmp_path: Path, count: int) -> None:
+    config = replace(
+        config_for(tmp_path),
+        parallel_asr_enabled=True,
+        gigaam_worker_count=count,
+    )
+
+    with pytest.raises(ValueError, match="gigaam_worker_count must be between 1 and 4"):
+        config.validate()
+
+
 def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     calls: list[tuple[list[str], dict[str, str]]] = []
@@ -2868,8 +2895,86 @@ def test_parallel_pipeline_overlaps_all_independent_stages(
         "enabled": True,
         "max_workers": 4,
         "stages": list(SEQUENTIAL_PIPELINE_STAGES),
+        "gigaam_workers": 1,
         "allows_swap": True,
     }
+
+
+def test_parallel_pipeline_starts_configured_gigaam_workers(
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        worker_once=True,
+        parallel_asr_enabled=True,
+        gigaam_worker_count=3,
+    )
+    calls: list[tuple[str, dict[str, str]]] = []
+    lock = threading.Lock()
+
+    def fake_runner(command, env, _cwd):
+        stage = command[command.index("--stages") + 1]
+        with lock:
+            calls.append((stage, dict(env)))
+        return {"rc": 0}
+
+    reports = run_sequential_pipeline_workers(config, {}, fake_runner)
+    stages = [stage for stage, _env in calls]
+    gigaam_envs = [env for stage, env in calls if stage == "backfill-second-asr"]
+
+    assert len(reports) == 6
+    assert stages.count("transcribe") == 1
+    assert stages.count("backfill-second-asr") == 3
+    assert stages.count("resolve") == 1
+    assert stages.count("analyze") == 1
+    assert {env["MANGO_GIGAAM_WORKER_INDEX"] for env in gigaam_envs} == {
+        "1",
+        "2",
+        "3",
+    }
+    assert {env["MANGO_GIGAAM_WORKER_COUNT"] for env in gigaam_envs} == {"3"}
+    assert len({env["CODEX_HOME"] for _stage, env in calls}) == 6
+    assert reports[0]["parallel_pipeline"]["max_workers"] == 6
+    assert reports[0]["parallel_pipeline"]["gigaam_workers"] == 3
+
+
+def test_parallel_asr_replicas_still_overlap_when_llm_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        worker_once=True,
+        parallel_asr_enabled=True,
+        gigaam_worker_count=2,
+    )
+    barrier = threading.Barrier(3)
+    calls: list[str] = []
+    lock = threading.Lock()
+
+    def fake_runner(command, _env, _cwd):
+        stage = command[command.index("--stages") + 1]
+        with lock:
+            calls.append(stage)
+        barrier.wait(timeout=2)
+        return {"rc": 0}
+
+    reports = run_sequential_pipeline_workers(
+        config,
+        {},
+        fake_runner,
+        include_llm=False,
+    )
+
+    assert calls.count("transcribe") == 1
+    assert calls.count("backfill-second-asr") == 2
+    assert "resolve" not in calls
+    assert "analyze" not in calls
+    assert len(reports) == 3
+    assert reports[0]["parallel_pipeline"]["max_workers"] == 3
+    assert reports[0]["parallel_pipeline"]["stages"] == [
+        "transcribe",
+        "backfill-second-asr",
+    ]
 
 
 def test_parallel_pipeline_stops_peers_when_one_stage_fails(
@@ -2919,6 +3024,61 @@ def test_parallel_pipeline_stops_peers_when_one_stage_fails(
         for report in reports
         if report["rc"] == 125
     )
+
+
+def test_parallel_pipeline_stops_all_peers_when_one_gigaam_replica_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        parallel_asr_enabled=True,
+        gigaam_worker_count=3,
+    )
+    barrier = threading.Barrier(6)
+    terminated: set[str] = set()
+    pid_lock = threading.Lock()
+    next_pid = {"value": 44000}
+
+    class StageProcess:
+        def __init__(self, command, **kwargs) -> None:
+            stage = command[command.index("--stages") + 1]
+            env = kwargs["env"]
+            self.name = (
+                f"gigaam_{env['MANGO_GIGAAM_WORKER_INDEX']}"
+                if stage == "backfill-second-asr"
+                else stage
+            )
+            with pid_lock:
+                next_pid["value"] += 1
+                self.pid = next_pid["value"]
+            self.returncode = 1 if self.name == "gigaam_2" else None
+            barrier.wait(timeout=2)
+
+        def poll(self):
+            return self.returncode
+
+    def terminate(proc) -> None:
+        if proc.returncode is None:
+            terminated.add(proc.name)
+            proc.returncode = -signal.SIGTERM
+
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", StageProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+
+    started = time.monotonic()
+    reports = run_sequential_pipeline_workers(
+        config, {}, calls_runtime.run_command, run_id="multi-giga-fail-fast"
+    )
+
+    assert time.monotonic() - started < 3
+    assert sorted(report["rc"] for report in reports) == [1, 125, 125, 125, 125, 125]
+    assert terminated == {
+        "transcribe",
+        "gigaam_1",
+        "gigaam_3",
+        "resolve",
+        "analyze",
+    }
 
 
 def test_codex_runtime_anchor_repairs_owned_mode_and_rejects_symlink(
@@ -7257,10 +7417,18 @@ def test_future_live_pid_heartbeat_cannot_override_failed_process_a(
 
 def test_parallel_stage_heartbeats_override_stale_aggregate_and_status(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    config = replace(
+        config_for(tmp_path),
+        freshness_max_age_minutes=30,
+        parallel_asr_enabled=True,
+        gigaam_worker_count=2,
+    )
     create_empty_capture_manifest(config)
     now = datetime(2026, 8, 14, 2, 0, tzinfo=timezone.utc)
+    live_pids = {51001, 51002, 51003, 51004, 51005, 51006}
+    monkeypatch.setattr(calls_runtime, "pid_exists", lambda pid: pid in live_pids)
     write_json(
         config.process_a_status_path,
         {
@@ -7284,21 +7452,22 @@ def test_parallel_stage_heartbeats_override_stale_aggregate_and_status(
         config.process_a_heartbeat_path,
         {
             "updated_at": "2026-08-13T20:00:00+00:00",
-            "pid": os.getpid(),
+            "pid": 51006,
             "stage": "parallel-pipeline",
         },
     )
-    for stage, filename in (
-        ("transcribe", "process_a_transcribe_heartbeat.json"),
-        ("backfill-second-asr", "process_a_gigaam_heartbeat.json"),
-        ("resolve", "process_a_resolve_heartbeat.json"),
-        ("analyze", "process_a_analyze_heartbeat.json"),
+    for stage, filename, pid in (
+        ("transcribe", "process_a_transcribe_heartbeat.json", 51001),
+        ("backfill-second-asr", "process_a_gigaam_heartbeat.json", 51002),
+        ("backfill-second-asr", "process_a_gigaam_2_heartbeat.json", 51003),
+        ("resolve", "process_a_resolve_heartbeat.json", 51004),
+        ("analyze", "process_a_analyze_heartbeat.json", 51005),
     ):
         write_json(
             config.pipeline_root / "state" / filename,
             {
                 "updated_at": (now - timedelta(seconds=10)).isoformat(),
-                "pid": os.getpid(),
+                "pid": pid,
                 "stage": stage,
             },
         )
@@ -7312,11 +7481,52 @@ def test_parallel_stage_heartbeats_override_stale_aggregate_and_status(
     assert set(report["heavy_heartbeat"]["stages"]) == {
         "transcribe", "gigaam", "resolve", "analyze"
     }
+    assert report["heavy_heartbeat"]["stages"]["gigaam"]["expected_workers"] == 2
+    assert set(report["heavy_heartbeat"]["stages"]["gigaam"]["workers"]) == {
+        "1",
+        "2",
+    }
+    second_gigaam_heartbeat = (
+        config.pipeline_root / "state" / "process_a_gigaam_2_heartbeat.json"
+    )
+    write_json(
+        second_gigaam_heartbeat,
+        {
+            "updated_at": (now - timedelta(seconds=10)).isoformat(),
+            "pid": 51002,
+            "stage": "backfill-second-asr",
+        },
+    )
+    duplicate_pid = pipeline_freshness(config, now=now)
+    assert duplicate_pid["status"] == "stale"
+    write_json(
+        second_gigaam_heartbeat,
+        {
+            "updated_at": (now - timedelta(seconds=10)).isoformat(),
+            "pid": 51003,
+            "stage": "backfill-second-asr",
+        },
+    )
+    second_gigaam_heartbeat.unlink()
+    missing_replica = pipeline_freshness(config, now=now)
+    assert missing_replica["status"] == "stale"
+    assert (
+        missing_replica["heavy_heartbeat"]["stages"]["gigaam"]["status"]
+        == "stale_or_dead"
+    )
+    write_json(
+        second_gigaam_heartbeat,
+        {
+            "updated_at": (now - timedelta(seconds=10)).isoformat(),
+            "pid": 51003,
+            "stage": "backfill-second-asr",
+        },
+    )
     write_json(
         config.pipeline_root / "state" / "process_a_analyze_heartbeat.json",
         {
             "updated_at": "2026-08-13T20:00:00+00:00",
-            "pid": os.getpid(),
+            "pid": 51005,
             "stage": "analyze",
         },
     )

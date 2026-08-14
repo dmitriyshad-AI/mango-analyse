@@ -4,7 +4,9 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -407,6 +409,76 @@ class ParallelPipelineClaimsTest(unittest.TestCase):
             self.assertTrue(set(first).isdisjoint(second))
             self.assertEqual(state["ready_pending"], 0)
             self.assertEqual(state["in_progress"], 3)
+
+    def test_pipeline_worker_ids_are_process_unique(self) -> None:
+        worker_ids = {
+            TranscribeService._pipeline_worker_id("bf") for _index in range(100)
+        }
+
+        self.assertEqual(len(worker_ids), 100)
+        self.assertTrue(
+            all(worker_id.startswith(f"bf-{os.getpid()}-") for worker_id in worker_ids)
+        )
+
+    def test_parallel_secondary_claims_are_disjoint(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_parallel_bf_claims_") as td:
+            db_path = Path(td) / "claims.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                dual_transcribe_enabled=True,
+                transcribe_provider="mlx",
+                secondary_transcribe_provider="gigaam",
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                for idx in range(4):
+                    session.add(
+                        CallRecord(
+                            source_file=str(Path(td) / f"call_{idx}.mp3"),
+                            source_filename=f"call_{idx}.mp3",
+                            transcription_status="done",
+                            resolve_status="pending",
+                            analysis_status="pending",
+                            sync_status="pending",
+                            transcript_variants_json=_stereo_payload(
+                                manager_b=None,
+                                client_b=None,
+                            ),
+                        )
+                    )
+                session.commit()
+
+            barrier = threading.Barrier(2)
+
+            def claim(worker_id: str) -> list[int]:
+                service = TranscribeService(settings)
+                with session_factory() as session:
+                    barrier.wait(timeout=2)
+                    return service._claim_secondary_backfill_batch(
+                        session,
+                        limit=1,
+                        worker_id=worker_id,
+                        secondary_provider="gigaam",
+                    )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first_future = pool.submit(claim, "bf-1")
+                second_future = pool.submit(claim, "bf-2")
+                first = first_future.result(timeout=5)
+                second = second_future.result(timeout=5)
+
+            self.assertGreaterEqual(len(first) + len(second), 1)
+            self.assertTrue(set(first).isdisjoint(second))
+            with session_factory() as session:
+                owners = dict(
+                    session.query(CallRecord.id, CallRecord.pipeline_worker_id)
+                    .filter(CallRecord.pipeline_stage == "backfill-second-asr")
+                    .all()
+                )
+            self.assertEqual(set(owners), set(first + second))
+            self.assertTrue(set(owners.values()).issubset({"bf-1", "bf-2"}))
 
     def test_secondary_backfill_counts_split_pending_and_in_progress(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_parallel_backfill_") as td:

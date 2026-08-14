@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -255,7 +256,7 @@ class TranscribeService:
 
     @staticmethod
     def _pipeline_worker_id(prefix: str) -> str:
-        return f"{prefix}-{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+        return f"{prefix}-{os.getpid()}-{uuid.uuid4().hex}"
 
     def _claim_transcribe_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
         if limit <= 0:
@@ -348,14 +349,12 @@ class TranscribeService:
 
         fresh_ids: list[int] = []
         retry_ids: list[int] = []
-        policy_changed = False
         for call in done_calls:
             payload = self._safe_json_dict(call.transcript_variants_json)
             updated_payload = self._apply_selective_gigaam_policy(call, payload)
             if updated_payload != payload:
                 call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
                 session.add(call)
-                policy_changed = True
             state = self.secondary_backfill_state_from_payload(
                 updated_payload,
                 secondary_provider=secondary_provider,
@@ -374,8 +373,7 @@ class TranscribeService:
         if len(candidate_ids) < limit:
             candidate_ids.extend(fresh_ids[: limit - len(candidate_ids)])
         if not candidate_ids:
-            if policy_changed:
-                session.commit()
+            session.commit()
             return []
 
         ids_sql = ",".join(str(int(item)) for item in candidate_ids)
@@ -409,6 +407,7 @@ class TranscribeService:
                       FROM call_records
                      WHERE pipeline_stage = 'backfill-second-asr'
                        AND pipeline_worker_id = :worker_id
+                       AND id IN ({ids_sql})
                        {scope_sql}
                      ORDER BY id ASC
                     """

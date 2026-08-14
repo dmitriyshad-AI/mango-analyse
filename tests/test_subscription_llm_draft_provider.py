@@ -154,6 +154,8 @@ def test_public_telegram_prompt_does_not_promise_unavailable_manager_handoff(
     assert "Не повторяй уже данный ответ" in prompt
     assert "не выбирай за клиента дни или время" in prompt
     assert "класс, предмет, формат или группу" in prompt
+    assert "Дни недели, время суток, точное время, частоту и длительность" in prompt
+    assert "не добавляй как полезное дополнение" in prompt
 
 
 def test_semantic_verifier_understands_unavailable_public_handoff_and_regenerates() -> None:
@@ -2512,6 +2514,8 @@ def test_semantic_output_regen_prompt_forbids_edit_comments() -> None:
     assert "для менеджерского черновика" not in prompt
     assert "Заменяю только этот абзац" in prompt
     assert "Остальной текст без изменений" in prompt
+    assert "удали его, а не заменяй новой конкретикой" in prompt
+    assert "не выводи одно из другого" in prompt
 
 
 def test_semantic_output_verifier_prompt_checks_price_written_in_words() -> None:
@@ -6829,6 +6833,33 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
     assert "unsupported_product_number" in {item["code"] for item in gate["findings"]}
     assert result.metadata["direct_path"]["downgraded"] is True
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
+
+    grounded_word_number_provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Годовой онлайн-курс стоит 69 900 руб.; занятия проходят 2 раза в неделю "
+                "по 2 академических часа."
+            ),
+        )
+    )
+    grounded_word_number = grounded_word_number_provider.build_draft(
+        "Сколько стоит годовой онлайн-курс и как часто проходят занятия?",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "0",
+            "confirmed_facts": {
+                "owner.unpk.year": (
+                    "УНПК МФТИ: год — 69 900 руб.; занятия проходят два раза в неделю "
+                    "по два академических часа."
+                )
+            },
+        },
+    )
+
+    assert grounded_word_number.route == "bot_answer_self_for_pilot"
+    assert grounded_word_number.metadata["authoritative_output_gate"]["action"] == "pass"
 
 
 def test_direct_path_derived_product_number_replaces_unsupported_amount() -> None:

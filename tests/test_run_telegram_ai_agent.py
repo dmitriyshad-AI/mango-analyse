@@ -17,6 +17,7 @@ class FakeTelegram:
     def __init__(self, updates=()) -> None:
         self.updates = list(updates)
         self.sent: list[dict] = []
+        self.actions: list[dict] = []
         self.tokens: list[str] = []
         self.status_code = 200
 
@@ -31,6 +32,9 @@ class FakeTelegram:
             return {"ok": True, "result": [item for item in self.updates if int(item["update_id"]) >= offset]}
         if method == "getWebhookInfo":
             return {"ok": True, "result": {"url": ""}}
+        if method == "sendChatAction":
+            self.actions.append(dict(payload))
+            return {"ok": True, "result": {}}
         self.sent.append(dict(payload))
         return {"ok": True, "result": {}}
 
@@ -111,6 +115,7 @@ def test_private_text_reaches_provider_and_client(monkeypatch: pytest.MonkeyPatc
     assert provider.calls[0]["context"]["active_brand"] == "foton"
     assert provider.calls[0]["context"]["public_pilot_mode"]["sends_client_replies"] is True
     assert telegram.sent == [{"chat_id": "555", "text": "Годовой курс стоит 37 000 ₽."}]
+    assert telegram.actions == [{"chat_id": "555", "action": "typing"}]
     assert _offset("foton") == 101
 
 
@@ -150,6 +155,7 @@ def test_start_introduces_ai_assistant_of_its_own_brand(brand: str, marker: str,
     other = "УНПК МФТИ" if brand == "foton" else "«Фотон»"
     assert other not in reply
     assert provider.calls == []
+    assert telegram.actions == []
     assert state.dialogue_memory_for(agent.DraftLoopKey(brand, "555")) == {}
     assert (brand, "555", "100") in state.processed_keys()
 
@@ -226,6 +232,32 @@ def test_provider_programming_error_does_not_advance_offset(monkeypatch: pytest.
     assert telegram.sent == []
     assert _dialogue_state("foton").payload["dialogue_memory"] == {}
     assert _dialogue_state("foton").processed_keys() == set()
+
+
+def test_typing_failure_never_blocks_model_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegram([_update(100)])
+
+    def api(token, method, payload):
+        if method == "sendChatAction":
+            raise ValueError("broken optional response")
+        return telegram(token, method, payload)
+
+    provider = FakeProvider(_result("Полезный ответ"))
+    monkeypatch.setattr(agent, "_api", api)
+
+    _cycle(telegram, provider)
+
+    assert len(provider.calls) == 1
+    assert telegram.sent == [{"chat_id": "555", "text": "Полезный ответ"}]
+
+
+def test_safe_error_code_never_logs_arbitrary_exception_text() -> None:
+    assert agent._safe_error_code(RuntimeError("telegram_getUpdates_transport_error")) == "telegram_getUpdates_transport_error"
+    assert agent._safe_error_code(RuntimeError("telegram_sendMessage_http_500")) == "telegram_sendMessage_http_500"
+    assert agent._safe_error_code(RuntimeError("client text: secret")) == "RuntimeError"
+    assert agent._safe_error_code(RuntimeError("79991234567")) == "RuntimeError"
+    assert agent._safe_error_code(RuntimeError("customer_12345")) == "RuntimeError"
+    assert agent._safe_error_code(RuntimeError("telegram_sendMessage_http_79991234567")) == "RuntimeError"
 
 
 def test_blocked_chat_does_not_stall_other_clients_or_save_unsent_memory(monkeypatch: pytest.MonkeyPatch) -> None:

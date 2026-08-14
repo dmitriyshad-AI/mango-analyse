@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse, fcntl, json, os, time
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -31,7 +33,8 @@ def _is_start_text(text: str) -> bool:
 
 def _api(token: str, method: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
     try:
-        response = requests.post(f"https://api.telegram.org/bot{token}/{method}", json=dict(payload), timeout=60)
+        timeout = 3 if method == "sendChatAction" else 60
+        response = requests.post(f"https://api.telegram.org/bot{token}/{method}", json=dict(payload), timeout=timeout)
     except requests.RequestException:
         raise RuntimeError(f"telegram_{method}_transport_error") from None
     if response.status_code != 200:
@@ -40,6 +43,44 @@ def _api(token: str, method: str, payload: Mapping[str, Any]) -> Mapping[str, An
     if not isinstance(body, Mapping) or not body.get("ok"):
         raise RuntimeError(f"telegram_{method}_rejected")
     return body
+
+
+@contextmanager
+def typing_indicator(token: str, chat_id: str):
+    """Keep Telegram's typing status visible while the model prepares a reply."""
+    stopped = Event()
+
+    def pulse() -> None:
+        while not stopped.wait(4):
+            try:
+                _api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            except Exception:  # noqa: BLE001 - typing is optional and must never block a reply
+                pass
+
+    try:
+        _api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    except Exception:  # noqa: BLE001 - typing is optional and must never block a reply
+        pass
+    thread = Thread(target=pulse, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=4)
+
+
+def _safe_error_code(exc: Exception) -> str:
+    value = str(exc)
+    known = {"telegram_offset_corrupt"}
+    for method in ("getUpdates", "sendMessage", "sendChatAction"):
+        known.update({f"telegram_{method}_transport_error", f"telegram_{method}_rejected"})
+        prefix = f"telegram_{method}_http_"
+        if value.startswith(prefix):
+            status = value.removeprefix(prefix)
+            if len(status) == 3 and status.isdigit() and 100 <= int(status) <= 599:
+                return value
+    return value if value in known else type(exc).__name__
 
 def _load_legacy_offset(brand: str) -> int | None:
     path = STATE_DIR / f"{brand}_offset.json"
@@ -134,7 +175,7 @@ def client_text(result: Any) -> str:
         return ""
     return text[:MAX_TELEGRAM_TEXT]
 
-def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, state: DraftLoopState) -> tuple[str, str, DraftLoopKey | None, Mapping[str, Any] | None]:
+def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, token: str, state: DraftLoopState) -> tuple[str, str, DraftLoopKey | None, Mapping[str, Any] | None]:
     message = update.get("message")
     if not isinstance(message, Mapping):
         return "", "", None, None
@@ -161,7 +202,8 @@ def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, st
         sends_client_replies=True, debug_impersonation_enabled=False, crm_context={},
         current_message_id=str(message.get("message_id") or update.get("update_id") or ""),
     )
-    result = provider.build_draft(text, context=context)
+    with typing_indicator(token, chat_id):
+        result = provider.build_draft(text, context=context)
     safe_reply = client_text(result)
     reply = safe_reply or FALLBACK_TEXT
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
@@ -202,7 +244,7 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
         marker = (brand, str(chat.get("id") or ""), update_id)
         if not all(marker) or marker in processed or not _is_start_text(str(message.get("text") or "").strip()):
             continue
-        chat_id, reply, _key, _memory = reply_for_update(update, provider=provider, brand=brand, state=state)
+        chat_id, reply, _key, _memory = reply_for_update(update, provider=provider, brand=brand, token=token, state=state)
         if not reply:
             continue
         try:
@@ -223,7 +265,7 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
         if all(marker) and marker in processed:
             _save_checkpoint(state, next_offset=int(update_id) + 1)
             continue
-        chat_id, reply, key, updated_memory = reply_for_update(update, provider=provider, brand=brand, state=state)
+        chat_id, reply, key, updated_memory = reply_for_update(update, provider=provider, brand=brand, token=token, state=state)
         if reply:
             try:
                 _api(token, "sendMessage", {"chat_id": chat_id, "text": reply})
@@ -267,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             run_cycle(brand=args.brand, token=token, provider=provider, state=state)
         except Exception as exc:  # noqa: BLE001 — цикл не должен падать из-за одного апдейта
-            print(f"[{args.brand}] cycle_error {type(exc).__name__}", flush=True)
+            print(f"[{args.brand}] cycle_error {_safe_error_code(exc)}", flush=True)
             if args.once or str(exc).endswith("_http_409") or str(exc) == "telegram_offset_corrupt":
                 return 3
         if args.once:

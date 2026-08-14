@@ -36,8 +36,8 @@ export PYTHONPATH=src
 export ENFORCE_CANONICAL_PROFILE=1
 export TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1
 export TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD=1
-export TELEGRAM_BOT_SAFE_CRM_CONTEXT=1
-export TELEGRAM_TIMELINE_MEMORY_IN_PROMPT=1
+export TELEGRAM_BOT_SAFE_CRM_CONTEXT="${TELEGRAM_BOT_SAFE_CRM_CONTEXT:-0}"
+export TELEGRAM_TIMELINE_MEMORY_IN_PROMPT="${TELEGRAM_TIMELINE_MEMORY_IN_PROMPT:-0}"
 export TELEGRAM_DIRECT_PATH_FORMAT_GUIDANCE=1
 export TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD=0
 
@@ -47,7 +47,11 @@ if [[ ! -f "$AUTO_PAIRS_FILE" ]]; then
   printf '{"pairs":[]}\n' >"$AUTO_PAIRS_FILE"
 fi
 
-CUSTOMER_TIMELINE_DB="${CUSTOMER_TIMELINE_DB:-/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite}"
+TIMELINE_ARGS=()
+if [[ "$TELEGRAM_BOT_SAFE_CRM_CONTEXT" == "1" ]]; then
+  : "${CUSTOMER_TIMELINE_DB:?CUSTOMER_TIMELINE_DB is required when Timeline context is enabled}"
+  TIMELINE_ARGS=(--customer-timeline-db "$CUSTOMER_TIMELINE_DB" --customer-timeline-tenant "${CUSTOMER_TIMELINE_TENANT:-foton}")
+fi
 
 MANIFEST="$LOG_DIR/phase1b_startup_manifest.json"
 export DRAFT_LOOP_STARTUP_MANIFEST="$MANIFEST"
@@ -60,6 +64,5 @@ exec "$PYTHON_BIN" scripts/run_amo_wappi_draft_loop.py \
   --interval-sec "${DRAFT_LOOP_INTERVAL_SEC:-45}" \
   --model "${DRAFT_LOOP_MODEL:-gpt-5.5}" \
   --reasoning "${DRAFT_LOOP_REASONING:-high}" \
-  --customer-timeline-db "$CUSTOMER_TIMELINE_DB" \
-  --customer-timeline-tenant "${CUSTOMER_TIMELINE_TENANT:-foton}" \
+  "${TIMELINE_ARGS[@]}" \
   --auto-pairs-file "$AUTO_PAIRS_FILE"

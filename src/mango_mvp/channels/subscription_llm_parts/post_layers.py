@@ -225,8 +225,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _build_direct_path_prompt,
     _direct_path_metadata,
     _direct_path_merge_metadata,
-    _direct_path_route_rubric_should_regenerate,
-    _build_direct_path_route_rubric_regen_prompt,
     _a2_extract_phone,
     _replace_echoed_phone,
 )
@@ -245,7 +243,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     ADMISSION_GUARANTEE_SAFE_TEXT,
     ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION_ENV,
     AUTONOMOUS_ROUTES,
-    AUTONOMY_MATRIX_SAFE_TOPIC_IDS,
     A_THREAD_ENV,
     BRAND_FORBIDDEN_TERMS,
     BRAND_LOYALTY_FOTON_TEXT,
@@ -279,15 +276,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     MATKAP_FEDERAL_TIMING_SAFE_TEXT,
     MATKAP_REGIONAL_SAFE_TEXT,
     MATKAP_SFR_REVIEW_SAFE_TEXT,
-    MISSING_CAMP_HELPFUL_TEXT,
-    MISSING_DISCOUNT_HELPFUL_TEXT,
-    MISSING_DOCS_HELPFUL_TEXT,
-    MISSING_GENERAL_HELPFUL_TEXT,
-    MISSING_INSTALLMENT_HELPFUL_TEXT,
-    MISSING_INTENSIVE_PRICE_HELPFUL_TEXT,
-    MISSING_PRICE_HELPFUL_TEXT,
-    MISSING_PROGRAM_HELPFUL_TEXT,
-    MISSING_SCHEDULE_HELPFUL_TEXT,
     MULTICHILD_DISCOUNT_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_GENERIC_SAFE_TEXT,
@@ -306,7 +294,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     RESULT_GUARANTEE_INPUT_RE,
     RESULT_GUARANTEE_SAFE_TEXT,
-    RouteDecision,
     SCOPE_FACT_GUARD_ENV,
     SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
     SUBJECT_GUARD_MARKERS,
@@ -329,9 +316,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS,
     _allowed_subjects_from_context,
     _answer_fact_scopes,
-    _autonomy_enabled,
-    _autonomy_policy,
-    _autonomy_topic_allowed,
     _context_has_missing_fact_signal,
     _context_with_dialogue_contract_retrieved_facts,
     _conversation_intent_plan,
@@ -340,13 +324,11 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _draft_confirms_payment,
     _extract_numeric_promise_claims,
     _fact_key_root,
-    _has_client_safe_current_fact,
     _has_missing_fact_signal,
     _humanity_previous_bot_texts,
     _is_combined_high_risk_case,
     _is_verified_safe_numeric_template,
     _known_fields_from_text,
-    _mapping_has_client_safe_current_fact,
     _mentioned_subjects,
     _merge_known_context_fields,
     _metadata_with_guarded_original_text,
@@ -605,6 +587,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "promocode_leak": "block",
     "p0_promise": "block",
     "p0_money_promise": "block",
+    "public_handoff_claim": "downgrade_keep_text",
     "unsupported_promise": "block",
     "unsupported_product_claim": "block",
     "unsupported_product_number": "block",
@@ -3518,6 +3501,7 @@ _SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset(
         "individual_diagnosis",
         "irrelevant_to_question",
         "p0_money_promise",
+        "public_handoff_claim",
     }
 )
 
@@ -3572,6 +3556,8 @@ def build_semantic_output_verifier_prompt(
 ) -> str:
     facts_block = "\n".join(f"- {key}: {value}" for key, value in (facts or {}).items()) or "(фактов нет)"
     price_scope_few_shot = _semantic_output_verifier_price_scope_few_shot(context)
+    public_mode = context.get("public_pilot_mode") if isinstance(context, Mapping) else None
+    public_client_reply = isinstance(public_mode, Mapping) and public_mode.get("sends_client_replies") is True
     return (
         "Ты — смысловой верификатор финального текста бота учебного центра. "
         "Проверяй только смысловые производные, которые плохо ловятся регулярными правилами. "
@@ -3579,7 +3565,7 @@ def build_semantic_output_verifier_prompt(
         "в том числе когда число написано словами. Бренд, мета и входящий P0 проверяет отдельный детерминированный gate. "
         "Единственное выходное P0-правило здесь — обещание денег самим ботом.\n\n"
         "Верни СТРОГО JSON:\n"
-        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis|irrelevant_to_question|p0_money_promise",'
+        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis|irrelevant_to_question|p0_money_promise|public_handoff_claim",'
         '"span":"цитата из ответа","evidence":"почему это риск","missing_fact":"какого факта не хватает",'
         '"relation_to_base":"contradicts|absent|adjacent","nearest_fact_key":"fact.key или пусто"}]}\n'
         'Если нарушений нет: {"findings":[]}.\n\n'
@@ -3596,6 +3582,10 @@ def build_semantic_output_verifier_prompt(
         "для прямого вопроса клиента и не является кратким уточнением либо безопасным следующим шагом.\n"
         "- p0_money_promise: бот от лица центра обещает вернуть, возместить, компенсировать, пересчитать в пользу "
         "клиента, отдать оплату или перевести деньги обратно. Это обязательство центра, а не описание порядка.\n\n"
+        "- public_handoff_claim: ТОЛЬКО если public_client_reply=true, текст ложно утверждает, что этот публичный бот "
+        "сам передаст/уточнит/проверит вопрос у менеджера, добавит клиента в чат или что менеджер сам свяжется/ответит. "
+        "У публичного контура нет AMO-передачи. Не флагай честное предложение клиенту самому связаться с учебным "
+        "центром по подтверждённому официальному контакту.\n\n"
         "НЕ ФЛАГАЙ:\n"
         "- дословный или смысловой пересказ факта;\n"
         "- склейку двух реальных фактов без новой приписки;\n"
@@ -3604,7 +3594,7 @@ def build_semantic_output_verifier_prompt(
         "- хеджированный ответ по ребёнку с передачей преподавателю/менеджеру;\n"
         "- описание порядка возврата, ссылка на договор или передача денежного вопроса менеджеру;\n"
         "- «вернёмся к вопросу/занятиям/обсуждению» без обещания денег;\n"
-        "- сервисное предложение или следующий шаг без новой продуктовой приписки: «Помогу с оформлением», "
+        "- при public_client_reply=false сервисное предложение или следующий шаг без новой продуктовой приписки: «Помогу с оформлением», "
         "«помогу записаться к старту», «менеджер сверит/свяжется/проверит наличие мест», "
         "«подберём подходящий вариант/группу»;\n"
         "- «подберём подходящий вариант/группу» без оценки конкретного ребёнка — это НЕ individual_diagnosis.\n"
@@ -3628,6 +3618,7 @@ def build_semantic_output_verifier_prompt(
         "adjacent = похожий факт есть, но он не подтверждает этот вывод. Для adjacent укажи nearest_fact_key.\n\n"
         f"active_brand: {active_brand}\n"
         f"route: {route}\n"
+        f"public_client_reply: {str(public_client_reply).lower()}\n"
         f"Факты:\n{facts_block}\n\n"
         f"Вопрос клиента:\n{str(client_message or '').strip()}\n\n"
         f"Финальный текст бота:\n{str(bot_text or '').strip()}\n"
@@ -3647,8 +3638,14 @@ def build_semantic_output_regen_prompt(
         if isinstance(item, Mapping)
     )
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(фактов нет)"
+    public_reply = any(str(item.get("code") or "") == "public_handoff_claim" for item in findings if isinstance(item, Mapping))
+    target = (
+        "для прямой отправки клиенту публичным ботом; у него нет внутренней передачи менеджеру"
+        if public_reply
+        else "для менеджерского черновика"
+    )
     return (
-        "Перепиши текст бота для менеджерского черновика: убери или захеджируй только указанные смысловые риски. "
+        f"Перепиши текст бота {target}: убери или захеджируй только указанные смысловые риски. "
         "Не добавляй новых фактов, чисел, брендов, обещаний и внутренних комментариев. "
         "Верни ТОЛЬКО текст ответа клиенту, без Markdown, без пояснений и без комментариев о правках. "
         "Не пиши фразы вроде «Заменяю только этот абзац», «Остальной текст без изменений», "
@@ -3690,7 +3687,9 @@ def apply_semantic_output_verifier(
         return replace(result, metadata=metadata)
     handoff_claim_text = dialogue_contract_handoff_factual_claim_text(result.draft_text)
     pure_handoff = dialogue_contract_is_pure_handoff_text(result.draft_text)
-    if pure_handoff and result.route not in AUTONOMOUS_ROUTES and not handoff_claim_text and (
+    public_mode = context.get("public_pilot_mode") if isinstance(context, Mapping) else None
+    public_client_reply = isinstance(public_mode, Mapping) and public_mode.get("sends_client_replies") is True
+    if not public_client_reply and pure_handoff and result.route not in AUTONOMOUS_ROUTES and not handoff_claim_text and (
         not _verifier_handoff_claims_enabled(context) or _semantic_verifier_is_whitelisted_pure_handoff(result.draft_text)
     ):
         verifier_meta["skipped"] = True
@@ -4041,21 +4040,6 @@ def _format_choice_is_disjunctive_question(text: str) -> bool:
         ("онлайн" in value and has_any_marker(value, ("очно", "офлайн")) and has_marker(value, "или"))
         or ("очно" in value and "онлайн" in value and "?" in value)
     )
-
-
-def _default_autonomy_flip_enabled(context: Optional[Mapping[str, Any]]) -> bool:
-    if not isinstance(context, Mapping) or not _autonomy_enabled(context):
-        return False
-    policy = _autonomy_policy(context)
-    for value in (
-        context.get("allow_default_autonomy"),
-        context.get("default_autonomy_flip_enabled"),
-        policy.get("allow_default_autonomy"),
-        policy.get("default_autonomy_flip_enabled"),
-    ):
-        if value is not None:
-            return _truthy_value(value)
-    return False
 
 
 def _humanity_p0_required(result: SubscriptionDraftResult) -> bool:

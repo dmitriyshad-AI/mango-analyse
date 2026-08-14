@@ -83,10 +83,7 @@ _ALLOWED_CONTEXT_KEYS = {
     "timeline_context_summary",
     "timeline_context",
     "risk_flags",
-    "autonomy_policy",
-    "autonomy_enabled",
     "client_safe_fact_verified",
-    "autonomy_fact_verified",
     "lead_stage",
     "client_segment",
     "off_hours_mode",
@@ -158,9 +155,9 @@ def build_draft_prompt(
         "- Если active_brand=foton, не консультируй по УНПК МФТИ. Если active_brand=unpk, не консультируй по Фотону.\n"
         "- На вопрос о связи брендов используй только нейтральную мысль: это отдельные организации, сориентируем в рамках текущего учебного центра.\n"
         "- Любая отправка клиенту запрещена: safety_flags всегда должны включать manager_approval_required и no_auto_send.\n\n"
-        "Правила автономности:\n"
-        "- По умолчанию отвечай осторожно: если тема не входит в матрицу автономности или есть сомнение, route=draft_for_manager или manager_only.\n"
-        "- route=bot_answer_self_for_pilot допустим и желателен для зелёных справочных/коммерческих тем, если есть явное разрешение autonomy_policy, тема из матрицы и факт с флагами client-safe и актуальности.\n"
+        "Правила маршрута:\n"
+        "- Сам определи по смыслу всего диалога, можно ли помочь сразу. Для безопасного ответа по проверенным фактам выбирай route=bot_answer_self_for_pilot.\n"
+        "- draft_for_manager или manager_only выбирай только когда действительно требуется действие человека, не хватает фактов или есть P0/high-risk.\n"
         "- Не решай сам, что факт актуален: используй только явные флаги в контексте, например client_safe_fact_verified или fresh/client_safe в facts_context.\n"
         "- Если сообщение многотемное и хотя бы одна часть относится к возврату, жалобе, юридическому вопросу или другой P0/high-risk теме, route=manager_only.\n"
         "- В таком многотемном случае можно подготовить для менеджера безопасную часть ответа, но клиенту автономно ничего не отправлять.\n\n"
@@ -351,13 +348,11 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
             "crm_write_allowed": False,
             "tallanto_write_allowed": False,
             "stable_runtime_write_allowed": False,
-            "autonomous_answer_default": "disabled_unless_explicit_matrix_and_verified_client_safe_fact",
+            "autonomous_answer_default": "model_decides_with_verified_facts",
             "autonomous_answer_requires": [
                 "active_brand_known",
-                "topic_in_autonomy_matrix",
                 "client_safe_fact_verified",
                 "no_p0_or_high_risk_topic",
-                "message_type_question",
             ],
         },
         "identity_disclosure_forbidden_phrases": list(IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES),
@@ -404,7 +399,6 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
         "context_quality",
         "brand_policy",
         "payment_context",
-        "autonomy_policy",
         "known_client_fields",
         "known_dialog_fields",
         "funnel_state",
@@ -425,7 +419,7 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
             compact[key] = value
     _copy_clean_list(compact, "few_shot_style_examples", source.get("few_shot_style_examples"), max_items=6, max_chars=900)
     _copy_clean_list(compact, "few_shot_correction_examples", source.get("few_shot_correction_examples"), max_items=4, max_chars=900)
-    for key in ("autonomy_enabled", "client_safe_fact_verified", "autonomy_fact_verified", "lead_stage", "client_segment", "off_hours_mode"):
+    for key in ("client_safe_fact_verified", "lead_stage", "client_segment", "off_hours_mode"):
         if key in source:
             compact[key] = source[key]
     _copy_clean_list(compact, "missing_slots", source.get("missing_slots"), max_items=10, max_chars=80)

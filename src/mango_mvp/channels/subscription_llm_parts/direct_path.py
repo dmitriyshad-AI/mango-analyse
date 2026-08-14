@@ -272,8 +272,22 @@ DIRECT_PATH_ROUTE_RUBRIC_BLOCK = (
     'Запрещено: выбирать "draft_for_manager" на всякий случай при полных фактах.'
 )
 
+def _public_client_reply(context: Optional[Mapping[str, Any]]) -> bool:
+    public_mode = context.get("public_pilot_mode") if isinstance(context, Mapping) else None
+    return isinstance(public_mode, Mapping) and public_mode.get("sends_client_replies") is True
+
+
 def _direct_path_mission_text(*, brand_label: str, context: Optional[Mapping[str, Any]]) -> str:
     mission = DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)
+    if _public_client_reply(context):
+        mission += (
+            "\nКритично: это ответ публичного Telegram-бота, и прошедший выходную проверку "
+            "draft_text уйдёт клиенту. У этого контура нет передачи в AMO или менеджеру: не пиши, "
+            "что уже передашь, уточнишь, добавишь в чат или попросишь менеджера связаться. "
+            "Даже route=draft_for_manager здесь означает только внутреннюю метку, а не реальную передачу. "
+            "Сначала дай всю безопасную пользу; если без человека нельзя, честно предложи клиенту "
+            "связаться с учебным центром по подтверждённому контакту."
+        )
     if not _route_rubric_enabled(context):
         return mission
     return mission.replace(
@@ -304,6 +318,20 @@ DIRECT_PATH_PROSE_MODEL_LED_BLOCK = (
 def _direct_path_prose_model_led_block(context: Optional[Mapping[str, Any]]) -> str:
     if not _prose_model_led_enabled(context):
         return ""
+    if _public_client_reply(context):
+        return (
+            "Качество публичного ответа:\n"
+            "- Сначала ответь на вопрос всей доступной проверенной информацией и предложи один полезный следующий шаг.\n"
+            "- Если точного факта не хватает, честно назови границу знания и задай один уточняющий вопрос; "
+            "не обещай передачу, проверку, звонок или ответ менеджера.\n"
+            "- Не обещай наличие места, бронь или запись без точного факта по нужной группе.\n"
+            "- Не повторяй уже данный ответ и не начинай с казённых вводных фраз.\n"
+            "- Не пиши клиенту «в фактах нет», «по фактам не вижу» или «у меня нет данных»: "
+            "объясни границу знания обычными словами.\n"
+            "- Не утверждай, что отправляешь файл, ссылку, запись или инструкцию, если их нет в этом сообщении.\n"
+            "- Адрес конкретного занятия или группы называй только при точном факте расписания.\n"
+            "- Не выводи внутренние плейсхолдеры и служебные формулировки.\n\n"
+        )
     block = DIRECT_PATH_PROSE_MODEL_LED_BLOCK
     if _text_hygiene_payment_fix_enabled(context):
         block = block.replace(
@@ -318,6 +346,14 @@ def _direct_path_prose_model_led_block(context: Optional[Mapping[str, Any]]) -> 
 def _text_hygiene_payment_fix_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
     if not _text_hygiene_payment_fix_enabled(context):
         return ""
+    if _public_client_reply(context):
+        return (
+            "Формулировки при неполных фактах:\n"
+            "- Не выдумывай отсутствующую деталь: дай известную часть ответа и задай один уточняющий вопрос.\n"
+            "- Не отрицай существование курса, направления или формата без явного факта.\n"
+            "- Если слово «справка» двусмысленно после вопроса о занятиях, коротко уточни, что нужно: "
+            "информация по занятиям или документ.\n\n"
+        )
     return (
         "Формулировки при неполных фактах:\n"
         "- Если нет проверенной опоры для детали, пиши: «точно не подскажу — уточню у менеджера», "
@@ -4348,57 +4384,6 @@ def apply_direct_path_scope_overclaim_guard(
         metadata["scope_overclaim_guard"] = trace
         return replace(result, metadata=metadata)
 
-
-def _direct_path_route_rubric_should_regenerate(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]],
-    facts: Mapping[str, str],
-    model_called: bool,
-    fact_pack: Optional[Mapping[str, Any]] = None,
-) -> bool:
-    if not _route_rubric_enabled(context):
-        return False
-    if not model_called or result.route != "draft_for_manager":
-        return False
-    if result.missing_facts:
-        return False
-    if _direct_keyword_fallback_relevance_enabled(context) and _direct_path_fallback_open_question(fact_pack, context):
-        return True
-    return bool(facts)
-
-def _direct_path_fallback_open_question(
-    fact_pack: Optional[Mapping[str, Any]],
-    context: Optional[Mapping[str, Any]],
-) -> bool:
-    if not isinstance(fact_pack, Mapping):
-        return False
-    llm_retrieve = fact_pack.get("llm_retrieve")
-    if not isinstance(llm_retrieve, Mapping):
-        return False
-    if str(llm_retrieve.get("fallback_reason") or "") not in {"empty_selection", "timeout"}:
-        return False
-    if not isinstance(context, Mapping):
-        return False
-    plan = context.get("conversation_intent_plan")
-    if isinstance(plan, Mapping) and str(plan.get("direct_question") or "").strip():
-        return True
-    memory = context.get("dialogue_memory_view")
-    open_question = memory.get("open_question") if isinstance(memory, Mapping) and isinstance(memory.get("open_question"), Mapping) else {}
-    return bool(str(open_question.get("text") or "").strip() or str(open_question.get("kind") or "").strip())
-
-def _build_direct_path_route_rubric_regen_prompt(prompt: str, first_result: SubscriptionDraftResult) -> str:
-    previous_json = json.dumps(first_result.to_json_dict(include_raw_response=False), ensure_ascii=False, indent=2)
-    return (
-        f"{str(prompt or '').rstrip()}\n\n"
-        "Предыдущий JSON-ответ модели:\n"
-        f"{previous_json}\n\n"
-        'В предыдущем ответе выбран "draft_for_manager", но missing_facts пуст. '
-        "Если факты по вопросу есть — ответь самостоятельно по фактам. Если фактов нет или они недостаточны, "
-        "задай один короткий уточняющий вопрос клиенту или заполни missing_facts конкретным недостающим фактом "
-        "или нужной проверкой менеджера.\n"
-        "Верни только JSON без Markdown и без комментариев."
-    )
 
 def _a2_extract_phone(text: str) -> str:
     match = _A2_PHONE_RE.search(str(text or ""))

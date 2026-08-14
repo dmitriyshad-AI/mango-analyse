@@ -63,7 +63,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     bot_safe_timeline_db_from_env,
     build_bot_safe_crm_context,
 )
-from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, AmoMcpConfig, read_mcp_env
+from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, AmoMcpConfig, AmoMcpError, read_mcp_env
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -881,12 +881,19 @@ def build_widget_resolver(
         active_brand_leads: list[Mapping[str, Any]] = []
         lead_contact_conflicts: list[str] = []
         lead_brand_conflicts: list[str] = []
+        lead_read_unavailable = False
         for lead_id in sorted(leads):
-            lead = amo_read_client.amo_api_get(
-                path=f"leads/{int(lead_id)}",
-                params={"with": "contacts"},
-                limit=1,
-            )
+            try:
+                lead = amo_read_client.amo_api_get(
+                    path=f"leads/{int(lead_id)}",
+                    params={"with": "contacts"},
+                    limit=1,
+                )
+            except AmoMcpError:
+                # The widget contact is authoritative; lead lookup only chooses
+                # whether the note can be placed more precisely on one deal.
+                lead_read_unavailable = True
+                break
             if not _is_active_lead(lead):
                 continue
             lead_embedded = lead.get("_embedded") if isinstance(lead.get("_embedded"), Mapping) else {}
@@ -923,6 +930,20 @@ def build_widget_resolver(
                 "contact_id": contact_id,
                 "lead_ids": tuple(sorted(leads)),
                 "conflicting_lead_ids": tuple(lead_brand_conflicts),
+            }
+        if lead_read_unavailable:
+            return {
+                "status": "matched",
+                "source": "wappi_amo_widget",
+                "lead_id": "",
+                "lead_ids": tuple(sorted(leads)),
+                "contact_id": contact_id,
+                "match_key": "wappi_widget_contact",
+                "lead_snapshot": {
+                    "lead_count": len(leads),
+                    "lead_read": "unavailable",
+                    "note_entity_type": "contact",
+                },
             }
         if len(active_brand_leads) != 1:
             return {
@@ -1102,6 +1123,7 @@ def run_loop_forever(
     health_interval = max(3600, min(int(health_interval_sec), 10800))
     last_health_at = monotonic() - health_interval
     processed_total = 0
+    skipped_total = 0
     error_total = 0
     while True:
         try:
@@ -1115,11 +1137,15 @@ def run_loop_forever(
             except Exception:  # noqa: BLE001 -- heartbeat failure must not kill the loop
                 pass
         processed_total += int(summary.get("processed") or 0)
+        skipped_total += int(summary.get("skipped") or 0)
         error_total += int(summary.get("status") == "cycle_error" or bool(summary.get("auth_error")))
         current = monotonic()
         if health_notify is not None and current - last_health_at >= health_interval:
             try:
-                sent = health_notify(f"Mango Wappi: жив; обработано {processed_total}; ошибок {error_total}")
+                sent = health_notify(
+                    f"Mango Wappi: жив; обработано {processed_total}; "
+                    f"пропусков {skipped_total}; ошибок {error_total}"
+                )
             except Exception:  # noqa: BLE001 -- retry after five minutes, never expose secrets
                 error_total += 1
                 sent = False
@@ -1146,6 +1172,7 @@ def write_startup_manifest(
     args: argparse.Namespace,
 ) -> None:
     code_root = Path(__file__).resolve().parents[1]
+    timeline_enabled = bot_safe_crm_context_enabled() or bot_memory_expanded_shadow_enabled()
     timeline_db = args.customer_timeline_db or bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
     payload = {
         "schema_version": "wappi_phase1b_startup_v2",
@@ -1160,7 +1187,8 @@ def write_startup_manifest(
         "all_personal_mode": bool(runner.config.all_personal_mode),
         "chat_limit": int(runner.config.chat_limit),
         "writer_lock_path": str(DEFAULT_WRITER_LOCK_PATH),
-        "customer_timeline_db": str(Path(timeline_db).expanduser().resolve()),
+        "customer_timeline_enabled": timeline_enabled,
+        "customer_timeline_db": str(Path(timeline_db).expanduser().resolve()) if timeline_enabled else "",
         "amo_note_write_enabled": bool(args.live_write),
         "client_send_enabled": False,
     }

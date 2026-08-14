@@ -1,17 +1,17 @@
 schema_version: adr003_understanding_map_v2_2026_08_13
 source:
-  base_repo_head: a3593d74ba857b57bebf10870c7fad0948854a02
+  base_repo_head: 530d4c70ef336a30a66374578a3f8b37449f3c40
   integrated_patch_heads: []
-  working_tree_task: 2026-08-05_TZ_REFRESH_CURRENT_KB_EXPIRED_FACTS.md
+  working_tree_task: 2026-08-14_TZ_M1_BOT_FINAL_LAUNCH.md
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
-  snapshot_rows: 692
-  snapshot_sha256: 864cc5d9833f8250612fd01ed90f8c9b003b8deb566eaf33c5e92b82cf6f8617
+  snapshot_rows: 690
+  snapshot_sha256: 0c23fd72282214eaf19d56d200ea8640b037109a98260f3c4d3c9c0b25433c69
   denominator: all_snapshot_rows
   node_kind_counts:
     marker_helper_call: 113
     regex_call: 311
     string_contains: 142
-    text_table: 126
+    text_table: 124
   regex_symbol_counts:
     re.compile: 140
     re.findall: 11
@@ -20,8 +20,8 @@ source:
     re.search: 128
     re.split: 3
     re.sub: 22
-  text_table_rows: 126
-  text_table_literal_strings: 1252
+  text_table_rows: 124
+  text_table_literal_strings: 1206
   text_table_cyrillic_strings: 756
   text_tables_ge8_cyrillic: 29
   cyrillic_elements_in_ge8_tables: 656
@@ -36,7 +36,7 @@ source:
   literal_left_membership_outside_canonical_text_scope: 140
 classification_counts:
   1_model_owned_semantics: 239
-  2_verification: 330
+  2_verification: 328
   3_format_hygiene: 32
   4_technical_parser_or_lookup: 89
   5_historical_measurement_only: 2
@@ -965,9 +965,6 @@ rows:
   adr003:5fbb0c1e396a9362c4891dc8:
   - 1_model_owned_semantics
   - legacy_model_owned_semantics
-  adr003:5febd57a976804ea752b1a7c:
-  - 2_verification
-  - fact_output_verification_floor
   adr003:5ff4e633a91d2c0f81a05a68:
   - 2_verification
   - fact_output_verification_floor
@@ -1529,9 +1526,6 @@ rows:
   adr003:a65be749c53050666a7bd278:
   - 2_verification
   - memory_safety_floor
-  adr003:a67013724368d421805f629e:
-  - 2_verification
-  - fact_output_verification_floor
   adr003:a71573e60928e0344e03062e:
   - 1_model_owned_semantics
   - legacy_model_owned_semantics

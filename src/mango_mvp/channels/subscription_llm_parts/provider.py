@@ -233,7 +233,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     ADMISSION_GUARANTEE_SAFE_TEXT,
     ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION_ENV,
     AUTONOMOUS_ROUTES,
-    AUTONOMY_MATRIX_SAFE_TOPIC_IDS,
     A_THREAD_ENV,
     BRAND_FORBIDDEN_TERMS,
     BRAND_LOYALTY_FOTON_TEXT,
@@ -267,15 +266,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     MATKAP_FEDERAL_TIMING_SAFE_TEXT,
     MATKAP_REGIONAL_SAFE_TEXT,
     MATKAP_SFR_REVIEW_SAFE_TEXT,
-    MISSING_CAMP_HELPFUL_TEXT,
-    MISSING_DISCOUNT_HELPFUL_TEXT,
-    MISSING_DOCS_HELPFUL_TEXT,
-    MISSING_GENERAL_HELPFUL_TEXT,
-    MISSING_INSTALLMENT_HELPFUL_TEXT,
-    MISSING_INTENSIVE_PRICE_HELPFUL_TEXT,
-    MISSING_PRICE_HELPFUL_TEXT,
-    MISSING_PROGRAM_HELPFUL_TEXT,
-    MISSING_SCHEDULE_HELPFUL_TEXT,
     MULTICHILD_DISCOUNT_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_GENERIC_SAFE_TEXT,
@@ -295,7 +285,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     RESULT_GUARANTEE_INPUT_RE,
     RESULT_GUARANTEE_SAFE_TEXT,
-    RouteDecision,
     SCOPE_FACT_GUARD_ENV,
     SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
     SUBJECT_GUARD_MARKERS,
@@ -318,9 +307,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS,
     _allowed_subjects_from_context,
     _answer_fact_scopes,
-    _autonomy_enabled,
-    _autonomy_policy,
-    _autonomy_topic_allowed,
     _context_has_missing_fact_signal,
     _context_with_dialogue_contract_retrieved_facts,
     _conversation_intent_plan,
@@ -329,13 +315,11 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _draft_confirms_payment,
     _extract_numeric_promise_claims,
     _fact_key_root,
-    _has_client_safe_current_fact,
     _has_missing_fact_signal,
     _humanity_previous_bot_texts,
     _is_combined_high_risk_case,
     _is_verified_safe_numeric_template,
     _known_fields_from_text,
-    _mapping_has_client_safe_current_fact,
     _mentioned_subjects,
     _merge_known_context_fields,
     _metadata_with_guarded_original_text,
@@ -426,7 +410,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _DRAFT_PERSON_NAME_CONTEXT_RE,
     _HUMANE_DETAIL_HANDOFF_TEXTS,
     _HUMANE_GENERIC_HANDOFF_TEXTS,
-    _MANAGER_CONTACT_PROMISE_PATTERNS,
     _SEMANTIC_OUTPUT_VERIFIER_CODES,
     _a2_context_tag,
     _a2_enforce_emoji_limit,
@@ -466,7 +449,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _core_handoff_detail,
     _current_moscow_hour,
     _dedupe_gate_findings,
-    _default_autonomy_flip_enabled,
     _derived_product_number_claims,
     _derived_product_number_manager_notes,
     _dialogue_contract_safety_flags,
@@ -480,7 +462,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _flexible_name_pattern,
     _format_choice_is_disjunctive_question,
     _has_diagnosis_hedge_and_transfer,
-    _has_manager_contact_promise,
     _humanity_p0_required,
     _identity_phrase_present,
     _llm_retrieve_timeout_sec,
@@ -597,9 +578,12 @@ def _model_owned_direct_path_context(
     rop_policy = cleaned.get("rop_policy")
     if isinstance(rop_policy, Mapping):
         clean_policy = dict(rop_policy)
-        for key in ("active_topics", "fact_scope", "required_fact_keys", "topic_id"):
+        for key in ("active_topics", "autonomy_policy", "fact_scope", "required_fact_keys", "topic_id"):
             clean_policy.pop(key, None)
-        cleaned["rop_policy"] = clean_policy
+        if clean_policy:
+            cleaned["rop_policy"] = clean_policy
+        else:
+            cleaned.pop("rop_policy", None)
     return cleaned
 
 

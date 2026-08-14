@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse, fcntl, json, os, time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any, Mapping, Sequence
@@ -15,6 +16,7 @@ from mango_mvp.channels import pilot_profile_runtime as profile
 from mango_mvp.channels.subscription_llm import SubscriptionLlmDraftProvider
 from mango_mvp.channels.subscription_llm_parts import AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION, SAFE_FALLBACK_DRAFT_TEXT, SemanticReading, semantic_frame_from_metadata, strip_internal_service_markers
 from mango_mvp.integrations.draft_loop import DraftLoopConfigError, DraftLoopKey, DraftLoopState
+from mango_mvp.knowledge_base.fact_registry import fact_runtime_time_ok
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
 
 DEFAULT_SNAPSHOT = Path(__file__).resolve().parents[1] / "product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/kb_release_v3_snapshot.json"
@@ -22,13 +24,34 @@ STATE_DIR = Path.home() / ".mango_local" / "telegram_ai_agent"
 BRAND_TOKEN_ENV = {"foton": "MANGO_TELEGRAM_FOTON_BOT_TOKEN", "unpk": "MANGO_TELEGRAM_UNPK_BOT_TOKEN"}
 BRAND_TITLE = {"foton": "учебного центра «Фотон»", "unpk": "учебного центра УНПК МФТИ"}
 MAX_TELEGRAM_TEXT = 3900
-FALLBACK_TEXT = "Не могу надёжно ответить на этот вопрос в чате. Пожалуйста, свяжитесь с учебным центром по контактам на официальном сайте."
+FALLBACK_TEXT = "Не смог сейчас надёжно ответить. Напишите, пожалуйста, вопрос чуть подробнее — я постараюсь помочь."
 ATTACHMENT_TEXT = "Пока я понимаю только текст. Напишите вопрос текстом, пожалуйста."
+RUNTIME_STATUS_ENV = "MANGO_TELEGRAM_RUNTIME_STATUS"
 
 
 def _is_start_text(text: str) -> bool:
     words = text.split(maxsplit=1)
     return bool(words) and words[0].split("@")[0] == "/start"
+
+
+def fallback_text(brand: str) -> str:
+    """Add the verified brand phone from the current KB to the rare fallback."""
+    try:
+        snapshot = json.loads(DEFAULT_SNAPSHOT.read_text(encoding="utf-8"))
+        fact_key = f"contacts_{brand}.phone"
+        contact = next(
+            str((fact.get("structured_value") or {}).get("raw_value") or fact.get("client_safe_text") or "").strip()
+            for fact in snapshot.get("facts", ())
+            if isinstance(fact, Mapping)
+            and isinstance(fact.get("structured_value"), Mapping)
+            and fact.get("fact_key") == fact_key
+            and fact.get("brand") == brand
+            and fact.get("allowed_for_client_answer") is True
+            and fact_runtime_time_ok(fact)
+        )
+    except (OSError, ValueError, TypeError, StopIteration):
+        return FALLBACK_TEXT
+    return f"{FALLBACK_TEXT} Если вопрос срочный, позвоните в центр: {contact}"
 
 
 def _api(token: str, method: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -81,6 +104,39 @@ def _safe_error_code(exc: Exception) -> str:
             if len(status) == 3 and status.isdigit() and 100 <= int(status) <= 599:
                 return value
     return value if value in known else type(exc).__name__
+
+
+def _delivery_outcome_uncertain(exc: Exception) -> bool:
+    code = str(exc)
+    return code == "telegram_sendMessage_transport_error" or code.startswith("telegram_sendMessage_http_5")
+
+
+def write_runtime_status(brand: str, *, status: str, state: DraftLoopState, error: str = "") -> None:
+    raw_path = os.environ.get(RUNTIME_STATUS_ENV, "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path).expanduser()
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        current = {}
+    raw_offset = state.payload.get("next_offset")
+    payload = {
+        **(current if isinstance(current, Mapping) else {}),
+        "status": status,
+        "brand": brand,
+        "pid": os.getpid(),
+        "last_cycle_at": datetime.now(timezone.utc).isoformat(),
+        "next_offset": raw_offset if isinstance(raw_offset, int) and raw_offset >= 0 else None,
+    }
+    if error:
+        payload["error"] = error
+    else:
+        payload.pop("error", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 def _load_legacy_offset(brand: str) -> int | None:
     path = STATE_DIR / f"{brand}_offset.json"
@@ -153,6 +209,68 @@ def _save_checkpoint(
             state.payload["next_offset"] = previous_offset
         raise
 
+
+def _save_delivery_intent(
+    state: DraftLoopState,
+    *,
+    marker: tuple[str, str, str],
+    next_offset: int,
+    key: DraftLoopKey | None,
+    memory: Mapping[str, Any] | None,
+    reply_text: str,
+) -> None:
+    state.payload["telegram_pending_delivery"] = {
+        "profile_id": marker[0],
+        "chat_id": marker[1],
+        "message_id": marker[2],
+        "next_offset": max(0, int(next_offset)),
+        "memory": dict(memory) if key is not None and memory is not None else None,
+        "reply_text": str(reply_text),
+        "recovery_attempted": False,
+    }
+    state.save()
+
+
+def _finish_delivery_intent(state: DraftLoopState) -> bool:
+    pending = state.payload.get("telegram_pending_delivery")
+    if not isinstance(pending, Mapping):
+        return False
+    marker = tuple(str(pending.get(name) or "") for name in ("profile_id", "chat_id", "message_id"))
+    if not all(marker):
+        state.payload.pop("telegram_pending_delivery", None)
+        state.save()
+        return False
+    memory = pending.get("memory")
+    if isinstance(memory, Mapping):
+        state.set_dialogue_memory(DraftLoopKey(marker[0], marker[1]), memory)
+    state.mark_processed_key(*marker)
+    state.payload["next_offset"] = max(0, int(pending.get("next_offset") or 0))
+    state.payload.pop("telegram_pending_delivery", None)
+    state.save()
+    return True
+
+
+def _recover_delivery_intent(state: DraftLoopState, *, token: str) -> bool:
+    pending = state.payload.get("telegram_pending_delivery")
+    if not isinstance(pending, Mapping):
+        return False
+    reply_text = str(pending.get("reply_text") or "").strip()
+    chat_id = str(pending.get("chat_id") or "").strip()
+    if not reply_text or not chat_id or pending.get("recovery_attempted") is True:
+        return _finish_delivery_intent(state)
+    pending = dict(pending)
+    pending["recovery_attempted"] = True
+    state.payload["telegram_pending_delivery"] = pending
+    state.save()
+    _api(token, "sendMessage", {"chat_id": chat_id, "text": reply_text})
+    return _finish_delivery_intent(state)
+
+
+def _abandon_delivery_intent(state: DraftLoopState) -> None:
+    state.payload.pop("telegram_pending_delivery", None)
+    state.save()
+
+
 def _recent_messages(memory: Mapping[str, Any]) -> tuple[str, ...]:
     turns = tuple(
         f"{'Ответ' if turn.get('role') == 'bot' else 'Клиент'}: {turn.get('text')}"
@@ -165,10 +283,13 @@ def _recent_messages(memory: Mapping[str, Any]) -> tuple[str, ...]:
 def client_text(result: Any) -> str:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     gate = metadata.get("authoritative_output_gate")
-    if result.error or result.route != "bot_answer_self_for_pilot":
+    verifier = metadata.get("semantic_output_verifier")
+    if result.error or result.route == "blocked":
         return ""
     valid_gate = isinstance(gate, Mapping) and gate.get("schema_version") == AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION
     if not valid_gate or gate.get("checked") is not True or gate.get("action") != "pass":
+        return ""
+    if not isinstance(verifier, Mapping) or verifier.get("checked") is not True or verifier.get("action") not in {"pass", "pass_after_regen"}:
         return ""
     text = strip_internal_service_markers(str(result.draft_text or "")).strip()
     if not text or text == SAFE_FALLBACK_DRAFT_TEXT:
@@ -205,7 +326,7 @@ def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, to
     with typing_indicator(token, chat_id):
         result = provider.build_draft(text, context=context)
     safe_reply = client_text(result)
-    reply = safe_reply or FALLBACK_TEXT
+    reply = safe_reply or fallback_text(brand)
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     semantic = SemanticReading.from_result(result)
     direct = metadata.get("direct_path")
@@ -220,6 +341,8 @@ def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, to
     return chat_id, reply, key, updated.to_json_dict()
 
 def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -> None:
+    if _recover_delivery_intent(state, token=token):
+        print(f"[{brand}] delivery_recovered", flush=True)
     offset = _state_offset(state)
     if offset is None:
         recovered = [
@@ -233,12 +356,15 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
             offset = max((int(item.get("update_id") or 0) + 1 for item in latest if isinstance(item, Mapping)), default=0)
         _save_checkpoint(state, next_offset=offset)
     body = _api(token, "getUpdates", {"offset": offset, "timeout": 25})
+    write_runtime_status(brand, status="ok", state=state)
     updates = [item for item in (body.get("result") or []) if isinstance(item, Mapping)]
     processed = state.processed_keys()
 
     # /start не должен ждать, пока модель ответит другим клиентам из той же пачки.
     for update in updates:
         update_id = str(update.get("update_id") or "")
+        if not update_id:
+            continue
         message = update.get("message") if isinstance(update.get("message"), Mapping) else {}
         chat = message.get("chat") if isinstance(message.get("chat"), Mapping) else {}
         marker = (brand, str(chat.get("id") or ""), update_id)
@@ -247,14 +373,26 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
         chat_id, reply, _key, _memory = reply_for_update(update, provider=provider, brand=brand, token=token, state=state)
         if not reply:
             continue
+        _save_delivery_intent(
+            state,
+            marker=marker,
+            next_offset=int(offset),
+            key=None,
+            memory=None,
+            reply_text=reply,
+        )
         try:
             _api(token, "sendMessage", {"chat_id": chat_id, "text": reply})
         except RuntimeError as exc:
+            if _delivery_outcome_uncertain(exc):
+                print(f"[{brand}] send_error {exc}", flush=True)
+                raise
+            _abandon_delivery_intent(state)
             if str(exc) != "telegram_sendMessage_http_403":
                 print(f"[{brand}] send_error {exc}", flush=True)
                 raise
             print(f"[{brand}] send_skipped {exc}", flush=True)
-        _save_checkpoint(state, next_offset=offset, marker=marker)
+        _finish_delivery_intent(state)
         processed.add(marker)
 
     for update in updates:
@@ -267,9 +405,21 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
             continue
         chat_id, reply, key, updated_memory = reply_for_update(update, provider=provider, brand=brand, token=token, state=state)
         if reply:
+            _save_delivery_intent(
+                state,
+                marker=marker,
+                next_offset=int(update_id) + 1,
+                key=key,
+                memory=updated_memory,
+                reply_text=reply,
+            )
             try:
                 _api(token, "sendMessage", {"chat_id": chat_id, "text": reply})
             except RuntimeError as exc:
+                if _delivery_outcome_uncertain(exc):
+                    print(f"[{brand}] send_error {exc}", flush=True)
+                    raise
+                _abandon_delivery_intent(state)
                 if str(exc) != "telegram_sendMessage_http_403":
                     print(f"[{brand}] send_error {exc}", flush=True)
                     raise
@@ -278,10 +428,7 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
                 processed.add(marker)
                 continue
             if key is not None and update_id:
-                _save_checkpoint(
-                    state, next_offset=int(update_id) + 1, key=key,
-                    memory=updated_memory, marker=marker,
-                )
+                _finish_delivery_intent(state)
                 processed.add(marker)
                 continue
         _save_checkpoint(state, next_offset=int(update.get("update_id") or 0) + 1)
@@ -308,9 +455,14 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         try:
             run_cycle(brand=args.brand, token=token, provider=provider, state=state)
+            write_runtime_status(args.brand, status="ok", state=state)
         except Exception as exc:  # noqa: BLE001 — цикл не должен падать из-за одного апдейта
-            print(f"[{args.brand}] cycle_error {_safe_error_code(exc)}", flush=True)
-            if args.once or str(exc).endswith("_http_409") or str(exc) == "telegram_offset_corrupt":
+            error_code = _safe_error_code(exc)
+            write_runtime_status(args.brand, status="error", state=state, error=error_code)
+            print(f"[{args.brand}] cycle_error {error_code}", flush=True)
+            if str(exc).endswith("_http_409"):
+                return 0  # duplicate poller: fail-stop instead of a launchd restart loop
+            if args.once or str(exc) == "telegram_offset_corrupt":
                 return 3
         if args.once:
             return 0

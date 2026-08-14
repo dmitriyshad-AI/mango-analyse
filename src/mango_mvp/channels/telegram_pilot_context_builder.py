@@ -46,32 +46,6 @@ NO_KNOWLEDGE_SNAPSHOT_VERSION = "knowledge_snapshot_missing"
 MAX_KNOWLEDGE_SNIPPETS = 8
 MAX_KNOWLEDGE_SNIPPET_CHARS = 700
 MAX_KNOWLEDGE_CONTEXT_CHARS = 4500
-AUTONOMY_MATRIX_SAFE_TOPIC_IDS = {
-    "theme:001_pricing",
-    "theme:005_discounts",
-    "theme:006_installment",
-    "theme:007_matkap_payment",
-    "theme:008_tax_deduction",
-    "theme:011_contract",
-    "theme:012_certificates",
-    "theme:013_schedule",
-    "theme:014_format",
-    "theme:015_address",
-    "theme:016_program",
-    "theme:018_materials_homework",
-    "theme:019a_positive_feedback",
-    "theme:020_enrollment",
-    "theme:021_continuation",
-    "theme:022_age_level_testing",
-    "theme:023_trial_class",
-    "theme:024_account_access",
-    "theme:025_missing_links_access",
-    "theme:026_camp_general",
-    "theme:027_camp_living_conditions",
-    "theme:028_transport_logistics",
-    "service:S5_general_consultation",
-}
-
 _FRESH_STATUSES = {"fresh", "fresh_verified", "verified", "document_verified", "allowed_after_fact_check"}
 _BLOCKING_STATUSES = {
     "metadata_only",
@@ -247,21 +221,6 @@ def build_telegram_pilot_context(
         known_slots=merged_known_slots,
         confirmed_facts=snapshot_context.confirmed_facts,
     )
-    policy_for_prompt.setdefault(
-        "autonomy_policy",
-        {
-            "allow_autonomous": bool(
-                topic_id in AUTONOMY_MATRIX_SAFE_TOPIC_IDS
-                and snapshot_context.facts_context.get("client_safe_fact_verified") is True
-                and not snapshot_context.missing_facts
-            ),
-            "allowed_topic_ids": [topic_id] if topic_id in AUTONOMY_MATRIX_SAFE_TOPIC_IDS else [],
-            "default": "draft_for_manager_or_manager_only",
-            "fact_requirement": "client_safe_fact_verified",
-            "p0_overrides_autonomy": True,
-        },
-    )
-
     return build_pilot_context(
         message,
         active_brand=active_brand,
@@ -512,7 +471,6 @@ def build_knowledge_snapshot_context(
         "facts_fresh": facts_fresh,
         "client_safe": facts_fresh,
         "client_safe_fact_verified": facts_fresh,
-        "autonomy_fact_verified": facts_fresh,
         "missing": bool(missing_facts),
         "facts_missing": bool(missing_facts),
         "stale": bool(stale_or_blocked),

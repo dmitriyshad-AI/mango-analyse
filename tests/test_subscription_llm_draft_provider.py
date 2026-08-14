@@ -131,6 +131,68 @@ def test_tz5_client_safe_literals_do_not_regress_process_decisions() -> None:
     assert "договор-оферта" in subscription_llm.CONTRACT_ENTITY_SAFE_TEXT
 
 
+def test_public_telegram_prompt_does_not_promise_unavailable_manager_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+    prompt = _build_direct_path_prompt(
+        "Помогите записаться",
+        context={
+            "active_brand": "foton",
+            "public_pilot_mode": {"sends_client_replies": True},
+        },
+    )
+
+    assert "это ответ публичного Telegram-бота" in prompt
+    assert "нет передачи в AMO или менеджеру" in prompt
+    assert "по подтверждённому контакту" in prompt
+    assert "Даже route=draft_for_manager здесь означает только внутреннюю метку" in prompt
+    assert "уточню у менеджера" not in prompt
+    assert "менеджер проверит" not in prompt
+    assert "что менеджер должен проверить" not in prompt
+    assert "Не обещай наличие места" in prompt
+    assert "Не повторяй уже данный ответ" in prompt
+
+
+def test_semantic_verifier_understands_unavailable_public_handoff_and_regenerates() -> None:
+    base = _semantic_verifier_base_result(
+        "По программе можно выбрать формат. Уточню детали у менеджера и вернусь с ответом."
+    )
+    calls = 0
+
+    def verify(prompt: str):
+        nonlocal calls
+        calls += 1
+        assert "public_client_reply: true" in prompt
+        if calls == 1:
+            return {
+                "findings": [
+                    {
+                        "code": "public_handoff_claim",
+                        "span": "Уточню детали у менеджера",
+                        "evidence": "У публичного Telegram-контура нет передачи в AMO.",
+                    }
+                ]
+            }
+        return {"findings": []}
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Какой формат выбрать?",
+        context={
+            SEMANTIC_OUTPUT_VERIFIER_ENV: True,
+            "active_brand": "foton",
+            "public_pilot_mode": {"sends_client_replies": True},
+        },
+        verifier_fn=verify,
+        regen_fn=lambda _prompt: "По программе можно выбрать очный или онлайн-формат. Какой вам удобнее?",
+    )
+
+    assert calls == 2
+    assert checked.draft_text == "По программе можно выбрать очный или онлайн-формат. Какой вам удобнее?"
+    assert checked.metadata["semantic_output_verifier"]["action"] == "pass_after_regen"
+
+
 def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -> None:
     command = CodexExecConfig(model="gpt-5.5", reasoning_effort="medium").build_command(tmp_path / "out.txt")
 
@@ -1998,49 +2060,6 @@ def _step2b1_pipeline_metadata(question: str, facts: dict[str, str]) -> dict:
             "retrieved_facts": facts,
             "retrieved_fact_keys": list(facts.keys()),
         }
-    }
-
-
-def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str, str]) -> dict:
-    topic_id = {
-        "teacher": "theme:017_teacher_method",
-        "recording": "theme:018_materials_homework",
-        "address": "theme:015_address",
-        "document": "theme:012_certificates",
-        "matkap": "theme:007_matkap_payment",
-        "tax": "theme:008_tax_deduction",
-        "olympiad_online": "theme:016_program",
-        "platform_access": "theme:024_account_access",
-        "installment": "theme:006_installment",
-        "payment_method": "theme:002_payment_method",
-        "payment_by_invoice_monthly": "theme:002_payment_method",
-        "discount": "theme:005_discounts",
-        "pricing": "theme:001_pricing",
-        "format": "theme:014_format",
-        "trial": "theme:023_trial_class",
-        "camp": "theme:026_camp_general",
-        "live_availability": "theme:026_camp_general",
-        "enrollment_process": "theme:020_enrollment",
-        "refund_policy": "theme:020_enrollment",
-    }.get(intent, "service:S5_general_consultation")
-    return {
-        "active_brand": brand,
-        "client_message": question,
-        "conversation_intent_plan": {
-            "active_brand": brand,
-            "primary_intent": intent,
-            "topic_id": topic_id,
-            "direct_question": question,
-            "answer_policy": "answer_directly_if_fact_verified",
-            "route_bias": "bot_answer_self_for_pilot",
-            "required_fact_keys": list(facts.keys()),
-        },
-        "autonomy_policy": {
-            "allow_autonomous": True,
-            "allow_default_autonomy": True,
-            "allowed_topic_ids": [topic_id],
-        },
-        "confirmed_facts": facts,
     }
 
 
@@ -3929,36 +3948,6 @@ def test_tz137_keyword_fallback_relevance_keeps_relevant_price_fact() -> None:
     assert "74 500" in _wide_pack_text(pack)
 
 
-def test_tz137_route_rubric_regenerates_empty_selection_open_question_only_with_flag() -> None:
-    result = SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
-    fact_pack = {"llm_retrieve": {"fallback": True, "fallback_reason": "empty_selection"}}
-    context = {
-        subscription_llm.ROUTE_RUBRIC_ENV: "1",
-        "conversation_intent_plan": {"direct_question": "Сколько стоит?"},
-    }
-
-    assert (
-        subscription_llm._direct_path_route_rubric_should_regenerate(
-            result,
-            context=context,
-            facts={},
-            model_called=True,
-            fact_pack=fact_pack,
-        )
-        is False
-    )
-    assert (
-        subscription_llm._direct_path_route_rubric_should_regenerate(
-            result,
-            context={**context, subscription_llm.DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV: "1"},
-            facts={},
-            model_called=True,
-            fact_pack=fact_pack,
-        )
-        is True
-    )
-
-
 def test_wave6_llm_retrieve_selects_enrollment_fact_for_paid_next_step(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     message = "Оплатила, что дальше?"
@@ -5006,7 +4995,7 @@ def test_model_owned_context_removes_legacy_semantic_preselection_but_keeps_safe
         "known_slots": {"grade": "8"},
         "p0_latch": {"active": True, "kind": "complaint"},
     }
-    assert cleaned["rop_policy"] == {"autonomy_policy": {"allow_autonomous": True}}
+    assert "rop_policy" not in cleaned
 
     rollback = {**context, LLM_RETRIEVE_ENV: "0"}
     assert subscription_provider._model_owned_direct_path_context(rollback) is rollback

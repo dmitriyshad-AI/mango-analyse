@@ -1159,6 +1159,7 @@ class AmoWappiDraftLoop:
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
         previous_pair = pair
+        newly_resolved_identity = False
         auto_pair_skipped = 0
         candidate = (
             self._resolve_auto_candidate(key, profile, dialog, messages, inbound_new[-1])
@@ -1190,6 +1191,7 @@ class AmoWappiDraftLoop:
                 }
                 pair = None
             else:
+                newly_resolved_identity = previous_pair is None or not previous_pair.contact_id
                 now_ts = int(self.now_fn().timestamp())
                 pair = DraftLoopPair(
                     key=key,
@@ -1223,6 +1225,9 @@ class AmoWappiDraftLoop:
                 self.state.save()
         elif self.auto_resolver is not None:
             pair = None
+        if newly_resolved_identity and not dry_run and self.state.dialogue_memory_for(key):
+            self.state.set_dialogue_memory(key, {})
+            self.state.save()
         if pair is None:
             for item in inbound_new:
                 if self.state.pair_missing_is_deferred(item):
@@ -1341,7 +1346,7 @@ class AmoWappiDraftLoop:
         auto_context_trusted = self.context_builder is self.trusted_auto_customer_context_builder
         previous_memory = (
             {}
-            if auto_unconfirmed and not auto_context_trusted
+            if newly_resolved_identity or (auto_unconfirmed and not auto_context_trusted)
             else self.state.dialogue_memory_for(key)
         )
         history = _prompt_history_lines(
@@ -1410,26 +1415,31 @@ class AmoWappiDraftLoop:
                 "bot_calls": bot_call_count,
                 "message_outcomes": message_outcomes,
             }
-        if not dry_run and not manual_review_required and _memory_provenance_enabled():
-            memory_source = (
-                context.get("dialogue_memory_state")
-                if isinstance(context.get("dialogue_memory_state"), Mapping)
-                else context.get("dialogue_memory_view")
-            )
+        memory_to_commit = None
+        if (
+            not manual_review_required
+            and _memory_provenance_enabled()
+            and isinstance(context.get("dialogue_memory_state"), Mapping)
+        ):
             semantic_reading = SemanticReading.from_result(result)
-            updated_memory = update_dialogue_memory_after_answer(
-                memory_source if isinstance(memory_source, Mapping) else {},
-                answer_text=draft_text,
+            direct_metadata = result_metadata.get("direct_path") if isinstance(result_metadata, Mapping) else None
+            dialog_summary = str(
+                result_metadata.get("dialog_summary_candidate")
+                or (direct_metadata.get("dialog_summary_candidate") if isinstance(direct_metadata, Mapping) else "")
+                or ""
+            )
+            memory_to_commit = update_dialogue_memory_after_answer(
+                context["dialogue_memory_state"],
+                answer_text="",
                 route=route,
                 fact_refs=tuple(getattr(result, "context_used", ()) or ()),
                 safety_flags=safety_flags,
                 semantic_reading=semantic_reading.to_memory_dict() if semantic_reading is not None else None,
                 semantic_frame=_semantic_frame_from_result(result),
-                dialog_summary=_dialog_summary_from_result(result),
-                memory_llm_fn=None,
+                dialog_summary=dialog_summary,
                 context=context,
-            )
-            self.state.set_dialogue_memory(key, updated_memory.to_json_dict())
+                answer_is_substantive=False,
+            ).to_json_dict()
         last_message = inbound_new[-1]
         pending_payload = {
             "profile_id": last_message.profile_id,
@@ -1450,6 +1460,7 @@ class AmoWappiDraftLoop:
             ),
             "auto_note": pair.auto_note,
             "memory_status": memory_status,
+            "dialogue_memory_to_commit": memory_to_commit,
             "config_fingerprint": dict(self.config.config_fingerprint or {}),
             "status": "note_pending",
         }
@@ -1508,6 +1519,8 @@ class AmoWappiDraftLoop:
                 "message_outcomes": message_outcomes,
             }
         self.state.clear_pending(_message_state_key(last_message))
+        if memory_to_commit is not None:
+            self.state.set_dialogue_memory(key, memory_to_commit)
         for item in inbound_new:
             self.state.mark_processed(item)
         self.journal.append(
@@ -1652,6 +1665,12 @@ class AmoWappiDraftLoop:
                     continue
 
             self.state.clear_pending(state_key)
+            memory_to_commit = payload.get("dialogue_memory_to_commit")
+            if isinstance(memory_to_commit, Mapping):
+                self.state.set_dialogue_memory(
+                    DraftLoopKey(str(payload.get("profile_id") or ""), str(payload.get("chat_id") or "")),
+                    memory_to_commit,
+                )
             for message_id in payload.get("covered_message_ids") or (payload.get("message_id"),):
                 if str(message_id or "").strip():
                     self.state.mark_processed_key(
@@ -1882,6 +1901,12 @@ def _auto_pair_note(*, profile: DraftLoopProfile, candidate: Mapping[str, Any]) 
     brand = "Фотон" if profile.brand == "foton" else "УНПК"
     channel = "Telegram" if profile.channel == "telegram" else "Max"
     if str(candidate.get("source") or "").strip() == "wappi_amo_widget":
+        lead_snapshot = candidate.get("lead_snapshot")
+        if isinstance(lead_snapshot, Mapping) and lead_snapshot.get("lead_read") == "unavailable":
+            return (
+                f"Контакт подтверждён виджетом Wappi→AMO ({match_key}), сделка не проверена; "
+                f"черновик записан в контакт. Канал: {brand}, {channel}."
+            )
         return f"Привязка подтверждена виджетом Wappi→AMO ({match_key}). Канал: {brand}, {channel}."
     return (
         f"Автоматическая привязка не подтверждена ({match_key}). Канал: {brand}, {channel}. "
@@ -1940,19 +1965,6 @@ def _history_lines(messages: Sequence[WappiHistoryMessage], *, limit: int | None
     return tuple(lines[-_raw_history_limit(limit):])
 
 
-def _dialog_summary_from_result(result: object) -> str:
-    metadata = getattr(result, "metadata", None)
-    if not isinstance(metadata, Mapping):
-        return ""
-    candidate = str(metadata.get("dialog_summary_candidate") or "").strip()
-    if candidate:
-        return candidate
-    direct = metadata.get("direct_path")
-    if isinstance(direct, Mapping):
-        return str(direct.get("dialog_summary_candidate") or "").strip()
-    return ""
-
-
 def _semantic_frame_from_result(result: object) -> Mapping[str, Any] | None:
     metadata = getattr(result, "metadata", None)
     if not isinstance(metadata, Mapping):
@@ -1998,7 +2010,11 @@ def _manager_guidance_note(result: object, *, client_message: str) -> str:
 
 
 def _journal_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key != "manager_guidance_note"}
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in {"manager_guidance_note", "dialogue_memory_to_commit"}
+    }
 
 
 def _prompt_history_lines(

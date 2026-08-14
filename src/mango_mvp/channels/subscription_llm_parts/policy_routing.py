@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
@@ -285,85 +285,9 @@ BRAND_LOYALTY_FOTON_TEXT = "Рады, что выбрали Фотон! Мене
 
 BRAND_LOYALTY_UNPK_TEXT = "Рады, что выбрали УНПК МФТИ! Менеджер свяжется и сориентирует по программе."
 
-MISSING_PRICE_HELPFUL_TEXT = (
-    "Могу сориентировать по вариантам: стоимость зависит от класса, формата и периода оплаты. "
-    "Напишите, пожалуйста, класс ребёнка и какой формат удобнее — очно или онлайн. "
-    "Менеджер проверит актуальную стоимость и предложит подходящий вариант."
-)
-
-MISSING_INTENSIVE_PRICE_HELPFUL_TEXT = (
-    "По интенсивам стоимость зависит от класса, предмета, длительности и актуального набора. "
-    "Точную цену сейчас не называю без проверки. Напишите, пожалуйста, класс ребёнка и предмет — "
-    "менеджер проверит актуальную программу и стоимость."
-)
-
-MISSING_SCHEDULE_HELPFUL_TEXT = (
-    "Расписание зависит от класса, предмета, формата и площадки. "
-    "Напишите, пожалуйста, класс ребёнка, предмет и какие дни удобнее — суббота или воскресенье. "
-    "Менеджер подберёт ближайший подходящий вариант."
-)
-
-MISSING_PROGRAM_HELPFUL_TEXT = (
-    "Поможем подобрать программу под цель ребёнка: школьная база, подготовка к экзаменам или олимпиадам требуют разного темпа. "
-    "Напишите класс, предмет и цель обучения — менеджер подскажет подходящий курс."
-)
-
-MISSING_DISCOUNT_HELPFUL_TEXT = (
-    "Скидки зависят от программы и условий участия. "
-    "Напишите, пожалуйста, какой курс рассматриваете и учился ли ребёнок у нас раньше — менеджер проверит доступные варианты."
-)
-
-MISSING_INSTALLMENT_HELPFUL_TEXT = (
-    "Варианты оплаты зависят от программы и периода обучения. "
-    "Напишите, пожалуйста, какой курс рассматриваете — менеджер подскажет, как удобнее распределить оплату."
-)
-
-MISSING_DOCS_HELPFUL_TEXT = (
-    "По документам поможем сориентироваться безопасно: порядок зависит от типа документа и ситуации. "
-    "Напишите, пожалуйста, какой документ нужен — справка, договор, чек или документы для вычета/маткапитала. "
-    "Менеджер проверит перечень и подскажет следующий шаг."
-)
-
-MISSING_CAMP_HELPFUL_TEXT = (
-    "По лагерям и выездным школам важно подобрать смену под класс, предмет и формат. "
-    "Напишите, пожалуйста, класс ребёнка и интересующее направление — менеджер проверит актуальные смены и наличие мест."
-)
-
-MISSING_GENERAL_HELPFUL_TEXT = (
-    "Помогу сориентироваться по обучению. Напишите, пожалуйста, класс ребёнка, предмет и цель: подтянуть школьную программу, "
-    "подготовиться к экзамену или олимпиаде. По этим данным менеджер предложит подходящий следующий шаг."
-)
-
-
 PROMOCODE_DRAFT_RE = re.compile(r"\b(?:LVSH-VEB20|LVSH-KF-10|ABRAMOV|VAGIN)\b", re.I)
 
 AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
-
-AUTONOMY_MATRIX_SAFE_TOPIC_IDS = {
-    "theme:001_pricing",
-    "theme:005_discounts",
-    "theme:006_installment",
-    "theme:007_matkap_payment",
-    "theme:008_tax_deduction",
-    "theme:011_contract",
-    "theme:012_certificates",
-    "theme:013_schedule",
-    "theme:014_format",
-    "theme:015_address",
-    "theme:016_program",
-    "theme:018_materials_homework",
-    "theme:019a_positive_feedback",
-    "theme:020_enrollment",
-    "theme:021_continuation",
-    "theme:022_age_level_testing",
-    "theme:023_trial_class",
-    "theme:024_account_access",
-    "theme:025_missing_links_access",
-    "theme:026_camp_general",
-    "theme:027_camp_living_conditions",
-    "theme:028_transport_logistics",
-    "service:S5_general_consultation",
-}
 
 HIGH_RISK_THEME_IDS = {
     "theme:009_refund",
@@ -1339,105 +1263,6 @@ def _dedupe_sentence(text: str, sentence: str) -> str:
     after = value[first + len(target) :]
     after = after.replace(target, "")
     return before + after
-
-def _autonomy_policy(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
-    if not isinstance(context, Mapping):
-        return {}
-    policy = context.get("autonomy_policy")
-    if isinstance(policy, Mapping):
-        return policy
-    rop_policy = context.get("rop_policy")
-    if isinstance(rop_policy, Mapping) and isinstance(rop_policy.get("autonomy_policy"), Mapping):
-        return rop_policy["autonomy_policy"]  # type: ignore[return-value,index]
-    return {}
-
-def _autonomy_enabled(context: Optional[Mapping[str, Any]]) -> bool:
-    policy = _autonomy_policy(context)
-    return (
-        _truthy_value(policy.get("allow_autonomous"))
-        or _truthy_value(policy.get("enabled"))
-        or _truthy_value(policy.get("bot_answer_self_enabled"))
-        or _truthy_value(context.get("autonomy_enabled") if isinstance(context, Mapping) else None)
-    )
-
-def _autonomy_topic_allowed(topic_id: str, context: Optional[Mapping[str, Any]]) -> bool:
-    topic = str(topic_id or "").strip()
-    if topic not in AUTONOMY_MATRIX_SAFE_TOPIC_IDS:
-        return False
-    policy = _autonomy_policy(context)
-    configured = policy.get("allowed_topic_ids") or policy.get("autonomous_topic_ids") or policy.get("topic_ids")
-    if configured is None:
-        return True
-    configured_ids = {str(item or "").strip() for item in configured} if isinstance(configured, Sequence) and not isinstance(configured, (str, bytes, bytearray)) else {str(configured or "").strip()}
-    return topic in configured_ids
-
-@dataclass(frozen=True)
-class RouteDecision:
-    route: str
-    veto_category: str = ""
-    safety_flags: tuple[str, ...] = ()
-    manager_checklist: tuple[str, ...] = ()
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-    autonomous_candidate: bool = False
-
-
-
-
-
-
-
-
-
-def _has_client_safe_current_fact(context: Optional[Mapping[str, Any]]) -> bool:
-    if not isinstance(context, Mapping):
-        return False
-    if _truthy_value(context.get("client_safe_fact_verified")) or _truthy_value(context.get("autonomy_fact_verified")):
-        return True
-    return _mapping_has_client_safe_current_fact(context.get("confirmed_facts")) or _mapping_has_client_safe_current_fact(
-        context.get("facts_context")
-    )
-
-def _mapping_has_client_safe_current_fact(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, Mapping):
-        if _truthy_value(value.get("internal_only")) or _truthy_value(value.get("stale")) or _truthy_value(value.get("facts_stale")):
-            return False
-        safe = any(
-            _truthy_value(value.get(key))
-            for key in (
-                "client_safe",
-                "client_allowed",
-                "allowed_for_client_answer",
-                "client_safe_fact",
-                "client_safe_fact_verified",
-                "pilot_allowed",
-            )
-        )
-        current = any(
-            _truthy_value(value.get(key))
-            for key in (
-                "fresh",
-                "facts_fresh",
-                "fresh_facts",
-                "current",
-                "actual",
-                "is_actual",
-                "document_verified",
-                "fresh_verified",
-            )
-        )
-        status_text = " ".join(
-            str(value.get(key) or "")
-            for key in ("freshness", "source_status", "approval_status", "verification_status", "status")
-        ).casefold()
-        current = current or any(marker in status_text for marker in ("fresh", "current", "actual", "document_verified", "verified"))
-        if safe and current:
-            return True
-        return any(_mapping_has_client_safe_current_fact(item) for item in value.values())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return any(_mapping_has_client_safe_current_fact(item) for item in value)
-    return False
 
 def _humanity_previous_bot_texts(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
     if not isinstance(context, Mapping):

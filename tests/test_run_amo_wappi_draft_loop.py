@@ -40,6 +40,9 @@ def test_wappi_launchd_renderer_targets_current_clean_code_root() -> None:
         ["git", "-C", str(root), "rev-parse", "HEAD"],
         text=True,
     ).strip()
+    assert "/opt/homebrew/bin" in payload["EnvironmentVariables"]["PATH"]
+    assert payload["StandardOutPath"] == str(Path.home() / ".mango_local/draft_loop/launchd.stdout.log")
+    assert payload["StandardErrorPath"] == str(Path.home() / ".mango_local/draft_loop/launchd.stderr.log")
 
 
 def test_wappi_launchers_prefer_dedicated_runtime_python() -> None:
@@ -52,11 +55,31 @@ def test_wappi_launchers_prefer_dedicated_runtime_python() -> None:
         assert '"$PYTHON_BIN"' in text
 
 
+def test_wappi_launchd_wrapper_exposes_operational_commands_via_live_truth() -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/start_wappi_draft_loop_launchd.sh").read_text(encoding="utf-8")
+
+    for mode in ("--status", "--smoke", "--stop", "--rollback"):
+        assert mode in text
+    assert "scripts/skills/live_truth.py" in text
+    assert "run_amo_wappi_draft_loop.py=$EXPECTED_HEAD" in text
+
+
+def test_legacy_live_wrapper_only_delegates_to_canonical_policy() -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/start_wappi_draft_loop_live.sh").read_text(encoding="utf-8")
+
+    assert "start_wappi_draft_loop_phase1b_live.sh" in text
+    assert "run_amo_wappi_draft_loop.py" not in text
+    assert "--live-write" not in text
+
+
 def test_startup_manifest_reports_actual_all_personal_runtime(tmp_path: Path, monkeypatch) -> None:
     target = tmp_path / "startup.json"
     timeline_db = tmp_path / "timeline.sqlite"
     monkeypatch.setenv("DRAFT_LOOP_RUNTIME_HEAD", "abc123")
     monkeypatch.setenv("DRAFT_LOOP_WRAPPER_SHA256", "wrapper-sha")
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
     fake_runner = SimpleNamespace(
         config=SimpleNamespace(
             profiles={"one": object(), "two": object()},
@@ -77,8 +100,28 @@ def test_startup_manifest_reports_actual_all_personal_runtime(tmp_path: Path, mo
     assert payload["chat_limit"] == 0
     assert payload["amo_note_write_enabled"] is True
     assert payload["client_send_enabled"] is False
+    assert payload["customer_timeline_enabled"] is True
     assert payload["customer_timeline_db"] == str(timeline_db.resolve())
     assert payload["writer_lock_path"] == str(runner.DEFAULT_WRITER_LOCK_PATH)
+
+
+def test_startup_manifest_reports_timeline_disabled_instead_of_default_path(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "startup.json"
+    monkeypatch.setenv("DRAFT_LOOP_RUNTIME_HEAD", "abc123")
+    monkeypatch.setenv("DRAFT_LOOP_WRAPPER_SHA256", "wrapper-sha")
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "0")
+    monkeypatch.setenv("TELEGRAM_BOT_MEMORY_EXPANDED_SHADOW", "0")
+    fake_runner = SimpleNamespace(config=SimpleNamespace(profiles={}, all_personal_mode=True, chat_limit=0))
+
+    runner.write_startup_manifest(
+        target,
+        runner=fake_runner,
+        args=SimpleNamespace(customer_timeline_db=None, live_write=True),
+    )
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["customer_timeline_enabled"] is False
+    assert payload["customer_timeline_db"] == ""
 
 
 def test_wappi_launchd_installer_restores_previous_plist_when_bootstrap_fails(tmp_path: Path) -> None:
@@ -806,6 +849,72 @@ def test_widget_resolver_keeps_contact_without_lead_explicit(monkeypatch) -> Non
     }
 
 
+def test_widget_resolver_falls_back_to_exact_contact_when_lead_read_fails(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {"contact": {"id": 2002}, "leads": [{"id": 1001, "status_id": 123}]}
+
+    class AmoReadClient:
+        def amo_api_get(self, **_kwargs):
+            raise runner.AmoMcpError("OAuth details must not escape", category="auth_error")
+
+    result = runner.build_widget_resolver(WappiClient(), AmoReadClient())(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="telegram", profile_id="profile-foton", brand="foton"),
+        dialog={"id": "chat-1", "type": "user"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result == {
+        "status": "matched",
+        "source": "wappi_amo_widget",
+        "lead_id": "",
+        "lead_ids": ("1001",),
+        "contact_id": "2002",
+        "match_key": "wappi_widget_contact",
+        "lead_snapshot": {
+            "lead_count": 1,
+            "lead_read": "unavailable",
+            "note_entity_type": "contact",
+        },
+    }
+
+
+def test_widget_resolver_does_not_forget_conflict_when_later_lead_read_fails(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {"contact": {"id": 2002}, "leads": [{"id": 1001}, {"id": 1002}]}
+
+    class AmoReadClient:
+        def amo_api_get(self, *, path, **_kwargs):
+            if path.endswith("1001"):
+                return _lead("1001", org="Фотон", contacts=("9999",))
+            raise runner.AmoMcpError("temporary read failure", category="server_error")
+
+    result = runner.build_widget_resolver(WappiClient(), AmoReadClient())(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="telegram", profile_id="profile-foton", brand="foton"),
+        dialog={"id": "chat-1", "type": "user"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "wappi_widget_lead_contact_conflict"
+    assert result["conflicting_lead_ids"] == ("1001",)
+
+
 def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
     class StopLoop(Exception):
         pass
@@ -854,7 +963,7 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
     assert "must-not-leak" not in json.dumps(FakeLoop.heartbeats)
     assert second == {"status": "ok", "client_sends": 0, "note_written": 0}
     assert sleeps == [5, 5]
-    assert health_messages == ["Mango Wappi: жив; обработано 0; ошибок 1"]
+    assert health_messages == ["Mango Wappi: жив; обработано 0; пропусков 0; ошибок 1"]
 
 
 def test_health_notifier_uses_only_internal_chat_and_business_hours() -> None:
@@ -923,17 +1032,19 @@ def test_live_loop_reports_health_again_after_two_hours() -> None:
         )
 
     assert messages == [
-        "Mango Wappi: жив; обработано 1; ошибок 0",
-        "Mango Wappi: жив; обработано 3; ошибок 0",
+        "Mango Wappi: жив; обработано 1; пропусков 0; ошибок 0",
+        "Mango Wappi: жив; обработано 3; пропусков 0; ошибок 0",
     ]
 
 
-def test_live_loop_refuses_start_without_internal_health_chat(tmp_path: Path, monkeypatch) -> None:
+def test_live_loop_requires_internal_health_chat(tmp_path: Path, monkeypatch) -> None:
     args = SimpleNamespace(
         loop=True,
         live_write=True,
         env_file=tmp_path / "empty.env",
         ai_office_env_file=tmp_path / "missing.env",
+        retro_report=None,
+        interval_sec=45,
     )
     args.env_file.write_text("", encoding="utf-8")
     monkeypatch.setattr(runner, "parse_args", lambda: args)
@@ -941,7 +1052,6 @@ def test_live_loop_refuses_start_without_internal_health_chat(tmp_path: Path, mo
     monkeypatch.delenv(runner.DRAFT_LOOP_HEALTH_CHAT_ID_ENV, raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_PILOT_MANAGER_CHAT_IDS", raising=False)
-
     with pytest.raises(RuntimeError, match="requires a configured internal Telegram health chat"):
         runner.main()
 

@@ -49,7 +49,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _pilot_profile_default_on_flag_enabled,
 )
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
-from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
 from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_funnel_context_payload
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
@@ -2321,16 +2320,7 @@ def build_bot_prompt_context(
     customer_summary = f"Динамический тестовый клиент: {persona.get('persona')}. Не раскрывать это клиенту."
     if crm_context.get("summary"):
         customer_summary = "\n".join((customer_summary, str(crm_context["summary"])))
-    rop_policy = {
-        "bot_permission": "bot_answer_self_for_pilot",
-        "autonomy_policy": {
-            "allow_autonomous": True,
-            "allowed_topic_ids": sorted(AUTONOMY_MATRIX_SAFE_TOPIC_IDS),
-            "default": "draft_for_manager_or_manager_only",
-            "fact_requirement": "client_safe_fact_verified",
-            "p0_overrides_autonomy": True,
-        },
-    }
+    rop_policy = {"bot_permission": "bot_answer_self_for_pilot"}
     pilot_context = build_telegram_pilot_context_from_snapshot(
         client_message,
         snapshot_path=snapshot_path,

@@ -770,8 +770,8 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
 def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
     rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
-    assert len(rows) == 692
-    assert len({row["row_id"] for row in rows}) == 692
+    assert len(rows) == 690
+    assert len({row["row_id"] for row in rows}) == 690
     assert {row["node_kind"] for row in rows} == {
         "marker_helper_call",
         "regex_call",
@@ -805,10 +805,10 @@ def test_adr003_understanding_map_classifies_every_canonical_snapshot_row() -> N
     mapped = _understanding_map_rows()
 
     source = payload["source"]
-    assert source["base_repo_head"] == "a3593d74ba857b57bebf10870c7fad0948854a02"
+    assert source["base_repo_head"] == "530d4c70ef336a30a66374578a3f8b37449f3c40"
     assert source["integrated_patch_heads"] == []
-    assert source["working_tree_task"] == "2026-08-05_TZ_REFRESH_CURRENT_KB_EXPIRED_FACTS.md"
-    assert source["snapshot_rows"] == len(snapshot_rows) == 692
+    assert source["working_tree_task"] == "2026-08-14_TZ_M1_BOT_FINAL_LAUNCH.md"
+    assert source["snapshot_rows"] == len(snapshot_rows) == 690
     assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
     assert source["node_kind_counts"] == {
         kind: sum(row["node_kind"] == kind for row in snapshot_rows)

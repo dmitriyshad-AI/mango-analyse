@@ -3,30 +3,35 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.mango.wappi-draft-loop</string>
+  <string>__MANGO_LABEL__</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>__MANGO_CODE_ROOT__/scripts/start_wappi_draft_loop_phase1b_live.sh</string>
+    <string>__MANGO_CODE_ROOT__/scripts/start_telegram_ai_agent_launchd.sh</string>
+    <string>__MANGO_BRAND__</string>
+    <string>--run</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__MANGO_CODE_ROOT__</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>DRAFT_LOOP_EXPECTED_HEAD</key>
+    <key>MANGO_TELEGRAM_EXPECTED_HEAD</key>
     <string>__MANGO_EXPECTED_HEAD__</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StandardOutPath</key>
-  <string>__MANGO_HOME__/.mango_local/draft_loop/launchd.stdout.log</string>
+  <string>__MANGO_HOME__/.mango_local/telegram_ai_agent/__MANGO_BRAND__.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__MANGO_HOME__/.mango_local/draft_loop/launchd.stderr.log</string>
+  <string>__MANGO_HOME__/.mango_local/telegram_ai_agent/__MANGO_BRAND__.err.log</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>ThrottleInterval</key>
-  <integer>30</integer>
+  <integer>15</integer>
 </dict>
 </plist>

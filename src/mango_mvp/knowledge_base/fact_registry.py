@@ -139,14 +139,13 @@ _FACT_KEY_ALIASES = {
 # not populated by any current build script; they are accepted here as a
 # fallback for when that changes.
 #
-# SLA classes per owner ТЗ (БЛОК 7): schedule/availability -- 24 hours;
-# prices, dates, commercial conditions -- 7 days; stable descriptive rules --
-# 90 days. KB dates have day precision only (no timestamps): "checked
-# yesterday" can mean anywhere up to ~47 hours ago, which already breaches a
-# 24-hour SLA, so "24 hours" is implemented as max age 0 days (checked_at
-# must equal today; checked_at == yesterday or older already breaches it).
+# Availability remains a live 24-hour fact. An owner-approved timetable with
+# an explicit validity window is a commercial term: recheck it weekly instead
+# of making all 178 schedule facts disappear the day after a KB release.
+# KB dates have day precision only, so the 24-hour class is implemented as
+# max age 0 days (checked_at must equal today).
 
-FRESHNESS_SLA_LIVE_STATUS = "live_status"            # расписание и наличие мест -- 24 часа
+FRESHNESS_SLA_LIVE_STATUS = "live_status"            # наличие мест -- 24 часа
 FRESHNESS_SLA_COMMERCIAL_TERMS = "commercial_terms"  # цены, даты, условия -- 7 дней
 FRESHNESS_SLA_STABLE_RULES = "stable_rules"          # стабильные правила -- 90 дней
 
@@ -163,7 +162,7 @@ FRESHNESS_SLA_DEFAULT_CLASS = FRESHNESS_SLA_COMMERCIAL_TERMS
 
 # Real per-fact `fact_type` values observed in kb_release_v3 fact records.
 FRESHNESS_SLA_CLASS_BY_FACT_TYPE: dict[str, str] = {
-    "schedule": FRESHNESS_SLA_LIVE_STATUS,
+    "schedule": FRESHNESS_SLA_COMMERCIAL_TERMS,
     "availability": FRESHNESS_SLA_LIVE_STATUS,
     "price": FRESHNESS_SLA_COMMERCIAL_TERMS,
     "deadline": FRESHNESS_SLA_COMMERCIAL_TERMS,
@@ -229,7 +228,11 @@ def evaluate_fact_freshness_sla(fact: Mapping[str, Any], *, today: date | None =
     neither is reported as `unknown_check_date` and NOT within SLA -- unknown
     age must not be silently treated as fresh.
     """
-    fact_type = str(fact.get("fact_type") or next(iter(fact.get("fact_types") or ()), "") or "")
+    raw_types = fact.get("fact_types")
+    fact_types = [str(fact.get("fact_type") or "").strip()]
+    if isinstance(raw_types, Sequence) and not isinstance(raw_types, (str, bytes, bytearray)):
+        fact_types.extend(str(item).strip() for item in raw_types)
+    fact_type = min((item for item in fact_types if item), key=fact_sla_max_age_days, default="")
     sla_class = fact_sla_class(fact_type)
     sla_days = FRESHNESS_SLA_MAX_AGE_DAYS[sla_class]
     fact_id = str(fact.get("fact_id") or fact.get("id") or "")
@@ -289,13 +292,20 @@ def fact_runtime_time_ok(fact: Mapping[str, Any], *, today: date | None = None) 
     that established contract; immutable KB releases always carry a check date
     and therefore still pass through the strict SLA gate.
     """
-    window_ok = fact_validity_window_ok(
-        valid_from=fact.get("valid_from"),
-        valid_until=fact.get("valid_until"),
-        today=today,
-    )
     structured = fact.get("structured_value")
     structured_map = structured if isinstance(structured, Mapping) else {}
+    valid_until = fact.get("valid_until") or structured_map.get("valid_until")
+    window_ok = fact_validity_window_ok(
+        valid_from=fact.get("valid_from") or structured_map.get("valid_from"),
+        valid_until=valid_until,
+        today=today,
+    )
+    raw_types = fact.get("fact_types")
+    fact_types = {str(fact.get("fact_type") or "").strip().casefold()}
+    if isinstance(raw_types, Sequence) and not isinstance(raw_types, (str, bytes, bytearray)):
+        fact_types.update(str(item).strip().casefold() for item in raw_types)
+    if "schedule" in fact_types and "availability" not in fact_types and str(valid_until or "").strip():
+        return window_ok
     has_check_date = bool(
         str(
             fact.get("freshness_check_date")

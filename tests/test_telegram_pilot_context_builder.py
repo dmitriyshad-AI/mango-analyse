@@ -60,7 +60,7 @@ def test_builder_wires_fresh_snapshot_into_pilot_context() -> None:
     assert payload["facts_context"]["knowledge_base_version"] == "kb_night_20260517_v1"
     assert payload["facts_context"]["fresh"] is True
     assert payload["facts_context"]["client_safe_fact_verified"] is True
-    assert payload["rop_policy"]["autonomy_policy"]["allow_autonomous"] is True
+    assert "autonomy_policy" not in payload["rop_policy"]
     assert payload["facts_context"]["facts_missing"] is False
     assert payload["confirmed_facts"]["fact:price_grade_10"] == "Стоимость курса для 10 класса: 120 000 рублей."
     assert payload["knowledge_snippets"]
@@ -620,7 +620,7 @@ def test_builder_does_not_mark_usable_fact_without_client_permission_as_verified
     assert "confirmed_facts" not in payload
     assert payload["facts_context"]["client_safe_fact_verified"] is False
     assert payload["facts_context"]["facts_missing"] is True
-    assert payload["rop_policy"]["autonomy_policy"]["allow_autonomous"] is False
+    assert "autonomy_policy" not in payload["rop_policy"]
 
 
 def test_builder_prefers_matching_class_and_format_price_fact() -> None:

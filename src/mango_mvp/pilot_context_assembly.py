@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.new_lead_funnel import LeadFunnelState, build_lead_funnel_state, lead_funnel_context_payload
-from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS, SubscriptionDraftResult
+from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 
 
@@ -197,16 +197,7 @@ def build_pilot_context_payload(
         active_brand=active_brand,
     )
     known_context_summary_text = build_known_context_summary(known_client_fields, known_dialog_fields)
-    rop_policy = {
-        "bot_permission": "bot_answer_self_for_pilot",
-        "autonomy_policy": {
-            "allow_autonomous": True,
-            "allowed_topic_ids": sorted(AUTONOMY_MATRIX_SAFE_TOPIC_IDS),
-            "default": "draft_for_manager_or_manager_only",
-            "fact_requirement": "client_safe_fact_verified",
-            "p0_overrides_autonomy": True,
-        },
-    }
+    rop_policy = {"bot_permission": "bot_answer_self_for_pilot"}
     pilot_context = build_telegram_pilot_context_from_snapshot(
         current_text,
         snapshot_path=Path(snapshot_path),

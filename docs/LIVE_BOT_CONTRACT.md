@@ -1,25 +1,20 @@
 # Контракт живого бота
 
-Обновлено: 2026-08-13. Это минимальный контракт, который сохраняется при любом
+Обновлено: 2026-08-14. Это минимальный контракт, который сохраняется при любом
 редеплое или упрощении кода.
 
-## Что фактически работает
+## Что входит в текущий кандидат
 
-- Канал: Wappi -> draft-loop -> AMO.
-- Каноническая папка кода и runtime:
-  `/Users/dmitrijfabarisov/Projects/Mango analyse`, ветка `main`.
-- Последняя проверенная загруженная ревизия кода: `ca1779bc022e8f8c5f97a9f0544bf7d6280eece4`.
-  Снимок 2026-07-19 12:49 МСК: PID `35089`, heartbeat `status=ok`,
-  `auth_error_count=0`. PID меняется при перезапуске и не является константой.
-- Более новый docs-only коммит в `main` не означает, что Python-процесс уже
-  перезапущен. Перед любым live-действием фактические PID, cwd, env и SHA нужно
-  заново проверить через `scripts/skills/live_truth.py --no-write`.
-- Память читается из
-  `/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
-- Draft-loop вызывает `SubscriptionLlmDraftProvider.build_draft()`, затем
-  единственный живой путь `direct_path` и его post-layers.
-- Результат записывается только как черновик-заметка в AMO. Клиентское сообщение
-  этим контуром не отправляется.
+- Два публичных Telegram-контура: Фотон и УНПК. Они отвечают клиенту через
+  `SubscriptionLlmDraftProvider.build_draft()`, помнят свой диалог и показывают
+  `typing` во время подготовки ответа.
+- Wappi -> draft-loop -> AMO: создаёт только черновик-заметку менеджеру по
+  точно определённому контакту или его единственной подходящей сделке.
+- Все три службы используют один clean SHA и текущую owner-approved KB v6.8.
+  Customer Timeline в этом выпуске отключена.
+- Код-кандидат не равен живому runtime. Служба считается запущенной только после
+  проверки её launchd label, живого PID, точного `code_root`, SHA, KB-хеша и
+  свежего heartbeat штатной командой `--status`.
 
 ## Несжимаемые правила
 
@@ -35,21 +30,25 @@
 4. **Факты.** Цена, дата, расписание, адрес, место, бронь и условия могут
    утверждаться только из подтверждённого KB-факта или слов клиента.
    Неподдержанное число или обещание понижает маршрут к менеджеру.
-5. **Маршрут.** `manager_only` нельзя повышать последующим слоем. Любой
-   `draft_for_manager` остаётся черновиком для ручной проверки.
+5. **Маршрут.** `manager_only` нельзя повышать внутри модельного ядра: он
+   сохраняет требование человеческого действия. Публичный транспорт отдельно
+   может показать безопасный клиентский текст только после общего выходного
+   гейта; это не считается выполнением действия менеджера.
 6. **Отправка.** Wappi никогда не отправляет клиенту. Публичный Telegram может
-   отправить только конечный `bot_answer_self_for_pilot` при финальном
-   `authoritative_output_gate=pass`; менеджерский или заблокированный `draft_text`
-   клиенту не отправляется.
+   отправить содержательный текст при финальном `authoritative_output_gate=pass`,
+   `semantic_output_verifier=pass|pass_after_regen`, отсутствии ошибки и
+   маршруте, отличном от `blocked`. Публичный контур не пишет в AMO и не
+   обещает, что уже передал вопрос менеджеру.
 
 ## Проверка перед редеплоем
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-  python3 scripts/skills/live_truth.py --no-write
+bash scripts/start_telegram_ai_agent_launchd.sh foton --status
+bash scripts/start_telegram_ai_agent_launchd.sh unpk --status
+bash scripts/start_wappi_draft_loop_launchd.sh --status
 ```
 
-- Зафиксировать фактические PID, worktree, SHA, профиль, флаги и путь к БД.
+- Зафиксировать фактические PID, worktree, SHA, профиль и KB-хеш каждой службы.
 - Проверить обычный вопрос, P0, кросс-бренд и неподдержанное число.
 - Подтвердить, что создаётся AMO-заметка, а клиентское сообщение не
   отправляется.
@@ -67,8 +66,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 - `src/mango_mvp/channels/subscription_llm_parts/post_layers.py`;
 - `src/mango_mvp/channels/output_verification_floor.py`;
 - `src/mango_mvp/channels/p0_recall_spec.py`;
-- `src/mango_mvp/customer_timeline/bot_safe_runtime_context.py`.
+- `product_data/knowledge_base/kb_release_20260813_v6_8_owner_approved/`.
 
-Rollback-тег `rollback/pre-refactoring-main-29b9ac26`, rollback-plist и три
-страховочных worktree сохраняются до отдельного решения владельца после личной
-приёмки. Они не являются текущим live-контуром.
+Rollback выполняется штатной командой `--rollback` каждой службы; она возвращает
+предыдущий plist и не удаляет накопленную память диалога.

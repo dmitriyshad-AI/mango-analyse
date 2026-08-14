@@ -10,8 +10,8 @@ MODE="${1:-}"
 PYTHON_BIN="${DRAFT_LOOP_PYTHON_BIN:-${HOME}/.mango_local/draft_loop/venv/bin/python}"
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN="$(command -v python3)"
 
-if [[ -n "$MODE" && "$MODE" != "--render-only" ]]; then
-  echo "Usage: $0 [--render-only]" >&2
+if [[ -n "$MODE" && "$MODE" != "--render-only" && "$MODE" != "--status" && "$MODE" != "--smoke" && "$MODE" != "--stop" && "$MODE" != "--rollback" ]]; then
+  echo "Usage: $0 [--render-only|--status|--smoke|--stop|--rollback]" >&2
   exit 2
 fi
 
@@ -19,7 +19,7 @@ EXPECTED_HEAD="$(git -C "$ROOT" rev-parse HEAD)"
 RENDERED_PLIST="$(mktemp "${TMPDIR:-/tmp}/mango-wappi-launchd.XXXXXX")"
 trap 'rm -f "$RENDERED_PLIST"' EXIT
 
-"$PYTHON_BIN" - "$PLIST_SOURCE" "$RENDERED_PLIST" "$ROOT" "$EXPECTED_HEAD" <<'PY'
+"$PYTHON_BIN" - "$PLIST_SOURCE" "$RENDERED_PLIST" "$ROOT" "$EXPECTED_HEAD" "$HOME" <<'PY'
 from pathlib import Path
 import plistlib
 import sys
@@ -29,9 +29,11 @@ source = Path(sys.argv[1])
 target = Path(sys.argv[2])
 code_root = sys.argv[3]
 expected_head = sys.argv[4]
+home = sys.argv[5]
 rendered = source.read_text(encoding="utf-8")
 rendered = rendered.replace("__MANGO_CODE_ROOT__", escape(str(Path(code_root).resolve())))
 rendered = rendered.replace("__MANGO_EXPECTED_HEAD__", escape(expected_head))
+rendered = rendered.replace("__MANGO_HOME__", escape(str(Path(home).resolve())))
 if "__MANGO_" in rendered:
     raise SystemExit("unresolved Wappi launchd placeholder")
 plistlib.loads(rendered.encode("utf-8"))
@@ -45,6 +47,23 @@ if [[ "$MODE" == "--render-only" ]]; then
 fi
 
 DOMAIN="gui/$(id -u)"
+if [[ "$MODE" == "--stop" ]]; then
+  launchctl bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || true
+  exit 0
+fi
+if [[ "$MODE" == "--status" || "$MODE" == "--smoke" ]]; then
+  launchctl print "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || exit 4
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" "$PYTHON_BIN" "$ROOT/scripts/skills/live_truth.py" \
+    --root "$ROOT" --expect-head "run_amo_wappi_draft_loop.py=$EXPECTED_HEAD" --no-write
+  exit $?
+fi
+if [[ "$MODE" == "--rollback" ]]; then
+  [[ -f "$ROLLBACK_PLIST" ]] || { echo "No previous Wappi plist to restore" >&2; exit 4; }
+  launchctl bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || true
+  install -m 0644 "$ROLLBACK_PLIST" "$PLIST_TARGET"
+  launchctl bootstrap "$DOMAIN" "$PLIST_TARGET"
+  exit 0
+fi
 WAS_LOADED=0
 HAD_PLIST=0
 

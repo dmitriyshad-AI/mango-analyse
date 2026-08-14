@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import plistlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,81 @@ import scripts.run_telegram_ai_agent as agent
 from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt
 from mango_mvp.channels.subscription_llm import AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION, SAFE_FALLBACK_DRAFT_TEXT, SubscriptionDraftResult
 from mango_mvp.integrations.draft_loop import DraftLoopConfigError
+
+
+@pytest.mark.parametrize("brand", ("foton", "unpk"))
+def test_launchd_renderer_pins_current_head_and_portable_paths(brand: str) -> None:
+    root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        ["bash", str(root / "scripts/start_telegram_ai_agent_launchd.sh"), brand, "--render-only"],
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+
+    payload = plistlib.loads(completed.stdout)
+    assert payload["Label"] == f"com.mango.telegram-ai-agent.{brand}"
+    assert payload["WorkingDirectory"] == str(root)
+    assert payload["ProgramArguments"] == [
+        "/bin/bash",
+        str(root / "scripts/start_telegram_ai_agent_launchd.sh"),
+        brand,
+        "--run",
+    ]
+    assert payload["EnvironmentVariables"]["MANGO_TELEGRAM_EXPECTED_HEAD"] == subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    assert "/opt/homebrew/bin" in payload["EnvironmentVariables"]["PATH"]
+    assert payload["KeepAlive"] == {"SuccessfulExit": False}
+    assert payload["StandardOutPath"] == str(Path.home() / f".mango_local/telegram_ai_agent/{brand}.out.log")
+
+
+def test_runtime_status_preserves_release_identity_and_contains_no_dialogue(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "status.json"
+    path.write_text(
+        json.dumps({"head": "abc123", "kb_sha256": "kb-sha", "state_path": "/runtime/state.json"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(agent.RUNTIME_STATUS_ENV, str(path))
+    state = agent.DraftLoopState(tmp_path / "dialogue.json")
+    state.payload["next_offset"] = 42
+    state.payload["dialogue_memory"] = {"foton\tchat": {"turns": [{"text": "Секретный вопрос"}]}}
+
+    agent.write_runtime_status("foton", status="ok", state=state)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+    assert payload["head"] == "abc123"
+    assert payload["kb_sha256"] == "kb-sha"
+    assert payload["next_offset"] == 42
+    assert "Секретный вопрос" not in path.read_text(encoding="utf-8")
+
+
+def test_error_status_can_be_written_when_offset_is_corrupt(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "status.json"
+    monkeypatch.setenv(agent.RUNTIME_STATUS_ENV, str(path))
+    state = agent.DraftLoopState(tmp_path / "dialogue.json")
+    state.payload["next_offset"] = "bad"
+
+    agent.write_runtime_status("foton", status="error", state=state, error="telegram_offset_corrupt")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["status"] == "error"
+    assert payload["error"] == "telegram_offset_corrupt"
+    assert payload["next_offset"] is None
+
+
+def test_launchd_wrapper_exposes_operational_commands_and_fresh_status_gate() -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/start_telegram_ai_agent_launchd.sh").read_text(encoding="utf-8")
+
+    for mode in ("--status", "--smoke", "--stop", "--rollback"):
+        assert mode in text
+    assert "last_cycle_at" in text
+    assert "kb_sha256" in text
+    assert 'launchctl print "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || exit 4' in text
+    assert "status_ok || exit 4" in text
+    assert "os.kill(pid, 0)" in text
+    assert 'payload.get("code_root")' in text
 
 
 class FakeTelegram:
@@ -58,13 +135,25 @@ def _result(
     route: str = "bot_answer_self_for_pilot",
     action: str = "pass",
     checked: bool = True,
+    verifier_checked: bool = True,
+    verifier_action: str = "pass",
     error: str | None = None,
 ) -> SubscriptionDraftResult:
     return SubscriptionDraftResult(
         route=route,
         draft_text=text,
         error=error,
-        metadata={"authoritative_output_gate": {"schema_version": AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION, "checked": checked, "action": action}},
+        metadata={
+            "authoritative_output_gate": {
+                "schema_version": AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
+                "checked": checked,
+                "action": action,
+            },
+            "semantic_output_verifier": {
+                "checked": verifier_checked,
+                "action": verifier_action,
+            },
+        },
     )
 
 
@@ -117,6 +206,16 @@ def test_private_text_reaches_provider_and_client(monkeypatch: pytest.MonkeyPatc
     assert telegram.sent == [{"chat_id": "555", "text": "Годовой курс стоит 37 000 ₽."}]
     assert telegram.actions == [{"chat_id": "555", "action": "typing"}]
     assert _offset("foton") == 101
+
+
+def test_fallback_uses_only_verified_contact_of_active_brand() -> None:
+    foton = agent.fallback_text("foton")
+    unpk = agent.fallback_text("unpk")
+
+    assert "8 (495) 500-25-88" in foton
+    assert "+7 (495) 150-81-51" not in foton
+    assert "+7 (495) 150-81-51" in unpk
+    assert "8 (495) 500-25-88" not in unpk
 
 
 def test_brands_keep_separate_tokens_and_offsets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,6 +284,38 @@ def test_start_bypasses_slow_model_message_in_same_batch(monkeypatch: pytest.Mon
         ("foton", "slow-client", "100"),
         ("foton", "new-client", "101"),
     }
+    assert _offset("foton") == 102
+
+
+def test_start_does_not_advance_past_earlier_message_when_cycle_crashes(monkeypatch: pytest.MonkeyPatch) -> None:
+    updates = [
+        _update(100, text="Сколько стоит год?", chat_id="earlier-client"),
+        _update(101, text="/start", chat_id="new-client"),
+    ]
+    first = FakeTelegram(updates)
+    monkeypatch.setattr(agent, "_api", first)
+    state = _dialogue_state("foton")
+    agent._save_checkpoint(state, next_offset=0)
+
+    with pytest.raises(RuntimeError, match="model unavailable"):
+        agent.run_cycle(
+            brand="foton",
+            token="token",
+            provider=FakeProvider(raises=RuntimeError("model unavailable")),
+            state=state,
+        )
+
+    persisted = _dialogue_state("foton")
+    assert agent._state_offset(persisted) == 0
+    assert ("foton", "new-client", "101") in persisted.processed_keys()
+
+    retry = FakeTelegram(updates)
+    provider = FakeProvider(_result("Годовой курс стоит 37 000 ₽."))
+    monkeypatch.setattr(agent, "_api", retry)
+    agent.run_cycle(brand="foton", token="token", provider=provider, state=persisted)
+
+    assert provider.calls[0]["client_message"] == "Сколько стоит год?"
+    assert retry.sent == [{"chat_id": "earlier-client", "text": "Годовой курс стоит 37 000 ₽."}]
     assert _offset("foton") == 102
 
 
@@ -288,7 +419,7 @@ def test_blocked_chat_does_not_stall_other_clients_or_save_unsent_memory(monkeyp
     assert _offset("foton") == 102
 
 
-def test_send_failure_does_not_advance_offset_and_restart_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_http_500_retries_saved_reply_without_second_model_call(monkeypatch: pytest.MonkeyPatch) -> None:
     class FailsOnce(FakeTelegram):
         def __call__(self, token, method, payload):
             if method == "sendMessage" and not self.sent:
@@ -297,17 +428,59 @@ def test_send_failure_does_not_advance_offset_and_restart_retries(monkeypatch: p
             return super().__call__(token, method, payload)
 
     telegram = FailsOnce([_update(100)])
+    provider = FakeProvider()
     monkeypatch.setattr(agent, "_api", telegram)
     _set_offset("foton", 0)
     with pytest.raises(RuntimeError):
-        agent.run_cycle(brand="foton", token="token", provider=FakeProvider(), state=_dialogue_state("foton"))
+        agent.run_cycle(brand="foton", token="token", provider=provider, state=_dialogue_state("foton"))
     assert _offset("foton") == 0
     assert _dialogue_state("foton").payload["dialogue_memory"] == {}
     assert _dialogue_state("foton").processed_keys() == set()
 
-    agent.run_cycle(brand="foton", token="token", provider=FakeProvider(), state=_dialogue_state("foton"))
+    agent.run_cycle(brand="foton", token="token", provider=provider, state=_dialogue_state("foton"))
     assert _offset("foton") == 101
     assert telegram.sent[-1]["text"] == "Годовой курс стоит 37 000 ₽."
+    assert len(provider.calls) == 1
+
+
+def test_failed_delivery_recovery_is_never_retried_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _dialogue_state("foton")
+    agent._save_delivery_intent(
+        state,
+        marker=("foton", "555", "100"),
+        next_offset=101,
+        key=None,
+        memory=None,
+        reply_text="Сохранённый ответ",
+    )
+    send_attempts = 0
+
+    def api(_token, method, _payload):
+        nonlocal send_attempts
+        if method == "sendMessage":
+            send_attempts += 1
+            raise RuntimeError("telegram_sendMessage_transport_error")
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(agent, "_api", api)
+    provider = FakeProvider()
+    with pytest.raises(RuntimeError, match="transport_error"):
+        agent.run_cycle(brand="foton", token="token", provider=provider, state=state)
+
+    agent.run_cycle(brand="foton", token="token", provider=provider, state=state)
+
+    assert send_attempts == 1
+    assert provider.calls == []
+    assert agent._state_offset(state) == 101
+
+
+def test_corrupt_pending_delivery_is_dropped_without_stopping_bot() -> None:
+    state = _dialogue_state("foton")
+    state.payload["telegram_pending_delivery"] = {"profile_id": "foton", "chat_id": "555"}
+    state.save()
+
+    assert agent._finish_delivery_intent(state) is False
+    assert "telegram_pending_delivery" not in state.payload
 
 
 def test_first_start_discards_old_backlog_and_then_answers_new_update(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -384,14 +557,14 @@ def test_main_enables_and_checks_canonical_profile(monkeypatch: pytest.MonkeyPat
     ("bad_result", "reason"),
     [
         (_result(error="timeout"), "provider error"),
-        (_result(route="manager_only"), "manager route"),
-        (_result(route="draft_for_manager"), "downgraded route"),
         (_result(action="downgrade_keep_text"), "gate downgraded"),
         (_result(action="annotate"), "gate annotated"),
         (_result(checked=False), "gate not checked"),
+        (_result(verifier_checked=False), "semantic verifier not checked"),
         (SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="37 000 ₽", metadata={"authoritative_output_gate": {"checked": True, "action": "pass"}}), "gate without canonical schema"),
         (_result("Автономный ответ не требуется, безопасный вариант ниже."), "internal manager draft"),
         (_result(SAFE_FALLBACK_DRAFT_TEXT), "manager promise stub"),
+        (_result("Приняли обращение. Передам вопрос менеджеру, он ответит вам.", verifier_action="downgrade_keep_text"), "unavailable public handoff"),
     ],
 )
 def test_unsafe_model_output_never_reaches_the_client(
@@ -403,9 +576,19 @@ def test_unsafe_model_output_never_reaches_the_client(
     _cycle(telegram, FakeProvider(bad_result))
 
     sent = telegram.sent[0]["text"]
-    assert sent == agent.FALLBACK_TEXT, reason
+    assert sent == agent.fallback_text("foton"), reason
     assert "менеджер" not in sent.casefold()
     assert sent != bad_result.draft_text
+
+
+@pytest.mark.parametrize("route", ["draft_for_manager", "manager_only"])
+def test_client_receives_safe_model_text_after_authoritative_gate(route: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegram([_update(100)])
+    monkeypatch.setattr(agent, "_api", telegram)
+
+    _cycle(telegram, FakeProvider(_result("Уточните, пожалуйста, удобный формат: очно или онлайн?", route=route)))
+
+    assert telegram.sent == [{"chat_id": "555", "text": "Уточните, пожалуйста, удобный формат: очно или онлайн?"}]
 
 
 @pytest.mark.parametrize(
@@ -414,10 +597,10 @@ def test_unsafe_model_output_never_reaches_the_client(
         ("Годовой курс стоит 37 000 ₽. [source_id=kb_release_v3_snapshot fact:price_year]", "Годовой курс стоит 37 000 ₽."),
         ("DEBUG: route=bot_answer_self_for_pilot\nЗдравствуйте!", "Здравствуйте!"),
         ('{"safety_flags":["pass"]}\nЗдравствуйте!', "Здравствуйте!"),
-        ("Менеджеру: проверить этот текст перед отправкой клиенту.", agent.FALLBACK_TEXT),
-        ("manager_checklist: проверить цену перед отправкой.", agent.FALLBACK_TEXT),
-        ("provider_error: timeout; показать менеджеру.", agent.FALLBACK_TEXT),
-        ("model=gpt-5.5", agent.FALLBACK_TEXT),
+        ("Менеджеру: проверить этот текст перед отправкой клиенту.", agent.fallback_text("foton")),
+        ("manager_checklist: проверить цену перед отправкой.", agent.fallback_text("foton")),
+        ("provider_error: timeout; показать менеджеру.", agent.fallback_text("foton")),
+        ("model=gpt-5.5", agent.fallback_text("foton")),
     ],
 )
 def test_internal_service_markers_are_stripped_from_the_client_text(
@@ -527,15 +710,15 @@ def test_fallback_is_remembered_but_does_not_close_client_question(monkeypatch: 
     telegram = FakeTelegram([_update(100, text="Когда проходят занятия?")])
     monkeypatch.setattr(agent, "_api", telegram)
 
-    state = _cycle(telegram, FakeProvider(_result(route="manager_only")))
+    state = _cycle(telegram, FakeProvider(_result(route="blocked")))
 
     memory = state.dialogue_memory_for(agent.DraftLoopKey("foton", "555"))
-    assert memory["turns"][-1]["text"] == agent.FALLBACK_TEXT
+    assert memory["turns"][-1]["text"] == agent.fallback_text("foton")
     assert memory["open_question"]["text"] == "Когда проходят занятия?"
     assert memory["open_question"]["answered"] is False
 
 
-def test_transient_checkpoint_failure_retries_state_without_second_model_or_send(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_restart_after_uncertain_sent_reply_retries_once_without_second_model(monkeypatch: pytest.MonkeyPatch) -> None:
     telegram = FakeTelegram([_update(100, text="Нужна физика онлайн")])
     provider = FakeProvider(_result("Подскажу по физике онлайн."))
     state = _dialogue_state("foton")
@@ -543,25 +726,27 @@ def test_transient_checkpoint_failure_retries_state_without_second_model_or_send
     real_save = state.save
     attempts = 0
 
-    def fail_once():
+    def fail_after_send():
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts == 2:
             raise OSError("temporary disk error")
         real_save()
 
-    monkeypatch.setattr(state, "save", fail_once)
+    monkeypatch.setattr(state, "save", fail_after_send)
     monkeypatch.setattr(agent, "_api", telegram)
     with pytest.raises(OSError, match="temporary disk error"):
         agent.run_cycle(brand="foton", token="token", provider=provider, state=state)
     assert len(provider.calls) == 1
     assert len(telegram.sent) == 1
-    assert agent._state_offset(state) == 0
+    persisted_after_crash = _dialogue_state("foton")
+    assert agent._state_offset(persisted_after_crash) == 0
+    assert persisted_after_crash.payload["telegram_pending_delivery"]["message_id"] == "100"
 
-    agent.run_cycle(brand="foton", token="token", provider=provider, state=state)
+    agent.run_cycle(brand="foton", token="token", provider=provider, state=persisted_after_crash)
 
     assert len(provider.calls) == 1
-    assert len(telegram.sent) == 1
+    assert len(telegram.sent) == 2
     persisted = _dialogue_state("foton")
     assert agent._state_offset(persisted) == 101
     assert len(persisted.dialogue_memory_for(agent.DraftLoopKey("foton", "555"))["turns"]) == 2
@@ -601,6 +786,38 @@ def test_processed_update_is_not_generated_or_sent_twice_after_offset_rollback(m
     assert replay_provider.calls == []
     assert replay_telegram.sent == []
     assert len(state.dialogue_memory_for(agent.DraftLoopKey("foton", "555"))["turns"]) == 2
+    assert _offset("foton") == 101
+
+
+def test_uncertain_send_error_retries_saved_reply_once_without_second_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    update = _update(100, text="Нужна физика онлайн")
+    telegram = FakeTelegram([update])
+    provider = FakeProvider(_result("Подскажу по физике онлайн."))
+    real_api = telegram.__call__
+
+    def uncertain_api(token, method, payload):
+        if method == "sendMessage":
+            telegram.sent.append(dict(payload))
+            raise RuntimeError("telegram_sendMessage_transport_error")
+        return real_api(token, method, payload)
+
+    monkeypatch.setattr(agent, "_api", uncertain_api)
+    state = _dialogue_state("foton")
+    agent._save_checkpoint(state, next_offset=0)
+
+    with pytest.raises(RuntimeError, match="telegram_sendMessage_transport_error"):
+        agent.run_cycle(brand="foton", token="token", provider=provider, state=state)
+
+    persisted = _dialogue_state("foton")
+    assert persisted.payload["telegram_pending_delivery"]["message_id"] == "100"
+
+    retry = FakeTelegram([update])
+    retry_provider = FakeProvider(_result("Повторный ответ"))
+    monkeypatch.setattr(agent, "_api", retry)
+    agent.run_cycle(brand="foton", token="token", provider=retry_provider, state=persisted)
+
+    assert retry_provider.calls == []
+    assert retry.sent == [{"chat_id": "555", "text": "Подскажу по физике онлайн."}]
     assert _offset("foton") == 101
 
 

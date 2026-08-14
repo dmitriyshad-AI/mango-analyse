@@ -12,6 +12,7 @@ from mango_mvp.knowledge_base.fact_registry import (
     FRESHNESS_SLA_STATUS_STALE,
     FRESHNESS_SLA_STATUS_UNKNOWN,
     evaluate_fact_freshness_sla,
+    fact_runtime_time_ok,
     fact_sla_class,
     fact_sla_max_age_days,
 )
@@ -22,8 +23,8 @@ SNAPSHOT_PATH = ROOT / "product_data/knowledge_base/kb_release_20260612_v6_7_sta
 
 
 def test_fact_sla_class_matches_owner_buckets() -> None:
-    # расписание и наличие -- 24 часа
-    assert fact_sla_class("schedule") == FRESHNESS_SLA_LIVE_STATUS
+    # Утверждённое расписание -- 7 дней; фактическое наличие мест -- 24 часа.
+    assert fact_sla_class("schedule") == FRESHNESS_SLA_COMMERCIAL_TERMS
     assert fact_sla_class("availability") == FRESHNESS_SLA_LIVE_STATUS
     # цены, даты, условия -- 7 дней
     assert fact_sla_class("price") == FRESHNESS_SLA_COMMERCIAL_TERMS
@@ -37,7 +38,8 @@ def test_fact_sla_class_matches_owner_buckets() -> None:
 
 
 def test_fact_sla_max_age_days_matches_owner_sla_numbers() -> None:
-    assert fact_sla_max_age_days("schedule") == 0  # 24 часа -> должен быть проверен сегодня
+    assert fact_sla_max_age_days("schedule") == 7
+    assert fact_sla_max_age_days("availability") == 0
     assert fact_sla_max_age_days("price") == 7
     assert fact_sla_max_age_days("program") == 90
 
@@ -47,16 +49,41 @@ def test_unmapped_fact_type_defaults_to_commercial_terms_bucket() -> None:
     assert fact_sla_class("some_new_fact_type_nobody_classified_yet") == FRESHNESS_SLA_COMMERCIAL_TERMS
 
 
-def test_schedule_fact_checked_yesterday_breaches_24h_sla() -> None:
+def test_schedule_fact_checked_yesterday_remains_within_weekly_sla() -> None:
     fact = {"fact_id": "fact:schedule-1", "fact_type": "schedule", "freshness_check_date": "2026-07-24"}
 
     result = evaluate_fact_freshness_sla(fact, today=date(2026, 7, 25))
 
-    assert result.sla_class == FRESHNESS_SLA_LIVE_STATUS
-    assert result.sla_max_age_days == 0
+    assert result.sla_class == FRESHNESS_SLA_COMMERCIAL_TERMS
+    assert result.sla_max_age_days == 7
     assert result.age_days == 1
-    assert result.within_sla is False
-    assert result.status == FRESHNESS_SLA_STATUS_STALE
+    assert result.within_sla is True
+    assert result.status == FRESHNESS_SLA_STATUS_OK
+
+
+def test_owner_schedule_remains_runtime_visible_until_explicit_end_date() -> None:
+    fact = {
+        "fact_id": "fact:schedule-owner",
+        "fact_type": "schedule",
+        "freshness_check_date": "2026-08-13",
+        "valid_from": "2026-08-13",
+        "valid_until": "2027-05-31",
+    }
+
+    assert fact_runtime_time_ok(fact, today=date(2026, 9, 1)) is True
+    assert fact_runtime_time_ok(fact, today=date(2027, 6, 1)) is False
+
+
+def test_owner_schedule_accepts_validity_window_from_structured_value() -> None:
+    fact = {
+        "fact_id": "fact:schedule-structured",
+        "fact_type": "schedule",
+        "freshness_check_date": "2026-08-13",
+        "structured_value": {"valid_from": "2026-08-13", "valid_until": "2027-05-31"},
+    }
+
+    assert fact_runtime_time_ok(fact, today=date(2026, 9, 1)) is True
+    assert fact_runtime_time_ok(fact, today=date(2027, 6, 1)) is False
 
 
 def test_availability_fact_checked_today_is_within_24h_sla() -> None:
@@ -66,6 +93,30 @@ def test_availability_fact_checked_today_is_within_24h_sla() -> None:
 
     assert result.within_sla is True
     assert result.status == FRESHNESS_SLA_STATUS_OK
+
+
+def test_availability_fact_checked_yesterday_breaches_24h_sla() -> None:
+    fact = {"fact_id": "fact:avail-2", "fact_type": "availability", "freshness_check_date": "2026-07-24"}
+
+    result = evaluate_fact_freshness_sla(fact, today=date(2026, 7, 25))
+
+    assert result.within_sla is False
+    assert result.status == FRESHNESS_SLA_STATUS_STALE
+
+
+def test_mixed_schedule_availability_uses_stricter_live_sla() -> None:
+    fact = {
+        "fact_id": "fact:mixed-live",
+        "fact_types": ["schedule", "availability"],
+        "freshness_check_date": "2026-07-24",
+        "valid_until": "2027-05-31",
+    }
+
+    result = evaluate_fact_freshness_sla(fact, today=date(2026, 7, 25))
+
+    assert result.fact_type == "availability"
+    assert result.within_sla is False
+    assert fact_runtime_time_ok(fact, today=date(2026, 7, 25)) is False
 
 
 def test_price_fact_exactly_at_seven_day_boundary_is_ok() -> None:

@@ -83,7 +83,7 @@ def test_pilot_context_safety_contract_is_read_only() -> None:
     assert safety["send_client_message"] is False
 
 
-def test_pilot_context_preserves_full_autonomy_topic_list() -> None:
+def test_pilot_context_discards_retired_autonomy_topic_list() -> None:
     allowed = [f"theme:{index:03d}_test" for index in range(1, 25)]
     allowed.extend(["theme:014_format", "theme:015_address", "theme:026_camp_general"])
 
@@ -100,11 +100,7 @@ def test_pilot_context_preserves_full_autonomy_topic_list() -> None:
     )
     payload = context.to_prompt_context()
 
-    preserved = payload["rop_policy"]["autonomy_policy"]["allowed_topic_ids"]
-    assert "theme:014_format" in preserved
-    assert "theme:015_address" in preserved
-    assert "theme:026_camp_general" in preserved
-    assert len(preserved) == len(allowed)
+    assert payload["rop_policy"] == {"bot_permission": "bot_answer_self_for_pilot"}
 
 
 def test_pilot_context_compaction_preserves_held_state_and_focus() -> None:

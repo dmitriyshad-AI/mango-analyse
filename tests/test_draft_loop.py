@@ -934,8 +934,9 @@ def test_draft_loop_journal_records_config_fingerprint_on_draft_created(tmp_path
     assert draft_created["config_fingerprint"]["schema_version"] == "draft_loop_config_fingerprint_v1_2026_06_10"
 
 
-def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_path: Path) -> None:
+def test_draft_loop_persists_only_observed_conversation_memory_by_profile_chat(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(DIALOG_SUMMARY_ROLLING_ENV, "1")
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
     calls: list[dict] = []
@@ -944,10 +945,12 @@ def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_
         def build_draft(self, client_message: str, *, context=None):
             self.calls.append({"client_message": client_message, "context": context})
             return SubscriptionDraftResult(
-                route="bot_answer_self",
+                route="manager_only",
                 draft_text=f"Черновик: {client_message}",
-                safety_flags=("client_safe_fact_verified",),
+                context_used=("fact:schedule",),
+                safety_flags=("direct_path_model_p0_refund",),
                 metadata={
+                    "dialog_summary_candidate": "Клиент выбирает физику онлайн для 7 класса.",
                     "direct_path_model_intent": {"primary_intent": "schedule", "sense": "schedule", "confidence": 0.9},
                     "semantic_frame": {
                         "source": "inline",
@@ -995,8 +998,14 @@ def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_
     stored = state["dialogue_memory"][key.value]
     assert stored["known_slots"]["grade"]["value"] == "7"
     assert stored["known_slots"]["grade"]["message_id"] == "m1"
-    assert stored["last_semantic_reading"]["source"] == "inline"
+    assert stored["last_semantic_reading"]["primary_intent"] == "schedule"
     assert stored["last_semantic_reading"]["product_subject"] == "физика"
+    assert stored["fact_refs"] == ["fact:schedule"]
+    assert stored["conversation_summary_short"] == "Клиент выбирает физику онлайн для 7 класса."
+    assert stored["p0_latch"]["active"] is True
+    assert "p0" in stored["risk_flags"]
+    assert all(turn["role"] == "client" for turn in stored["turns"])
+    assert "Черновик:" not in json.dumps(stored, ensure_ascii=False)
     assert "last_semantic_reading" not in calls[0]["payload"]["dialogue_memory_view"]
     assert calls[0]["message_id"] == "m1"
 
@@ -1085,6 +1094,20 @@ def test_auto_pair_manager_note_is_actionable_without_internal_roles() -> None:
     assert "архитектор" not in text.casefold()
 
 
+def test_auto_pair_manager_note_marks_unread_deal_and_contact_target() -> None:
+    text = _auto_pair_note(
+        profile=DraftLoopProfile("profile-foton", "foton", "telegram"),
+        candidate={
+            "source": "wappi_amo_widget",
+            "match_key": "wappi_widget_contact",
+            "lead_snapshot": {"lead_read": "unavailable"},
+        },
+    )
+
+    assert "сделка не проверена" in text
+    assert "черновик записан в контакт" in text
+
+
 def test_manager_note_marks_manual_pair_memory_connected(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
@@ -1166,6 +1189,43 @@ def test_auto_pair_keeps_only_canonical_confirmed_customer_context(tmp_path: Pat
 
     assert received_memory == [{"conversation_summary_short": "Ранее обсуждали расписание."}]
     assert bot.calls[0]["context"]["read_only_customer_context"]["found"] is True
+
+
+def test_new_exact_widget_contact_never_inherits_orphaned_chat_memory(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    key = DraftLoopKey("profile-foton", "chat-1")
+    bot = FakeBot()
+    received_memory: list[Mapping[str, object]] = []
+
+    def canonical_builder(*_args, dialogue_memory=None, **_kwargs):
+        received_memory.append(dict(dialogue_memory or {}))
+        return {"read_only_customer_context": {"found": True}}
+
+    loop = _loop(
+        tmp_path,
+        messages=[_message("m1")],
+        pairs={key: DraftLoopPair(key=key, lead_id="49762441", expected_brand="foton", contact_id="")},
+        amo=FakeAmo(fail=True),
+        bot=bot,
+        auto_resolver=lambda **_kwargs: {
+            "status": "matched",
+            "source": "wappi_amo_widget",
+            "lead_id": "49832125",
+            "contact_id": "CONTACT_B",
+            "match_key": "wappi_widget_contact",
+        },
+    )
+    loop.config = replace(loop.config, auto_pairs_path=tmp_path / "auto_pairs.json")
+    loop.context_builder = canonical_builder
+    loop.trusted_auto_customer_context_builder = canonical_builder
+    loop.state.set_dialogue_memory(key, {"conversation_summary_short": "СЕКРЕТ_КЛИЕНТА_A"})
+
+    loop.run_once(dry_run=False)
+
+    assert received_memory == [{}]
+    assert "СЕКРЕТ_КЛИЕНТА_A" not in str(bot.calls[0]["context"])
+    assert loop.state.dialogue_memory_for(key) == {}
 
 
 def test_draft_loop_stop_fetches_but_does_not_call_bot_or_mark_processed(tmp_path: Path) -> None:
@@ -1856,7 +1916,8 @@ def test_failed_pending_note_retry_becomes_manual_review_without_repost(tmp_path
     assert pending["profile-foton\tchat-1\tm1"]["status"] == "manual_review"
 
 
-def test_timeout_after_note_post_uses_readback_without_second_post(tmp_path: Path) -> None:
+def test_timeout_after_note_post_uses_readback_without_second_post(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
     key = DraftLoopKey("profile-foton", "chat-1")
 
     class TimeoutAfterPostAmo(FakeAmo):
@@ -1878,6 +1939,9 @@ def test_timeout_after_note_post_uses_readback_without_second_post(tmp_path: Pat
         pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")},
         amo=amo,
     )
+    loop.context_builder = lambda *args, **kwargs: {
+        "dialogue_memory_state": {"turns": [{"role": "client", "text": "Наблюдавшийся вопрос"}]}
+    }
 
     first = loop.run_once(dry_run=False)
     second = loop.run_once(dry_run=False)
@@ -1888,6 +1952,12 @@ def test_timeout_after_note_post_uses_readback_without_second_post(tmp_path: Pat
     saved = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert saved["pending_notes"] == {}
     assert {item["message_id"] for item in saved["processed"]} == {"m1"}
+    assert saved["dialogue_memory"][key.value]["turns"] == [
+        {"role": "client", "text": "Наблюдавшийся вопрос"}
+    ]
+    journal = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+    assert "dialogue_memory_to_commit" not in journal
+    assert "Наблюдавшийся вопрос" not in journal
 
 
 def test_timeout_missing_readback_never_reposts_then_requires_manual_review(tmp_path: Path) -> None:
@@ -2361,11 +2431,15 @@ def test_message_outcomes_quarantined_pair_is_manual_review(tmp_path: Path) -> N
     assert result["message_outcomes"] == {"m1": "manual_review", "m2": "manual_review"}
 
 
-def test_message_outcomes_generic_write_failure_is_write_unknown(tmp_path: Path) -> None:
+def test_message_outcomes_generic_write_failure_is_write_unknown(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
     profile = _outcome_profile()
     key = DraftLoopKey(profile.profile_id, "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
     loop = _outcome_loop(tmp_path, pairs={key: pair}, amo=FakeAmo(fail=True))
+    loop.context_builder = lambda *args, **kwargs: {
+        "dialogue_memory_state": {"turns": [{"role": "client", "text": "Вопрос"}]}
+    }
     dialog = {"id": "chat-1", "type": "user"}
     inbound = [_outcome_message("m1", ts=1000)]
 
@@ -2374,6 +2448,7 @@ def test_message_outcomes_generic_write_failure_is_write_unknown(tmp_path: Path)
     assert result["message_outcomes"] == {"m1": "write_unknown"}
     state = json.loads(loop.config.state_path.read_text(encoding="utf-8"))
     assert state["pending_notes"]["profile-foton\tchat-1\tm1"]["status"] == "write_outcome_unknown"
+    assert state["dialogue_memory"] == {}
 
 
 def test_message_outcomes_mixed_batch_not_before_skipped_unsupported_and_written(tmp_path: Path) -> None:

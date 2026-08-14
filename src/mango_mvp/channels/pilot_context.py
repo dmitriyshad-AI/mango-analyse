@@ -463,19 +463,7 @@ def _truthy_setting(value: Any) -> bool:
 
 def compact_rop_policy(value: Mapping[str, Any] | None, *, max_items: int, max_chars: int) -> Mapping[str, Any]:
     result = dict(compact_mapping(value, max_items=max_items, max_chars=max_chars))
-    if not isinstance(value, Mapping):
-        return result
-    autonomy = value.get("autonomy_policy")
-    if not isinstance(autonomy, Mapping):
-        return result
-    compact_autonomy = dict(compact_mapping(autonomy, max_items=16, max_chars=max_chars))
-    for key in ("allowed_topic_ids", "autonomous_topic_ids", "topic_ids"):
-        topics = autonomy.get(key)
-        if isinstance(topics, Sequence) and not isinstance(topics, (str, bytes, bytearray)):
-            compact_autonomy[key] = [clean_text(item, max_chars=120) for item in topics if clean_text(item, max_chars=120)][:64]
-        elif topics is not None:
-            compact_autonomy[key] = clean_text(topics, max_chars=120)
-    result["autonomy_policy"] = compact_autonomy
+    result.pop("autonomy_policy", None)
     return result
 
 

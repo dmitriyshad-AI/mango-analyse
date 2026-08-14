@@ -285,6 +285,9 @@ def test_fast_service_renders_exact_publication_schedule_without_execute(
     assert "StartCalendarInterval" not in plists["com.mango.calls-capture"]
     assert plists["com.mango.calls-pipeline"]["StartInterval"] == 60
     assert "StartCalendarInterval" not in plists["com.mango.calls-pipeline"]
+    assert plists["com.mango.calls-pipeline"]["ProcessType"] == "Interactive"
+    assert plists["com.mango.calls-capture"]["ProcessType"] == "Background"
+    assert plists["com.mango.calls-watchdog"]["ProcessType"] == "Background"
     assert {
         plists[label]["ProgramArguments"][-1]
         for label in (

@@ -120,7 +120,11 @@ def _payload(
         ],
         "WorkingDirectory": str(ROOT),
         "RunAtLoad": False,
-        "ProcessType": "Background",
+        # This Mac is dedicated to the calls pipeline.  Background jobs are
+        # deliberately CPU/I/O throttled by launchd, which starves both MLX
+        # Whisper dispatch and GigaAM.  Keep auxiliary jobs unobtrusive, but
+        # let the four-stage pipeline use the machine without that throttle.
+        "ProcessType": "Interactive" if command == "pipeline-worker" else "Background",
         "Umask": 63,
         "ThrottleInterval": 60,
         "StandardOutPath": str(log_dir / f"{command}.stdout.log"),

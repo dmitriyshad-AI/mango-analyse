@@ -154,6 +154,34 @@ def test_start_introduces_ai_assistant_of_its_own_brand(brand: str, marker: str,
     assert (brand, "555", "100") in state.processed_keys()
 
 
+def test_start_bypasses_slow_model_message_in_same_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegram([
+        _update(100, text="Сколько стоит год?", chat_id="slow-client"),
+        _update(101, text="/start", chat_id="new-client"),
+    ])
+
+    class Provider(FakeProvider):
+        def build_draft(self, client_message, *, context=None):
+            assert telegram.sent == [{
+                "chat_id": "new-client",
+                "text": "Здравствуйте! Я — ИИ-помощница учебного центра «Фотон». Подскажу по курсам, ценам, расписанию и записи. Что вас интересует?",
+            }]
+            return super().build_draft(client_message, context=context)
+
+    provider = Provider(_result("Годовой курс стоит 37 000 ₽."))
+    monkeypatch.setattr(agent, "_api", telegram)
+
+    state = _cycle(telegram, provider)
+
+    assert [item["chat_id"] for item in telegram.sent] == ["new-client", "slow-client"]
+    assert provider.calls[0]["client_message"] == "Сколько стоит год?"
+    assert state.processed_keys() >= {
+        ("foton", "slow-client", "100"),
+        ("foton", "new-client", "101"),
+    }
+    assert _offset("foton") == 102
+
+
 def test_group_channel_edited_and_bot_updates_are_ignored_but_offset_advances(monkeypatch: pytest.MonkeyPatch) -> None:
     group = {"update_id": 100, "message": {"chat": {"id": "1", "type": "group"}, "from": {"id": "1"}, "text": "Цена?"}}
     edited = {"update_id": 101, "edited_message": {"chat": {"id": "2", "type": "private"}, "text": "Цена?"}}

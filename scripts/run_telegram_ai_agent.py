@@ -22,6 +22,13 @@ BRAND_TITLE = {"foton": "учебного центра «Фотон»", "unpk": 
 MAX_TELEGRAM_TEXT = 3900
 FALLBACK_TEXT = "Не могу надёжно ответить на этот вопрос в чате. Пожалуйста, свяжитесь с учебным центром по контактам на официальном сайте."
 ATTACHMENT_TEXT = "Пока я понимаю только текст. Напишите вопрос текстом, пожалуйста."
+
+
+def _is_start_text(text: str) -> bool:
+    words = text.split(maxsplit=1)
+    return bool(words) and words[0].split("@")[0] == "/start"
+
+
 def _api(token: str, method: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
     try:
         response = requests.post(f"https://api.telegram.org/bot{token}/{method}", json=dict(payload), timeout=60)
@@ -140,7 +147,7 @@ def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, st
     text = str(message.get("text") or "").strip()
     if not text:
         return chat_id, ATTACHMENT_TEXT, key, None
-    if text.split()[0].split("@")[0] == "/start":
+    if _is_start_text(text):
         return chat_id, f"Здравствуйте! Я — ИИ-помощница {BRAND_TITLE[brand]}. Подскажу по курсам, ценам, расписанию и записи. Что вас интересует?", key, None
     previous_memory = state.dialogue_memory_for(key)
     recent = _recent_messages(previous_memory)
@@ -186,6 +193,28 @@ def run_cycle(*, brand: str, token: str, provider: Any, state: DraftLoopState) -
     body = _api(token, "getUpdates", {"offset": offset, "timeout": 25})
     updates = [item for item in (body.get("result") or []) if isinstance(item, Mapping)]
     processed = state.processed_keys()
+
+    # /start не должен ждать, пока модель ответит другим клиентам из той же пачки.
+    for update in updates:
+        update_id = str(update.get("update_id") or "")
+        message = update.get("message") if isinstance(update.get("message"), Mapping) else {}
+        chat = message.get("chat") if isinstance(message.get("chat"), Mapping) else {}
+        marker = (brand, str(chat.get("id") or ""), update_id)
+        if not all(marker) or marker in processed or not _is_start_text(str(message.get("text") or "").strip()):
+            continue
+        chat_id, reply, _key, _memory = reply_for_update(update, provider=provider, brand=brand, state=state)
+        if not reply:
+            continue
+        try:
+            _api(token, "sendMessage", {"chat_id": chat_id, "text": reply})
+        except RuntimeError as exc:
+            if str(exc) != "telegram_sendMessage_http_403":
+                print(f"[{brand}] send_error {exc}", flush=True)
+                raise
+            print(f"[{brand}] send_skipped {exc}", flush=True)
+        _save_checkpoint(state, next_offset=offset, marker=marker)
+        processed.add(marker)
+
     for update in updates:
         update_id = str(update.get("update_id") or "")
         message = update.get("message") if isinstance(update.get("message"), Mapping) else {}

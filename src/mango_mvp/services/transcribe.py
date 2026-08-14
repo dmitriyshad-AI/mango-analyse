@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from openai import OpenAI
 from sqlalchemy import func, or_, select, text
@@ -361,15 +361,18 @@ class TranscribeService:
                 secondary_provider=secondary_provider,
             )
             if state == "fresh":
-                fresh_ids.append(call.id)
-                if len(fresh_ids) >= limit:
-                    break
+                if len(fresh_ids) < limit:
+                    fresh_ids.append(call.id)
             elif state == "retry" and len(retry_ids) < limit:
                 retry_ids.append(call.id)
+                if len(retry_ids) >= limit:
+                    break
 
-        candidate_ids = list(fresh_ids)
+        # A constant stream of fresh calls must not starve a partial GigaAM
+        # result forever. Finish the bounded retry first, then take new work.
+        candidate_ids = list(retry_ids[:limit])
         if len(candidate_ids) < limit:
-            candidate_ids.extend(retry_ids[: limit - len(candidate_ids)])
+            candidate_ids.extend(fresh_ids[: limit - len(candidate_ids)])
         if not candidate_ids:
             if policy_changed:
                 session.commit()
@@ -692,6 +695,45 @@ class TranscribeService:
             "exhausted": bool(exhausted),
             "last_error": error.strip(),
             "last_attempt_utc": self._utc_now().isoformat(),
+        }
+        return updated
+
+    def _apply_exhausted_secondary_exception(
+        self,
+        payload: Dict[str, Any],
+        *,
+        secondary_provider: str,
+        fallback_text: str = "",
+    ) -> Dict[str, Any]:
+        """Allow the primary transcript to continue, explicitly marked for review."""
+
+        mode = str(payload.get("mode") or "").strip()
+        required_slots = (
+            ("manager", "client") if mode == "stereo"
+            else ("full",) if mode == "mono_or_fallback"
+            else ()
+        )
+        def has_usable_text(slot: str) -> bool:
+            block = payload.get(slot)
+            return bool(
+                isinstance(block, Mapping)
+                and any(
+                    str(block.get(key) or "").strip()
+                    for key in ("variant_a", "variant_b")
+                )
+            )
+
+        if not required_slots or not (
+            any(has_usable_text(slot) for slot in required_slots)
+            or fallback_text.strip()
+        ):
+            return payload
+        updated = dict(payload)
+        updated["dual_asr_exception"] = {
+            "approved": True,
+            "reason": f"{secondary_provider}_exhausted_available_asr_requires_review",
+            "approved_by": "service_policy:secondary_asr_retry_v1",
+            "approved_at": self._utc_now().isoformat(),
         }
         return updated
 
@@ -3933,10 +3975,16 @@ class TranscribeService:
                         result_payload or current_payload,
                         secondary_provider=secondary_provider,
                         attempts=attempts,
-                        status="partial",
+                        status="exhausted" if is_exhausted else "partial",
                         exhausted=is_exhausted,
                         error="secondary_variant_still_missing",
                     )
+                    if is_exhausted:
+                        result_payload = self._apply_exhausted_secondary_exception(
+                            result_payload,
+                            secondary_provider=secondary_provider,
+                            fallback_text=str(result.get("transcript_text") or call.transcript_text or ""),
+                        )
                     result["transcript_variants_json"] = json.dumps(result_payload, ensure_ascii=False)
                     _assign_transcribe_result(call, result)
                     call.last_error = (
@@ -3991,10 +4039,16 @@ class TranscribeService:
                     current_payload,
                     secondary_provider=secondary_provider,
                     attempts=attempts,
-                    status="failed",
+                    status="exhausted" if is_exhausted else "failed",
                     exhausted=is_exhausted,
                     error=error_text,
                 )
+                if is_exhausted:
+                    updated_payload = self._apply_exhausted_secondary_exception(
+                        updated_payload,
+                        secondary_provider=secondary_provider,
+                        fallback_text=str(call.transcript_text or ""),
+                    )
                 call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
                 # Keep existing successful transcript intact when selective backfill fails.
                 call.transcription_status = "done"

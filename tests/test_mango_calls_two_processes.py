@@ -2872,6 +2872,55 @@ def test_parallel_pipeline_overlaps_all_independent_stages(
     }
 
 
+def test_parallel_pipeline_stops_peers_when_one_stage_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), parallel_asr_enabled=True)
+    barrier = threading.Barrier(len(SEQUENTIAL_PIPELINE_STAGES))
+    terminated: set[str] = set()
+    pid_lock = threading.Lock()
+    next_pid = {"value": 43000}
+
+    class StageProcess:
+        def __init__(self, command, **_kwargs) -> None:
+            self.stage = command[command.index("--stages") + 1]
+            with pid_lock:
+                next_pid["value"] += 1
+                self.pid = next_pid["value"]
+            self.returncode = 1 if self.stage == "resolve" else None
+            barrier.wait(timeout=2)
+
+        def poll(self):
+            return self.returncode
+
+    def terminate(proc) -> None:
+        if proc.returncode is None:
+            terminated.add(proc.stage)
+            proc.returncode = -signal.SIGTERM
+
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", StageProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+
+    started = time.monotonic()
+    reports = run_sequential_pipeline_workers(
+        config, {}, calls_runtime.run_command, run_id="fail-fast"
+    )
+
+    assert time.monotonic() - started < 3
+    assert {report["command"]: report["rc"] for report in reports} == {
+        "worker:transcribe": 125,
+        "worker:backfill-second-asr": 125,
+        "worker:resolve": 1,
+        "worker:analyze": 125,
+    }
+    assert terminated == {"transcribe", "backfill-second-asr", "analyze"}
+    assert all(
+        "parallel_peer_failed" in Path(str(report["log_path"])).read_text()
+        for report in reports
+        if report["rc"] == 125
+    )
+
+
 def test_codex_runtime_anchor_repairs_owned_mode_and_rejects_symlink(
     tmp_path: Path,
 ) -> None:

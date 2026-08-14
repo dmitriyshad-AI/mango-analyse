@@ -850,6 +850,26 @@ def test_missing_second_asr_is_explicitly_marked_for_review(tmp_path: Path) -> N
     assert ["День закрыт", "Нет"] in summary
 
 
+def test_manual_resolve_with_reviewed_analysis_is_processing_ready(tmp_path: Path) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE call_records SET resolve_status='manual'")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(sha256=sha256_file(db), size_bytes=db.stat().st_size)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest_path,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert "Разделение ролей не завершено" not in str(row["Причина проверки"])
+    assert publisher.processing_ready_row(row) is True
+
+
 def test_v2_non_conversation_has_deterministic_result(tmp_path: Path) -> None:
     db, manifest = _ready_fixture(tmp_path, analyzed=True)
 

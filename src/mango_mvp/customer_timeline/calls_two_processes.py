@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -5785,7 +5786,7 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
         ):
             return True
         return bool(
-            resolve_status in {"done", "skipped"}
+            resolve_status in {"done", "skipped", "manual"}
             and row.get("analysis_status") in {"pending", "failed"}
             and int(row.get("analyze_attempts") or 0)
             < max(1, int(os.getenv("ANALYZE_MAX_ATTEMPTS", "3")))
@@ -6373,7 +6374,7 @@ def call_db_has_open_work(path: Path) -> bool:
             resolve = row.get("resolve_status")
             if transcription == "done" and resolve in {"pending", "failed"} and retry_due and int(row.get("resolve_attempts") or 0) < limits["resolve"]:
                 return True
-            if transcription == "done" and resolve in {"done", "skipped"} and row.get("analysis_status") in {"pending", "failed"} and retry_due and int(row.get("analyze_attempts") or 0) < limits["analyze"]:
+            if transcription == "done" and resolve in {"done", "skipped", "manual"} and row.get("analysis_status") in {"pending", "failed"} and retry_due and int(row.get("analyze_attempts") or 0) < limits["analyze"]:
                 return True
         return False
 
@@ -7215,6 +7216,7 @@ def run_sequential_pipeline_workers(
     stages_override: Optional[Sequence[str]] = None,
     heartbeat_path_override: Optional[Path] = None,
     codex_runtime_override: Optional[Mapping[str, str]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> list[Mapping[str, Any]]:
     stages = (
         tuple(stages_override)
@@ -7263,6 +7265,7 @@ def run_sequential_pipeline_workers(
                     max_workers=len(stages),
                     thread_name_prefix="mango-stage",
                 ) as pool:
+                    stop_parallel_workers = threading.Event()
                     futures = {
                         stage: pool.submit(
                             run_sequential_pipeline_workers,
@@ -7284,9 +7287,24 @@ def run_sequential_pipeline_workers(
                                 )
                             ),
                             codex_runtime_override=stage_runtimes[stage],
+                            stop_event=stop_parallel_workers,
                         )
                         for stage in stages
                     }
+
+                    def stop_peers_on_failure(future: Any) -> None:
+                        try:
+                            failed = any(
+                                int(report.get("rc") or 0) != 0
+                                for report in future.result()
+                            )
+                        except BaseException:
+                            failed = True
+                        if failed:
+                            stop_parallel_workers.set()
+
+                    for future in futures.values():
+                        future.add_done_callback(stop_peers_on_failure)
                     stage_reports = [
                         report
                         for stage in stages
@@ -7389,6 +7407,7 @@ def run_sequential_pipeline_workers(
         lifeline_read_fd = -1
         lifeline_write_fd = -1
         timed_out = False
+        peer_failed = False
         authority_scope = controlled_worker_authority_environment(
             config,
             stage=stage,
@@ -7440,6 +7459,10 @@ def run_sequential_pipeline_workers(
                 last_heartbeat = 0.0
                 while proc.poll() is None:
                     current = time.monotonic()
+                    if stop_event is not None and stop_event.is_set():
+                        peer_failed = True
+                        terminate_process_group(proc)
+                        break
                     if current - last_heartbeat >= 30:
                         write_json(
                             heartbeat_path,
@@ -7456,9 +7479,16 @@ def run_sequential_pipeline_workers(
                         terminate_process_group(proc)
                         break
                     time.sleep(1)
-                rc = 124 if timed_out else int(proc.returncode or 0)
+                if peer_failed:
+                    rc = 125
+                elif timed_out:
+                    rc = 124
+                else:
+                    rc = int(proc.returncode or 0)
                 if timed_out:
                     log_handle.write("stage_timeout\n")
+                elif peer_failed:
+                    log_handle.write("parallel_peer_failed\n")
         finally:
             try:
                 if proc is not None:

@@ -34,6 +34,7 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     has_dual_asr_or_exception,
     parse_aware_datetime,
     read_stable_regular_bytes,
+    resolve_row_is_complete,
     sha256_file,
     validate_quarantine_items_payload,
     validate_ready_manifest_payload,
@@ -329,7 +330,7 @@ def load_manager_rows(
             issues.append("Распознавание не завершено")
         if not has_dual_asr_or_exception(row):
             issues.append("Вторая расшифровка GigaAM не готова")
-        if row.get("resolve_status") not in {"done", "skipped"}:
+        if not resolve_row_is_complete(row):
             issues.append("Разделение ролей не завершено")
         if row.get("analysis_status") != "done" or not analysis:
             issues.append("Смысловой анализ не завершён")

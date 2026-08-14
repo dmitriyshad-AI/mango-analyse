@@ -15,6 +15,11 @@ from mango_mvp.cli import cmd_stats
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
+from mango_mvp.productization.mango_calls_service_contract import (
+    has_dual_asr_or_exception,
+    ready_row_is_complete,
+    resolve_row_is_complete,
+)
 from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.transcribe import TranscribeService
 from tests.test_dialogue_format import make_settings
@@ -483,6 +488,150 @@ class ParallelPipelineClaimsTest(unittest.TestCase):
             self.assertEqual(summary["retry_pending"], 1)
             self.assertEqual(summary["in_progress"], 1)
             self.assertEqual(summary["exhausted"], 1)
+
+    def test_secondary_backfill_prioritizes_retry_over_fresh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_backfill_retry_first_") as td:
+            db_path = Path(td) / "retry_first.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add_all(
+                    [
+                        CallRecord(
+                            source_file=str(Path(td) / "fresh.mp3"),
+                            source_filename="fresh.mp3",
+                            transcription_status="done",
+                            transcript_variants_json=_stereo_payload(
+                                secondary_provider="", manager_b=None, client_b=None
+                            ),
+                        ),
+                        CallRecord(
+                            source_file=str(Path(td) / "retry.mp3"),
+                            source_filename="retry.mp3",
+                            transcription_status="done",
+                            transcript_variants_json=_stereo_payload(
+                                manager_b="Здравствуйте", client_b=None
+                            ),
+                        ),
+                    ]
+                )
+                session.commit()
+                retry_id = int(
+                    session.query(CallRecord)
+                    .filter(CallRecord.source_filename == "retry.mp3")
+                    .one()
+                    .id
+                )
+
+            service = TranscribeService(settings)
+            with session_factory() as session:
+                claimed = service._claim_secondary_backfill_batch(
+                    session,
+                    limit=1,
+                    worker_id="retry-owner",
+                    secondary_provider="gigaam",
+                )
+
+            self.assertEqual(claimed, [retry_id])
+
+    def test_exhausted_secondary_fallback_is_explicit_and_ready(self) -> None:
+        service = TranscribeService(make_settings())
+        payload = json.loads(
+            _stereo_payload(manager_b="Здравствуйте", client_b=None, exhausted=True)
+        )
+
+        updated = service._apply_exhausted_secondary_exception(
+            payload,
+            secondary_provider="gigaam",
+        )
+        row = {
+            "transcription_status": "done",
+            "transcript_variants_json": json.dumps(updated, ensure_ascii=False),
+            "resolve_status": "manual",
+            "analysis_status": "done",
+            "analysis_json": json.dumps({"needs_review": True}),
+        }
+
+        self.assertTrue(has_dual_asr_or_exception(row))
+        self.assertTrue(ready_row_is_complete(row))
+
+    def test_manual_resolve_is_terminal_only_with_boolean_review_flag(self) -> None:
+        base = {
+            "transcription_status": "done",
+            "transcript_variants_json": _stereo_payload(),
+            "resolve_status": "manual",
+            "analysis_status": "done",
+        }
+
+        for analysis in ({}, {"needs_review": False}, {"needs_review": "true"}):
+            row = {**base, "analysis_json": json.dumps(analysis)}
+            self.assertFalse(resolve_row_is_complete(row))
+            self.assertFalse(ready_row_is_complete(row))
+
+        row = {**base, "analysis_json": json.dumps({"needs_review": True})}
+        self.assertTrue(resolve_row_is_complete(row))
+        self.assertTrue(ready_row_is_complete(row))
+
+    def test_second_secondary_failure_becomes_terminal_review_fallback(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_backfill_exhausted_") as td:
+            db_path = Path(td) / "exhausted.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                dual_transcribe_enabled=True,
+                transcribe_provider="mlx",
+                secondary_transcribe_provider="gigaam",
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            variants = json.loads(
+                _stereo_payload(
+                    manager_a="Здравствуйте",
+                    client_a="",
+                    manager_b="Здравствуйте",
+                    client_b=None,
+                )
+            )
+            variants["secondary_asr_policy"] = {
+                "schema": "selective_non_conversation_v1",
+                "decision": "required",
+            }
+            with session_factory() as session:
+                call = CallRecord(
+                    source_file=str(Path(td) / "call.mp3"),
+                    source_filename="call.mp3",
+                    transcription_status="done",
+                    resolve_status="pending",
+                    analysis_status="pending",
+                    sync_status="pending",
+                    transcript_text="[00:00.0] Менеджер: Здравствуйте.",
+                    transcript_variants_json=json.dumps(variants, ensure_ascii=False),
+                )
+                session.add(call)
+                session.commit()
+                call_id = int(call.id)
+
+            service = TranscribeService(settings)
+            with session_factory() as session, patch.object(
+                service,
+                "_backfill_secondary_only",
+                side_effect=RuntimeError("secondary still unavailable"),
+            ):
+                report = service.backfill_secondary_asr(session, limit=1)
+
+            with session_factory() as session:
+                call = session.get(CallRecord, call_id)
+                assert call is not None
+                payload = json.loads(call.transcript_variants_json or "{}")
+                row = {
+                    "transcript_variants_json": call.transcript_variants_json,
+                }
+
+            self.assertEqual(report["exhausted"], 1)
+            self.assertTrue(payload["secondary_backfill_meta"]["exhausted"])
+            self.assertTrue(has_dual_asr_or_exception(row))
+            self.assertIsNone(call.pipeline_stage)
 
     def test_resolve_requeues_calls_waiting_for_second_asr_without_counting_processed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_parallel_resolve_wait_") as td:

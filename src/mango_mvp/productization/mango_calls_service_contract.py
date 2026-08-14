@@ -1512,20 +1512,29 @@ def has_dual_asr_or_exception(
     return True
 
 
+def resolve_row_is_complete(row: Mapping[str, Any]) -> bool:
+    status = str(row.get("resolve_status") or "")
+    if status in {"done", "skipped"}:
+        return True
+    analysis = _json_object(row.get("analysis_json"))
+    return status == "manual" and analysis.get("needs_review") is True
+
+
 def ready_row_is_complete(
     row: Mapping[str, Any],
     *,
     now: Optional[datetime] = None,
 ) -> bool:
+    analysis = _json_object(row.get("analysis_json"))
     return bool(
         str(row.get("transcription_status") or "") == "done"
         and has_dual_asr_or_exception(
             row,
             now=now,
         )
-        and str(row.get("resolve_status") or "") in {"done", "skipped"}
+        and resolve_row_is_complete(row)
         and str(row.get("analysis_status") or "") == "done"
-        and _json_object(row.get("analysis_json"))
+        and analysis
         and not str(row.get("dead_letter_stage") or "").strip()
         and not any(
             row.get(field)
@@ -2703,7 +2712,7 @@ def build_stage10_verdict(
         for row in active_ready_rows
     )
     ready_without_resolve = sum(
-        str(row.get("resolve_status") or "") not in {"done", "skipped"}
+        not resolve_row_is_complete(row)
         for row in active_ready_rows
     )
     ready_without_analyze = sum(

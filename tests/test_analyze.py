@@ -69,6 +69,71 @@ class AnalyzeServiceTest(unittest.TestCase):
                 self.assertEqual(sum(1 for row in claimed_rows if row.analysis_worker_id == "w1"), 2)
                 self.assertEqual(sum(1 for row in claimed_rows if row.analysis_worker_id == "w2"), 2)
 
+    def test_claim_batch_accepts_manual_resolve_for_review(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_analyze_manual_") as td:
+            db_path = Path(td) / "manual.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                call = CallRecord(
+                    source_file=str(Path(td) / "manual.mp3"),
+                    source_filename="manual.mp3",
+                    transcription_status="done",
+                    resolve_status="manual",
+                    analysis_status="pending",
+                    transcript_text="Менеджер: Здравствуйте.\nКлиент: Добрый день.",
+                )
+                session.add(call)
+                session.commit()
+                call_id = int(call.id)
+
+            with session_factory() as session:
+                claimed = AnalyzeService(settings)._claim_batch(
+                    session,
+                    limit=1,
+                    worker_id="manual-review",
+                )
+
+            self.assertEqual(claimed, [call_id])
+
+    def test_review_flags_keep_manual_and_exhausted_uncertainty(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            resolve_status="manual",
+            duration_sec=60.0,
+            transcript_variants_json=json.dumps(
+                {
+                    "mode": "stereo",
+                    "secondary_backfill_meta": {
+                        "provider": "gigaam",
+                        "attempts": 2,
+                        "status": "exhausted",
+                        "exhausted": True,
+                    },
+                }
+            ),
+        )
+
+        flags = service._build_review_flags(
+            call,
+            text="Менеджер: Здравствуйте. Клиент: Добрый день.",
+            call_type="service_call",
+            products=[],
+            formats=[],
+            exam_targets=[],
+            target_product=None,
+            next_step_action=None,
+            history_summary=None,
+        )
+
+        self.assertTrue(flags["needs_review"])
+        self.assertIn("resolve_manual_review_required", flags["review_reasons"])
+        self.assertIn(
+            "secondary_asr_exhausted_primary_fallback",
+            flags["review_reasons"],
+        )
+
     def test_claim_batch_never_skips_missing_resolve_state(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_analyze_resolve_gate_") as td:
             db_path = Path(td) / "claim.db"

@@ -384,7 +384,7 @@ class AnalyzeService:
                     SELECT id
                       FROM call_records
                      WHERE transcription_status = 'done'
-                       AND resolve_status IN ('done', 'skipped')
+                       AND resolve_status IN ('done', 'skipped', 'manual')
                        AND dead_letter_stage IS NULL
                        AND analysis_status IN ('pending', 'failed')
                        AND analyze_attempts < :max_attempts
@@ -1262,6 +1262,11 @@ class AnalyzeService:
             and not next_step_action
         ):
             reasons.append("non_sales_with_sales_signal")
+
+        if getattr(call, "resolve_status", None) == "manual":
+            reasons.append("resolve_manual_review_required")
+        if self._quality_flags_from_call(call).get("secondary_backfill_exhausted"):
+            reasons.append("secondary_asr_exhausted_primary_fallback")
 
         return {
             "needs_review": bool(reasons),

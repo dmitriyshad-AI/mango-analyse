@@ -950,7 +950,8 @@ def test_process_wrapper_rejects_pipeline_root_inside_repository(tmp_path: Path)
     config_path.write_text(json.dumps(config), encoding="utf-8")
     env_file.write_text(
         env_file.read_text(encoding="utf-8").replace(
-            str(tmp_path / ".mango_local" / "pipeline"), config["pipeline_root"]
+            str(tmp_path / ".mango_local" / "pipeline"),
+            shlex.quote(config["pipeline_root"]),
         ),
         encoding="utf-8",
     )

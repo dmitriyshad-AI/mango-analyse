@@ -186,6 +186,9 @@ class CallsTwoProcessesConfig:
     python_executable: Path
     codex_binary: Path
     codex_home_root: Path
+    gigaam_python_executable: Optional[Path] = None
+    gigaam_download_root: Optional[Path] = None
+    gigaam_batch_size: int = 1
     foton_daily_dir: Optional[Path] = None
     tenant_id: str = "foton"
     base_url: str = DEFAULT_MANGO_BASE_URL
@@ -254,6 +257,10 @@ class CallsTwoProcessesConfig:
         if not isinstance(parallel_asr_enabled, bool):
             raise ValueError("parallel_asr_enabled must be a boolean")
         optional_daily = str(payload.get("foton_daily_dir") or "").strip()
+        optional_gigaam_python = str(
+            payload.get("gigaam_python_executable") or ""
+        ).strip()
+        optional_gigaam_root = str(payload.get("gigaam_download_root") or "").strip()
         config = cls(
             pipeline_root=Path(str(payload["pipeline_root"])).expanduser(),
             timeline_db=Path(str(payload["timeline_db"])).expanduser(),
@@ -261,6 +268,15 @@ class CallsTwoProcessesConfig:
             python_executable=Path(str(payload.get("python_executable") or sys.executable)).expanduser(),
             codex_binary=Path(str(payload.get("codex_binary") or "codex")).expanduser(),
             codex_home_root=Path(str(payload["codex_home_root"])).expanduser(),
+            gigaam_python_executable=(
+                Path(optional_gigaam_python).expanduser()
+                if optional_gigaam_python
+                else None
+            ),
+            gigaam_download_root=(
+                Path(optional_gigaam_root).expanduser() if optional_gigaam_root else None
+            ),
+            gigaam_batch_size=int(payload.get("gigaam_batch_size", 1)),
             foton_daily_dir=Path(optional_daily).expanduser() if optional_daily else None,
             tenant_id=str(payload.get("tenant_id") or "foton"),
             base_url=str(payload.get("base_url") or DEFAULT_MANGO_BASE_URL),
@@ -380,6 +396,16 @@ class CallsTwoProcessesConfig:
             raise ValueError("parallel_asr_enabled is allowed only in service scope")
         if self.gigaam_worker_count < 1 or self.gigaam_worker_count > 4:
             raise ValueError("gigaam_worker_count must be between 1 and 4")
+        if not 1 <= self.gigaam_batch_size <= 8:
+            raise ValueError("gigaam_batch_size must be between 1 and 8")
+        if self.gigaam_batch_size > 1 and (
+            self.processing_scope != "service"
+            or self.gigaam_python_executable is None
+            or self.gigaam_download_root is None
+            or not self.gigaam_python_executable.is_absolute()
+            or not self.gigaam_download_root.is_absolute()
+        ):
+            raise ValueError("GigaAM batch mode requires isolated service runtime")
         if self.gigaam_worker_count > 1 and (
             not self.parallel_asr_enabled or self.processing_scope != "service"
         ):
@@ -6504,6 +6530,14 @@ def environment_preflight(
         and os.getenv("MANGO_OFFICE_API_SALT", "").strip()
     )
     python_ok = config.python_executable.is_file() and os.access(config.python_executable, os.X_OK)
+    gigaam_python_ok = bool(
+        config.gigaam_python_executable is None
+        or (
+            config.gigaam_python_executable.is_file()
+            and os.access(config.gigaam_python_executable, os.X_OK)
+        )
+    )
+    gigaam_batch_runtime = probe_gigaam_batch_runtime(config) if run_commands else {"ok": True}
     codex_ok = config.codex_binary.is_file() and os.access(config.codex_binary, os.X_OK)
     auth_ok = False
     modules_ok = False
@@ -6557,6 +6591,8 @@ def environment_preflight(
     checks = {
         "mango_credentials": mango_ok,
         "python_executable": python_ok,
+        "gigaam_python_executable": gigaam_python_ok,
+        "gigaam_batch_runtime": gigaam_batch_runtime.get("ok") is True,
         "asr_modules": modules_ok,
         "codex_binary": codex_ok,
         "codex_auth": auth_ok,
@@ -6572,6 +6608,10 @@ def environment_preflight(
     )
     if config.strict_ready_provenance:
         required = (*required, "runtime_fingerprint")
+    if config.gigaam_python_executable is not None:
+        required = (*required, "gigaam_python_executable")
+    if config.gigaam_batch_size > 1:
+        required = (*required, "gigaam_batch_runtime")
     failed_checks = [name for name in required if run_commands and not checks[name]]
     return {
         "ok": not failed_checks,
@@ -6591,7 +6631,45 @@ def environment_preflight(
         ),
         "runtime_fingerprint": runtime_observation.get("fingerprint"),
         "runtime_fingerprint_errors": runtime_observation.get("errors"),
+        "gigaam_batch_runtime": gigaam_batch_runtime,
     }
+
+
+def probe_gigaam_batch_runtime(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
+    if config.gigaam_batch_size == 1:
+        return {"ok": True, "batch_size": 1}
+    assert config.gigaam_python_executable and config.gigaam_download_root
+    model_path = config.gigaam_download_root / "v2_rnnt.ckpt"
+    code = (
+        "import hashlib,importlib.metadata as m,json,mango_mvp.cli,sys;"
+        "d=m.distribution('gigaam');u=json.loads(d.read_text('direct_url.json') or '{}');"
+        "p=open(sys.argv[1],'rb').read();print(json.dumps({'gigaam':m.version('gigaam'),"
+        "'torch':m.version('torch'),'torchaudio':m.version('torchaudio'),"
+        "'commit':u.get('vcs_info',{}).get('commit_id'),'model_md5':hashlib.md5(p).hexdigest()}))"
+    )
+    try:
+        result = subprocess.run(
+            [str(config.gigaam_python_executable), "-c", code, str(model_path)],
+            cwd=Path(__file__).resolve().parents[3],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        observed = json.loads(result.stdout) if result.returncode == 0 else {}
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        observed = {}
+    if not isinstance(observed, Mapping):
+        observed = {}
+    expected = {
+        "gigaam": "0.2.0",
+        "torch": "2.11.0",
+        "torchaudio": "2.11.0",
+        "commit": "559d88d6b72541412743929f633a6ae7c9950b85",
+        "model_md5": "547460139acfebd842323f59ed54ab54",
+    }
+    return {"ok": observed == expected, "batch_size": config.gigaam_batch_size, **observed}
 
 
 def observe_runtime_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
@@ -7024,6 +7102,18 @@ def transcribe_environment(config: CallsTwoProcessesConfig, base: Mapping[str, s
         "MLX_WORD_TIMESTAMPS": "1",
         "GIGAAM_MODEL": "v2_rnnt",
         "GIGAAM_DEVICE": "cpu",
+        "GIGAAM_BATCH_SIZE": str(
+            config.gigaam_batch_size if config.processing_scope == "service" else 1
+        ),
+        "GIGAAM_DOWNLOAD_ROOT": (
+            str(config.gigaam_download_root)
+            if config.processing_scope == "service" and config.gigaam_download_root
+            else ""
+        ),
+        "GIGAAM_TORCH_NUM_THREADS": "8",
+        "GIGAAM_TORCH_INTEROP_THREADS": "1",
+        "OMP_NUM_THREADS": "8",
+        "VECLIB_MAXIMUM_THREADS": "8",
     }
 
 
@@ -7690,12 +7780,18 @@ def parse_worker_stage_metrics(path: Path, stage: str) -> Mapping[str, Any]:
         stage_receipt = receipts.get(stage)
         if not isinstance(stage_receipt, Mapping):
             return {}
-        expected_receipt_fields = {
+        required_receipt_fields = {
             "provider_invocations",
             "mlx_cache_release_attempts",
             "mlx_cache_release_successes",
         }
-        if set(stage_receipt) != expected_receipt_fields:
+        optional_receipt_fields = {
+            "gigaam_batch_attempts",
+            "gigaam_batch_fallbacks",
+        }
+        if not required_receipt_fields.issubset(stage_receipt) or not set(
+            stage_receipt
+        ).issubset(required_receipt_fields | optional_receipt_fields):
             return {}
         providers = stage_receipt.get("provider_invocations")
         if not isinstance(providers, Mapping):
@@ -7715,8 +7811,10 @@ def parse_worker_stage_metrics(path: Path, stage: str) -> Mapping[str, Any]:
         for name in (
             "mlx_cache_release_attempts",
             "mlx_cache_release_successes",
+            "gigaam_batch_attempts",
+            "gigaam_batch_fallbacks",
         ):
-            value = stage_receipt.get(name)
+            value = stage_receipt.get(name, 0)
             if (
                 not isinstance(value, int)
                 or isinstance(value, bool)
@@ -7738,8 +7836,15 @@ def parse_worker_stage_metrics(path: Path, stage: str) -> Mapping[str, Any]:
 
 
 def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
-    command = cli_command(
-        config,
+    python_executable = (
+        config.gigaam_python_executable
+        if stages == "backfill-second-asr" and config.gigaam_python_executable
+        else config.python_executable
+    )
+    command = [
+        str(python_executable),
+        "-m",
+        "mango_mvp.cli",
         "worker",
         "--stages",
         stages,
@@ -7749,7 +7854,7 @@ def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
         str(config.poll_seconds),
         "--max-idle-cycles",
         str(config.max_idle_cycles),
-    )
+    ]
     if config.worker_once:
         command.append("--once")
     return command

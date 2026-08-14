@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -794,6 +795,79 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(result["segments"][0]["start"], 0.0)
         self.assertTrue(result["segments"][0]["approximate"])
         self.assertEqual(len(heartbeats), 2)
+
+    def test_gigaam_batches_chunks_and_preserves_order(self) -> None:
+        import torch
+
+        service = TranscribeService(make_settings())
+        heartbeats: list[bool] = []
+        service._gigaam_chunk_heartbeat = lambda: heartbeats.append(True)
+
+        class FakeModel:
+            _device = torch.device("cpu")
+            _dtype = torch.float32
+
+            def forward(self, padded, lengths):  # noqa: ANN001
+                return padded, lengths
+
+            def _decode(self, _encoded, _encoded_len, lengths, _timestamps):  # noqa: ANN001
+                return [(f"chunk-{int(length)}", None) for length in lengths]
+
+        chunks = [Path(f"chunk_{idx:03d}.wav") for idx in range(5)]
+        waves = [torch.ones(size) for size in (3, 4, 5, 6, 7)]
+        with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "2"}):
+            with patch("gigaam.load_audio", side_effect=waves):
+                texts = service._transcribe_gigaam_chunks(FakeModel(), chunks)
+
+        self.assertEqual(texts, ["chunk-3", "chunk-4", "chunk-5", "chunk-6", "chunk-7"])
+        self.assertEqual(len(heartbeats), 6)
+        self.assertEqual(service._gigaam_batch_attempts, 3)
+        self.assertEqual(service._gigaam_batch_fallbacks, 0)
+
+    def test_gigaam_batch_requires_pinned_library(self) -> None:
+        service = TranscribeService(make_settings())
+        with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "4"}):
+            with patch("mango_mvp.services.transcribe.package_version", return_value="0.1.0"):
+                with self.assertRaisesRegex(RuntimeError, "pinned gigaam 0.2.0"):
+                    service._get_gigaam_model()
+
+    def test_gigaam_batch_requires_preloaded_local_model(self) -> None:
+        service = TranscribeService(make_settings())
+        with patch.dict(
+            os.environ,
+            {"GIGAAM_BATCH_SIZE": "4", "GIGAAM_DOWNLOAD_ROOT": ""},
+        ):
+            with patch("mango_mvp.services.transcribe.package_version", return_value="0.2.0"):
+                with self.assertRaisesRegex(RuntimeError, "pinned local GigaAM model"):
+                    service._get_gigaam_model()
+
+    def test_gigaam_batch_falls_back_to_same_model_sequentially(self) -> None:
+        import torch
+
+        service = TranscribeService(make_settings())
+
+        class FakeModel:
+            _device = torch.device("cpu")
+            _dtype = torch.float32
+            batch_calls = 0
+
+            def forward(self, _padded, _lengths):  # noqa: ANN001
+                self.batch_calls += 1
+                raise RuntimeError("batch unavailable")
+
+            def transcribe(self, path: str) -> str:
+                return Path(path).stem
+
+        model = FakeModel()
+        chunks = [Path(f"chunk_{idx:03d}.wav") for idx in range(4)]
+        with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "2"}):
+            with patch("gigaam.load_audio", return_value=torch.ones(3)):
+                texts = service._transcribe_gigaam_chunks(model, chunks)
+
+        self.assertEqual(texts, ["chunk_000", "chunk_001", "chunk_002", "chunk_003"])
+        self.assertEqual(model.batch_calls, 1)
+        self.assertEqual(service._gigaam_batch_attempts, 1)
+        self.assertEqual(service._gigaam_batch_fallbacks, 1)
 
     def test_secondary_lease_loss_is_not_sanitized_as_asr_error(self) -> None:
         with patch.object(

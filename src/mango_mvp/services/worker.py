@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -113,6 +114,11 @@ def _run_worker_with_lifeline(
     secondary_transcribe_service = (
         TranscribeService(settings) if "backfill-second-asr" in selected_stages else None
     )
+    if (
+        secondary_transcribe_service is not None
+        and int(os.getenv("GIGAAM_BATCH_SIZE", "1")) > 1
+    ):
+        secondary_transcribe_service._get_gigaam_model()
 
     cycles = 0
     idle_cycles = 0
@@ -124,6 +130,8 @@ def _run_worker_with_lifeline(
             "provider_invocations": {},
             "mlx_cache_release_attempts": 0,
             "mlx_cache_release_successes": 0,
+            "gigaam_batch_attempts": 0,
+            "gigaam_batch_fallbacks": 0,
         }
         for stage in selected_stages
     }
@@ -175,6 +183,8 @@ def _run_worker_with_lifeline(
                 for key in (
                     "mlx_cache_release_attempts",
                     "mlx_cache_release_successes",
+                    "gigaam_batch_attempts",
+                    "gigaam_batch_fallbacks",
                 ):
                     runtime_receipts[stage][key] += int(receipt.get(key) or 0)
 

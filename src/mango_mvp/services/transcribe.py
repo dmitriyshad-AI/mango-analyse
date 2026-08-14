@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -219,10 +220,14 @@ class TranscribeService:
         self._client: Optional[OpenAI] = None
         self._ollama_client_instance: Optional[OllamaClient] = None
         self._gigaam_model: Any = None
+        self._gigaam_runtime_configured = False
+        self._gigaam_batch_disabled = False
         self._gigaam_chunk_heartbeat: Optional[Callable[[], None]] = None
         self._provider_invocations: Counter[str] = Counter()
         self._mlx_cache_release_attempts = 0
         self._mlx_cache_release_successes = 0
+        self._gigaam_batch_attempts = 0
+        self._gigaam_batch_fallbacks = 0
         self._llm_cache = LLMResponseCache(
             enabled=settings.llm_cache_enabled,
             root_dir=settings.llm_cache_dir,
@@ -237,12 +242,16 @@ class TranscribeService:
         self._provider_invocations.clear()
         self._mlx_cache_release_attempts = 0
         self._mlx_cache_release_successes = 0
+        self._gigaam_batch_attempts = 0
+        self._gigaam_batch_fallbacks = 0
 
     def _asr_runtime_receipt(self) -> Dict[str, Any]:
         return {
             "provider_invocations": dict(sorted(self._provider_invocations.items())),
             "mlx_cache_release_attempts": self._mlx_cache_release_attempts,
             "mlx_cache_release_successes": self._mlx_cache_release_successes,
+            "gigaam_batch_attempts": self._gigaam_batch_attempts,
+            "gigaam_batch_fallbacks": self._gigaam_batch_fallbacks,
         }
 
     @staticmethod
@@ -886,6 +895,24 @@ class TranscribeService:
     def _get_gigaam_model(self) -> Any:
         if self._gigaam_model is not None:
             return self._gigaam_model
+        batch_size = self._gigaam_batch_size()
+        if batch_size > 1 and package_version("gigaam") != "0.2.0":
+            raise RuntimeError("GIGAAM_BATCH_SIZE > 1 requires pinned gigaam 0.2.0")
+        download_root = os.getenv("GIGAAM_DOWNLOAD_ROOT", "").strip()
+        if batch_size > 1:
+            model_path = Path(download_root) / f"{self._settings.gigaam_model}.ckpt"
+            if not download_root or not model_path.is_file():
+                raise RuntimeError("pinned local GigaAM model is required for batch mode")
+        if batch_size > 1 and not self._gigaam_runtime_configured:
+            import torch
+
+            threads = int(os.getenv("GIGAAM_TORCH_NUM_THREADS", "8"))
+            interop = int(os.getenv("GIGAAM_TORCH_INTEROP_THREADS", "1"))
+            if not 1 <= threads <= 16 or not 1 <= interop <= 4:
+                raise RuntimeError("invalid GigaAM torch thread configuration")
+            torch.set_num_interop_threads(interop)
+            torch.set_num_threads(threads)
+            self._gigaam_runtime_configured = True
         try:
             from gigaam import load_model
         except ImportError as exc:
@@ -898,8 +925,70 @@ class TranscribeService:
             self._settings.gigaam_model,
             device=self._settings.gigaam_device,
             fp16_encoder=False,
+            download_root=download_root or None,
         )
         return self._gigaam_model
+
+    @staticmethod
+    def _gigaam_batch_size() -> int:
+        try:
+            batch_size = int(os.getenv("GIGAAM_BATCH_SIZE", "1"))
+        except ValueError as exc:
+            raise RuntimeError("GIGAAM_BATCH_SIZE must be an integer") from exc
+        if not 1 <= batch_size <= 8:
+            raise RuntimeError("GIGAAM_BATCH_SIZE must be between 1 and 8")
+        return batch_size
+
+    def _transcribe_gigaam_chunks(
+        self,
+        model: Any,
+        chunks: list[Path],
+    ) -> list[str]:
+        batch_size = self._gigaam_batch_size()
+        texts: list[str] = []
+        for offset in range(0, len(chunks), batch_size):
+            group = chunks[offset : offset + batch_size]
+            if self._gigaam_chunk_heartbeat is not None:
+                self._gigaam_chunk_heartbeat()
+            if batch_size == 1 or self._gigaam_batch_disabled:
+                group_texts = [str(model.transcribe(str(chunk))) for chunk in group]
+            else:
+                self._gigaam_batch_attempts += 1
+                try:
+                    group_texts = self._decode_gigaam_batch(model, group)
+                except SecondaryAsrLeaseLost:
+                    raise
+                except Exception:
+                    self._gigaam_batch_disabled = True
+                    self._gigaam_batch_fallbacks += 1
+                    group_texts = []
+                if not group_texts:
+                    group_texts = [str(model.transcribe(str(chunk))) for chunk in group]
+            if self._gigaam_chunk_heartbeat is not None:
+                self._gigaam_chunk_heartbeat()
+            texts.extend(group_texts)
+        return texts
+
+    @staticmethod
+    def _decode_gigaam_batch(model: Any, group: list[Path]) -> list[str]:
+        import torch
+        from gigaam import load_audio
+        from torch.nn.utils.rnn import pad_sequence
+
+        waves = [load_audio(str(chunk)) for chunk in group]
+        lengths = torch.tensor(
+            [wave.numel() for wave in waves], dtype=torch.long, device=model._device
+        )
+        padded = pad_sequence(waves, batch_first=True).to(
+            device=model._device, dtype=model._dtype
+        )
+        with torch.inference_mode():
+            encoded, encoded_len = model.forward(padded, lengths)
+            decoded = model._decode(encoded, encoded_len, lengths, False)
+        result = [str(item[0]) for item in decoded]
+        if len(result) != len(group):
+            raise RuntimeError("GigaAM batch result count mismatch")
+        return result
 
     @staticmethod
     def _parse_codex_tokens_used(stderr: str) -> int | None:
@@ -2989,12 +3078,9 @@ class TranscribeService:
                 if not chunks:
                     raise RuntimeError("gigaam chunking produced no chunks")
 
-                for idx, chunk in enumerate(chunks):
-                    if self._gigaam_chunk_heartbeat is not None:
-                        self._gigaam_chunk_heartbeat()
-                    chunk_text = str(model.transcribe(str(chunk))).strip()
-                    if self._gigaam_chunk_heartbeat is not None:
-                        self._gigaam_chunk_heartbeat()
+                chunk_texts = self._transcribe_gigaam_chunks(model, chunks)
+                for idx, chunk_text in enumerate(chunk_texts):
+                    chunk_text = chunk_text.strip()
                     if not chunk_text:
                         continue
                     normalized_text = " ".join(chunk_text.split())
@@ -3029,11 +3115,10 @@ class TranscribeService:
                 result = subprocess.run(cmd, capture_output=True, text=True, check=False)
                 if result.returncode != 0:
                     raise RuntimeError(f"gigaam transcode failed: {result.stderr.strip()}")
-                if self._gigaam_chunk_heartbeat is not None:
-                    self._gigaam_chunk_heartbeat()
-                chunk_text = str(model.transcribe(str(converted))).strip()
-                if self._gigaam_chunk_heartbeat is not None:
-                    self._gigaam_chunk_heartbeat()
+                chunk_text = self._transcribe_gigaam_chunks(
+                    model,
+                    [converted],
+                )[0].strip()
                 if chunk_text:
                     normalized_text = " ".join(chunk_text.split())
                     parts.append(normalized_text)

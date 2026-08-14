@@ -43,6 +43,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     new_calls_run_id,
     normalize_unambiguous_legacy_asr_topologies,
     prepare_ingest_inputs,
+    probe_gigaam_batch_runtime,
     persist_capture_snapshot_to_working_db,
     prepare_codex_home,
     process_lease,
@@ -65,6 +66,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     run_controlled_local_previews,
     compact_command_reports,
     pipeline_freshness,
+    parse_worker_stage_metrics,
     safe_daily_payload,
     sha256_file,
     sqlite_check,
@@ -106,7 +108,14 @@ def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_stagin
 def test_service_transcribe_environment_keeps_whisper_canonical_and_selects_gigaam(
     tmp_path: Path,
 ) -> None:
-    service = replace(config_for(tmp_path), processing_scope="service")
+    service = replace(
+        config_for(tmp_path),
+        processing_scope="service",
+        gigaam_python_executable=tmp_path / "gigaam-python",
+        gigaam_download_root=tmp_path / "models",
+        gigaam_batch_size=4,
+    )
+    legacy_service = replace(config_for(tmp_path), processing_scope="service")
     controlled = replace(config_for(tmp_path), processing_scope="controlled_1")
 
     service_env = transcribe_environment(service, {})
@@ -114,8 +123,84 @@ def test_service_transcribe_environment_keeps_whisper_canonical_and_selects_giga
 
     assert service_env["DUAL_MERGE_PROVIDER"] == "primary"
     assert service_env["GIGAAM_POLICY"] == "selective_non_conversation_v1"
+    assert service_env["GIGAAM_MODEL"] == "v2_rnnt"
+    assert service_env["GIGAAM_BATCH_SIZE"] == "4"
+    assert service_env["GIGAAM_DOWNLOAD_ROOT"] == str(tmp_path / "models")
+    assert service_env["GIGAAM_TORCH_NUM_THREADS"] == "8"
+    assert service_env["GIGAAM_TORCH_INTEROP_THREADS"] == "1"
     assert controlled_env["DUAL_MERGE_PROVIDER"] == "rule"
     assert controlled_env["GIGAAM_POLICY"] == "all"
+    assert controlled_env["GIGAAM_BATCH_SIZE"] == "1"
+    assert transcribe_environment(legacy_service, {})["GIGAAM_BATCH_SIZE"] == "1"
+
+
+@pytest.mark.parametrize("include_batch_counts", [False, True])
+def test_worker_metrics_accept_old_and_batch_runtime_receipts(
+    tmp_path: Path,
+    include_batch_counts: bool,
+) -> None:
+    receipt = {
+        "provider_invocations": {"gigaam": 2},
+        "mlx_cache_release_attempts": 0,
+        "mlx_cache_release_successes": 0,
+    }
+    if include_batch_counts:
+        receipt.update({"gigaam_batch_attempts": 7, "gigaam_batch_fallbacks": 0})
+    path = tmp_path / "worker.log"
+    path.write_text(
+        json.dumps(
+            {
+                "totals": {"backfill-second-asr": {"processed": 2, "success": 2, "failed": 0}},
+                "cycles": 2,
+                "idle_cycles": 0,
+                "runtime_receipts": {"backfill-second-asr": receipt},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parsed = parse_worker_stage_metrics(path, "backfill-second-asr")
+
+    assert parsed["runtime_receipt"]["gigaam_batch_attempts"] == (
+        7 if include_batch_counts else 0
+    )
+
+
+def test_worker_command_uses_isolated_python_only_for_gigaam(tmp_path: Path) -> None:
+    alternate = tmp_path / "gigaam-venv" / "bin" / "python"
+    config = replace(
+        config_for(tmp_path),
+        gigaam_python_executable=alternate,
+    )
+
+    assert worker_command(config, "backfill-second-asr")[0] == str(alternate)
+    assert worker_command(config, "transcribe")[0] == str(config.python_executable)
+
+
+def test_gigaam_batch_runtime_probe_checks_isolated_versions_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    observed = {
+        "gigaam": "0.2.0",
+        "torch": "2.11.0",
+        "torchaudio": "2.11.0",
+        "commit": "559d88d6b72541412743929f633a6ae7c9950b85",
+        "model_md5": "547460139acfebd842323f59ed54ab54",
+    }
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, json.dumps(observed), ""),
+    )
+    config = replace(
+        config_for(tmp_path),
+        gigaam_python_executable=tmp_path / "gigaam-python",
+        gigaam_download_root=tmp_path / "models",
+        gigaam_batch_size=4,
+    )
+
+    assert probe_gigaam_batch_runtime(config) == {"ok": True, "batch_size": 4, **observed}
 
 
 _REAL_POLL_MANGO_OFFICIAL_LIST_PAGES = (

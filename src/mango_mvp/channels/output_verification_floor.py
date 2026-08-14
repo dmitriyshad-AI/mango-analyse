@@ -1012,8 +1012,9 @@ def _answer_mode_number_findings(
     answer_mode: str,
     estimate_domain: str = "none",
 ) -> list[VerificationFinding]:
-    backed_numbers = _free_number_surfaces(" ".join(str(value) for value in facts.values()))
-    client_numbers = _free_number_surfaces(client_message)
+    fact_text = " ".join(str(value) for value in facts.values())
+    backed_numbers = _numbers(fact_text) | _free_number_surfaces(fact_text)
+    client_numbers = _numbers(client_message) | _free_number_surfaces(client_message)
     introduced: set[str] = set()
     product_introduced: set[str] = set()
     token_map = _number_token_map(text)

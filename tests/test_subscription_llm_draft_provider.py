@@ -6839,7 +6839,7 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
             route="bot_answer_self_for_pilot",
             draft_text=(
                 "Годовой онлайн-курс стоит 69 900 руб.; занятия проходят 2 раза в неделю "
-                "по 2 академических часа."
+                "по 2 академических часа, по вторникам и четвергам, 18:00–19:30."
             ),
         )
     )
@@ -6852,7 +6852,7 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
             "confirmed_facts": {
                 "owner.unpk.year": (
                     "УНПК МФТИ: год — 69 900 руб.; занятия проходят два раза в неделю "
-                    "по два академических часа."
+                    "по два академических часа, вторник и четверг, 18:00-19:30."
                 )
             },
         },

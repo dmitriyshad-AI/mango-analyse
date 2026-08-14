@@ -312,6 +312,18 @@ def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, to
     if _is_start_text(text):
         return chat_id, f"Здравствуйте! Я — ИИ-помощница {BRAND_TITLE[brand]}. Подскажу по курсам, ценам, расписанию и записи. Что вас интересует?", key, None
     previous_memory = state.dialogue_memory_for(key)
+    previous_memory = {
+        **previous_memory,
+        "turns": [
+            dict(turn)
+            for turn in previous_memory.get("turns", ())
+            if isinstance(turn, Mapping)
+            and not (
+                str(turn.get("role") or "") == "bot"
+                and str(turn.get("text") or "").startswith(FALLBACK_TEXT)
+            )
+        ],
+    }
     recent = _recent_messages(previous_memory)
     context = build_pilot_context_payload(
         current_text=text,
@@ -333,7 +345,7 @@ def reply_for_update(update: Mapping[str, Any], *, provider: Any, brand: str, to
     summary = str(metadata.get("dialog_summary_candidate") or (direct.get("dialog_summary_candidate") if isinstance(direct, Mapping) else "") or "")
     updated = update_dialogue_memory_after_answer(
         context["dialogue_memory_state"],
-        answer_text=reply, route=result.route, fact_refs=result.context_used, safety_flags=result.safety_flags,
+        answer_text=safe_reply, route=result.route, fact_refs=result.context_used, safety_flags=result.safety_flags,
         semantic_reading=semantic.to_memory_dict() if semantic else None,
         semantic_frame=semantic_frame_from_metadata(metadata) or None,
         dialog_summary=summary, context=context, answer_is_substantive=bool(safe_reply),

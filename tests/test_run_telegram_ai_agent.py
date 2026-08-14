@@ -673,6 +673,19 @@ def test_dialogue_memory_survives_restart_and_reaches_next_prompt(monkeypatch: p
     ]
     assert stored["known_slots"]["subject"]["value"] == "физика"
 
+    key = agent.DraftLoopKey("foton", "555")
+    restarted_state.set_dialogue_memory(
+        key,
+        {
+            **stored,
+            "turns": [
+                *stored["turns"],
+                {"role": "bot", "text": agent.fallback_text("foton")},
+            ],
+        },
+    )
+    restarted_state.save()
+
     telegram.updates.append(_update(101, text="А сколько это стоит?"))
     second = FakeProvider(_result("Проверю актуальную стоимость этого формата."))
     _cycle(telegram, second, state=restarted_state)
@@ -684,6 +697,8 @@ def test_dialogue_memory_survives_restart_and_reaches_next_prompt(monkeypatch: p
         "А сколько это стоит?",
     ]
     assert second.calls[0]["context"]["dialogue_memory_view"]["known_slots"]["subject"] == "физика"
+    persisted = restarted_state.dialogue_memory_for(key)
+    assert all(not str(turn.get("text") or "").startswith(agent.FALLBACK_TEXT) for turn in persisted["turns"])
 
 
 def test_rolling_summary_and_seven_latest_turns_reach_final_direct_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -715,14 +730,15 @@ def test_rolling_summary_and_seven_latest_turns_reach_final_direct_prompt(monkey
     assert "старая реплика 11" in prompt
 
 
-def test_fallback_is_remembered_but_does_not_close_client_question(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fallback_is_not_remembered_and_does_not_close_client_question(monkeypatch: pytest.MonkeyPatch) -> None:
     telegram = FakeTelegram([_update(100, text="Когда проходят занятия?")])
     monkeypatch.setattr(agent, "_api", telegram)
 
     state = _cycle(telegram, FakeProvider(_result(route="blocked")))
 
     memory = state.dialogue_memory_for(agent.DraftLoopKey("foton", "555"))
-    assert memory["turns"][-1]["text"] == agent.fallback_text("foton")
+    assert [turn["role"] for turn in memory["turns"]] == ["client"]
+    assert all(not str(turn.get("text") or "").startswith(agent.FALLBACK_TEXT) for turn in memory["turns"])
     assert memory["open_question"]["text"] == "Когда проходят занятия?"
     assert memory["open_question"]["answered"] is False
 

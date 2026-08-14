@@ -5,7 +5,7 @@ source:
   working_tree_task: 2026-08-14_TZ_M1_BOT_FINAL_LAUNCH.md
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
   snapshot_rows: 690
-  snapshot_sha256: 0c23fd72282214eaf19d56d200ea8640b037109a98260f3c4d3c9c0b25433c69
+  snapshot_sha256: d4606c04460ac4edafe82582b75016d3ac6a6a3765e0441ace7fcb5f5f6c0e34
   denominator: all_snapshot_rows
   node_kind_counts:
     marker_helper_call: 113

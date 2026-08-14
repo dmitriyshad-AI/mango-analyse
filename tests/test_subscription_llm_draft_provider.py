@@ -152,6 +152,8 @@ def test_public_telegram_prompt_does_not_promise_unavailable_manager_handoff(
     assert "что менеджер должен проверить" not in prompt
     assert "Не обещай наличие места" in prompt
     assert "Не повторяй уже данный ответ" in prompt
+    assert "не выбирай за клиента дни или время" in prompt
+    assert "класс, предмет, формат или группу" in prompt
 
 
 def test_semantic_verifier_understands_unavailable_public_handoff_and_regenerates() -> None:
@@ -159,6 +161,7 @@ def test_semantic_verifier_understands_unavailable_public_handoff_and_regenerate
         "По программе можно выбрать формат. Уточню детали у менеджера и вернусь с ответом."
     )
     calls = 0
+    regen_prompts: list[str] = []
 
     def verify(prompt: str):
         nonlocal calls
@@ -176,6 +179,10 @@ def test_semantic_verifier_understands_unavailable_public_handoff_and_regenerate
             }
         return {"findings": []}
 
+    def regenerate(prompt: str) -> str:
+        regen_prompts.append(prompt)
+        return "По программе можно выбрать очный или онлайн-формат. Какой вам удобнее?"
+
     checked = apply_semantic_output_verifier(
         base,
         client_message="Какой формат выбрать?",
@@ -185,10 +192,12 @@ def test_semantic_verifier_understands_unavailable_public_handoff_and_regenerate
             "public_pilot_mode": {"sends_client_replies": True},
         },
         verifier_fn=verify,
-        regen_fn=lambda _prompt: "По программе можно выбрать очный или онлайн-формат. Какой вам удобнее?",
+        regen_fn=regenerate,
     )
 
     assert calls == 2
+    assert "для прямой отправки клиенту публичным ботом" in regen_prompts[0]
+    assert "для менеджерского черновика" not in regen_prompts[0]
     assert checked.draft_text == "По программе можно выбрать очный или онлайн-формат. Какой вам удобнее?"
     assert checked.metadata["semantic_output_verifier"]["action"] == "pass_after_regen"
 
@@ -2298,7 +2307,8 @@ def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> Non
     assert "Помогу с оформлением" in prompt
     assert "подберём подходящий вариант" in prompt
     assert "НЕ individual_diagnosis" in prompt
-    assert "цена очного формата не подтверждает онлайн-контекст" in prompt
+    assert "цена онлайн-формата не подтверждает очный контекст" in prompt
+    assert "классу внутри указанного в факте диапазона" in prompt
 
     base = _semantic_verifier_base_result("Есть базовый и продвинутый уровень.")
     checked = apply_semantic_output_verifier(
@@ -2321,7 +2331,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
             {
                 "facts": [
                     {
-                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+                        "fact_key": "owner_2026_08_13.foton.regular.online.5_11.semester",
                         "brand": "foton",
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
@@ -2329,10 +2339,10 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "freshness_check_date": "2026-08-13",
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
-                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+                        "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, семестр — 34 200 руб.",
                     },
                     {
-                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+                        "fact_key": "owner_2026_08_13.foton.regular.online.5_11.year",
                         "brand": "foton",
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
@@ -2340,16 +2350,16 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "freshness_check_date": "2026-08-13",
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
-                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+                        "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, год — 57 000 руб.",
                     },
                     {
-                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+                        "fact_key": "owner_2026_08_13.foton.regular.online.5_11.semester",
                         "brand": "unpk",
                         "allowed_for_client_answer": True,
                         "freshness_check_date": "2026-08-13",
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
-                        "client_safe_text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
+                        "client_safe_text": "УНПК: регулярные курсы онлайн, 5-11 классы, семестр — 41 800 руб.",
                     },
                 ]
             },
@@ -2359,18 +2369,24 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
     )
 
     prompt = build_semantic_output_verifier_prompt(
-        bot_text="Стоимость онлайн-курса такая же, как очно.",
-        client_message="А онлайн?",
-        facts={"prices.offline": "Фотон: очные цены есть только для очного формата."},
+        bot_text="Для 9 класса онлайн на год — 57 000 руб.",
+        client_message="9 класс, ОГЭ по физике онлайн. Сколько стоит регулярный курс на год?",
+        facts={
+            "owner_2026_08_13.foton.regular.online.5_11.year": (
+                "Фотон: регулярные курсы онлайн, 5-11 классы, год — 57 000 руб."
+            )
+        },
         active_brand="foton",
         route="bot_answer_self_for_pilot",
         context={"snapshot_path": str(snapshot)},
     )
 
-    assert "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽." in prompt
-    assert "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽." in prompt
-    assert "Стоимость курса — 44 600 ₽ или 74 500 ₽" in prompt
-    assert "49 000 ₽" not in prompt
+    assert "Фотон: регулярные курсы онлайн, 5-11 классы, семестр — 34 200 руб." in prompt
+    assert "Фотон: регулярные курсы онлайн, 5-11 классы, год — 57 000 руб." in prompt
+    assert "Для 9 класса онлайн на год — 57 000 руб." in prompt
+    assert 'Вердикт: {"findings":[]}' in prompt
+    assert "Стоимость очного курса — 34 200 руб или 57 000 руб" in prompt
+    assert "41 800 руб." not in prompt
     assert "82 000 ₽" not in prompt
 
 
@@ -2381,18 +2397,18 @@ def test_semantic_output_verifier_price_scope_few_shot_ignores_expired_kb_prices
             {
                 "facts": [
                     {
-                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+                        "fact_key": "owner_2026_08_13.foton.regular.online.5_11.semester",
                         "brand": "foton",
                         "allowed_for_client_answer": True,
                         "valid_until": "2000-01-01",
-                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+                        "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, семестр — 34 200 руб.",
                     },
                     {
-                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+                        "fact_key": "owner_2026_08_13.foton.regular.online.5_11.year",
                         "brand": "foton",
                         "allowed_for_client_answer": True,
                         "valid_until": "2000-01-01",
-                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+                        "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, год — 57 000 руб.",
                     },
                 ]
             },
@@ -2410,9 +2426,9 @@ def test_semantic_output_verifier_price_scope_few_shot_ignores_expired_kb_prices
         context={"snapshot_path": str(snapshot)},
     )
 
-    assert "Ответ переносит очную цену в онлайн-контекст" in prompt
-    assert "44 600 ₽" not in prompt
-    assert "74 500 ₽" not in prompt
+    assert "Ответ переносит онлайн-цену в очный контекст" in prompt
+    assert "34 200 руб." not in prompt
+    assert "57 000 руб." not in prompt
     assert "49 000 ₽" not in prompt
     assert "82 000 ₽" not in prompt
 
@@ -2488,9 +2504,12 @@ def test_semantic_output_regen_prompt_forbids_edit_comments() -> None:
         client_message="Есть уровень попроще?",
         facts={"program.basic": "Фотон: есть базовый и продвинутый уровень."},
         findings=[{"code": "derived_product_claim", "span": "базовый уровень"}],
+        public_client_reply=True,
     )
 
     assert "Верни ТОЛЬКО текст ответа клиенту" in prompt
+    assert "для прямой отправки клиенту публичным ботом" in prompt
+    assert "для менеджерского черновика" not in prompt
     assert "Заменяю только этот абзац" in prompt
     assert "Остальной текст без изменений" in prompt
 
@@ -3822,6 +3841,8 @@ def test_wave6_llm_retriever_prompt_tells_model_to_restore_incomplete_question()
 
     assert "Если текущий вопрос неполный" in prompt
     assert "восстанови его по последним репликам диалога" in prompt
+    assert "только при однозначном совпадении класса, предмета, формата и группы" in prompt
+    assert "неоднозначные варианты оставляй в adjacent_ids" in prompt
     assert "А по физике?" in prompt
     assert "Сколько стоит очная математика 9 класс?" in prompt
     assert "foton.physics.offline.price" in prompt
@@ -4090,10 +4111,123 @@ def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_
     assert "primary_intent" not in prompt_seen
     assert "answer_topics" not in prompt_seen
     assert "сам по смыслу определи" in prompt_seen
+    assert "required ставь только факту, который прямо нужен" in prompt_seen
+    assert "часовом поясе, длительности, записи или формате" in prompt_seen
+    assert "помещай их id только в adjacent_ids" in prompt_seen
     assert calls == 1
     assert pack["llm_retrieve"]["mode"] == "model_driven"
     assert pack["llm_retrieve"]["model_driven"] is True
     assert pack["llm_retrieve"]["keyword_required_fact_keys"] == ["prices.current"]
+
+    unpk_message = "9 класс, математика ОГЭ онлайн по будням. Сколько стоит регулярный курс на год?"
+    unpk_context = {
+        "active_brand": "unpk",
+        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        LLM_RETRIEVE_ENV: "1",
+        ASSUMED_SCOPE_GUARD_ENV: "1",
+        RETRIEVER_MODEL_DRIVEN_ENV: "1",
+        "TELEGRAM_RETRIEVER_NEED_SHADOW": "1",
+        "TELEGRAM_FACT_SELECT_FRAME": "1",
+        "TELEGRAM_FACT_VENUE_SCOPE": "1",
+        "dialogue_memory_view": {
+            "slot_provenance": {
+                "grade": {"value": "9", "source": "memory_provenance", "quote": "9 класс"},
+                "format": {"value": "online", "source": "memory_provenance", "quote": "онлайн"},
+            }
+        },
+    }
+    unpk_payload = {
+        "requested_scope": "online",
+        "requested_product": {
+            "brand": "unpk",
+            "subject": "математика",
+            "grade": "9",
+            "format": "online",
+            "venue": "online",
+            "program_kind": "regular",
+            "product": "regular_courses_2026_27",
+        },
+        "requested_product_confidence": 0.95,
+        "needed_facts": [
+            {
+                "theme": "pricing",
+                "fact_type": "price",
+                "brand": "unpk",
+                "grade": "9",
+                "subject": "математика",
+                "format": "online",
+                "venue": "online",
+                "program_kind": "regular",
+                "product": "regular_courses_2026_27",
+                "why_needed": "клиент спрашивает цену за год",
+                "importance": "required",
+            }
+        ],
+        "exact_ids": ["owner_2026_08_13.unpk.regular.online.weekday.9_11.year"],
+        "adjacent_ids": [],
+    }
+    unpk_pack = _direct_path_context_fact_pack(
+        unpk_context,
+        client_message=unpk_message,
+        retriever_fn=lambda _prompt: unpk_payload,
+    )
+
+    assert unpk_pack["exact_keys"] == ["owner_2026_08_13.unpk.regular.online.weekday.9_11.year"]
+    assert unpk_pack["llm_retrieve"]["fallback_reason"] == ""
+
+    wrong_grade_payload = {
+        **unpk_payload,
+        "requested_product": {**unpk_payload["requested_product"], "grade": "8"},
+        "needed_facts": [{**unpk_payload["needed_facts"][0], "grade": "8"}],
+    }
+    wrong_grade_pack = _direct_path_context_fact_pack(
+        {
+            **unpk_context,
+            "dialogue_memory_view": {
+                "slot_provenance": {
+                    "grade": {"value": "8", "source": "memory_provenance", "quote": "8 класс"},
+                    "format": {"value": "online", "source": "memory_provenance", "quote": "онлайн"},
+                }
+            },
+        },
+        client_message="8 класс, математика онлайн по будням. Сколько стоит год?",
+        retriever_fn=lambda _prompt: wrong_grade_payload,
+    )
+    assert wrong_grade_pack["exact_keys"] == []
+    assert wrong_grade_pack["llm_retrieve"]["fallback_reason"] == "post_filter_no_required_exact"
+
+    wrong_format_payload = {
+        **unpk_payload,
+        "requested_scope": "moscow_regular",
+        "requested_product": {
+            **unpk_payload["requested_product"],
+            "format": "offline",
+            "venue": "moscow_regular",
+        },
+        "needed_facts": [
+            {
+                **unpk_payload["needed_facts"][0],
+                "format": "offline",
+                "venue": "moscow_regular",
+            }
+        ],
+    }
+    wrong_format_pack = _direct_path_context_fact_pack(
+        {
+            **unpk_context,
+            "dialogue_memory_view": {
+                "slot_provenance": {
+                    "grade": {"value": "9", "source": "memory_provenance", "quote": "9 класс"},
+                    "format": {"value": "offline", "source": "memory_provenance", "quote": "очно"},
+                }
+            },
+        },
+        client_message="9 класс, математика очно. Сколько стоит год?",
+        retriever_fn=lambda _prompt: wrong_format_payload,
+    )
+    assert wrong_format_pack["exact_keys"] == []
+    assert wrong_format_pack["llm_retrieve"]["fallback_reason"] == "post_filter_no_required_exact"
 
 
 def test_tz119_model_driven_requires_assumed_scope_guard(tmp_path: Path) -> None:

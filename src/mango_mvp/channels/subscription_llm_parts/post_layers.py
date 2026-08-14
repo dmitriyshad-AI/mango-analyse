@@ -3506,8 +3506,8 @@ _SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset(
 )
 
 
-_SEMANTIC_VERIFIER_FOTON_OFFLINE_SEMESTER_FACT_KEY = "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester"
-_SEMANTIC_VERIFIER_FOTON_OFFLINE_YEAR_FACT_KEY = "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year"
+_SEMANTIC_VERIFIER_FOTON_ONLINE_SEMESTER_FACT_KEY = "owner_2026_08_13.foton.regular.online.5_11.semester"
+_SEMANTIC_VERIFIER_FOTON_ONLINE_YEAR_FACT_KEY = "owner_2026_08_13.foton.regular.online.5_11.year"
 
 
 def _semantic_output_verifier_price_scope_few_shot(context: Optional[Mapping[str, Any]] = None) -> str:
@@ -3515,18 +3515,19 @@ def _semantic_output_verifier_price_scope_few_shot(context: Optional[Mapping[str
     semester_fact = _direct_path_fact_by_brand_key(
         snapshot,
         active_brand="foton",
-        fact_key=_SEMANTIC_VERIFIER_FOTON_OFFLINE_SEMESTER_FACT_KEY,
+        fact_key=_SEMANTIC_VERIFIER_FOTON_ONLINE_SEMESTER_FACT_KEY,
     )
     year_fact = _direct_path_fact_by_brand_key(
         snapshot,
         active_brand="foton",
-        fact_key=_SEMANTIC_VERIFIER_FOTON_OFFLINE_YEAR_FACT_KEY,
+        fact_key=_SEMANTIC_VERIFIER_FOTON_ONLINE_YEAR_FACT_KEY,
     )
     if not isinstance(semester_fact, Mapping) or not isinstance(year_fact, Mapping):
         return (
-            "- Факты: «Фотон: очная цена подтверждена только для очного формата; онлайн-цена не указана». "
-            "Вопрос: «а онлайн?». Ответ переносит очную цену в онлайн-контекст. "
-            "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+            "- Факты: «Фотон: онлайн-цена подтверждена только для онлайн-формата». "
+            "Вопрос: «а очно?». Ответ переносит онлайн-цену в очный контекст. "
+            "Вердикт: derived_product_claim, relation_to_base=adjacent — "
+            "цена онлайн-формата не подтверждает очный контекст.\n"
         )
     semester_text = _direct_path_snapshot_fact_text(semester_fact)
     year_text = _direct_path_snapshot_fact_text(year_fact)
@@ -3534,14 +3535,21 @@ def _semantic_output_verifier_price_scope_few_shot(context: Optional[Mapping[str
     year_price = _direct_path_fact_value(year_text)
     if not semester_text or not year_text or not semester_price or not year_price:
         return (
-            "- Факты: «Фотон: очная цена подтверждена только для очного формата; онлайн-цена не указана». "
-            "Вопрос: «а онлайн?». Ответ переносит очную цену в онлайн-контекст. "
-            "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+            "- Факты: «Фотон: онлайн-цена подтверждена только для онлайн-формата». "
+            "Вопрос: «а очно?». Ответ переносит онлайн-цену в очный контекст. "
+            "Вердикт: derived_product_claim, relation_to_base=adjacent — "
+            "цена онлайн-формата не подтверждает очный контекст.\n"
         )
     return (
         f"- Факты: «{semester_text}» / «{year_text}». "
-        f"Вопрос: «а онлайн?». Ответ: «Стоимость курса — {semester_price} или {year_price}». "
-        "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+        "Вопрос: «9 класс, ОГЭ по физике онлайн. "
+        "Сколько стоит регулярный курс на год?». "
+        f"Ответ: «Для 9 класса онлайн на год — {year_price}». "
+        "Вердикт: {\"findings\":[]} — бренд, онлайн-формат, год и диапазон 5–11 совпадают; "
+        "предмет и цель ОГЭ взяты из вопроса клиента, а не приписаны ценовому факту.\n"
+        f"- Те же факты. Вопрос: «а очно?». Ответ: «Стоимость очного курса — {semester_price} или {year_price}». "
+        "Вердикт: derived_product_claim, relation_to_base=adjacent — "
+        "цена онлайн-формата не подтверждает очный контекст.\n"
     )
 
 
@@ -3589,6 +3597,9 @@ def build_semantic_output_verifier_prompt(
         "НЕ ФЛАГАЙ:\n"
         "- дословный или смысловой пересказ факта;\n"
         "- склейку двух реальных фактов без новой приписки;\n"
+        "- применение цены к классу внутри указанного в факте диапазона при совпадающих "
+        "бренде, формате, периоде и семействе регулярного курса; предмет и цель обучения "
+        "из вопроса клиента сами по себе не создают новый продукт;\n"
         "- каноничную фразу разделения брендов;\n"
         "- общий житейский совет с хеджем, если он не делает продуктовый вывод;\n"
         "- хеджированный ответ по ребёнку с передачей преподавателю/менеджеру;\n"
@@ -3631,6 +3642,7 @@ def build_semantic_output_regen_prompt(
     client_message: str,
     facts: Mapping[str, str],
     findings: Sequence[Mapping[str, Any]],
+    public_client_reply: bool = False,
 ) -> str:
     findings_block = "\n".join(
         f"- {item.get('code')}: {item.get('span') or item.get('evidence') or item.get('missing_fact')}"
@@ -3638,7 +3650,9 @@ def build_semantic_output_regen_prompt(
         if isinstance(item, Mapping)
     )
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(фактов нет)"
-    public_reply = any(str(item.get("code") or "") == "public_handoff_claim" for item in findings if isinstance(item, Mapping))
+    public_reply = bool(public_client_reply) or any(
+        str(item.get("code") or "") == "public_handoff_claim" for item in findings if isinstance(item, Mapping)
+    )
     target = (
         "для прямой отправки клиенту публичным ботом; у него нет внутренней передачи менеджеру"
         if public_reply
@@ -3755,6 +3769,7 @@ def apply_semantic_output_verifier(
                         client_message=client_message,
                         facts=facts,
                         findings=findings,
+                        public_client_reply=public_client_reply,
                     )
                 )
                 or ""

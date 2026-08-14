@@ -203,6 +203,15 @@ def test_private_text_reaches_provider_and_client(monkeypatch: pytest.MonkeyPatc
     assert provider.calls[0]["client_message"] == "Сколько стоит год?"
     assert provider.calls[0]["context"]["active_brand"] == "foton"
     assert provider.calls[0]["context"]["public_pilot_mode"]["sends_client_replies"] is True
+    for forbidden_customer_context in (
+        "read_only_customer_context",
+        "known_client_fields",
+        "customer_summary",
+        "amo_context",
+        "tallanto_context",
+        "timeline_context",
+    ):
+        assert forbidden_customer_context not in provider.calls[0]["context"]
     assert telegram.sent == [{"chat_id": "555", "text": "Годовой курс стоит 37 000 ₽."}]
     assert telegram.actions == [{"chat_id": "555", "action": "typing"}]
     assert _offset("foton") == 101

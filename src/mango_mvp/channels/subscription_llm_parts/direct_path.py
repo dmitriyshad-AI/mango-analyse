@@ -38,6 +38,10 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import semantic_reading_trace_record
 from mango_mvp.knowledge_base.fact_registry import fact_runtime_time_ok
+from mango_mvp.knowledge_base.product_existence_axes_catalog import (
+    _grade_values as _product_fact_grade_values,
+    normalize_format as _normalize_product_fact_format,
+)
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_MEMORY_EXPANDED_SHADOW_ENV,
     TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
@@ -324,6 +328,9 @@ def _direct_path_prose_model_led_block(context: Optional[Mapping[str, Any]]) -> 
             "- Сначала ответь на вопрос всей доступной проверенной информацией и предложи один полезный следующий шаг.\n"
             "- Если точного факта не хватает, честно назови границу знания и задай один уточняющий вопрос; "
             "не обещай передачу, проверку, звонок или ответ менеджера.\n"
+            "- Если расписанию соответствует несколько групп, не выбирай за клиента дни или время: "
+            "назови общую подтверждённую часть и спроси один недостающий параметр — "
+            "класс, предмет, формат или группу.\n"
             "- Не обещай наличие места, бронь или запись без точного факта по нужной группе.\n"
             "- Не повторяй уже данный ответ и не начинай с казённых вводных фраз.\n"
             "- Не пиши клиенту «в фактах нет», «по фактам не вижу» или «у меня нет данных»: "
@@ -1312,8 +1319,18 @@ def _direct_path_fact_conflicts_slots(
     if slot_format and fact_format and slot_format != fact_format:
         return True
     grade = re.sub(r"\D+", "", str(slots.get("grade") or slots.get("class") or ""))
-    if grade and not _direct_path_grade_in_fact(grade, haystack):
-        return True
+    if grade:
+        structured = fact.get("structured_value")
+        has_structured_grades = isinstance(structured, Mapping) and any(
+            structured.get(key) not in (None, "", [])
+            for key in ("grade_values", "classes", "classes_raw", "grade")
+        )
+        structured_grades = _product_fact_grade_values(fact) if has_structured_grades else []
+        if structured_grades:
+            if int(grade) not in structured_grades:
+                return True
+        elif not _direct_path_grade_in_fact(grade, haystack):
+            return True
     family = _normalize_fact_match_text(slots.get("product_family") or slots.get("product") or "")
     if use_structured_program_kind and family:
         program_kind = fact_program_kind(fact)
@@ -1471,13 +1488,22 @@ def _fact_select_venue_matches(value: Any, fact: Mapping[str, Any]) -> bool:
     requested = _normalize_fact_match_text(value)
     if not requested:
         return False
-    return requested in _FACT_SELECT_CANONICAL_VENUES and fact_venue(fact) == requested
+    if requested not in _FACT_SELECT_CANONICAL_VENUES:
+        return False
+    if requested == "online" and _fact_select_format_matches("online", fact):
+        return True
+    return fact_venue(fact) == requested
 
 
 def _fact_select_format_matches(value: Any, fact: Mapping[str, Any]) -> bool:
     requested = _normalize_fact_match_text(value)
     if requested not in _FACT_SELECT_CANONICAL_FORMATS:
         return False
+    structured = fact.get("structured_value")
+    if isinstance(structured, Mapping):
+        structured_format = _normalize_product_fact_format(structured.get("format"))
+        if structured_format:
+            return structured_format == requested
     venue = fact_venue(fact)
     if requested == "online":
         return venue == "online"
@@ -1533,8 +1559,20 @@ def _fact_select_fact_score(
             reasons.append("subject_not_matched")
     if product.get("format") and _fact_select_format_matches(product.get("format"), fact):
         score += 6
-    if product.get("grade") and _direct_path_grade_in_fact(product.get("grade") or "", haystack):
-        score += 6
+    requested_grade = str(product.get("grade") or "")
+    if requested_grade:
+        structured = fact.get("structured_value")
+        has_structured_grades = isinstance(structured, Mapping) and any(
+            structured.get(key) not in (None, "", [])
+            for key in ("grade_values", "classes", "classes_raw", "grade")
+        )
+        structured_grades = _product_fact_grade_values(fact) if has_structured_grades else []
+        if (
+            requested_grade.isdigit()
+            and structured_grades
+            and int(requested_grade) in structured_grades
+        ) or (not structured_grades and _direct_path_grade_in_fact(requested_grade, haystack)):
+            score += 6
     if product.get("venue") and _fact_select_venue_matches(product.get("venue"), fact):
         score += 5
     if product.get("program_kind") and _fact_select_program_matches(product, fact):
@@ -2359,7 +2397,11 @@ def build_direct_path_llm_retriever_prompt(
             f"{driver_line}"
             "Каждый элемент needed_facts: theme, fact_type, brand, grade, subject, format, venue, program_kind, product, "
             "why_needed, importance. importance только required или helpful. Генератор получит только exact_ids типов "
-            "importance=required; helpful и adjacent_ids останутся диагностикой. Если нужных фактов нет, верни пустой список.\n"
+            "importance=required; helpful и adjacent_ids останутся диагностикой. "
+            "required ставь только факту, который прямо нужен для ответа на заданный вопрос. "
+            "Общие пояснения о часовом поясе, длительности, записи или формате ставь helpful, "
+            "если клиент их отдельно не спрашивал, и помещай их id только в adjacent_ids. "
+            "Если нужных фактов нет, верни пустой список.\n"
         )
         if fact_select:
             product_instruction = (
@@ -2398,7 +2440,9 @@ def build_direct_path_llm_retriever_prompt(
         "не ограничивайся дословными совпадениями.\n"
         "Если текущий вопрос неполный («а по физике?», «а очно?») — восстанови его по последним репликам диалога "
         "и подбирай факты для восстановленного вопроса.\n"
-        "exact_ids — факты, которые прямо отвечают на вопрос или его часть. adjacent_ids — смежные полезные факты.\n"
+        "exact_ids — факты, которые прямо отвечают на вопрос или его часть. "
+        "Для расписания ставь факт в exact_ids только при однозначном совпадении класса, "
+        "предмета, формата и группы; неоднозначные варианты оставляй в adjacent_ids.\n"
         "Нельзя выдумывать id: используй только id из списка кандидатов.\n\n"
         f"Вопрос клиента:\n{client_message}\n\n"
         f"Последние реплики:\n{recent}\n\n"

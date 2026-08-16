@@ -64,5 +64,5 @@ exec "$PYTHON_BIN" scripts/run_amo_wappi_draft_loop.py \
   --interval-sec "${DRAFT_LOOP_INTERVAL_SEC:-45}" \
   --model "${DRAFT_LOOP_MODEL:-gpt-5.5}" \
   --reasoning "${DRAFT_LOOP_REASONING:-high}" \
-  "${TIMELINE_ARGS[@]}" \
+  ${TIMELINE_ARGS[@]+"${TIMELINE_ARGS[@]}"} \
   --auto-pairs-file "$AUTO_PAIRS_FILE"

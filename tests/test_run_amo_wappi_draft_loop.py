@@ -53,6 +53,8 @@ def test_wappi_launchers_prefer_dedicated_runtime_python() -> None:
         assert ".mango_local/draft_loop/venv/bin/python" in text
         assert "DRAFT_LOOP_PYTHON_BIN" in text
         assert '"$PYTHON_BIN"' in text
+        if name == "start_wappi_draft_loop_phase1b_live.sh":
+            assert '${TIMELINE_ARGS[@]+"${TIMELINE_ARGS[@]}"}' in text
 
 
 def test_wappi_launchd_wrapper_exposes_operational_commands_via_live_truth() -> None:

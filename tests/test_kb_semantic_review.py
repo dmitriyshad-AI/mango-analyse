@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,7 @@ from scripts.run_kb_semantic_review import run_kb_semantic_review
 # release, see БЛОК 7 audit). Fixtures below that predate the БЛОК 7 SLA
 # check used minimal facts without it; `_FRESH_CHECK_DATE` keeps them
 # representative of real facts without hard-coding a date that ages out.
-_FRESH_CHECK_DATE = date.today().isoformat()
+_FRESH_CHECK_DATE = datetime.now(timezone.utc).date().isoformat()
 
 
 def test_semantic_review_blocks_implausible_client_price(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.productization.mango_calls_service_contract import (
     ready_row_is_complete,
 )
+from mango_mvp.services.dialogue_contract import guard_stored_analysis
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -70,6 +71,9 @@ class SourceRow:
     manager_name: str | None
     direction: str | None
     duration_sec: float | None
+    source_recording_id: str | None
+    transcript_text: str | None
+    transcript_variants_json: str | None
     analysis_json: str
     brand_evidence: str = "none"
     brand_evidence_brands: tuple[str, ...] = ()
@@ -151,6 +155,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             analysis = parse_json_object(row.analysis_json)
             if not analysis:
                 continue
+            analysis = guard_stored_analysis(
+                {
+                    "source_call_id": row.source_call_id or row.row_id,
+                    "source_recording_id": row.source_recording_id or "",
+                    "source_filename": row.source_filename or "",
+                    "source_file": row.source_file or "",
+                    "started_at": row.started_at,
+                    "phone": row.phone or "",
+                    "manager_name": row.manager_name or "",
+                    "direction": row.direction or "",
+                    "duration_sec": row.duration_sec,
+                    "transcript_text": row.transcript_text or "",
+                    "transcript_variants_json": row.transcript_variants_json or "",
+                },
+                analysis,
+            )
             call_type = analysis_call_type(analysis)
             call_type_counts[call_type or "unknown"] += 1
             brand_evidence_counts[row.brand_evidence] += 1
@@ -295,6 +315,11 @@ def read_ready_call_rows(
                     manager_name=first_text(row, "manager_name", "Менеджер"),
                     direction=first_text(row, "direction", "Направление звонка"),
                     duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
+                    source_recording_id=first_text(row, "source_recording_id", "recording_id"),
+                    transcript_text=first_text(
+                        row, "transcript_text", "transcript", "resolved_transcript_text"
+                    ),
+                    transcript_variants_json=first_text(row, "transcript_variants_json"),
                     analysis_json=str(row.get("analysis_json") or ""),
                     **brand_evidence_fields(row),
                     amocrm_contact_id=first_text(row, "amocrm_contact_id"),
@@ -341,6 +366,11 @@ def read_duplicate_source_ids(
                     manager_name=first_text(row, "manager_name", "Менеджер"),
                     direction=first_text(row, "direction", "Направление звонка"),
                     duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
+                    source_recording_id=first_text(row, "source_recording_id", "recording_id"),
+                    transcript_text=first_text(
+                        row, "transcript_text", "transcript", "resolved_transcript_text"
+                    ),
+                    transcript_variants_json=first_text(row, "transcript_variants_json"),
                     analysis_json=str(row.get("analysis_json") or ""),
                     **brand_evidence_fields(row),
                     amocrm_contact_id=first_text(row, "amocrm_contact_id"),

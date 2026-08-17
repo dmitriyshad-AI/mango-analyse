@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
@@ -74,6 +75,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     terminate_process_group,
     transcribe_environment,
     worker_command,
+    worker_environment,
     write_json,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
@@ -132,6 +134,16 @@ def test_service_transcribe_environment_keeps_whisper_canonical_and_selects_giga
     assert controlled_env["GIGAAM_POLICY"] == "all"
     assert controlled_env["GIGAAM_BATCH_SIZE"] == "1"
     assert transcribe_environment(legacy_service, {})["GIGAAM_BATCH_SIZE"] == "1"
+
+
+def test_resolve_never_spends_model_tokens_when_mango_roles_are_physical(
+    tmp_path: Path,
+) -> None:
+    service = replace(config_for(tmp_path), processing_scope="service")
+    controlled = replace(config_for(tmp_path), processing_scope="controlled_1")
+
+    assert worker_environment(service)["RESOLVE_LLM_PROVIDER"] == "off"
+    assert worker_environment(controlled)["RESOLVE_LLM_PROVIDER"] == "off"
 
 
 @pytest.mark.parametrize("include_batch_counts", [False, True])
@@ -2620,7 +2632,7 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
                 "event_key": "event:1",
                 "provider_call_id": "call-1",
                 "recording_id": "recording-1",
-                "recording_ids": ["recording-1"],
+                "recording_ids": [" recording-1 ", "recording-1"],
                 "started_at": "2026-07-09T00:00:00+00:00",
                 "direction": "inbound",
                 "status": "downloaded",
@@ -2638,6 +2650,9 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
 
     assert first["audio_files"] == second["audio_files"] == 1
     assert second["link_actions"] == {"exists_same_hash": 1}
+    with config.metadata_csv.open(encoding="utf-8", newline="") as handle:
+        metadata = list(csv.DictReader(handle))
+    assert metadata[0]["recording_id"] == "recording-1"
 
 
 def test_prepare_ingest_inputs_waits_for_recording_set_stabilization(tmp_path: Path) -> None:
@@ -6218,6 +6233,8 @@ def test_pipeline_rejects_shortened_cursor_after_exact_capture_validation(
         )
         manual_resume = run_process_a(
             config,
+            since=requested_since,
+            until=requested_until,
             skip_capture=True,
             skip_workers=True,
         )
@@ -6594,6 +6611,8 @@ def test_legacy_transfer_cursor_migrates_without_inheriting_zero_and_resumes(
     )
     resumed = run_process_a(
         config,
+        since=cursor["capture_window_certificate"]["requested_since"],
+        until=cursor["capture_window_certificate"]["requested_until"],
         skip_capture=True,
         skip_workers=True,
     )

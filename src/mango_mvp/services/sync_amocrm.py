@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
@@ -11,6 +12,11 @@ from mango_mvp.clients.amocrm import AmoCRMClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
 from mango_mvp.services.controlled_call_scope import load_controlled_call_scope
+from mango_mvp.services.dialogue_contract import (
+    call_record_view,
+    guard_stored_analysis,
+    safe_error_text,
+)
 
 LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE = (
     "Legacy amoCRM contact sync is disabled by default. "
@@ -198,6 +204,25 @@ class AmoCRMSyncService:
         multiplier = max(1, 2 ** max(0, attempts - 1))
         return timedelta(seconds=base * multiplier)
 
+    @staticmethod
+    def _source_fingerprint(call: CallRecord) -> str:
+        payload = {
+            name: getattr(call, name, None)
+            for name in (
+                "source_call_id",
+                "source_recording_id",
+                "phone",
+                "analysis_json",
+                "transcript_variants_json",
+                "transcript_text",
+                "analysis_status",
+            )
+        }
+        raw = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
     def run(self, session: Session, limit: int) -> Dict[str, int]:
         if load_controlled_call_scope(self._settings) is not None:
             raise RuntimeError("controlled_call_scope_forbids_amocrm_sync")
@@ -217,23 +242,51 @@ class AmoCRMSyncService:
         success = 0
         failed = 0
         skipped = 0
+        dry_run_count = 0
 
         for call in calls:
-            call.sync_attempts = int(call.sync_attempts or 0) + 1
-            attempt = call.sync_attempts
+            attempt = int(call.sync_attempts or 0) + 1
             try:
                 if not call.analysis_json:
                     raise RuntimeError("analysis_json is empty")
-                analysis: Dict[str, Any] = json.loads(call.analysis_json)
+                stored_analysis = json.loads(call.analysis_json)
+                if not isinstance(stored_analysis, dict):
+                    raise RuntimeError("analysis_contract_invalid")
+                analysis = guard_stored_analysis(call_record_view(call), stored_analysis)
+                quality_flags = analysis.get("quality_flags")
+                quality_flags = quality_flags if isinstance(quality_flags, dict) else {}
+                review_reasons = analysis.get("review_reasons")
+                review_reasons = review_reasons if isinstance(review_reasons, list) else []
+                flag_reasons = quality_flags.get("review_reasons")
+                flag_reasons = flag_reasons if isinstance(flag_reasons, list) else []
+                contract_invalid = quality_flags.get("analysis_contract_invalid") or (
+                    "analysis_contract_invalid" in {*review_reasons, *flag_reasons}
+                )
+                terminal_reason = (
+                    "analysis_contract_invalid"
+                    if contract_invalid
+                    else "role_attribution_untrusted"
+                    if quality_flags.get("role_attribution_untrusted")
+                    else ""
+                )
                 if self._settings.sync_dry_run:
-                    call.sync_status = "done"
+                    # A simulation must not consume the queue item or an
+                    # attempt.  It validates the stored contract and leaves
+                    # every persistent field unchanged.
+                    dry_run_count += 1
+                    continue
+                if terminal_reason:
+                    # Retrying cannot make persisted evidence or role binding
+                    # trustworthy.  Keep the row visible, but out of both the
+                    # retry queue and the live AMO path.
+                    call.sync_status = "skipped"
                     call.next_retry_at = None
                     call.dead_letter_stage = None
-                    call.last_error = "dry_run"
-                    success += 1
+                    call.last_error = f"sync:{terminal_reason}"
+                    skipped += 1
                     session.add(call)
                     continue
-
+                source_fingerprint = self._source_fingerprint(call)
                 if not call.phone:
                     raise RuntimeError("no phone in call record")
 
@@ -244,6 +297,15 @@ class AmoCRMSyncService:
 
                 contact_id = int(contact["id"])
                 note_text = _build_note_text(call, analysis)
+                session.refresh(call)
+                if self._source_fingerprint(call) != source_fingerprint:
+                    # The contact lookup raced a fresh Analyse result.  The old
+                    # note and fields must make zero AMO writes and consume no
+                    # retry attempt.
+                    session.rollback()
+                    skipped += 1
+                    continue
+                call.sync_attempts = attempt
                 self._client.add_contact_note(contact_id, note_text)
                 fields = _build_custom_fields(self._settings, analysis)
                 self._client.update_contact_fields(contact_id, fields)
@@ -270,7 +332,14 @@ class AmoCRMSyncService:
                 call.last_error = None
                 success += 1
             except Exception as exc:  # noqa: BLE001
-                call.last_error = f"sync: {exc}"
+                if self._settings.sync_dry_run:
+                    failed += 1
+                    continue
+                call.sync_attempts = attempt
+                # Same column, same dashboards, same leak: ``contact not found
+                # for {call.phone}`` above put the client's phone straight into
+                # ``last_error``.  One shared helper for every stage.
+                call.last_error = safe_error_text("sync", exc)
                 if attempt >= max_attempts:
                     call.sync_status = "dead"
                     call.dead_letter_stage = "sync"
@@ -287,4 +356,5 @@ class AmoCRMSyncService:
             "success": success,
             "failed": failed,
             "skipped": skipped,
+            "dry_run": dry_run_count,
         }

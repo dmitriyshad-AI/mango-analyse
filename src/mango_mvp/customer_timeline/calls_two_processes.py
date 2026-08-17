@@ -5678,6 +5678,10 @@ def prepare_ingest_inputs(
         if entry.provider_call_id in working_call_ids:
             skipped["already_in_working"] = skipped.get("already_in_working", 0) + 1
             continue
+        recording_ids = entry_recording_ids(entry)
+        source_recording_id = recording_ids[0] if len(recording_ids) == 1 else ""
+        if entry.canonical_recording_id and entry.canonical_recording_id != source_recording_id:
+            source_recording_id = ""
         rows.append(
             {
                 "filename": target.name,
@@ -5687,13 +5691,19 @@ def prepare_ingest_inputs(
                 "started_at": entry.started_at,
                 "direction": entry.direction,
                 "source_event_key": entry.event_key,
+                # Independent capture metadata.  It is intentionally not derived
+                # from ASR/Resolve JSON, which makes evidence rebinding fail closed.
+                "recording_id": source_recording_id,
             }
         )
     config.metadata_csv.parent.mkdir(parents=True, exist_ok=True)
     with config.metadata_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=("filename", "call_id", "phone", "manager", "started_at", "direction", "source_event_key"),
+            fieldnames=(
+                "filename", "call_id", "phone", "manager", "started_at",
+                "direction", "source_event_key", "recording_id",
+            ),
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -7027,7 +7037,10 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         "MANGO_CODEX_SERVICE_TIER": config.codex_service_tier,
         "CODEX_RESOLVE_MODEL": config.codex_resolve_model,
         "CODEX_ANALYZE_MODEL": config.codex_analyze_model,
-        "RESOLVE_LLM_PROVIDER": "codex_cli",
+        # Mango's physical channels already bind the speakers. Resolve therefore
+        # stays deterministic in every scope; a model call here adds no trusted
+        # role evidence and duplicates the later Analyze stage.
+        "RESOLVE_LLM_PROVIDER": "off",
         "RESOLVE_DIALOGUE_MODE": "dialogue",
         "RESOLVE_RESCUE_PROVIDER": "none",
         "RESOLVE_RESCUE_DUAL_ENABLED": "0",

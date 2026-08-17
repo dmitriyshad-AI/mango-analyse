@@ -9,8 +9,19 @@ from datetime import datetime
 from io import StringIO
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
+from mango_mvp.services.dialogue_contract import (
+    DialogueContractError,
+    PROVIDER_EVIDENCE_SOURCE,
+    canonical_provider_phrases_sha256,
+    provider_raw_response_record,
+    provider_record,
+)
+
 
 DEFAULT_MANGO_BASE_URL = "https://app.mango-office.ru"
+RECORDING_TRANSCRIPTS_PATH = "/vpbx/queries/recording_transcripts"
+# The documented ceiling of one ``recording_transcripts`` request.
+RECORDING_TRANSCRIPTS_MAX_IDS = 500
 DEFAULT_STATS_FIELDS = (
     "records,start,finish,answer,from_extension,from_number,"
     "to_extension,to_number,disconnect_reason,line_number,location,entry_id"
@@ -129,6 +140,131 @@ class MangoOfficeClient:
             return extract_stats_rows(result)
         raise AssertionError("unreachable Mango stats polling state")
 
+    @staticmethod
+    def build_recording_transcripts_payload(
+        recording_ids: Sequence[str],
+    ) -> Mapping[str, Any]:
+        """Pure request body for ``/vpbx/queries/recording_transcripts``.
+
+        No network call: этап B only prepares and validates the contract.  The
+        real availability of the method is checked by the M1 1→10 ladder.
+        """
+        if isinstance(recording_ids, (str, bytes)) or not isinstance(recording_ids, Sequence):
+            raise MangoOfficeApiError("recording_transcripts needs a sequence of recording ids")
+        if any(not isinstance(item, str) for item in recording_ids):
+            raise MangoOfficeApiError("recording_transcripts recording ids must be strings")
+        cleaned = [item.strip() for item in recording_ids]
+        if not cleaned or any(not item for item in cleaned):
+            raise MangoOfficeApiError("recording_transcripts needs non-empty recording ids")
+        if len(set(cleaned)) != len(cleaned):
+            raise MangoOfficeApiError("recording_transcripts recording ids are duplicated")
+        if len(cleaned) > RECORDING_TRANSCRIPTS_MAX_IDS:
+            raise MangoOfficeApiError(
+                "recording_transcripts accepts at most "
+                f"{RECORDING_TRANSCRIPTS_MAX_IDS} recording ids"
+            )
+        # Mango's current VPBX API PDF documents a JSON *string* containing
+        # the array, not a native nested array.  Keep this odd wire contract in
+        # one place so callers cannot sign a different body by accident.
+        return {
+            "recording_id": json.dumps(
+                cleaned, ensure_ascii=False, separators=(",", ":")
+            )
+        }
+
+    def fetch_recording_transcripts(
+        self, recording_ids: Sequence[str]
+    ) -> tuple[Any, str]:
+        """Read one documented batch and preserve the exact response body.
+
+        This method only performs transport.  A caller must still bind every
+        returned record to its capture metadata with
+        :meth:`parse_recording_transcripts_response` before storing evidence.
+        """
+        response = self._post_response(
+            RECORDING_TRANSCRIPTS_PATH,
+            self.build_recording_transcripts_payload(recording_ids),
+        )
+        raw_body = str(response.text)
+        return _decode_json_response(response), raw_body
+
+    @staticmethod
+    def parse_recording_transcripts_response(
+        payload: Any,
+        *,
+        source_call_id: str,
+        raw_body: str,
+        expected_recording_id: str,
+    ) -> Mapping[str, Any]:
+        """Strict offline reader of the official ``recording_transcripts`` answer.
+
+        The documented envelope is ``result`` plus ``data``.  Mango's public
+        one-record example uses an object, while batch responses may contain a
+        list; the dialogue contract accepts only those two explicit forms.  The
+        envelope grammar itself lives in the dialogue contract so that capture
+        and the role guard can never drift apart.
+
+        ``expected_recording_id`` is required and is used only to *select* the
+        record: the answer is searched for exactly that id and nothing is
+        reordered or picked by position.  The value written into the evidence is
+        the id the body itself declares — a request parameter is not proof of
+        what came back, so the two are compared rather than copied.
+
+        The returned evidence is bound to one ``source_call_id`` and carries
+        only that recording's canonical response.  The full batch body may
+        contain other clients and must be stored once in owner-only capture
+        storage under ``batch_response_sha256``; it must never be copied into
+        every call row.  A ``raw_body`` that does not re-derive the same record
+        is refused here.
+
+        The response is NOT assumed to carry a left/right channel binding — the
+        documented answer never promised one.  The dialogue contract derives the
+        binding from the phrases themselves, so this method deliberately stores
+        no ``channels`` field: a second copy of that fact is a second thing to
+        forge.  Until the M1 1→10 ladder captures a real answer, the whole path
+        stays fail-closed.
+        """
+        call_id = str(source_call_id or "").strip()
+        if not call_id:
+            raise MangoOfficeApiError("recording_transcripts evidence needs a source_call_id")
+        expected = str(expected_recording_id or "").strip()
+        if not expected:
+            raise MangoOfficeApiError(
+                "recording_transcripts evidence needs an expected recording_id"
+            )
+        raw_response = str(raw_body)
+        try:
+            record = provider_raw_response_record(raw_response, expected)
+            if record != provider_record(payload, expected):
+                raise DialogueContractError(
+                    "raw response body does not carry the parsed response"
+                )
+        except DialogueContractError as exc:
+            raise MangoOfficeApiError(f"recording_transcripts response is invalid: {exc}") from exc
+        if record["recording_id"] != expected:
+            raise MangoOfficeApiError(
+                "recording_transcripts response describes another recording"
+            )
+        record_response = json.dumps(
+            {"result": 1000, "data": record},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return {
+            "provider": PROVIDER_EVIDENCE_SOURCE,
+            "source_call_id": call_id,
+            "recording_id": record["recording_id"],
+            "phrases_sha256": canonical_provider_phrases_sha256(record["phrases"]),
+            "raw_response": record_response,
+            "raw_response_sha256": hashlib.sha256(
+                record_response.encode("utf-8")
+            ).hexdigest(),
+            "batch_response_sha256": hashlib.sha256(
+                raw_response.encode("utf-8")
+            ).hexdigest(),
+        }
+
     def post_command(self, path: str, payload: Mapping[str, Any]) -> Any:
         return _decode_json_response(self._post_response(path, payload))
 
@@ -143,8 +279,12 @@ class MangoOfficeClient:
             timeout=self.timeout_sec,
         )
         if response.status_code >= 400:
+            body_sha256 = hashlib.sha256(
+                str(response.text or "").encode("utf-8")
+            ).hexdigest()
             raise MangoOfficeApiError(
-                f"Mango Office API HTTP {response.status_code}: {response.text[:500]}"
+                "Mango Office API request failed: "
+                f"status={response.status_code} path={path} body_sha256={body_sha256}"
             )
         return response
 

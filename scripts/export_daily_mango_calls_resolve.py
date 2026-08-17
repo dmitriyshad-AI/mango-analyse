@@ -46,6 +46,13 @@ from mango_mvp.productization.ready_publication import (
     recover_ready_generation,
 )
 from mango_mvp.services.export_excel import call_to_row
+from mango_mvp.services.dialogue_contract import (
+    DialogueContractError,
+    SOURCE_DIALOGUE_LINES,
+    build_dialogue_input,
+    call_record_view,
+    guard_stored_analysis,
+)
 from mango_mvp.utils.filename_repair import repair_manager_name
 from mango_mvp.utils.phone import normalize_phone
 
@@ -82,7 +89,6 @@ CALL_TYPE_RU = {
     "technical_call": "Технический вопрос",
     "non_conversation": "Разговор не состоялся",
 }
-STATUS_RU = {"done": "Готово", "skipped": "Пропущено по правилу", "manual": "Нужна ручная проверка", "pending": "Ожидает", "failed": "Ошибка", "in_progress": "В работе"}
 PRICE_RU = {"high": "Высокая", "medium": "Средняя", "low": "Низкая"}
 CHANNEL_RU = {"phone": "Телефон", "email": "Электронная почта", "telegram": "Telegram", "whatsapp": "WhatsApp"}
 
@@ -393,30 +399,6 @@ def ordered_dialogue(source: Path, variants: Mapping[str, Any], fallback: str, *
     return f"{ORDER_WARNING}\n\n{preserved}".strip(), False
 
 
-def manager_roles_confirmed(variants: Mapping[str, Any]) -> bool:
-    if variants.get("dialogue_lines_source") == "mutable_sidecar":
-        return False
-    for key in ("resolve", "dialogue_resolve"):
-        block = variants.get(key)
-        if not isinstance(block, Mapping):
-            continue
-        try:
-            if int(block.get("speaker_corrections") or 0) != 0:
-                return False
-        except (TypeError, ValueError):
-            return False
-    mapping = variants.get("role_mapping")
-    channels = {(variants.get(role) if isinstance(variants.get(role), Mapping) else {}).get("physical_channel") for role in ("manager", "client")}
-    return bool(
-        isinstance(mapping, Mapping)
-        and mapping.get("confirmed") is True
-        and mapping.get("manager_quality_allowed") is True
-        and mapping.get("topology") == "simple_two_party"
-        and variants.get("call_topology") == "simple_two_party"
-        and channels == {"left", "right"}
-    )
-
-
 def neutralize_unconfirmed_roles(text: str) -> str:
     text = re.sub(r"(?i)\bМенеджер(?:\s*\([^)]+\))?\s*:", "Спикер A (роль не подтверждена):", text)
     return re.sub(r"(?i)\bКлиент(?:\s*\([^)]+\))?\s*:", "Спикер B (роль не подтверждена):", text)
@@ -617,21 +599,33 @@ def processing_issues(
 
 
 def normalize_row(row: sqlite3.Row, names: Mapping[str, str], *, sealed_only: bool = False) -> dict[str, Any]:
-    analysis, resolve, variants = parse_json(row["analysis_json"]), parse_json(row["resolve_json"]), parse_json(row["transcript_variants_json"])
+    stored_analysis = parse_json(row["analysis_json"])
+    resolve, variants = parse_json(row["resolve_json"]), parse_json(row["transcript_variants_json"])
     raw = dict(row)
     started_utc = datetime.fromisoformat(str(row["started_at"])).replace(tzinfo=timezone.utc)
     raw["started_at"] = started_utc
+    analysis = (
+        guard_stored_analysis(call_record_view(raw), stored_analysis)
+        if stored_analysis
+        else {}
+    )
     base = call_to_row(SimpleNamespace(**raw), analysis) if analysis else {}
     started = started_utc.astimezone(MOSCOW)
-    transcript, order_confirmed = ordered_dialogue(
-        Path(str(row["source_file"])), variants, str(row["transcript_text"] or ""),
-        allow_file_fallback=not sealed_only,
-    )
-    stored_lines = variants.get("dialogue_lines")
-    dialogue_text_aligned = not isinstance(stored_lines, list) or _role_binding_matches(
-        stored_lines, str(row["transcript_text"] or "")
-    )
-    roles_confirmed = manager_roles_confirmed(variants)
+    try:
+        dialogue = build_dialogue_input(call_record_view(raw))
+        transcript = dialogue.render()
+        order_confirmed = bool(dialogue.turns) and dialogue.source == SOURCE_DIALOGUE_LINES
+        dialogue_text_aligned = order_confirmed
+        roles_confirmed = dialogue.trusted
+    except DialogueContractError:
+        transcript, _ = ordered_dialogue(
+            Path(str(row["source_file"])),
+            variants,
+            str(row["transcript_text"] or ""),
+            allow_file_fallback=not sealed_only,
+        )
+        transcript = neutralize_unconfirmed_roles(transcript)
+        order_confirmed = dialogue_text_aligned = roles_confirmed = False
     chronology_confirmed = order_confirmed and roles_confirmed and dialogue_text_aligned
     extension = str(row["manager_name"] or "").strip()
     manager = names.get(extension, "")
@@ -666,7 +660,11 @@ def normalize_row(row: sqlite3.Row, names: Mapping[str, str], *, sealed_only: bo
         )
         transcript = warning + "\n\n" + neutralize_unconfirmed_roles(transcript)
     if not chronology_confirmed:
-        base = {key: base.get(key) for key in ("call_type", "history_summary", "interests_products", "recommended_product", "objections", "next_step_action") if base.get(key)}
+        base = {
+            key: base.get(key)
+            for key in ("call_type", "history_summary")
+            if base.get(key)
+        }
     if row["analysis_status"] != "done" or not analysis:
         base["history_summary"] = NEUTRAL_SUMMARY
     elif not clean_summary(base.get("history_summary")):

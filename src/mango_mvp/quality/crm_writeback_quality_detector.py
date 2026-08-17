@@ -99,7 +99,12 @@ CRM_WRITEBACK_RULES: tuple[tuple[str, str, re.Pattern[str], str], ...] = (
             r"\bномер\s+указан\s+как\s+техническ\w+\s+и\s+не\s+использ|"
             r"\bповторн\w+\s+связь\s+по\s+этому\s+номеру\s+не\s+требуется\b|"
             r"\bномер\s+общий\b.{0,120}\bне\s+знает,\s*кто\s+ранее\s+звонил|"
-            r"\bменеджер\b.{0,120}\bобщал\w+\s+с\s+клиент\w+\.\s*итог:\s*оценка\s+на\s+основе\s+содержания\s+звонка"
+            # The date/manager preamble is no longer written into the конспект
+            # (ТЗ-04 §7.4), so the bare "Итог: оценка на основе содержания
+            # звонка." is now the whole contentless summary and must still be
+            # caught on its own; the old prefixed form keeps matching too.
+            r"(?:\bменеджер\b.{0,120}\bобщал\w+\s+с\s+клиент\w+\.\s*)?"
+            r"итог:\s*оценка\s+на\s+основе\s+содержания\s+звонка"
         ),
         "No-content or no EdTech intent marker",
     ),

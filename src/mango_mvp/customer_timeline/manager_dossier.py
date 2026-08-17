@@ -38,6 +38,7 @@ from mango_mvp.customer_timeline.store import (
     customer_timeline_readonly_uri,
     open_family_identity_conflict_customer_ids,
 )
+from mango_mvp.services.dialogue_contract import trusted_role_text
 from mango_mvp.knowledge_base.price_axes_catalog import extract_price_query_axes, select_price
 
 
@@ -1185,8 +1186,23 @@ def load_canonical_call_client_texts(path: Path | str | None) -> Mapping[str, st
     if not db.exists():
         return {}
     with _connect_ro(db) as con:
-        rows = con.execute("SELECT canonical_call_id, transcript_client FROM canonical_calls").fetchall()
-    return {str(row[0]): str(row[1] or "") for row in rows}
+        columns = {str(row[1]) for row in con.execute("PRAGMA table_info(canonical_calls)")}
+        required = {
+            "canonical_call_id", "source_call_id", "source_recording_id",
+            "transcript_text", "transcript_variants_json",
+        }
+        if not required <= columns:
+            return {}
+        rows = con.execute(
+            "SELECT canonical_call_id, source_call_id, source_recording_id, "
+            "transcript_text, transcript_variants_json FROM canonical_calls"
+        ).fetchall()
+    result: dict[str, str] = {}
+    for row in rows:
+        client_text = trusted_role_text(dict(row), "client")
+        if client_text:
+            result[str(row["canonical_call_id"])] = client_text
+    return result
 
 
 def _load_canonical_calls_fail_soft(path: Path | str | None) -> tuple[Mapping[str, str], str]:

@@ -33,6 +33,13 @@ from mango_mvp.services.controlled_call_scope import (
     require_unique_controlled_call,
     write_call_artifact_bytes,
 )
+from mango_mvp.services.dialogue_contract import (
+    DialogueContractError,
+    label_role as dialogue_label_role,
+    label_side as dialogue_label_side,
+    parse_line as parse_dialogue_line,
+    safe_error_text,
+)
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
@@ -1246,46 +1253,22 @@ class TranscribeService:
             for idx, (speaker, text) in enumerate(turns)
         ]
 
-    @staticmethod
-    def _timecode_to_seconds(token: str) -> float:
-        raw = (token or "").strip()
-        if raw.startswith("~"):
-            raw = raw[1:]
-        parts = raw.split(":")
-        try:
-            if len(parts) == 2:
-                minutes = int(parts[0])
-                seconds = float(parts[1])
-                return float(minutes * 60) + seconds
-            if len(parts) == 3:
-                hours = int(parts[0])
-                minutes = int(parts[1])
-                seconds = float(parts[2])
-                return float(hours * 3600 + minutes * 60) + seconds
-        except (TypeError, ValueError):
-            return 0.0
-        return 0.0
-
     def _parse_dialogue_line(self, line: str) -> Optional[Dict[str, Any]]:
-        match = re.match(r"^\[(?P<time>[^\]]+)\]\s+(?P<speaker>[^:]+):\s*(?P<text>.*)$", line.strip())
-        if not match:
+        try:
+            parsed = parse_dialogue_line(line)
+        except DialogueContractError:
             return None
-        speaker = match.group("speaker").strip()
-        text = match.group("text").strip()
-        if speaker.startswith("Менеджер"):
-            role = "manager"
-        elif speaker == "Клиент":
-            role = "client"
-        else:
-            role = "other"
+        speaker = str(parsed["label"])
+        label_kind = dialogue_label_role(speaker) or dialogue_label_side(speaker)
+        role = label_kind if label_kind in {"manager", "client"} else "other"
         return {
-            "timecode": match.group("time"),
-            "start": self._timecode_to_seconds(match.group("time")),
-            "approximate": match.group("time").startswith("~"),
+            "timecode": str(parsed["timecode"])[1:-1],
+            "start": float(parsed["start_sec"]),
+            "approximate": bool(parsed["approximate"]),
             "speaker": speaker,
             "role": role,
-            "text": text,
-            "line": line.strip(),
+            "text": str(parsed["text"]),
+            "line": str(parsed["raw_line"]),
         }
 
     def _role_text_fit_score(self, role: str, text: str) -> float:
@@ -2580,7 +2563,7 @@ class TranscribeService:
                 try:
                     llm_result = self._assign_roles_with_openai(turns, manager_name)
                 except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"mono_role_assign: openai_failed: {exc}")
+                    warnings.append(safe_error_text("mono_role_assign_openai", exc))
             else:
                 warnings.append(
                     "mono_role_assign: OPENAI_API_KEY missing for openai_selective"
@@ -2589,12 +2572,12 @@ class TranscribeService:
             try:
                 llm_result = self._assign_roles_with_ollama(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"mono_role_assign: ollama_failed: {exc}")
+                warnings.append(safe_error_text("mono_role_assign_ollama", exc))
         elif mode == "codex_selective":
             try:
                 llm_result = self._assign_roles_with_codex(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"mono_role_assign: codex_failed: {exc}")
+                warnings.append(safe_error_text("mono_role_assign_codex", exc))
 
         if llm_result and mode == "codex_selective":
             llm_result = self._apply_low_info_role_filter(
@@ -2970,7 +2953,7 @@ class TranscribeService:
                     "selection": choice,
                     "confidence": 0.6,
                     "provider": "rule_fallback",
-                    "notes": f"ollama_merge_failed: {exc}",
+                    "notes": "ollama_merge_failed | " + safe_error_text("ollama_merge", exc),
                     "suspicious_drops": suspicious_drops,
                     "similarity": similarity,
                 }
@@ -2996,7 +2979,7 @@ class TranscribeService:
                     "selection": choice,
                     "confidence": 0.6,
                     "provider": "rule_fallback",
-                    "notes": f"codex_cli_merge_failed: {exc}",
+                    "notes": "codex_cli_merge_failed | " + safe_error_text("codex_cli_merge", exc),
                     "suspicious_drops": suspicious_drops,
                     "similarity": similarity,
                 }
@@ -3023,7 +3006,7 @@ class TranscribeService:
                 "selection": choice,
                 "confidence": 0.6,
                 "provider": "rule_fallback",
-                "notes": f"openai_merge_failed: {exc}",
+                "notes": "openai_merge_failed | " + safe_error_text("openai_merge", exc),
                 "suspicious_drops": suspicious_drops,
                 "similarity": similarity,
             }
@@ -3034,7 +3017,7 @@ class TranscribeService:
         except SecondaryAsrLeaseLost:
             raise
         except Exception as exc:  # noqa: BLE001
-            return {"text": "", "segments": None, "error": str(exc)}
+            return {"text": "", "segments": None, "error": safe_error_text("gigaam", exc)}
         text = str(result.get("text", "")).strip()
         segments = result.get("segments")
         return {
@@ -3521,15 +3504,21 @@ class TranscribeService:
                         if rebuilt_manager and rebuilt_client:
                             manager_text = rebuilt_manager
                             client_text = rebuilt_client
-                        if role_mapping["manager_quality_allowed"]:
-                            combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
-                            output_manager, output_client = manager_text, client_text
-                        else:
-                            dialogue_lines = self._neutralize_role_lines(
-                                dialogue_lines, manager_channel
-                            )
-                            combined = f"CHANNEL_LEFT:\n{manager_text}\n\nCHANNEL_RIGHT:\n{client_text}"
-                            output_manager = output_client = None
+                        # ТЗ-01/ТЗ-02 R1: the stored dialogue always names the
+                        # *physical* track, never a role.  The old heuristic
+                        # (manager/client whenever ``manager_quality_allowed``)
+                        # made trusted unreachable in practice: the role guard
+                        # requires proven provider evidence, and a line that
+                        # already claims "Менеджер" carries no physical side to
+                        # bind that evidence to.  The role texts below stay as
+                        # raw per-side text inside the variants only.  The legacy
+                        # role columns stay empty because older consumers can read
+                        # them without applying the dialogue trust contract.
+                        dialogue_lines = self._neutralize_role_lines(
+                            dialogue_lines, manager_channel
+                        )
+                        combined = f"CHANNEL_LEFT:\n{manager_text}\n\nCHANNEL_RIGHT:\n{client_text}"
+                        output_manager = output_client = None
                         variants_payload = {
                             "mode": "stereo",
                             "dialogue_lines": dialogue_lines,
@@ -3655,27 +3644,14 @@ class TranscribeService:
         dialogue_lines = self._build_mono_dialogue_lines_from_turns(
             mono_turns, "Спикер (не определен)"
         )
-        manager_name = self._extract_manager_name_from_filename(call.source_filename)
         role_assignment = None
-        if stereo_fallback_mapping is None:
-            role_assignment = self._assign_roles_for_mono(
-                mono_turns,
-                manager_name=manager_name,
-                warnings=warnings,
-            )
-        else:
+        if stereo_fallback_mapping is not None:
             warnings.append("role_mapping: blocked_after_stereo_fallback")
+        elif (self._settings.mono_role_assignment_mode or "off").strip().lower() != "off":
+            warnings.append("mono_role_assign: disabled_without_provider_evidence")
         transcript_manager: Optional[str] = None
         transcript_client: Optional[str] = None
         transcript_text = full_text
-        if role_assignment:
-            transcript_manager = str(role_assignment.get("manager_text") or "").strip()
-            transcript_client = str(role_assignment.get("client_text") or "").strip()
-            if transcript_manager and transcript_client:
-                dialogue_lines = role_assignment.get("dialogue_lines") or dialogue_lines
-                transcript_text = (
-                    f"MANAGER:\n{transcript_manager}\n\nCLIENT:\n{transcript_client}"
-                )
         artifact_filter = self._drop_artifact_only_lines(dialogue_lines)
         dropped_artifacts = int(artifact_filter.get("dropped", 0) or 0)
         if dropped_artifacts > 0:
@@ -3684,15 +3660,9 @@ class TranscribeService:
                 "dialogue_artifact_filter: dropped_lines="
                 f"{dropped_artifacts}"
             )
-            rebuilt_manager, rebuilt_client = self._rebuild_role_texts_from_dialogue_lines(
-                dialogue_lines
-            )
-            if rebuilt_manager and rebuilt_client:
-                transcript_manager = rebuilt_manager
-                transcript_client = rebuilt_client
-                transcript_text = (
-                    f"MANAGER:\n{transcript_manager}\n\nCLIENT:\n{transcript_client}"
-                )
+            # The mono dialogue carries a neutral speaker now, so rebuilding the
+            # per-role texts from it could only ever return nothing.  The branch
+            # that did so is gone rather than left as a no-op nobody can read.
         mono_role_mapping = stereo_fallback_mapping or {
             "status": "unverified_mono_or_legacy",
             "confirmed": False,
@@ -4097,7 +4067,7 @@ class TranscribeService:
                 session.expire_all()
                 failed += 1
                 outcome = "lease_lost"
-                error_text = str(exc)
+                error_text = safe_error_text("secondary_asr_lease", exc)
                 _emit_progress(
                     {
                         "stage": "backfill_second_asr",
@@ -4109,7 +4079,6 @@ class TranscribeService:
                         "exhausted": exhausted,
                         "status": outcome,
                         "call_id": call.id,
-                        "source_filename": call.source_filename,
                         "error": error_text,
                     }
                 )
@@ -4118,7 +4087,7 @@ class TranscribeService:
                 is_exhausted = attempts >= SECONDARY_BACKFILL_MAX_ATTEMPTS
                 failed += 1
                 outcome = "failed"
-                error_text = str(exc)
+                error_text = safe_error_text("secondary_asr", exc)
                 updated_payload = self._apply_secondary_backfill_meta(
                     current_payload,
                     secondary_provider=secondary_provider,
@@ -4136,7 +4105,7 @@ class TranscribeService:
                 call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
                 # Keep existing successful transcript intact when selective backfill fails.
                 call.transcription_status = "done"
-                call.last_error = f"backfill-second-asr: {exc}"
+                call.last_error = safe_error_text("backfill_second_asr", exc)
                 call.pipeline_stage = None
                 call.pipeline_worker_id = None
                 call.pipeline_claimed_at = None
@@ -4157,7 +4126,6 @@ class TranscribeService:
                     "exhausted": exhausted,
                     "status": outcome,
                     "call_id": call.id,
-                    "source_filename": call.source_filename,
                     "error": error_text,
                 }
             )
@@ -4340,7 +4308,7 @@ class TranscribeService:
                 call.pipeline_claimed_at = None
                 success += 1
             except Exception as exc:  # noqa: BLE001
-                call.last_error = f"transcribe: {exc}"
+                call.last_error = safe_error_text("transcribe", exc)
                 if attempt >= max_attempts:
                     call.transcription_status = "dead"
                     call.dead_letter_stage = "transcribe"
@@ -4356,7 +4324,7 @@ class TranscribeService:
                 call.pipeline_claimed_at = None
                 failed += 1
                 outcome = "failed"
-                error_text = str(exc)
+                error_text = safe_error_text("transcribe", exc)
             session.add(call)
             _emit_progress(
                 {
@@ -4367,7 +4335,6 @@ class TranscribeService:
                     "failed": failed,
                     "status": outcome,
                     "call_id": call.id,
-                    "source_filename": call.source_filename,
                     "error": error_text,
                 }
             )

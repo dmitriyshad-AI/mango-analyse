@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.services.dialogue_contract import trusted_role_text
 
 
 OBJECTION_EXTRACTOR_VERSION = "ob_v1"
@@ -498,16 +499,24 @@ def _load_canonical_call_texts(path: Path | str | None) -> Mapping[str, Canonica
     uri = f"{db.as_uri()}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as con:
         con.row_factory = sqlite3.Row
+        columns = {str(row[1]) for row in con.execute("PRAGMA table_info(canonical_calls)")}
+        required = {
+            "canonical_call_id", "source_call_id", "source_recording_id",
+            "transcript_text", "transcript_variants_json", "direction",
+        }
+        if not required <= columns:
+            return {}
         rows = con.execute(
             """
-            SELECT canonical_call_id, transcript_client, direction
+            SELECT canonical_call_id, source_call_id, source_recording_id,
+                   transcript_text, transcript_variants_json, direction
             FROM canonical_calls
             """
         ).fetchall()
     result: dict[str, CanonicalCallText] = {}
     for row in rows:
         result[str(row["canonical_call_id"])] = CanonicalCallText(
-            transcript_client=str(row["transcript_client"] or ""),
+            transcript_client=trusted_role_text(dict(row), "client"),
             direction=str(row["direction"] or "unknown").lower(),
         )
     return result

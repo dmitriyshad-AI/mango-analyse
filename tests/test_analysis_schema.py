@@ -10,6 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
+
 from mango_mvp import cli as cli_module
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
@@ -23,7 +26,68 @@ from mango_mvp.services.sync_amocrm import _build_custom_fields
 from tests.test_dialogue_format import make_settings
 
 
+def _v3_answer(**overrides: object) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "result": {"status": None, "detail": None},
+        "people": {"parent_fio": None, "child_fio": None},
+        "contacts": {"email": None, "preferred_channel": None},
+        "student": {"grade_current": None, "school": None},
+        "interests": {
+            "products": [], "format": [], "subjects": [], "exam_targets": [],
+        },
+        "commercial": {
+            "price_sensitivity": None, "budget": None, "discount_interest": None,
+        },
+        "objections": [],
+        "next_step": {"action": None, "due": None},
+    }
+    fields.update(overrides)
+    return {"structured_fields": fields, "claim_requests": []}
+
+
 class AnalysisSchemaTest(unittest.TestCase):
+    def test_source_recording_id_is_unique_and_legacy_duplicates_block_migration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_recording_unique_") as td:
+            settings = replace(
+                make_settings(), database_url=f"sqlite:///{Path(td) / 'calls.db'}"
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file="first.mp3",
+                        source_filename="first.mp3",
+                        source_recording_id="recording-1",
+                    )
+                )
+                session.commit()
+                session.add(
+                    CallRecord(
+                        source_file="second.mp3",
+                        source_filename="second.mp3",
+                        source_recording_id=" recording-1 ",
+                    )
+                )
+                with self.assertRaises(IntegrityError):
+                    session.commit()
+                session.rollback()
+
+            with session_factory() as session:
+                session.execute(sa_text("DROP INDEX ix_call_records_source_recording_id"))
+                session.commit()
+                session.add(
+                    CallRecord(
+                        source_file="second.mp3",
+                        source_filename="second.mp3",
+                        source_recording_id="recording-1",
+                    )
+                )
+                session.commit()
+
+            with self.assertRaisesRegex(RuntimeError, "duplicate source_recording_id"):
+                init_db(settings)
+
     def test_analysis_schema_version_detection(self) -> None:
         service = AnalyzeService(make_settings())
         self.assertEqual(service.analysis_schema_version({}), "v1")
@@ -49,10 +113,11 @@ class AnalysisSchemaTest(unittest.TestCase):
 
         migrated = service.migrate_analysis_payload(call, old_payload)
         self.assertEqual(migrated.get("analysis_schema_version"), "v2")
-        self.assertEqual(migrated.get("next_step"), "Отправить программу")
-        self.assertEqual(migrated["crm_blocks"]["student"]["grade_current"], "10")
-        self.assertIn("математика", migrated["crm_blocks"]["interests"]["subjects"])
-        self.assertNotIn("analysis_meta", migrated)
+        self.assertIsNone(migrated.get("next_step"))
+        self.assertEqual(migrated["structured_fields"], {})
+        self.assertEqual(migrated["crm_blocks"], {})
+        self.assertIn("математика", migrated["neutral_topics"])
+        self.assertTrue(migrated["needs_review"])
 
     def test_top_level_migrate_analysis_payload_matches_service_adapter(self) -> None:
         service = AnalyzeService(make_settings())
@@ -105,8 +170,9 @@ class AnalysisSchemaTest(unittest.TestCase):
             migrated = list(executor.map(migrate_analysis_payload, snapshots, payloads))
 
         self.assertEqual([item["analysis_schema_version"] for item in migrated], ["v2", "v2"])
-        self.assertEqual(migrated[0]["next_step"], "Отправить программу")
-        self.assertEqual(migrated[1]["next_step"], "Отправить материалы")
+        self.assertIsNone(migrated[0].get("next_step"))
+        self.assertIsNone(migrated[1].get("next_step"))
+        self.assertTrue(all(item["needs_review"] for item in migrated))
 
     def test_normalize_analysis_emits_v2_blocks_and_legacy(self) -> None:
         service = AnalyzeService(make_settings())
@@ -133,7 +199,9 @@ class AnalysisSchemaTest(unittest.TestCase):
 
         self.assertEqual(analysis.get("analysis_schema_version"), "v2")
         self.assertEqual(analysis.get("summary"), analysis.get("history_short"))
-        self.assertIn("менеджер леонов алексей", analysis.get("history_summary", "").lower())
+        # ТЗ-04 §7.4: the date and the manager stay in their own columns.
+        self.assertNotIn("леонов алексей", analysis.get("history_summary", "").lower())
+        self.assertNotIn("10.02.2026", analysis.get("history_summary", ""))
         self.assertIn("Договорились:", analysis.get("history_summary", ""))
         self.assertEqual(analysis.get("structured_fields"), analysis.get("crm_blocks"))
         self.assertEqual(
@@ -266,8 +334,8 @@ class AnalysisSchemaTest(unittest.TestCase):
 
         analysis = service._normalize_analysis(call, transcript, raw)
         summary_text = analysis.get("history_summary", "")
-        self.assertIn("08.03.2026 11:22", summary_text)
-        self.assertIn("менеджер Петрова Анна", summary_text)
+        self.assertNotIn("08.03.2026 11:22", summary_text)
+        self.assertNotIn("менеджер Петрова Анна", summary_text)
         self.assertIn("Договорились:", summary_text)
         self.assertNotIn("[00:01.1]", summary_text)
 
@@ -587,7 +655,7 @@ class AnalysisSchemaTest(unittest.TestCase):
             self.assertIsInstance(meta, dict)
             self.assertEqual(meta["analysis_provider"], "mock")
             self.assertEqual(meta["analysis_model"], "mock")
-            self.assertEqual(meta["analysis_prompt_version"], "v6")
+            self.assertEqual(meta["analysis_prompt_version"], "v8")
             self.assertTrue(meta["analyzed_at"].endswith("+00:00"))
 
             base = export_dir / calls_dir.name / f"{source.stem}"
@@ -599,8 +667,8 @@ class AnalysisSchemaTest(unittest.TestCase):
             summary_text = summary_path.read_text(encoding="utf-8").strip()
             self.assertTrue(summary_text)
             structured = json.loads(structured_path.read_text(encoding="utf-8"))
-            self.assertIsInstance(structured, dict)
-            self.assertIn("interests", structured)
+            self.assertEqual(structured, {})
+            self.assertIn("требует ручной проверки", summary_text)
 
     def test_export_crm_fields_cli(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_crm_export_") as td:
@@ -667,9 +735,10 @@ class AnalysisSchemaTest(unittest.TestCase):
             self.assertEqual(code, 0)
             content = out_path.read_text(encoding="utf-8")
             self.assertIn("history_summary", content)
-            self.assertIn("Иванова Анна", content)
-            self.assertIn("годовые курсы", content)
-            self.assertIn("Нужен контакт на этой неделе", content)
+            self.assertIn("требует ручной проверки", content)
+            self.assertNotIn("Иванова Анна", content)
+            self.assertNotIn("годовые курсы", content)
+            self.assertNotIn("Нужен контакт на этой неделе", content)
 
     def test_analyze_provider_codex_cli_routes_to_codex_method(self) -> None:
         settings = replace(
@@ -688,9 +757,11 @@ class AnalysisSchemaTest(unittest.TestCase):
             "обсуждает стоимость, просит отправить программу на почту и перезвонить завтра в 18:00."
         )
 
-        with patch.object(service, "_codex_cli_analysis", return_value={"summary": "ok"}) as mocked:
+        answer = _v3_answer()
+        with patch.object(service, "_codex_cli_analysis", return_value=answer) as mocked:
             payload = service._analyze_text(call, text)
-        self.assertEqual(payload.get("summary"), "ok")
+        self.assertEqual(payload["structured_fields"], answer["structured_fields"])
+        self.assertEqual(payload["claim_requests"], [])
         mocked.assert_called_once()
 
     def test_analyze_text_pre_llm_gate_skips_codex_for_no_live_call(self) -> None:
@@ -746,12 +817,19 @@ class AnalysisSchemaTest(unittest.TestCase):
             with patch.object(
                 service,
                 "_codex_cli_analysis",
-                return_value={"summary": "provider called", "target_product": "летний лагерь"},
+                return_value=_v3_answer(
+                    interests={
+                        "products": ["летний лагерь"], "format": [],
+                        "subjects": [], "exam_targets": [],
+                    }
+                ),
             ) as mocked:
                 payload = service._analyze_text(call, text)
 
         mocked.assert_called_once()
-        self.assertEqual(payload["target_product"], "летний лагерь")
+        self.assertEqual(
+            payload["structured_fields"]["interests"]["products"], ["летний лагерь"]
+        )
 
     def test_migrate_analysis_schema_refreshes_export_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_migrate_export_") as td:
@@ -843,12 +921,14 @@ class AnalysisSchemaTest(unittest.TestCase):
             self.assertTrue(structured_path.exists())
             summary_text = summary_path.read_text(encoding="utf-8")
             structured = json.loads(structured_path.read_text(encoding="utf-8"))
-            self.assertIn("Петрова Анна", summary_text)
-            self.assertEqual(structured["next_step"]["action"], "Уточнить информацию и сообщить клиенту")
+            self.assertNotIn("Петрова Анна", summary_text)
+            self.assertIn("требует ручной проверки", summary_text)
+            self.assertEqual(structured, {})
             with session_factory() as session:
                 call = session.query(CallRecord).one()
                 migrated = json.loads(call.analysis_json or "{}")
-            self.assertNotIn("analysis_meta", migrated)
+            self.assertEqual(migrated["analysis_meta"], {})
+            self.assertTrue(migrated["needs_review"])
 
 
 if __name__ == "__main__":

@@ -1387,7 +1387,10 @@ def event_recording_ids(event: TelephonyCallEvent) -> tuple[str, ...]:
 
 
 def entry_recording_ids(entry: Optional[ManifestEntry]) -> tuple[str, ...]:
-    return () if entry is None else entry.recording_ids or ((entry.recording_id,) if entry.recording_id else ())
+    if entry is None:
+        return ()
+    raw = entry.recording_ids or ((entry.recording_id,) if entry.recording_id else ())
+    return tuple(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))
 
 
 def merge_recording_ids(*groups: Sequence[str]) -> tuple[str, ...]:

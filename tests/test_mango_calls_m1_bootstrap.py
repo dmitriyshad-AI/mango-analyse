@@ -9,7 +9,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -339,6 +339,114 @@ def test_readiness_probe_accepts_tuple_and_rejects_future_measurement(
         expected_sha="a" * 40,
         host_id="m1-host",
     )
+
+
+def test_google_readonly_probe_uses_supported_publisher_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+    from scripts import publish_current_mango_calls_google as publisher
+
+    owner = "owner@example.invalid"
+    service = "publisher@example.invalid"
+    reviewer = "reviewer@example.invalid"
+    tmp_path.chmod(0o700)
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text(json.dumps({"client_email": service}), encoding="utf-8")
+    credentials_path.chmod(0o600)
+    config_path = tmp_path / "google.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": publisher.CONFIG_SCHEMA,
+                "spreadsheet_id": "spreadsheet-id",
+                "owner_email": owner,
+                "service_account_email": service,
+                "credentials": str(credentials_path),
+                "pilot_started_day": "2026-08-01",
+                "allowed_permissions": [
+                    {"email": owner, "role": "owner"},
+                    {"email": service, "role": "writer"},
+                    {"email": reviewer, "role": "reader"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+
+    permissions = [
+        {"type": "user", "emailAddress": owner, "role": "owner"},
+        {"type": "user", "emailAddress": service, "role": "writer"},
+        {"type": "user", "emailAddress": reviewer, "role": "reader"},
+    ]
+    requests: list[str] = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class ReadOnlySession:
+        def get(self, url: str, **_kwargs: object) -> Response:
+            requests.append(url)
+            if url.endswith("/permissions"):
+                return Response({"permissions": permissions})
+            return Response(
+                {"sheets": [{"properties": {"sheetId": 1, "title": "Calls"}}]}
+            )
+
+    def fake_credentials(info: dict[str, object], scopes: object) -> str:
+        assert info == {"client_email": service}
+        assert scopes
+        return "credentials"
+
+    class FakeCredentials:
+        from_service_account_info = staticmethod(fake_credentials)
+
+    google = ModuleType("google")
+    google.__path__ = []  # type: ignore[attr-defined]
+    auth = ModuleType("google.auth")
+    auth.__path__ = []  # type: ignore[attr-defined]
+    transport = ModuleType("google.auth.transport")
+    transport.__path__ = []  # type: ignore[attr-defined]
+    google_requests = ModuleType("google.auth.transport.requests")
+    google_requests.AuthorizedSession = (  # type: ignore[attr-defined]
+        lambda credentials: ReadOnlySession() if credentials == "credentials" else None
+    )
+    oauth2 = ModuleType("google.oauth2")
+    oauth2.__path__ = []  # type: ignore[attr-defined]
+    service_account = ModuleType("google.oauth2.service_account")
+    service_account.Credentials = FakeCredentials  # type: ignore[attr-defined]
+    google.auth = auth  # type: ignore[attr-defined]
+    google.oauth2 = oauth2  # type: ignore[attr-defined]
+    auth.transport = transport  # type: ignore[attr-defined]
+    transport.requests = google_requests  # type: ignore[attr-defined]
+    oauth2.service_account = service_account  # type: ignore[attr-defined]
+    for name, module in {
+        "google": google,
+        "google.auth": auth,
+        "google.auth.transport": transport,
+        "google.auth.transport.requests": google_requests,
+        "google.oauth2": oauth2,
+        "google.oauth2.service_account": service_account,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    assert probe.probe_google_readonly(
+        {"google_current_config_path": str(config_path)}
+    ) == {
+        "google_spreadsheet_acl_ok": True,
+        "google_metadata_readback_ok": True,
+    }
+    assert requests == [
+        "https://www.googleapis.com/drive/v3/files/spreadsheet-id/permissions",
+        "https://sheets.googleapis.com/v4/spreadsheets/spreadsheet-id",
+    ]
 
 
 def test_codex_model_probe_uses_exact_models_and_isolated_wrapper(

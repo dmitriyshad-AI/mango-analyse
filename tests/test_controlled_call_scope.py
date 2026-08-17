@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 import mango_mvp.services.controlled_call_scope as controlled_scope_module
 import scripts.create_m1_calls_controlled_request as request_creator
@@ -966,6 +967,50 @@ def test_service_transcript_export_still_creates_fresh_directory(
     assert (export_dir / "fresh-audio" / "one_text.txt").is_file()
 
 
+def test_transcribe_failure_never_persists_or_reports_private_error_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "transcribe-error.sqlite"
+    settings = replace(
+        make_settings(),
+        database_url=f"sqlite:///{db_path}",
+        transcribe_provider="mock",
+    )
+    init_db(settings)
+    factory = build_session_factory(settings)
+    with factory() as session:
+        session.add(
+            CallRecord(
+                source_file=str(tmp_path / "private" / "+79990000000.wav"),
+                source_filename="+79990000000.wav",
+                source_call_id="PRIVATE-FAILURE",
+                transcription_status="pending",
+                resolve_status="pending",
+                analysis_status="pending",
+                sync_status="pending",
+            )
+        )
+        session.commit()
+
+    service = TranscribeService(settings)
+    secret = "клиент Мария +79990000000 /Users/private/audio.wav"
+    monkeypatch.setattr(
+        service, "_transcribe_call",
+        lambda _call: (_ for _ in ()).throw(RuntimeError(secret)),
+    )
+    progress: list[dict] = []
+    with factory() as session:
+        report = service.run(session, limit=1, progress_callback=progress.append)
+        stored = session.scalar(select(CallRecord))
+
+    assert report["failed"] == 1
+    dumped = json.dumps(progress, ensure_ascii=False)
+    for private in ("Мария", "+79990000000", "/Users/private"):
+        assert private not in dumped
+        assert private not in str(stored.last_error)
+    assert "message_sha256=" in str(stored.last_error)
+
+
 def test_controlled_transcript_export_rejects_symlinked_call_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1301,6 +1346,7 @@ def test_controlled_worker_disables_inherited_llm_cache(
     environment = worker_environment(config)
 
     assert environment["LLM_CACHE_ENABLED"] == "0"
+    assert environment["RESOLVE_LLM_PROVIDER"] == "off"
     assert environment["LLM_CACHE_DIR"] == str(
         config.pipeline_root / "state" / "controlled_llm_cache_disabled"
     )

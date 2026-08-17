@@ -4,16 +4,72 @@ from pathlib import Path
 
 from mango_mvp.quality.tenant_text_normalizer import (
     DETECTOR_KNOWN_BRAND_VARIANTS,
+    TENANT_TEXT_ENGINE_VERSION,
     detect_product_list_artifacts,
     detect_residual_manager_text_artifacts,
     format_objection_list,
     format_product_list,
     normalize_manager_text,
+    normalize_manager_text_with_provenance,
     normalize_objection_label,
+    tenant_ruleset_version,
 )
 
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "tenant_text_normalizer_frozen_corpus.jsonl"
+
+
+# --- ТЗ-04: provenance on the same engine, no second dictionary ---------------
+
+
+def test_provenance_names_the_rule_engine_ruleset_and_tenant() -> None:
+    result = normalize_manager_text_with_provenance("Учимся в МПК МФТИ", tenant_id="mango")
+
+    assert result.normalized_value == "Учимся в УНПК МФТИ"
+    assert result.changed is True
+    assert result.rule_ids == ("brand.unpk_mfti.known_alias",)
+    assert result.engine_version == TENANT_TEXT_ENGINE_VERSION
+    assert result.ruleset_version == tenant_ruleset_version("mango")
+    assert result.tenant_id == "mango"
+    assert result.status == "normalized_deterministic"
+    # The raw value is kept next to the normalized one, never replaced by it.
+    assert result.raw_value == "Учимся в МПК МФТИ"
+
+
+def test_a_second_pass_is_byte_identical_and_claims_no_new_rule() -> None:
+    first = normalize_manager_text_with_provenance("Учимся в МПК МФТИ", tenant_id="mango")
+    second = normalize_manager_text_with_provenance(
+        first.normalized_value, tenant_id="mango"
+    )
+
+    assert second.normalized_value == first.normalized_value
+    assert second.changed is False
+    assert second.rule_ids == ()
+    assert second.status == "unchanged"
+
+
+def test_a_tenant_without_a_ruleset_gets_no_other_tenants_brands() -> None:
+    other = normalize_manager_text_with_provenance("Учимся в МПК МФТИ", tenant_id="other")
+
+    assert other.normalized_value == "Учимся в МПК МФТИ"
+    assert other.changed is False
+    assert other.rule_ids == ()
+    assert other.ruleset_version == ""
+    assert other.status == "skipped_unknown_tenant"
+    # Negative control: the very same text does normalize for its own tenant.
+    assert (
+        normalize_manager_text_with_provenance(
+            "Учимся в МПК МФТИ", tenant_id="mango"
+        ).normalized_value
+        == "Учимся в УНПК МФТИ"
+    )
+
+
+def test_the_legacy_string_api_keeps_its_frozen_behaviour() -> None:
+    for text in ("Учимся в МПК МФТИ", "летняя ночная школа", "обычный текст"):
+        assert normalize_manager_text(text) == (
+            normalize_manager_text_with_provenance(text, tenant_id="mango").normalized_value
+        )
 
 
 def test_normalizes_unpk_mfti_brand_aliases() -> None:

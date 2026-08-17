@@ -178,6 +178,7 @@ def ingest_from_directory(
                 source_call_id = _pick(row, "call_id", "id", "record_id") or filename_meta.get(
                     "source_call_id"
                 )
+                source_recording_id = (_pick(row, "recording_id") or "").strip() or None
                 if source_call_id and session.scalar(
                     select(CallRecord.id).where(
                         CallRecord.source_call_id == source_call_id
@@ -193,6 +194,7 @@ def ingest_from_directory(
                         source_file=abs_path,
                         source_filename=repair_filename_display(file_path.name),
                         source_call_id=source_call_id,
+                        source_recording_id=source_recording_id,
                         audio_codec=audio_meta.get("codec_name"),
                         sample_rate=audio_meta.get("sample_rate"),  # type: ignore[arg-type]
                         channels=audio_meta.get("channels"),  # type: ignore[arg-type]

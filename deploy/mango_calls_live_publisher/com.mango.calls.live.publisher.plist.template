@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Shadow-only template. Nothing here is installed or loaded by Codex/Claude.
+  It intentionally performs no external write. A monitored execute plist may
+  be created locally only after the owner authorizes the cutover.
+  Replace __REPO__, __CONFIG__, __LOG_DIR__ and __PYTHON__ before use.
+  See README.md in this directory.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mango.calls.live.publisher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__REPO__/scripts/publish_live_mango_calls_google.py</string>
+        <string>--config</string>
+        <string>__CONFIG__</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>__REPO__/src</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/publisher.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/publisher.err.log</string>
+</dict>
+</plist>

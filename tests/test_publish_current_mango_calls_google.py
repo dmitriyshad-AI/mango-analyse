@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import re
+import os
 import shutil
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.productization import owner_only_io
 from tests.conftest import dual_strict_source, ready_capture_proof
 
-from mango_mvp.productization import owner_only_io
 from mango_mvp.productization.mango_calls_service_contract import (
     STAGE10_SCHEMA,
     approved_runtime_fingerprint,
@@ -21,7 +21,11 @@ from mango_mvp.productization.ready_publication import (
     commit_ready_generation,
     inspect_ready_publication,
 )
+from mango_mvp.models import CallRecord
+from mango_mvp.services.dialogue_contract import manager_output_sha256
 from scripts import publish_current_mango_calls_google as publisher
+from tests import mango_provider_fixture as fx
+from tests.test_ai_office_export import valid_v3_analysis
 
 
 OWNER = "owner@example.test"
@@ -52,145 +56,13 @@ def _interrupt_ready_publication(ready_db: Path) -> None:
         commit_ready_generation(ready_db, staged, manifest, checkpoint=crash)
 
 
-def permissions(*, extra: str | None = None, public: bool = False) -> list[dict[str, str]]:
-    result = [
-        {"type": "user", "role": "owner", "emailAddress": OWNER},
-        {"type": "user", "role": "writer", "emailAddress": SERVICE},
-        {"type": "user", "role": "writer", "emailAddress": ROP},
-    ]
-    if extra:
-        result.append({"type": "user", "role": "reader", "emailAddress": extra})
-    if public:
-        result.append({"type": "anyone", "role": "reader"})
-    return result
+class NoAccessGateway:
+    def __init__(self) -> None:
+        self.accesses: list[str] = []
 
-
-def _column_number(name: str) -> int:
-    value = 0
-    for character in name:
-        value = value * 26 + ord(character) - 64
-    return value
-
-
-class Gateway:
-    def __init__(self, *, acl: list[dict[str, str]] | None = None) -> None:
-        self.acl = acl or permissions()
-        self._sheets: dict[str, int] = {}
-        self.values: dict[str, list[list[object]]] = {}
-        self.next_id = 1
-        self.writes: list[object] = []
-        self.banners: dict[str, str] = {}
-        self._protections: dict[str, list[dict[str, object]]] = {}
-        self._hidden_columns: dict[str, set[int]] = {}
-
-    def permissions(self) -> list[dict[str, str]]:
-        return list(self.acl)
-
-    def file_permissions(self, _file_id: str) -> list[dict[str, str]]:
-        return list(self.acl)
-
-    def sheets(self) -> list[dict[str, object]]:
-        return [
-            {"title": title, "sheetId": sheet_id}
-            for title, sheet_id in self._sheets.items()
-        ]
-
-    def batch_sheet_requests(self, requests: list[dict[str, object]]) -> None:
-        self.writes.append(("sheet", requests))
-        for request in requests:
-            if "addSheet" in request:
-                title = request["addSheet"]["properties"]["title"]
-                self._sheets[str(title)] = self.next_id
-                self.next_id += 1
-                self.values[str(title)] = []
-                self._protections[str(title)] = []
-                self._hidden_columns[str(title)] = set()
-            elif "updateSheetProperties" in request:
-                props = request["updateSheetProperties"]["properties"]
-                old = next(
-                    name for name, sheet_id in self._sheets.items()
-                    if sheet_id == props["sheetId"]
-                )
-                new = str(props["title"])
-                self._sheets[new] = self._sheets.pop(old)
-                self.values[new] = self.values.pop(old)
-                if old in self.banners:
-                    self.banners[new] = self.banners.pop(old)
-                self._protections[new] = self._protections.pop(old, [])
-                self._hidden_columns[new] = self._hidden_columns.pop(old, set())
-            elif "updateDimensionProperties" in request:
-                dimension = request["updateDimensionProperties"]["range"]
-                sheet_id = int(dimension["sheetId"])
-                title = next(
-                    name for name, current_id in self._sheets.items()
-                    if current_id == sheet_id
-                )
-                if request["updateDimensionProperties"]["properties"].get(
-                    "hiddenByUser"
-                ) is True:
-                    self._hidden_columns.setdefault(title, set()).update(
-                        range(int(dimension["startIndex"]), int(dimension["endIndex"]))
-                    )
-            elif "addProtectedRange" in request:
-                payload = dict(request["addProtectedRange"]["protectedRange"])
-                sheet_id = int(payload["range"]["sheetId"])
-                title = next(
-                    name for name, current_id in self._sheets.items()
-                    if current_id == sheet_id
-                )
-                self._protections.setdefault(title, []).append(payload)
-
-    def protections(self, title: str) -> list[dict[str, object]]:
-        return [dict(value) for value in self._protections.get(title, [])]
-
-    def column_hidden(self, title: str, column_index: int) -> bool:
-        return column_index in self._hidden_columns.get(title, set())
-
-    def read_values(self, title: str) -> list[list[object]]:
-        return [list(row) for row in self.values.get(title, [])]
-
-    def read_banner(self, title: str) -> str:
-        return self.banners.get(title, "")
-
-    def clear_values(self, title: str) -> None:
-        self.writes.append(("clear", title))
-        if self.values.get(title):
-            self.values[title] = self.values[title][:1]
-
-    def write_values(self, data: list[dict[str, object]]) -> None:
-        self.writes.append(("values", data))
-        for item in data:
-            raw_range = str(item["range"])
-            title = raw_range.split("!", 1)[0].strip("'").replace("''", "'")
-            values = item["values"]
-            if raw_range.endswith("!A1"):
-                self.banners[title] = str(values[0][0])
-                continue
-            if re.search(r"!A1:[A-Z]+2$", raw_range):
-                self.banners[title] = str(values[0][0])
-                self.values[title] = [list(values[1])]
-                continue
-            block = re.search(r"!A(\d+):([A-Z]+)(\d+)$", raw_range)
-            if block:
-                start = int(block.group(1))
-                for row_offset, values_row in enumerate(values):
-                    sheet_row = start + row_offset
-                    index = sheet_row - 2
-                    while len(self.values[title]) <= index:
-                        self.values[title].append([])
-                    self.values[title][index] = list(values_row)
-                continue
-            match = re.search(r"!([A-Z]+)(\d+)$", raw_range)
-            assert match
-            column = _column_number(match.group(1))
-            sheet_row = int(match.group(2))
-            index = sheet_row - 2
-            while len(self.values[title]) <= index:
-                self.values[title].append([])
-            row = self.values[title][index]
-            while len(row) < column:
-                row.append("")
-            row[column - 1] = values[0][0]
+    def __getattr__(self, name: str) -> object:
+        self.accesses.append(name)
+        raise AssertionError(f"legacy publisher touched gateway attribute {name}")
 
 
 def manager_row(key: str, *, summary: str = "Обсудили программу обучения.") -> dict[str, object]:
@@ -215,22 +87,6 @@ def manager_row(key: str, *, summary: str = "Обсудили программу
     }
 
 
-def publish(gateway: Gateway, rows: list[dict[str, object]], **kwargs: object) -> dict[str, object]:
-    return dict(
-        publisher.publish_current(
-            gateway,
-            day=date(2026, 8, 11),
-            desired_rows=rows,
-            owner_email=OWNER,
-            allowed_emails=(SERVICE, ROP),
-            pilot_started_day=date(2026, 8, 1),
-            retention_approved=False,
-            prior_day=None,
-            **kwargs,
-        )
-    )
-
-
 def test_credentials_policy_uses_path_of_exact_opened_inode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -250,12 +106,7 @@ def test_credentials_policy_uses_path_of_exact_opened_inode(
         path.symlink_to(local)
         return raw, opened_path
 
-    monkeypatch.setattr(
-        publisher,
-        "read_stable_regular_bytes_with_path",
-        swap_after_read,
-    )
-
+    monkeypatch.setattr(publisher, "read_stable_regular_bytes_with_path", swap_after_read)
     with pytest.raises(RuntimeError, match="outside repository and cloud"):
         publisher.validate_credentials(cloud)
 
@@ -267,7 +118,7 @@ def test_credentials_reject_hardlink_with_cloud_alias(tmp_path: Path) -> None:
     local.chmod(0o600)
     cloud = tmp_path / "Yandex.Disk" / "credentials.json"
     cloud.parent.mkdir()
-    cloud.hardlink_to(local)
+    os.link(local, cloud)
 
     with pytest.raises(RuntimeError, match="owner-only 0600"):
         publisher.validate_credentials(local)
@@ -280,10 +131,7 @@ def test_credentials_reject_parent_move_during_descriptor_read(
     local_root = tmp_path / "local"
     local_root.mkdir()
     credentials = local_root / "credentials.json"
-    credentials.write_text(
-        json.dumps({"client_email": "moved@example.test"}),
-        encoding="utf-8",
-    )
+    credentials.write_text(json.dumps({"client_email": "moved@example.test"}), encoding="utf-8")
     credentials.chmod(0o600)
     cloud_root = tmp_path / "Yandex.Disk"
     cloud_root.mkdir()
@@ -300,167 +148,33 @@ def test_credentials_reject_parent_move_during_descriptor_read(
         return original_read(descriptor, size)
 
     monkeypatch.setattr(owner_only_io.os, "read", move_parent_then_read)
-
     with pytest.raises(RuntimeError, match="owner-only 0600"):
         publisher.validate_credentials(credentials)
-
     assert swapped is True
 
 
 def test_credentials_reject_macos_cloudstorage_path(tmp_path: Path) -> None:
     credentials = (
-        tmp_path
-        / "Library"
-        / "CloudStorage"
-        / "GoogleDrive-test"
-        / "credentials.json"
+        tmp_path / "Library" / "CloudStorage" / "GoogleDrive-test" / "credentials.json"
     )
     credentials.parent.mkdir(parents=True)
-    credentials.write_text(
-        json.dumps({"client_email": "cloud@example.test"}),
-        encoding="utf-8",
-    )
+    credentials.write_text(json.dumps({"client_email": "cloud@example.test"}), encoding="utf-8")
     credentials.chmod(0o600)
 
     with pytest.raises(RuntimeError, match="outside repository and cloud"):
         publisher.validate_credentials(credentials)
 
 
-def test_three_header_based_upserts_preserve_rop_sort_and_unknown_column() -> None:
-    gateway = Gateway()
-    first = publish(gateway, [manager_row("call-1")])
-    assert first["rows"] == 1
-    header = gateway.values[publisher.CURRENT_TITLE][0]
-    row = gateway.values[publisher.CURRENT_TITLE][1]
-    row.extend([""] * (len(header) - len(row)))
-    row[header.index("Комментарий РОПа")] = "Проверено"
-    row[header.index("Решение РОПа")] = "Принято"
-    header.insert(3, "Новая колонка РОПа")
-    row.insert(3, "Не менять")
-    gateway.values[publisher.CURRENT_TITLE].append(["", "служебная строка"])
-    gateway.values[publisher.CURRENT_TITLE][1:] = list(
-        reversed(gateway.values[publisher.CURRENT_TITLE][1:])
-    )
+def test_legacy_publish_function_refuses_before_google_access() -> None:
+    gateway = NoAccessGateway()
 
-    second = publish(gateway, [manager_row("call-1", summary="Обновлённая сводка")])
-    third = publish(gateway, [manager_row("call-1", summary="Обновлённая сводка")])
-
-    rows = gateway.values[publisher.CURRENT_TITLE]
-    header = rows[0]
-    matching = [row for row in rows[1:] if row and row[header.index("call_key")] == "call-1"]
-    assert len(matching) == 1
-    assert matching[0][header.index("Комментарий РОПа")] == "Проверено"
-    assert matching[0][header.index("Решение РОПа")] == "Принято"
-    assert matching[0][header.index("Новая колонка РОПа")] == "Не менять"
-    assert second["managed_cell_updates"] == 1
-    assert third["status"] == "unchanged" and third["managed_cell_updates"] == 0
-
-
-def test_quarantine_is_only_in_review_is_idempotent_and_clears() -> None:
-    gateway = Gateway()
-    quarantine = publisher.quarantine_review_rows(
-        [
-            {
-                "call_key": "quarantine-1",
-                "started_at": "2026-08-11T09:30:00+00:00",
-                "code": "recording_retry_expired",
-                "reason": "Аудиозапись не появилась в Mango в течение 72 часов.",
-                "action": (
-                    "Проверить запись в Mango и повторить загрузку вручную, "
-                    "если файл появился."
-                ),
-            }
-        ],
-        day=date(2026, 8, 11),
-    )
-    summary = {
-        "mango_unique": 2,
-        "ready_unique": 1,
-        "quarantine_unique": 1,
-        "pending_unique": 0,
-        "unexplained_missing": 0,
-        "consistency_ok": True,
-        "closure_ok": True,
-    }
-
-    first = publish(
-        gateway,
-        [manager_row("call-1")],
-        quarantine_rows=quarantine,
-        stage10_summary=summary,
-    )
-    second = publish(
-        gateway,
-        [manager_row("call-1")],
-        quarantine_rows=quarantine,
-        stage10_summary=summary,
-    )
-
-    assert first["quarantine_rows"] == 1
-    assert second["status"] == "unchanged"
-    current = gateway.values[publisher.CURRENT_TITLE]
-    review = gateway.values[publisher.REVIEW_TITLE]
-    assert [row[0] for row in current[1:] if row] == ["call-1"]
-    assert [row[0] for row in review[1:] if row] == ["quarantine-1"]
-    assert review[1][review[0].index("Телефон")] == ""
-    assert review[1][review[0].index(publisher.TRANSCRIPT_LINK_HEADER)] == ""
-    assert review[1][review[0].index("Следующий шаг")].startswith(
-        "Техническое действие с данными:"
-    )
-
-    cleared = publish(
-        gateway,
-        [manager_row("call-1")],
-        quarantine_rows=[],
-        stage10_summary={**summary, "mango_unique": 1, "quarantine_unique": 0},
-    )
-    assert cleared["status"] == "updated"
-    assert not [row for row in gateway.values[publisher.REVIEW_TITLE][1:] if any(row)]
-
-
-@pytest.mark.parametrize(
-    "acl",
-    [permissions(extra="outsider@example.test"), permissions(public=True)],
-)
-def test_acl_failure_precedes_every_write(acl: list[dict[str, str]]) -> None:
-    gateway = Gateway(acl=acl)
-    with pytest.raises(RuntimeError, match="ACL"):
-        publish(gateway, [manager_row("call-1")])
-    assert gateway.writes == []
-
-
-def test_duplicate_or_missing_required_header_fails_before_cell_write() -> None:
-    for bad_header in (
-        [*publisher.HEADERS[:-1], publisher.HEADERS[-2]],
-        list(publisher.HEADERS[:-1]),
+    with pytest.raises(
+        RuntimeError,
+        match=r"plan-only; use publish_live_mango_calls_google\.py",
     ):
-        gateway = Gateway()
-        gateway._sheets[publisher.CURRENT_TITLE] = 1
-        gateway.values[publisher.CURRENT_TITLE] = [bad_header]
-        with pytest.raises(RuntimeError, match="headers"):
-            publish(gateway, [manager_row("call-1")])
-        assert not [item for item in gateway.writes if item[0] == "values"]
-
-
-def test_existing_unhidden_call_key_column_fails_before_cell_write() -> None:
-    gateway = Gateway()
-    publish(gateway, [manager_row("call-1")])
-    key_index = list(gateway.values[publisher.CURRENT_TITLE][0]).index("call_key")
-    gateway._hidden_columns[publisher.CURRENT_TITLE].discard(key_index)
-    writes_before = list(gateway.writes)
-
-    with pytest.raises(RuntimeError, match="hidden-column readback"):
-        publish(gateway, [manager_row("call-1")])
-
-    assert gateway.writes == writes_before
-
-
-def test_day_15_without_retention_policy_stops_before_google_write() -> None:
-    gateway = Gateway()
-    with pytest.raises(RuntimeError, match="retention"):
         publisher.publish_current(
             gateway,
-            day=date(2026, 8, 15),
+            day=date(2026, 8, 11),
             desired_rows=[manager_row("call-1")],
             owner_email=OWNER,
             allowed_emails=(SERVICE, ROP),
@@ -468,35 +182,32 @@ def test_day_15_without_retention_policy_stops_before_google_write() -> None:
             retention_approved=False,
             prior_day=None,
         )
-    assert gateway.writes == []
+
+    assert gateway.accesses == []
 
 
-def test_moscow_rotation_renames_old_sheet_and_preserves_rop() -> None:
-    gateway = Gateway()
-    publish(gateway, [manager_row("call-1")])
-    header = gateway.values[publisher.CURRENT_TITLE][0]
-    row = gateway.values[publisher.CURRENT_TITLE][1]
-    row.extend([""] * (len(header) - len(row)))
-    row[header.index("Комментарий РОПа")] = "Сохранить"
-
-    report = publisher.publish_current(
-        gateway,
-        day=date(2026, 8, 12),
-        desired_rows=[manager_row("call-2")],
-        owner_email=OWNER,
-        allowed_emails=(SERVICE, ROP),
-        pilot_started_day=date(2026, 8, 1),
-        retention_approved=False,
-        prior_day=date(2026, 8, 11),
-    )
-
-    assert report["rotated_from"] == "2026-08-11"
-    archived = gateway.values["Звонки 2026-08-11 — предварительно"]
-    assert archived[1][archived[0].index("Комментарий РОПа")] == "Сохранить"
-    assert gateway.values[publisher.CURRENT_TITLE][1][0] == "call-2"
+def test_plan_only_module_exposes_no_google_write_gateway() -> None:
+    gateway = publisher.GoogleGateway(object(), "spreadsheet-id")
+    assert not hasattr(gateway, "batch_sheet_requests")
+    assert not hasattr(gateway, "write_values")
+    assert not hasattr(gateway, "clear_values")
+    assert not hasattr(publisher, "plan_upsert")
+    assert not hasattr(publisher, "verify_readback")
 
 
-def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
+# The planner reads the very same stored payloads as the live publisher, so it
+# applies the very same fail-closed role guard.  These fixtures are the proven
+# case; ``roles_proven=False`` is the real production majority and has its own
+# test below.
+READY_TURNS = (
+    ("client", "right", "Нас интересует математика для 9 класса."),
+    ("operator", "left", "Хорошо, я отправлю программу."),
+)
+
+
+def _ready_fixture(
+    tmp_path: Path, *, analyzed: bool, roles_proven: bool = True
+) -> tuple[Path, Path]:
     db = tmp_path / "ready.sqlite"
     with sqlite3.connect(db) as con:
         con.execute(
@@ -506,35 +217,51 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
                 phone TEXT, direction TEXT, duration_sec REAL,
                 transcription_status TEXT, resolve_status TEXT, analysis_status TEXT,
                 analysis_json TEXT, transcript_variants_json TEXT,
-                transcript_text TEXT, source_file TEXT
+                transcript_text TEXT, source_file TEXT, source_recording_id TEXT
             )
             """
         )
-        analysis = (
-            {
-                "analysis_schema_version": "v3",
-                "history_summary": "Безопасная краткая сводка",
-                "structured_fields": {
-                    "interests": {"products": ["Летняя школа", "Онлайн-курс"]},
-                    "objections": ["Стоимость", "Расписание"],
-                    "next_step": {
-                        "action": "Перезвонить после обсуждения",
-                        "due": "2026-08-12",
-                    },
-                },
-                "quality_flags": {
-                    "call_type": "sales_call",
-                    "needs_review": True,
-                    "review_reasons": ["synthetic_review"],
-                },
-                "needs_review": True,
-                "review_reasons": ["synthetic_review"],
-            }
-            if analyzed
-            else {}
+        variants = {
+            "mode": "stereo",
+            "primary_provider": "mlx",
+            "secondary_provider": "gigaam",
+            "manager": {"variant_a": "Здравствуйте", "variant_b": "Здравствуйте"},
+            "client": {"variant_a": "Нужен курс", "variant_b": "Нужен курс"},
+            "dialogue_lines": fx.dialogue_lines(READY_TURNS),
+        }
+        if roles_proven:
+            variants["role_mapping"] = dict(fx.PROVEN_ROLE_MAPPING)
+            variants[fx.PROVIDER_EVIDENCE_FIELD] = fx.evidence(
+                READY_TURNS, source_call_id="call-1"
+            )
+        fixture_call = CallRecord(
+            id=1,
+            source_call_id="call-1",
+            source_recording_id=fx.RECORDING_ID,
+            started_at=datetime(2026, 8, 11, 9, tzinfo=timezone.utc),
+            manager_name="Менеджер",
+            phone="+70000000000",
+            direction="inbound",
+            duration_sec=45,
+            transcript_variants_json=json.dumps(variants, ensure_ascii=False),
+            transcript_text="СЕКРЕТНЫЙ ПОЛНЫЙ ДИАЛОГ",
+            source_file="/Users/private/call.mp3",
+            source_filename="call.mp3",
         )
+        analysis = valid_v3_analysis(fixture_call) if analyzed else {}
+        if analyzed:
+            analysis["quality_flags"].update(
+                call_type="sales_call",
+                needs_review=True,
+                review_reasons=["synthetic_review"],
+            )
+            analysis["needs_review"] = True
+            analysis["review_reasons"] = ["synthetic_review"]
+            analysis["analysis_meta"]["manager_output_sha256"] = (
+                manager_output_sha256(analysis)
+            )
         con.execute(
-            "INSERT INTO call_records VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO call_records VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 "call-1",
                 "2026-08-11T09:00:00+00:00",
@@ -546,24 +273,10 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
                 "done",
                 "done" if analyzed else "pending",
                 json.dumps(analysis, ensure_ascii=False),
-                json.dumps(
-                    {
-                        "mode": "stereo",
-                        "primary_provider": "mlx",
-                        "secondary_provider": "gigaam",
-                        "manager": {
-                            "variant_a": "Здравствуйте",
-                            "variant_b": "Здравствуйте",
-                        },
-                        "client": {
-                            "variant_a": "Нужен курс",
-                            "variant_b": "Нужен курс",
-                        },
-                    },
-                    ensure_ascii=False,
-                ),
+                json.dumps(variants, ensure_ascii=False),
                 "СЕКРЕТНЫЙ ПОЛНЫЙ ДИАЛОГ",
                 "/Users/private/call.mp3",
+                fx.RECORDING_ID,
             ),
         )
     verdict = {
@@ -728,20 +441,6 @@ def test_capture_quarantine_is_visible_as_safe_manager_review_row(
         ready_manifest=manifest,
         now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
     )
-    quarantine_rows = publisher.quarantine_review_rows(
-        plan["quarantine_items"], day=date(2026, 8, 11)
-    )
-    assert len(quarantine_rows) == 1
-    quarantine = quarantine_rows[0]
-    assert quarantine["Тип разговора"] == "Карантин данных"
-    assert quarantine["Нужна проверка"] == "Да"
-    assert quarantine["Телефон"] == ""
-    assert quarantine[publisher.TRANSCRIPT_LINK_HEADER] == ""
-    assert "72 часов" in quarantine["Причина проверки"]
-    assert "повторить загрузку вручную" in quarantine["Следующий шаг"]
-    serialized = json.dumps(quarantine, ensure_ascii=False).casefold()
-    assert "error" not in serialized and "/users/" not in serialized
-
     assert len(publisher.validate_safe_plan_payload(
         plan,
         expected_day=date(2026, 8, 11),
@@ -790,13 +489,44 @@ def test_projection_uses_real_analyze_schema_without_list_repr(tmp_path: Path) -
     )[0]
 
     assert row["Тип разговора"] == "Продажа / подбор обучения"
-    assert row["Интерес клиента"] == "Летняя школа | Онлайн-курс"
-    assert row["Главное возражение"] == "Стоимость | Расписание"
-    assert row["Следующий шаг"] == "Перезвонить после обсуждения"
-    assert row["Срок"] == "2026-08-12"
-    assert row["Результат"] == "Следующий шаг выделен анализом"
+    assert row["Интерес клиента"] == ""
+    assert row["Главное возражение"] == ""
+    assert row["Следующий шаг"] == ""
+    assert row["Срок"] == ""
+    assert row["Результат"] == "Итог не зафиксирован"
     assert row["Нужна проверка"] == "Да"
     assert "текущей схемой Analyze" not in str(row["Причина проверки"])
+
+
+def test_the_planner_never_revives_a_role_dependent_field_of_an_unproven_call(
+    tmp_path: Path,
+) -> None:
+    """Planning is still reading, and reading an old payload is not trusting it.
+
+    This script only prepares a plan, but a human copies that plan into Google.
+    So it applies the same fail-closed guard as the live publisher: with the
+    sides unproven there is no next step, no deadline and no objection.
+    """
+    db, manifest = _ready_fixture(tmp_path, analyzed=True, roles_proven=False)
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert row["Следующий шаг"] == ""
+    assert row["Срок"] == ""
+    assert row["Главное возражение"] == ""
+    assert row["Интерес клиента"] == ""
+    assert row["Нужна проверка"] == "Да"
+    # The neutral metadata of the call is kept: the row does not disappear.
+    assert row["Телефон"] == "'+70000000000"
+    assert row["Менеджер"] == "Менеджер"
+    serialized = json.dumps(row, ensure_ascii=False)
+    assert "Перезвонить после обсуждения" not in serialized
+    assert "Стоимость" not in serialized
 
 
 def test_missing_second_asr_is_explicitly_marked_for_review(tmp_path: Path) -> None:
@@ -834,20 +564,9 @@ def test_missing_second_asr_is_explicitly_marked_for_review(tmp_path: Path) -> N
         ready_manifest=manifest_payload,
         now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
     )
-    summary = publisher._summary_rows(
-        [row],
-        {
-            **plan["stage10_counts"],
-            "consistency_ok": plan["consistency_ok"],
-            "closure_ok": plan["closure_ok"],
-        },
-    )
-
     assert plan["stage10_counts"]["processing_ready_unique"] == 0
     assert plan["row_completion_ok"] is False
     assert plan["closure_ok"] is False
-    assert ["Полностью готово", 0] in summary
-    assert ["День закрыт", "Нет"] in summary
 
 
 def test_manual_resolve_with_reviewed_analysis_is_processing_ready(tmp_path: Path) -> None:
@@ -870,7 +589,7 @@ def test_manual_resolve_with_reviewed_analysis_is_processing_ready(tmp_path: Pat
     assert publisher.processing_ready_row(row) is True
 
 
-def test_v2_non_conversation_has_deterministic_result(tmp_path: Path) -> None:
+def test_mutated_non_conversation_cannot_override_current_result(tmp_path: Path) -> None:
     db, manifest = _ready_fixture(tmp_path, analyzed=True)
 
     def mutate(payload: dict[str, object]) -> None:
@@ -889,8 +608,8 @@ def test_v2_non_conversation_has_deterministic_result(tmp_path: Path) -> None:
         allowed_emails=(SERVICE, ROP),
     )[0]
 
-    assert row["Результат"] == "Разговор не состоялся"
-    assert "Итог разговора" not in str(row["Причина проверки"])
+    assert row["Результат"] == "Итог не зафиксирован"
+    assert "нужен повторный анализ" in str(row["Причина проверки"])
 
 
 def test_v2_without_supported_outcome_gets_neutral_result_and_review(
@@ -919,7 +638,7 @@ def test_v2_without_supported_outcome_gets_neutral_result_and_review(
     assert "Итог разговора требует ручной проверки" in str(row["Причина проверки"])
 
 
-def test_legacy_explicit_result_has_priority(tmp_path: Path) -> None:
+def test_legacy_explicit_result_cannot_bypass_current_contract(tmp_path: Path) -> None:
     db, manifest = _ready_fixture(tmp_path, analyzed=True)
     _rewrite_analysis(
         db,
@@ -935,58 +654,27 @@ def test_legacy_explicit_result_has_priority(tmp_path: Path) -> None:
         allowed_emails=(SERVICE, ROP),
     )[0]
 
-    assert row["Результат"] == "Договор отправлен"
+    assert row["Результат"] == "Итог не зафиксирован"
+    assert "Договор отправлен" not in json.dumps(row, ensure_ascii=False)
+    assert "нужен повторный анализ" in str(row["Причина проверки"])
 
 
 @pytest.mark.parametrize("length", [2_001, 32_000])
 def test_analyze_summary_is_preserved_without_truncation(
     tmp_path: Path, length: int
 ) -> None:
-    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
     expected = "я" * length
-    _rewrite_analysis(
-        db,
-        manifest_path,
-        lambda payload: payload.update(history_summary=expected),
-    )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    rows = publisher.load_manager_rows(
-        ready_db=db,
-        ready_manifest=manifest_path,
-        ready_manifest_payload=manifest,
-        day=date(2026, 8, 11),
-        owner_email=OWNER,
-        allowed_emails=(SERVICE, ROP),
-    )
-    plan = publisher.build_safe_plan(
-        day=date(2026, 8, 11),
-        rows=rows,
-        ready_manifest=manifest,
-        now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
-    )
+    summary, issue = publisher.manager_summary(expected)
 
-    assert plan["rows"][0]["Краткое содержание"] == expected
+    assert summary == expected
+    assert issue == ""
 
 
 def test_summary_over_analyze_limit_is_replaced_per_row(tmp_path: Path) -> None:
-    db, manifest = _ready_fixture(tmp_path, analyzed=True)
-    _rewrite_analysis(
-        db,
-        manifest,
-        lambda payload: payload.update(history_summary="я" * 32_001),
-    )
+    summary, issue = publisher.manager_summary("я" * 32_001)
 
-    row = publisher.load_manager_rows(
-        ready_db=db,
-        ready_manifest=manifest,
-        day=date(2026, 8, 11),
-        owner_email=OWNER,
-        allowed_emails=(SERVICE, ROP),
-    )[0]
-
-    assert row["Краткое содержание"] == publisher.OVERSIZED_SUMMARY
-    assert row["Нужна проверка"] == "Да"
-    assert "предел Analyze" in str(row["Причина проверки"])
+    assert summary == publisher.OVERSIZED_SUMMARY
+    assert "предел Analyze" in issue
 
 
 def test_safe_plan_expires_after_sixty_minutes(tmp_path: Path) -> None:
@@ -1192,7 +880,6 @@ def test_manifest_and_publication_lock_symlinks_are_rejected(
             pass
     assert victim.read_text(encoding="utf-8") == "must remain unchanged"
 
-
 def test_dry_run_uses_one_ready_manifest_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1257,20 +944,53 @@ def test_dry_run_recovers_interrupted_ready_generation(
     assert inspect_ready_publication(db)["recovery_required"] is False
 
 
-def test_execute_requires_owner_approval_of_exact_safe_plan_sha() -> None:
-    with pytest.raises(RuntimeError, match="approved SHA-256"):
+def test_execute_refuses_without_reads_network_or_state_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    touched: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        touched.append("called")
+        raise AssertionError("legacy execute touched an external or local writer path")
+
+    for name in (
+        "atomic_owner_json",
+        "authorized_session",
+        "owner_json",
+        "stable_json_object",
+    ):
+        monkeypatch.setattr(publisher, name, forbidden)
+    state = tmp_path / "state.json"
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"plan-only; use publish_live_mango_calls_google\.py",
+    ):
         publisher.main(
             [
                 "--execute",
                 "--confirmation",
-                publisher.CONFIRMATION,
+                "legacy-confirmation",
                 "--config",
                 "/not/read/config.json",
                 "--safe-plan",
                 "/not/read/plan.json",
                 "--state",
-                "/not/read/state.json",
+                str(state),
+                "--approved-plan-sha256",
+                "0" * 64,
                 "--day",
                 "2026-08-11",
             ]
         )
+
+    assert touched == []
+    assert not state.exists()
+
+
+def test_plan_only_module_has_no_google_post_or_uncertain_write_state() -> None:
+    source = Path(publisher.__file__).read_text(encoding="utf-8")
+
+    assert "session.post" not in source
+    assert "write_uncertain" not in source

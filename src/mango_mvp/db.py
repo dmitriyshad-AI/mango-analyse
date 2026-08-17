@@ -71,6 +71,7 @@ def _ensure_columns(engine) -> None:
     existing = {col["name"] for col in inspector.get_columns("call_records")}
     additions = {
         "transcript_variants_json": "TEXT",
+        "source_recording_id": "VARCHAR(256)",
         "resolve_json": "TEXT",
         "resolve_quality_score": "FLOAT",
         "transcribe_attempts": "INTEGER DEFAULT 0 NOT NULL",
@@ -82,10 +83,16 @@ def _ensure_columns(engine) -> None:
         "pipeline_claimed_at": "DATETIME",
         "analysis_worker_id": "VARCHAR(64)",
         "analysis_claimed_at": "DATETIME",
+        "analysis_attempts_json": "TEXT",
         "resolve_status": "VARCHAR(16) DEFAULT 'pending'",
         "next_retry_at": "DATETIME",
         "dead_letter_stage": "VARCHAR(16)",
     }
+    indexes = (
+        {}
+        if engine.dialect.name == "sqlite"
+        else {item["name"]: item for item in inspector.get_indexes("call_records")}
+    )
     with engine.begin() as conn:
         for column_name, sql_type in additions.items():
             if column_name in existing:
@@ -93,6 +100,37 @@ def _ensure_columns(engine) -> None:
             conn.execute(
                 text(f"ALTER TABLE call_records ADD COLUMN {column_name} {sql_type}")
             )
+        duplicate_recording_id = conn.execute(
+            text(
+                "SELECT source_recording_id FROM call_records "
+                "WHERE source_recording_id IS NOT NULL AND TRIM(source_recording_id) <> '' "
+                "GROUP BY TRIM(source_recording_id) HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        ).first()
+        if duplicate_recording_id is not None:
+            raise RuntimeError("duplicate source_recording_id blocks database migration")
+        source_index = indexes.get("ix_call_records_source_recording_id")
+        if engine.dialect.name == "sqlite":
+            source_index_sql = conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type='index' AND name='ix_call_records_source_recording_id'"
+                )
+            ).scalar_one_or_none()
+            source_index_is_raw = bool(
+                source_index_sql and "TRIM(" not in str(source_index_sql).upper()
+            )
+        else:
+            source_index_is_raw = source_index is not None
+        if source_index_is_raw:
+            conn.execute(text("DROP INDEX ix_call_records_source_recording_id"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_call_records_source_recording_id "
+                "ON call_records (TRIM(source_recording_id)) "
+                "WHERE source_recording_id IS NOT NULL AND TRIM(source_recording_id) <> ''"
+            )
+        )
         # Keep worker/requeue queries fast on legacy DBs where these indexes did not exist.
         conn.execute(
             text(

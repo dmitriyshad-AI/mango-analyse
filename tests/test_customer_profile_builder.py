@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import mango_mvp.customer_profile.builder as profile_builder_module
 from mango_mvp.customer_profile import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_profile.build_cli import safe_field_preview
 from mango_mvp.customer_profile.builder import apply_child_slot_merge_candidates, child_slot_groups
@@ -37,6 +38,17 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+REAL_STORED_ANALYSIS_GUARD = profile_builder_module.guard_stored_analysis
+
+
+@pytest.fixture(autouse=True)
+def _legacy_profile_fixture_scope(monkeypatch: pytest.MonkeyPatch):
+    """Keep legacy business-rule fixtures focused on profile aggregation."""
+    monkeypatch.setattr(
+        profile_builder_module,
+        "guard_stored_analysis",
+        lambda _record, analysis: dict(analysis) if isinstance(analysis, dict) else {},
+    )
 
 
 class _FakeMessage:
@@ -313,6 +325,33 @@ def test_builder_marks_superseded_conflicting_grade_and_is_idempotent(tmp_path: 
     assert all_grade_rows[0][1]
     assert all_grade_rows[1][0] == "8"
     assert all_grade_rows[1][1] == ""
+
+
+def test_builder_real_guard_rejects_unbound_legacy_call_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        profile_builder_module, "guard_stored_analysis", REAL_STORED_ANALYSIS_GUARD
+    )
+    timeline_db = _timeline_db(tmp_path)
+    master_db = _master_calls_db(
+        tmp_path, [(100, "2026-01-10T10:00:00+00:00", _analysis(grade="8"))]
+    )
+    profiles_db = tmp_path / "profiles.sqlite"
+
+    CustomerProfileBuilder(
+        CustomerProfileBuildOptions(
+            timeline_db=timeline_db,
+            profiles_db=profiles_db,
+            master_calls_db=master_db,
+            customer_ids=("cust-1",),
+        )
+    ).build()
+
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        assert not any(
+            row["field"] == "grade" for row in store.active_fields("cust-1")
+        )
 
 
 def test_builder_opens_read_only_sources_under_path_with_space(tmp_path: Path) -> None:

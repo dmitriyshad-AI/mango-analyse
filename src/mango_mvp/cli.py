@@ -22,6 +22,7 @@ from mango_mvp.services.analyze import (
     migrate_analysis_payload,
 )
 from mango_mvp.services.controlled_call_scope import enforce_controlled_cli_command
+from mango_mvp.services.dialogue_contract import call_record_view, guard_stored_analysis
 from mango_mvp.services.export_excel import build_call_rows, build_contact_rows, write_workbook
 from mango_mvp.services.export_ai_office import push_call_insights
 from mango_mvp.services.ingest import ingest_from_directory
@@ -627,6 +628,7 @@ def cmd_export_crm_fields(args) -> int:
             continue
         if not isinstance(analysis, dict):
             continue
+        analysis = guard_stored_analysis(call_record_view(call), analysis)
 
         blocks = _as_dict(analysis.get("structured_fields"))
         if not blocks:
@@ -845,7 +847,7 @@ def cmd_push_ai_office_insights(args) -> int:
         result["out"] = str(out_path.resolve())
 
     _json_print(result)
-    return 0
+    return 1 if int(result.get("failed") or 0) else 0
 
 
 def cmd_sync(args) -> int:

@@ -271,6 +271,46 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
     assert "+79161112233" not in json.dumps(report, ensure_ascii=False)
 
 
+def test_timeline_scrubs_role_dependent_fields_from_unproven_stored_analysis(
+    tmp_path: Path,
+) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(
+        timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233"
+    )
+    package_db = tmp_path / "calls.sqlite"
+    create_call_records_db(
+        package_db,
+        [
+            {
+                "id": 1,
+                "source_call_id": "27100000001",
+                "source_filename": "call-one.wav",
+                "source_file": "/ignored/call-one.wav",
+                "started_at": "2026-06-25T09:00:00+00:00",
+                "phone": "+79161112233",
+                "manager_name": "Менеджер",
+                "direction": "inbound",
+                "duration_sec": 120,
+                "analysis_status": "done",
+                "analysis_json": analysis("Клиент оплатил и ждёт договор."),
+                "transcript_text": "Старый текст без доказанной привязки дорожек.",
+                "amocrm_contact_id": None,
+                "amocrm_lead_id": None,
+            }
+        ],
+    )
+
+    events, _report = run_producer(
+        tmp_path, timeline_db=timeline_db, package_db=package_db
+    )
+
+    guarded = events[0]["analysis_json"]
+    assert guarded["structured_fields"] == {}
+    assert guarded["quality_flags"]["role_attribution_untrusted"] is True
+    assert "Клиент оплатил" not in events[0]["summary"]
+
+
 def test_producer_fails_loudly_on_done_row_with_invalid_analysis_json(tmp_path: Path) -> None:
     timeline_db = tmp_path / "customer_timeline.sqlite"
     seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")

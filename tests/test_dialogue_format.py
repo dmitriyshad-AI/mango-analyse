@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +14,62 @@ from unittest.mock import patch
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
 from mango_mvp.services.transcribe import SecondaryAsrLeaseLost, TranscribeService
+
+
+class _FakeWave:
+    """A wave is only ever asked for its length by the code under test."""
+
+    def __init__(self, size: int) -> None:
+        self._size = int(size)
+
+    def numel(self) -> int:
+        return self._size
+
+
+class _FakePadded:
+    def __init__(self, waves: list[_FakeWave]) -> None:
+        self.waves = list(waves)
+
+    def to(self, **_kwargs: object) -> "_FakePadded":
+        return self
+
+
+def fake_asr_modules() -> dict[str, types.ModuleType]:
+    """Stand-in ``torch``/``gigaam`` for the batching and fallback tests.
+
+    Importing real torch here would load libomp into the shared pytest
+    process, and every later test that forks or spawns a subprocess then dies
+    with ``crashed on child side of fork pre-exec``.  The doubles cover exactly
+    the calls ``_decode_gigaam_batch`` makes, so grouping, reply order and the
+    batch->sequential fallback stay under test.
+
+    ponytail: no real tensor maths is exercised. Ceiling: numerical GigaAM
+    behaviour is proven by a real ASR run on the measuring machine, never here.
+    """
+
+    torch = types.ModuleType("torch")
+    torch.long = "long"
+    torch.float32 = "float32"
+    torch.device = lambda name: f"device:{name}"
+    torch.ones = lambda size: _FakeWave(size)
+    torch.tensor = lambda values, dtype=None, device=None: list(values)
+    torch.inference_mode = contextlib.nullcontext
+    rnn = types.ModuleType("torch.nn.utils.rnn")
+    rnn.pad_sequence = lambda waves, batch_first=False: _FakePadded(waves)
+    utils = types.ModuleType("torch.nn.utils")
+    utils.rnn = rnn
+    nn = types.ModuleType("torch.nn")
+    nn.utils = utils
+    torch.nn = nn
+    gigaam = types.ModuleType("gigaam")
+    gigaam.load_audio = lambda path: _FakeWave(1)
+    return {
+        "torch": torch,
+        "torch.nn": nn,
+        "torch.nn.utils": utils,
+        "torch.nn.utils.rnn": rnn,
+        "gigaam": gigaam,
+    }
 
 
 def make_settings(
@@ -219,7 +278,16 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(payload["manager"]["physical_channel"], "right")
         self.assertEqual(payload["client"]["physical_channel"], "left")
         self.assertIn("dual_asr_consensus", payload["role_mapping"]["evidence"])
-        self.assertIn("Менеджер", result["dialogue_lines"][0])
+        # ТЗ-01 R1: even a dual-ASR consensus is a text-derived conclusion, so
+        # the stored dialogue names the physical track and nothing else.  The
+        # manager sits on the right channel here, and that is what is written.
+        self.assertIn("Дорожка правая", result["dialogue_lines"][0])
+        self.assertTrue(
+            all(
+                "Менеджер" not in line and "Клиент:" not in line
+                for line in result["dialogue_lines"]
+            )
+        )
 
     def test_dual_asr_role_disagreement_blocks_and_uses_neutral_labels(self) -> None:
         service = TranscribeService(
@@ -432,10 +500,11 @@ class DialogueFormatTest(unittest.TestCase):
                     with patch.object(service, "_classify_stereo_call", side_effect=lambda *args, **kwargs: dict(confirmed)):
                         result = service._backfill_secondary_only(call, secondary_provider="gigaam")
         self.assertEqual(asr.call_count, 2)
-        self.assertNotIn("CHANNEL_", result["transcript_text"])
+        self.assertIn("CHANNEL_LEFT:", result["transcript_text"])
+        self.assertIn("CHANNEL_RIGHT:", result["transcript_text"])
         payload = json.loads(str(result["transcript_variants_json"]))
-        self.assertEqual(result["transcript_manager"], payload["manager"]["final"])
-        self.assertEqual(result["transcript_client"], payload["client"]["final"])
+        self.assertIsNone(result["transcript_manager"])
+        self.assertIsNone(result["transcript_client"])
         self.assertIn("Giga client", result["transcript_text"])
         self.assertEqual(payload["manager"]["variant_b"], "Giga manager")
         self.assertEqual(payload["client"]["variant_b"], "Giga client")
@@ -598,6 +667,39 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertTrue(all(line.startswith("[~") for line in lines))
         self.assertTrue(all("Спикер (не определен):" in line for line in lines))
 
+    def test_mono_role_guess_setting_cannot_persist_manager_or_client(self) -> None:
+        service = TranscribeService(make_settings(mono_mode="rule"))
+        with tempfile.TemporaryDirectory(prefix="mango_mono_role_guard_") as td:
+            source = Path(td) / "call.mp3"
+            source.write_bytes(b"audio")
+            call = CallRecord(
+                source_file=str(source), source_filename=source.name,
+                channels=1, duration_sec=20,
+            )
+            segments = [
+                {"start": 0.0, "text": "Добрый день, вас беспокоит учебный центр."},
+                {"start": 3.0, "text": "Здравствуйте, нужен курс по математике."},
+                {"start": 6.0, "text": "Подскажите класс ученика."},
+                {"start": 9.0, "text": "Девятый класс."},
+            ]
+            with patch.object(
+                service,
+                "_try_transcribe_file_with_meta",
+                return_value={"text": " ".join(item["text"] for item in segments), "segments": segments},
+            ):
+                result = service._transcribe_call(call)
+
+        payload = json.loads(result["transcript_variants_json"])
+        self.assertIsNone(result["transcript_manager"])
+        self.assertIsNone(result["transcript_client"])
+        self.assertNotIn("MANAGER:", result["transcript_text"])
+        self.assertNotIn("CLIENT:", result["transcript_text"])
+        self.assertFalse(payload["role_assignment"]["applied"])
+        self.assertIn(
+            "mono_role_assign: disabled_without_provider_evidence",
+            payload["warnings"],
+        )
+
     def test_stereo_similarity_guard(self) -> None:
         mirrored = (
             "Алло добрый день это тестовая фраза которая повторяется один в один "
@@ -620,6 +722,47 @@ class DialogueFormatTest(unittest.TestCase):
 
         self.assertTrue(should_fallback)
         self.assertAlmostEqual(similarity, 1.0, places=6)
+
+    def test_parse_dialogue_line_supports_physical_track_labels(self) -> None:
+        cases = (
+            (
+                "[00:01.2] Дорожка левая: Добрый день",
+                {
+                    "timecode": "00:01.2",
+                    "start": 1.2,
+                    "approximate": False,
+                    "speaker": "Дорожка левая",
+                    "role": "other",
+                    "text": "Добрый день",
+                    "line": "[00:01.2] Дорожка левая: Добрый день",
+                },
+            ),
+            (
+                "[~01:02.3] Дорожка правая: Здравствуйте",
+                {
+                    "timecode": "~01:02.3",
+                    "start": 62.3,
+                    "approximate": True,
+                    "speaker": "Дорожка правая",
+                    "role": "other",
+                    "text": "Здравствуйте",
+                    "line": "[~01:02.3] Дорожка правая: Здравствуйте",
+                },
+            ),
+        )
+        for line, expected in cases:
+            with self.subTest(speaker=expected["speaker"]):
+                self.assertEqual(self.service._parse_dialogue_line(line), expected)
+
+    def test_parse_dialogue_line_returns_none_for_malformed_input(self) -> None:
+        malformed = (
+            "Дорожка левая: без таймкода",
+            "[00:99.0] Дорожка правая: неверное время",
+            "[00:01.0] Дорожка левая:   ",
+        )
+        for line in malformed:
+            with self.subTest(line=line):
+                self.assertIsNone(self.service._parse_dialogue_line(line))
 
     def test_stereo_crosstalk_dedupe_removes_mirrored_lines(self) -> None:
         lines = [
@@ -797,7 +940,8 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(len(heartbeats), 2)
 
     def test_gigaam_batches_chunks_and_preserves_order(self) -> None:
-        import torch
+        modules = fake_asr_modules()
+        torch = modules["torch"]
 
         service = TranscribeService(make_settings())
         heartbeats: list[bool] = []
@@ -815,9 +959,10 @@ class DialogueFormatTest(unittest.TestCase):
 
         chunks = [Path(f"chunk_{idx:03d}.wav") for idx in range(5)]
         waves = [torch.ones(size) for size in (3, 4, 5, 6, 7)]
-        with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "2"}):
-            with patch("gigaam.load_audio", side_effect=waves):
-                texts = service._transcribe_gigaam_chunks(FakeModel(), chunks)
+        with patch.dict(sys.modules, modules):
+            with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "2"}):
+                with patch("gigaam.load_audio", side_effect=waves):
+                    texts = service._transcribe_gigaam_chunks(FakeModel(), chunks)
 
         self.assertEqual(texts, ["chunk-3", "chunk-4", "chunk-5", "chunk-6", "chunk-7"])
         self.assertEqual(len(heartbeats), 6)
@@ -842,7 +987,8 @@ class DialogueFormatTest(unittest.TestCase):
                     service._get_gigaam_model()
 
     def test_gigaam_batch_falls_back_to_same_model_sequentially(self) -> None:
-        import torch
+        modules = fake_asr_modules()
+        torch = modules["torch"]
 
         service = TranscribeService(make_settings())
 
@@ -860,9 +1006,10 @@ class DialogueFormatTest(unittest.TestCase):
 
         model = FakeModel()
         chunks = [Path(f"chunk_{idx:03d}.wav") for idx in range(4)]
-        with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "2"}):
-            with patch("gigaam.load_audio", return_value=torch.ones(3)):
-                texts = service._transcribe_gigaam_chunks(model, chunks)
+        with patch.dict(sys.modules, modules):
+            with patch.dict(os.environ, {"GIGAAM_BATCH_SIZE": "2"}):
+                with patch("gigaam.load_audio", return_value=torch.ones(3)):
+                    texts = service._transcribe_gigaam_chunks(model, chunks)
 
         self.assertEqual(texts, ["chunk_000", "chunk_001", "chunk_002", "chunk_003"])
         self.assertEqual(model.batch_calls, 1)

@@ -24,6 +24,10 @@ from mango_mvp.productization.ready_publication import (
     commit_ready_generation,
     inspect_ready_publication,
 )
+from mango_mvp.models import CallRecord
+from mango_mvp.services import dialogue_contract as contract
+from tests import mango_provider_fixture as fx
+from tests.test_ai_office_export import valid_v3_analysis
 
 
 SCHEMA = """
@@ -32,6 +36,7 @@ CREATE TABLE call_records (
     source_file TEXT,
     source_filename TEXT,
     source_call_id TEXT,
+    source_recording_id TEXT,
     duration_sec REAL,
     phone TEXT,
     manager_name TEXT,
@@ -94,21 +99,67 @@ def _analysis() -> dict:
 
 
 def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", started: str = "2026-07-28 08:00:00", audio: Path) -> None:
-    dialogue = [
-        "[00:01.0] Менеджер (Коршунова Анастасия): Здравствуйте, Анна Иванова.",
-        "[00:02.0] Клиент: Добрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой.",
-        "[00:03.0] Клиент: Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор.",
-        "[00:04.0] Клиент: Отправьте договор и свяжитесь со мной завтра по телефону.",
-        "[00:05.0] Менеджер (Коршунова Анастасия): Хорошо, отправлю договор и позвоню завтра.",
-    ]
+    turns = (
+        ("operator", "left", "Здравствуйте. Расскажу про математику."),
+        ("client", "right", "Добрый день. Ищу ребёнку очный летний лагерь по математике."),
+        ("client", "right", "Цена важна. Есть скидка? Нужно обсудить договор."),
+        ("client", "right", "Отправьте договор и свяжитесь завтра по телефону."),
+        ("operator", "left", "Хорошо, отправлю договор и позвоню завтра."),
+    )
+    variants = fx.proven_variants(turns)
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = fx.evidence(
+        turns, source_call_id=call_id
+    )
+    variants.update(
+        primary_provider="mlx",
+        secondary_provider="gigaam",
+        call_topology="simple_two_party",
+        manager={
+            "physical_channel": "left",
+            "variant_a": "Здравствуйте. Расскажу про математику.",
+            "variant_b": "Здравствуйте. Расскажу про математику.",
+        },
+        client={
+            "physical_channel": "right",
+            "variant_a": "Нужен лагерь. Пришлите договор.",
+            "variant_b": "Нужен лагерь. Пришлите договор.",
+        },
+    )
+    fixture_call = CallRecord(
+        id=2 if pending else 1,
+        source_file=str(audio),
+        source_filename=audio.name,
+        source_call_id=call_id,
+        source_recording_id=fx.RECORDING_ID,
+        duration_sec=125.0,
+        phone="+79990001123" if pending else "+79990001122",
+        manager_name="19",
+        direction="outbound" if pending else "inbound",
+        started_at=datetime.fromisoformat(started).replace(tzinfo=timezone.utc),
+        transcript_variants_json=json.dumps(variants, ensure_ascii=False),
+        transcript_text=(
+            "MANAGER:\nЗдравствуйте. Расскажу про математику. Хорошо, отправлю договор.\n"
+            "CLIENT:\nНужен лагерь. Пришлите договор."
+        ),
+    )
+    analysis = valid_v3_analysis(fixture_call) if not pending else {}
+    if analysis:
+        analysis["quality_flags"].update(
+            call_type="sales_call",
+            transcript_quality_requires_manual_review=False,
+        )
+        analysis["analysis_meta"]["manager_output_sha256"] = (
+            contract.manager_output_sha256(analysis)
+        )
     with sqlite3.connect(db) as con:
         con.execute(
-            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 2 if pending else 1,
                 str(audio),
                 audio.name,
                 call_id,
+                fx.RECORDING_ID,
                 125.0,
                 "+79990001122" if not pending else "+79990001123",
                 "19",
@@ -117,31 +168,10 @@ def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", sta
                 "done",
                 "pending" if pending else "done",
                 "pending" if pending else "done",
-                "MANAGER:\nЗдравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.\nCLIENT:\nДобрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
-                json.dumps({
-                    "mode": "stereo",
-                    "primary_provider": "mlx",
-                    "secondary_provider": "gigaam",
-                    "dialogue_lines": dialogue,
-                    "call_topology": "simple_two_party",
-                    "role_mapping": {
-                        "confirmed": True,
-                        "manager_quality_allowed": True,
-                        "topology": "simple_two_party",
-                    },
-                    "manager": {
-                        "physical_channel": "left",
-                        "variant_a": "Здравствуйте. Отправлю договор.",
-                        "variant_b": "Здравствуйте. Отправлю договор.",
-                    },
-                    "client": {
-                        "physical_channel": "right",
-                        "variant_a": "Нужен лагерь. Пришлите договор.",
-                        "variant_b": "Нужен лагерь. Пришлите договор.",
-                    },
-                }, ensure_ascii=False),
+                fixture_call.transcript_text,
+                json.dumps(variants, ensure_ascii=False),
                 "{}" if pending else json.dumps({"decision": "automatic"}, ensure_ascii=False),
-                "{}" if pending else json.dumps(_analysis(), ensure_ascii=False),
+                "{}" if pending else json.dumps(analysis, ensure_ascii=False),
             ),
         )
 
@@ -547,13 +577,12 @@ def test_role_swapped_dialogue_never_reaches_manager_sheet(
         problem_text = " ".join(
             str(cell) for row in wb["Проблемы данных"].iter_rows(values_only=True) for cell in row
         )
-        assert "Текст с таймкодами не совпадает с итоговой расшифровкой" in problem_text
-        assert "Роли менеджера и клиента не подтверждены" not in problem_text
-        assert "Спикер A (роль не подтверждена)" in problem_text
+        assert "Роли менеджера и клиента не подтверждены" in problem_text
+        assert "Роли не подтверждены; не использовать для оценки сотрудника" in problem_text
     wb.close()
 
 
-def test_per_role_rewrite_reports_text_alignment_not_false_role_conflict(
+def test_per_role_rewrite_cannot_override_provider_bound_tracks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
@@ -588,14 +617,13 @@ def test_per_role_rewrite_reports_text_alignment_not_false_role_conflict(
         tallanto_client=FakeTallantoClient(),
     )
 
-    assert result["manager_ready_rows"] == 0
+    assert result["manager_ready_rows"] == 1
     wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
-    problem_text = " ".join(
-        str(cell) for row in wb["Проблемы данных"].iter_rows(values_only=True) for cell in row
+    manager_text = " ".join(
+        str(cell) for row in wb["Звонки"].iter_rows(values_only=True) for cell in row
     )
-    assert "Текст с таймкодами не совпадает с итоговой расшифровкой" in problem_text
-    assert "Роли менеджера и клиента не подтверждены" not in problem_text
-    assert "Спикер A (роль не подтверждена)" in problem_text
+    assert "Здравствуйте. Расскажу про математику." in manager_text
+    assert "Здравствуйте, Анна Иванова, я слушаю вас." not in manager_text
     wb.close()
 
 
@@ -731,7 +759,6 @@ def test_persisted_mutable_sidecar_is_never_confirmed() -> None:
         Path("call.mp3"), variants, "MANAGER:\nПервый ответ.\nCLIENT:\nПервый вопрос."
     )
     assert not chronology_confirmed
-    assert not exporter.manager_roles_confirmed(variants)
 
 
 def test_invalid_stored_line_is_preserved_for_manual_review() -> None:
@@ -774,7 +801,7 @@ def test_equal_cross_role_timecodes_are_excluded_from_manager_report(
     wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
     assert wb["Звонки"].max_row == 1
     assert any(
-        "Порядок реплик не подтверждён" in str(cell)
+        "Роли менеджера и клиента не подтверждены" in str(cell)
         for row in wb["Проблемы данных"].iter_rows(values_only=True)
         for cell in row
     )
@@ -809,10 +836,8 @@ def test_export_merges_pending_rows_and_preserves_dialogue(tmp_path: Path, monke
     assert "MANAGER:" not in transcript and "CLIENT:" not in transcript
     assert sheet.cell(2, headers["ФИО клиента из Tallanto"]).value == "Анна Иванова"
     assert sheet.cell(2, headers["Предметы"]).value == "математика"
-    assert sheet.cell(2, headers["Формат"]).value == "очно"
-    assert sheet.cell(2, headers["Класс"]).value == "7"
-    assert sheet.cell(2, headers["Озвученный бюджет"]).value == "100000 рублей"
-    assert sheet.cell(2, headers["Интерес к скидке"]).value == "Да"
+    for column in ("Формат", "Класс", "Озвученный бюджет", "Интерес к скидке"):
+        assert sheet.cell(2, headers[column]).value is None
     assert headers["Расшифровка разговора, часть 1"] == headers["Краткое содержание разговора"] + 1
     assert "Статус обработки" not in headers and "Школа" not in headers and "Аудиозапись" not in headers
     phone = sheet.cell(2, headers["Телефон клиента"])
@@ -1185,23 +1210,27 @@ def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, mon
     headers = {value: index for index, value in enumerate(values[0])}
     row = next(item for item in values[1:] if item[headers["Телефон клиента"]] == "+79990001122")
     assert row[headers["Статус смысловой выжимки"]].startswith("Гипотезы:")
-    assert row[headers["Тип звонка по смысловому анализу"]] == "Продажа / подбор обучения"
-    assert row[headers["Краткое содержание разговора"]] == "Клиент обсудил летний лагерь и попросил договор."
-    assert row[headers["Продукт"]] == "летний курс M9"
-    assert row[headers["Возражения и ограничения"]] == "нужно обсудить договор"
-    assert row[headers["Следующий шаг"]] == "Отправить договор"
-    for column in ("Предметы", "Формат", "Целевые экзамены", "Класс", "Срок следующего шага", "Предпочтительный канал", "Озвученный бюджет", "Чувствительность к цене", "Интерес к скидке"):
+    assert row[headers["Краткое содержание разговора"]].startswith(
+        "Стороны разговора не подтверждены"
+    )
+    for column in (
+        "Тип звонка по смысловому анализу", "Продукт",
+        "Возражения и ограничения", "Следующий шаг", "Предметы", "Формат",
+        "Целевые экзамены", "Класс", "Срок следующего шага",
+        "Предпочтительный канал", "Озвученный бюджет",
+        "Чувствительность к цене", "Интерес к скидке",
+    ):
         assert row[headers[column]] is None
     transcript = "\n".join(str(row[index] or "") for name, index in headers.items() if str(name).startswith("Расшифровка разговора"))
-    assert "Спикер A (роль не подтверждена):" in transcript
-    assert "Спикер B (роль не подтверждена):" in transcript
+    assert "Спикер A:" in transcript
+    assert "Спикер B:" in transcript
     assert "Менеджер (" not in transcript and "Клиент:" not in transcript
     description = list(wb["Описание полей"].iter_rows(values_only=True))
     assert any("не является фактом для оценки менеджера или KPI" in str(cell) for item in description for cell in item)
     wb.close()
 
 
-def test_historical_model_speaker_correction_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_historical_model_speaker_correction_cannot_override_provider_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
@@ -1229,18 +1258,13 @@ def test_historical_model_speaker_correction_is_review_only(tmp_path: Path, monk
         tallanto_client=FakeTallantoClient(),
     )
 
-    assert result["manager_ready_rows"] == 0
+    assert result["manager_ready_rows"] == 1
     wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
-    assert wb["Звонки"].max_row == 1
-    assert any(
-        "Роли менеджера и клиента не подтверждены" in str(cell)
-        for row in wb["Проблемы данных"].iter_rows(values_only=True)
-        for cell in row
-    )
+    assert wb["Звонки"].max_row == 2
     wb.close()
 
 
-def test_conflicting_topology_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_topology_label_cannot_override_provider_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
@@ -1255,10 +1279,10 @@ def test_conflicting_topology_is_review_only(tmp_path: Path, monkeypatch: pytest
 
     result = exporter.export_day(ready_db, working_db, out, date(2026, 7, 28), users, tallanto_export=tallanto, tallanto_client=FakeTallantoClient())
 
-    assert result["manager_ready_rows"] == 0
+    assert result["manager_ready_rows"] == 1
     transcript_name = f"call_{hashlib.sha256(b'call-ready').hexdigest()[:20]}.txt"
     transcript = (Path(result["transcript_dir"]) / transcript_name).read_text(encoding="utf-8")
-    assert "Менеджер:" not in transcript
+    assert "Менеджер:" in transcript and "Клиент:" in transcript
 
 
 def test_call_id_is_hashed_in_transcript_filename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1648,7 +1672,7 @@ def test_late_closed_call_creates_one_immutable_supplement(
     assert pending is not None
     with sqlite3.connect(ready_db) as target:
         target.execute(
-            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             pending,
         )
         target.execute(
@@ -1765,17 +1789,21 @@ def test_balance_only_change_creates_supplement_with_new_balance(
             for row in wb["Сводка"].iter_rows(values_only=True)
             if row and row[0]
         }
-        problems = " ".join(
-            str(cell)
-            for row in wb["Проблемы данных"].iter_rows(values_only=True)
-            for cell in row
+        problem_rows = list(wb["Проблемы данных"].iter_rows(values_only=True))
+        problems = " ".join(str(cell) for row in problem_rows for cell in row)
+        quarantine_start = next(
+            index for index, row in enumerate(problem_rows)
+            if row and row[0] == "Карантин Stage10"
+        )
+        quarantine_text = " ".join(
+            str(cell) for row in problem_rows[quarantine_start:] for cell in row
         )
     finally:
         wb.close()
     assert "Карантин Stage10" in problems
     assert "Аудиозапись не появилась в Mango в течение 72 часов." in problems
     assert "повторить загрузку вручную" in problems
-    assert "+7999" not in problems
+    assert "+7999" not in quarantine_text
     assert summary["Всего звонков"] == 2
     assert summary["Строк с доступными данными"] == 1
     assert summary["Требуют проверки"] >= 1
@@ -1845,31 +1873,53 @@ def test_missing_tallanto_export_blocks_matching(tmp_path: Path) -> None:
 
 def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
-    manager_text = "а" * 70_000
-    lines = [f"[00:01.0] Менеджер (Иван): {manager_text}", "[00:02.0] Клиент: конец"]
+    manager_text = "математика " + "а" * 70_000
+    turns = (("operator", "left", manager_text), ("client", "right", "конец"))
+    variants = fx.proven_variants(turns)
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = fx.evidence(
+        turns, source_call_id="call-ready"
+    )
+    variants.update(
+        primary_provider="mlx",
+        secondary_provider="gigaam",
+        manager={
+            "physical_channel": "left",
+            "variant_a": manager_text,
+            "variant_b": manager_text,
+        },
+        client={
+            "physical_channel": "right",
+            "variant_a": "конец",
+            "variant_b": "конец",
+        },
+    )
+    fixture_call = CallRecord(
+        id=1,
+        source_file=str(ready_db.parent.parent / "working/audio/ready.mp3"),
+        source_filename="ready.mp3",
+        source_call_id="call-ready",
+        source_recording_id=fx.RECORDING_ID,
+        duration_sec=125.0,
+        phone="+79990001122",
+        manager_name="19",
+        direction="inbound",
+        started_at=datetime.fromisoformat("2026-07-28 08:00:00").replace(tzinfo=timezone.utc),
+        transcript_variants_json=json.dumps(variants, ensure_ascii=False),
+        transcript_text=f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец",
+    )
+    analysis = valid_v3_analysis(fixture_call)
+    expected = contract.build_dialogue_input(contract.call_record_view(fixture_call)).render()
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
-                con.execute(
-                        "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
-                        (f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец", json.dumps({
-                            "mode": "stereo",
-                            "primary_provider": "mlx",
-                            "secondary_provider": "gigaam",
-                            "dialogue_lines": lines,
-                        "call_topology": "simple_two_party",
-                        "role_mapping": {"confirmed": True, "manager_quality_allowed": True, "topology": "simple_two_party"},
-                            "manager": {
-                                "physical_channel": "left",
-                                "variant_a": manager_text,
-                                "variant_b": manager_text,
-                            },
-                            "client": {
-                                "physical_channel": "right",
-                                "variant_a": "конец",
-                                "variant_b": "конец",
-                            },
-                    }, ensure_ascii=False),),
-                )
+            con.execute(
+                "UPDATE call_records SET transcript_text=?, transcript_variants_json=?, analysis_json=? "
+                "WHERE source_call_id='call-ready'",
+                (
+                    fixture_call.transcript_text,
+                    json.dumps(variants, ensure_ascii=False),
+                    json.dumps(analysis, ensure_ascii=False),
+                ),
+            )
     manifest_path = ready_db.with_suffix(".manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
@@ -1882,10 +1932,10 @@ def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pyte
     sheet = wb["Звонки"]
     header = next(sheet.iter_rows(values_only=True))
     transcript_columns = [i for i, value in enumerate(header) if str(value).startswith("Расшифровка разговора, часть")]
+    assert result["manager_ready_rows"] == 1, result
     row = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
     restored = "".join(str(row[i] or "") for i in transcript_columns)
-    expected, confirmed = exporter.ordered_dialogue(Path("ignored"), {"dialogue_lines": lines}, "")
-    assert confirmed and restored == expected
+    assert restored == expected
     assert all(len(str(row[i] or "")) <= exporter.TRANSCRIPT_CHUNK for i in transcript_columns)
     transcript_name = f"call_{hashlib.sha256(b'call-ready').hexdigest()[:20]}.txt"
     txt = Path(result["transcript_dir"]) / transcript_name

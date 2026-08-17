@@ -11,6 +11,11 @@ from sqlalchemy.orm import Session
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
 from mango_mvp.services.analyze import AnalyzeService
+from mango_mvp.services.dialogue_contract import (
+    call_record_view,
+    guard_stored_analysis,
+    safe_error_text,
+)
 
 
 class AIOfficeExportError(RuntimeError):
@@ -81,14 +86,23 @@ def _parse_analysis(call: CallRecord, settings: Settings) -> Dict[str, Any]:
         raise AIOfficeExportError(f"Call #{call.id} has invalid analysis_json.") from exc
     if not isinstance(payload, dict):
         raise AIOfficeExportError(f"Call #{call.id} analysis_json must decode to an object.")
+    if AnalyzeService.analysis_schema_version(payload) == "v3":
+        return guard_stored_analysis(call_record_view(call), payload)
     return AnalyzeService(settings).migrate_analysis_payload(call, payload)
 
 
 def build_call_insight_payload(call: CallRecord, analysis: Dict[str, Any]) -> Dict[str, Any]:
     normalized = analysis if isinstance(analysis, dict) else {}
-    blocks = _as_dict(normalized.get("structured_fields"))
+    claim_evidence = (
+        _as_list(normalized.get("claim_evidence"))
+        if AnalyzeService.analysis_schema_version(normalized) == "v3"
+        else []
+    )
+    blocks = _as_dict(normalized.get("display_fields"))
     if not blocks:
-        blocks = _as_dict(normalized.get("crm_blocks"))
+        blocks = _as_dict(normalized.get("crm_blocks")) or _as_dict(
+            normalized.get("structured_fields")
+        )
 
     people = _as_dict(blocks.get("people"))
     contacts = _as_dict(blocks.get("contacts"))
@@ -141,14 +155,24 @@ def build_call_insight_payload(call: CallRecord, analysis: Dict[str, Any]) -> Di
         "call_summary": {
             "history_summary": history_summary,
             "history_short": _clean_text(normalized.get("history_short")) or _clean_text(normalized.get("summary")),
-            "evidence": [
+            "claim_evidence": [
                 {
-                    "speaker": _clean_text(_as_dict(item).get("speaker")),
-                    "ts": _clean_text(_as_dict(item).get("ts")),
-                    "text": _clean_text(_as_dict(item).get("text")) or "",
+                    "field_path": item["field_path"],
+                    "turn_id": item["turn_id"],
+                    "exact_quote": item["exact_quote"],
+                    "timecode": item["timecode"],
+                    "speaker_kind": item["speaker_kind"],
+                    "claim_id": item["claim_id"],
                 }
-                for item in _as_list(normalized.get("evidence"))
-                if _clean_text(_as_dict(item).get("text"))
+                for item in claim_evidence
+                if isinstance(item, dict)
+                and all(
+                    isinstance(item.get(key), str) and item[key]
+                    for key in (
+                        "field_path", "turn_id", "exact_quote", "timecode",
+                        "speaker_kind", "claim_id",
+                    )
+                )
             ],
         },
         "sales_insight": {
@@ -210,7 +234,7 @@ def _post_call_insight(
             timeout=max(1, int(settings.ai_office_timeout_sec)),
         )
     except requests.RequestException as exc:
-        raise AIOfficeExportError(f"Failed to reach AI Office: {exc}") from exc
+        raise AIOfficeExportError(safe_error_text("ai_office_request", exc)) from exc
 
     try:
         data = response.json()
@@ -229,9 +253,7 @@ def _post_call_insight(
             "http_status": response.status_code,
             "response": data,
         }
-    raise AIOfficeExportError(
-        f"AI Office returned HTTP {response.status_code}: {data.get('detail') or response.text.strip()}"
-    )
+    raise AIOfficeExportError(f"AI Office returned HTTP {response.status_code}")
 
 
 def push_call_insights(
@@ -264,11 +286,24 @@ def push_call_insights(
     created = 0
     duplicates = 0
     failed = 0
+    skipped = 0
     items: list[Dict[str, Any]] = []
 
     for call in ordered_calls:
         try:
             payload = build_call_insight_payload_for_record(call, settings)
+            analysis = _as_dict(payload.get("raw_analysis"))
+            flags = _as_dict(analysis.get("quality_flags"))
+            if flags.get("role_attribution_untrusted") or flags.get("analysis_contract_invalid"):
+                skipped += 1
+                items.append(
+                    {
+                        "call_id": int(call.id),
+                        "status": "skipped_untrusted_analysis",
+                        "http_status": None,
+                    }
+                )
+                continue
             if dry_run:
                 result = {"status": "dry_run", "http_status": None, "response": None}
             else:
@@ -283,8 +318,6 @@ def push_call_insights(
             items.append(
                 {
                     "call_id": int(call.id),
-                    "source_call_id": _clean_text(call.source_call_id),
-                    "source_filename": _clean_text(call.source_filename),
                     "status": status_value,
                     "http_status": result["http_status"],
                 }
@@ -294,10 +327,8 @@ def push_call_insights(
             items.append(
                 {
                     "call_id": int(call.id),
-                    "source_call_id": _clean_text(call.source_call_id),
-                    "source_filename": _clean_text(call.source_filename),
                     "status": "failed",
-                    "error": str(exc),
+                    "error": safe_error_text("ai_office_export", exc),
                 }
             )
 
@@ -307,6 +338,7 @@ def push_call_insights(
         "created": created,
         "duplicates": duplicates,
         "failed": failed,
+        "skipped": skipped,
         "missing_ids": missing_ids,
         "dry_run": bool(dry_run),
         "items": items,

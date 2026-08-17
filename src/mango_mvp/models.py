@@ -20,6 +20,11 @@ class CallRecord(Base):
     source_file: Mapped[str] = mapped_column(String(1024), unique=True, index=True)
     source_filename: Mapped[str] = mapped_column(String(255), index=True)
     source_call_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    # Independent capture-manifest binding.  It must not live inside the
+    # mutable transcript payload that it is meant to verify.
+    source_recording_id: Mapped[Optional[str]] = mapped_column(
+        String(256), nullable=True, index=True, unique=True
+    )
 
     audio_codec: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     sample_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -60,6 +65,9 @@ class CallRecord(Base):
     resolve_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     resolve_quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     analysis_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Technical-only ledger: failed model attempts must not overwrite the last
+    # valid business analysis and must still appear in the cost balance.
+    analysis_attempts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     amocrm_contact_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     amocrm_lead_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)

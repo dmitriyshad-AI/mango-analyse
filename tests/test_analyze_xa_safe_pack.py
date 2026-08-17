@@ -67,9 +67,11 @@ def test_full_profile_user_prompt_includes_hints_section() -> None:
     assert "target_product_candidates" in context["user_prompt"]
 
 
-def test_system_prompt_full_v7_mentions_hints() -> None:
-    assert ANALYZE_PROMPT_VERSION_FULL == "v7"
-    assert ANALYZE_PROMPT_VERSION_COMPACT == "v6"
+def test_system_prompt_full_mentions_hints_under_the_v3_contract() -> None:
+    # Bumped for the canonical dialogue input and again for the v3 claim
+    # contract: the prompt bytes changed, so the cache key changes with them.
+    assert ANALYZE_PROMPT_VERSION_FULL == "v9"
+    assert ANALYZE_PROMPT_VERSION_COMPACT == "v8"
     assert "deterministic hints" in SYSTEM_PROMPT_FULL.lower()
     assert "Never invent facts from hints" in SYSTEM_PROMPT_FULL
 

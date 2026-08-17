@@ -134,6 +134,26 @@ class IngestFilenameParseTest(unittest.TestCase):
             self.assertEqual(result["processed"], 1)
             self.assertEqual(result["inserted"], 1)
 
+    def test_ingest_normalizes_recording_id_before_persisting(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ingest_recording_id_") as td:
+            root = Path(td)
+            audio = root / "selected.mp3"
+            audio.write_bytes(b"selected")
+            metadata = root / "metadata.csv"
+            metadata.write_text(
+                "filename,call_id,recording_id\nselected.mp3,call-1,  recording-1  \n",
+                encoding="utf-8",
+            )
+            engine = create_engine("sqlite:///:memory:", future=True)
+            Base.metadata.create_all(bind=engine)
+            with Session(engine, future=True) as session, patch(
+                "mango_mvp.services.ingest.probe_audio", return_value={"codec_name": "mp3"}
+            ):
+                ingest_from_directory(session, root, metadata)
+                row = session.scalars(select(CallRecord)).one()
+
+            self.assertEqual(row.source_recording_id, "recording-1")
+
     def test_ingest_with_header_only_metadata_is_empty(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_ingest_empty_") as td:
             root = Path(td)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Safe current-day Google projection for Mango calls.
+"""Plan the safe current-day Google projection for Mango calls.
 
-Dry-run is the default.  The module deliberately has no transcript column and
-updates existing rows by header name plus call_key, preserving ROP-owned cells.
+This module never writes Google. External publication belongs exclusively to
+``publish_live_mango_calls_google.py``.
 """
 from __future__ import annotations
 
@@ -48,6 +48,12 @@ from mango_mvp.productization.ready_publication import (  # noqa: E402
     ready_publication_lock,
     recover_ready_generation,
 )
+from mango_mvp.services.dialogue_contract import (  # noqa: E402
+    call_record_view,
+    guard_stored_analysis,
+    json_object,
+    manager_result_ru,
+)
 from mango_mvp.services.export_excel import call_to_row  # noqa: E402
 
 
@@ -55,11 +61,10 @@ MOSCOW = ZoneInfo("Europe/Moscow")
 SCHEMA = "mango_calls_current_google_v1"
 SAFE_PLAN_SCHEMA = "mango_calls_current_google_safe_plan_v2"
 CONFIG_SCHEMA = "mango_calls_current_google_config_v1"
-CURRENT_TITLE = "Сегодня — предварительно"
-REVIEW_TITLE = "Требует проверки"
-SUMMARY_TITLE = "Сводка"
-BANNER_PREFIX = "ПРЕДВАРИТЕЛЬНО, ДЕНЬ НЕ ЗАКРЫТ"
-CONFIRMATION = "UPDATE_MANGO_CURRENT_SHEET"
+LEGACY_WRITE_MIGRATION = (
+    "publish_current_mango_calls_google.py is plan-only; "
+    "use publish_live_mango_calls_google.py for every Google write"
+)
 NEUTRAL_SUMMARY = (
     "Смысловой анализ не завершён; строка ожидает повторной обработки."
 )
@@ -95,14 +100,11 @@ HEADERS = (
 )
 ROP_HEADERS = ("Комментарий РОПа", "Решение РОПа")
 MANAGED_HEADERS = HEADERS[: -len(ROP_HEADERS)]
-REVIEW_HEADERS = MANAGED_HEADERS
-SUMMARY_HEADERS = ("Показатель", "Значение")
 FORBIDDEN_LOCAL_PATH_MARKERS = CLOUD_PATH_MARKERS
 FORBIDDEN_FIELD_RE = re.compile(
     r"(?:transcript|dialogue|расшифровк|sqlite|analysis_json|resolve_json|source_file)",
     re.IGNORECASE,
 )
-PUBLIC_LINK_RE = re.compile(r"^https?://", re.IGNORECASE)
 DRIVE_FILE_RE = re.compile(
     r"^https://drive\.google\.com/(?:file/d/|open\?id=)(?P<id>[A-Za-z0-9_-]+)"
 )
@@ -119,16 +121,6 @@ BLOCKING_PROCESSING_REASONS = (
     "Разделение ролей не завершено",
     "Смысловой анализ не завершён",
 )
-
-
-def json_object(value: Any) -> Mapping[str, Any]:
-    if isinstance(value, Mapping):
-        return value
-    try:
-        payload = json.loads(str(value or "{}"))
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, Mapping) else {}
 
 
 def clean_text(value: Any, *, maximum: int = MAX_MANAGER_VALUE) -> str:
@@ -298,21 +290,26 @@ def load_manager_rows(
         seen.add(call_key)
         if call_key in quarantine_keys:
             continue
-        analysis = json_object(row.get("analysis_json"))
-        analysis_complete = row.get("analysis_status") == "done" and bool(analysis)
-        business_analysis = analysis if analysis_complete else {}
+        stored_analysis = json_object(row.get("analysis_json"))
+        analysis_complete = row.get("analysis_status") == "done" and bool(stored_analysis)
+        # This script only plans and prepares, but its plan is still read by a
+        # human and copied into Google.  Almost every stored payload here
+        # predates the role guard, so it goes through exactly the same
+        # fail-closed projector as Analyse, Excel, AI Office and the live
+        # publisher: re-reading an old payload is not a reason to believe it.
+        analysis = (
+            guard_stored_analysis(call_record_view(row), stored_analysis)
+            if analysis_complete
+            else {}
+        )
+        business_analysis = analysis
+        projection_record = dict(row)
+        projection_record["started_at"] = started
+        projection_record.setdefault("source_filename", "")
         normalized = (
             call_to_row(
-                SimpleNamespace(
-                    id=row.get("id") or call_key,
-                    started_at=started,
-                    phone=row.get("phone"),
-                    manager_name=row.get("manager_name"),
-                    duration_sec=row.get("duration_sec"),
-                    source_filename="",
-                    source_file="",
-                ),
-                dict(business_analysis),
+                SimpleNamespace(**projection_record),
+                dict(analysis),
             )
             if analysis_complete
             else {}
@@ -352,10 +349,13 @@ def load_manager_rows(
         ):
             issues.append("Качество расшифровки требует проверки")
         if analysis_complete and normalized.get("needs_review"):
-            issues.append("Смысловой анализ запросил ручную проверку")
-        explicit_result = clean_text(
-            business_analysis.get("result") or business_analysis.get("call_result")
-        )
+            issues.append(
+                clean_text(normalized.get("review_reasons"))
+                or "Смысловой анализ запросил ручную проверку"
+            )
+        explicit_result = manager_result_ru(business_analysis) if analysis_complete else ""
+        if explicit_result == "—":
+            explicit_result = ""
         if analysis_complete and not explicit_result:
             if clean_text(normalized.get("call_type")) == "non_conversation":
                 explicit_result = "Разговор не состоялся"
@@ -417,50 +417,6 @@ def load_manager_rows(
         result.append(manager_row)
     result.sort(key=lambda item: (str(item["Дата и время"]), str(item["call_key"])))
     return result
-
-
-def quarantine_review_rows(
-    items: Any, *, day: date
-) -> list[Mapping[str, Any]]:
-    raw_items = list(items) if isinstance(items, list) else items
-    errors = validate_quarantine_items_payload(
-        raw_items,
-        day=day,
-        expected_count=len(raw_items) if isinstance(raw_items, list) else -1,
-    )
-    if errors:
-        raise RuntimeError("safe quarantine items are invalid")
-    result: list[Mapping[str, Any]] = []
-    for item in raw_items:
-        started = parse_aware_datetime(item["started_at"])
-        result.append(
-            {
-                "call_key": str(item["call_key"]),
-                "Дата и время": started.astimezone(MOSCOW).strftime(
-                    "%d.%m.%Y %H:%M:%S"
-                ),
-                "Менеджер": "Не определён",
-                "Направление": "Не определено",
-                "Клиент": "",
-                "Телефон": "",
-                "Длительность": 0,
-                "Тип разговора": "Карантин данных",
-                "Краткое содержание": (
-                    "Разговор не обработан: данные находятся в карантине"
-                ),
-                "Результат": "Результат разговора не определён",
-                "Интерес клиента": "",
-                "Главное возражение": "",
-                "Следующий шаг": (
-                    "Техническое действие с данными: " + str(item["action"])
-                ),
-                "Срок": "",
-                TRANSCRIPT_LINK_HEADER: "",
-                "Нужна проверка": "Да",
-                "Причина проверки": str(item["reason"]),
-            }
-        )
-    return validate_safe_rows(result)
 
 
 def _safe_json_sha256(value: Any) -> str:
@@ -711,195 +667,9 @@ def validate_safe_plan_payload(
     return safe_rows
 
 
-def header_map(
-    header: Sequence[Any], required_headers: Sequence[str] = HEADERS
-) -> Mapping[str, int]:
-    normalized = [str(value or "").strip() for value in header]
-    duplicates = {value for value in normalized if value and normalized.count(value) > 1}
-    if duplicates:
-        raise RuntimeError("Google sheet has duplicate headers")
-    missing = [name for name in required_headers if name not in normalized]
-    if missing:
-        raise RuntimeError("Google sheet is missing required headers")
-    return {name: normalized.index(name) for name in required_headers}
-
-
-def plan_named_upsert(
-    existing: Sequence[Sequence[Any]],
-    desired: Sequence[Mapping[str, Any]],
-    *,
-    required_headers: Sequence[str],
-    managed_headers: Sequence[str],
-    manual_headers: Sequence[str] = (),
-    clear_absent: bool = False,
-) -> Mapping[str, Any]:
-    if not existing:
-        existing = [list(required_headers)]
-    mapping = header_map(existing[0], required_headers)
-    key_column = mapping["call_key"]
-    rows_by_key: dict[str, int] = {}
-    existing_by_key: dict[str, Sequence[Any]] = {}
-    manual_before: dict[str, tuple[Any, ...]] = {}
-    for offset, row in enumerate(existing[1:], start=3):
-        key = str(row[key_column] if key_column < len(row) else "").strip()
-        if not key:
-            continue
-        if key in rows_by_key:
-            raise RuntimeError("Google sheet has duplicate call_key")
-        rows_by_key[key] = offset
-        existing_by_key[key] = row
-        manual_before[key] = tuple(
-            row[mapping[name]] if mapping[name] < len(row) else ""
-            for name in manual_headers
-        )
-    next_row = max(3, len(existing) + 2)
-    updates: list[Mapping[str, Any]] = []
-    desired_keys = {str(row["call_key"]) for row in desired}
-    if clear_absent:
-        for key in sorted(set(existing_by_key) - desired_keys):
-            for name in managed_headers:
-                if name == "call_key" and manual_headers:
-                    continue
-                prior_row = existing_by_key[key]
-                prior = prior_row[mapping[name]] if mapping[name] < len(prior_row) else ""
-                if str(prior) != "":
-                    updates.append(
-                        {
-                            "row": rows_by_key[key],
-                            "column": mapping[name] + 1,
-                            "header": name,
-                            "value": "",
-                        }
-                    )
-    for desired_row in desired:
-        key = str(desired_row["call_key"])
-        target_row = rows_by_key.get(key)
-        if target_row is None:
-            target_row = next_row
-            next_row += 1
-            rows_by_key[key] = target_row
-        for name in managed_headers:
-            prior_row = existing_by_key.get(key)
-            if prior_row is not None:
-                prior_value = (
-                    prior_row[mapping[name]] if mapping[name] < len(prior_row) else ""
-                )
-                if str(prior_value) == str(desired_row.get(name, "")):
-                    continue
-            updates.append(
-                {
-                    "row": target_row,
-                    "column": mapping[name] + 1,
-                    "header": name,
-                    "value": desired_row.get(name, ""),
-                }
-            )
-    return {
-        "updates": updates,
-        "manual_before": manual_before,
-        "desired_keys": sorted(desired_keys),
-    }
-
-
-def plan_upsert(
-    existing: Sequence[Sequence[Any]], desired: Sequence[Mapping[str, Any]]
-) -> Mapping[str, Any]:
-    return plan_named_upsert(
-        existing,
-        desired,
-        required_headers=HEADERS,
-        managed_headers=MANAGED_HEADERS,
-        manual_headers=ROP_HEADERS,
-        clear_absent=True,
-    )
-
-
-def column_name(number: int) -> str:
-    if number < 1:
-        raise ValueError("column number must be positive")
-    result = ""
-    while number:
-        number, remainder = divmod(number - 1, 26)
-        result = chr(65 + remainder) + result
-    return result
-
-
-def quote_title(title: str) -> str:
-    return "'" + title.replace("'", "''") + "'"
-
-
-def verify_named_readback(
-    values: Sequence[Sequence[Any]],
-    desired: Sequence[Mapping[str, Any]],
-    manual_before: Mapping[str, Sequence[Any]],
-    *,
-    required_headers: Sequence[str],
-    managed_headers: Sequence[str],
-    manual_headers: Sequence[str] = (),
-    require_absent_cleared: bool = False,
-) -> None:
-    mapping = header_map(values[0] if values else (), required_headers)
-    key_column = mapping["call_key"]
-    rows: dict[str, Sequence[Any]] = {}
-    for row in values[1:]:
-        key = str(row[key_column] if key_column < len(row) else "").strip()
-        if not key:
-            continue
-        if key in rows:
-            raise RuntimeError("Google readback has duplicate call_key")
-        rows[key] = row
-    for wanted in desired:
-        key = str(wanted["call_key"])
-        actual = rows.get(key)
-        if actual is None:
-            raise RuntimeError("Google readback is missing an updated row")
-        for name in managed_headers:
-            value = actual[mapping[name]] if mapping[name] < len(actual) else ""
-            if str(value) != str(wanted.get(name, "")):
-                raise RuntimeError("Google managed-cell readback mismatch")
-        if manual_headers and key in manual_before:
-            manual = tuple(
-                actual[mapping[name]] if mapping[name] < len(actual) else ""
-                for name in manual_headers
-            )
-            if tuple(map(str, manual)) != tuple(map(str, manual_before[key])):
-                raise RuntimeError("Google ROP-owned cells changed")
-    if require_absent_cleared:
-        desired_keys = {str(item["call_key"]) for item in desired}
-        for key, actual in rows.items():
-            if key in desired_keys:
-                continue
-            if any(
-                str(actual[mapping[name]] if mapping[name] < len(actual) else "")
-                for name in managed_headers
-                if name != "call_key"
-            ):
-                raise RuntimeError("Google stale managed row was not cleared")
-
-
-def verify_readback(
-    values: Sequence[Sequence[Any]],
-    desired: Sequence[Mapping[str, Any]],
-    manual_before: Mapping[str, Sequence[Any]],
-) -> None:
-    verify_named_readback(
-        values,
-        desired,
-        manual_before,
-        required_headers=HEADERS,
-        managed_headers=MANAGED_HEADERS,
-        manual_headers=ROP_HEADERS,
-        require_absent_cleared=True,
-    )
-
-
-def retention_allows(
-    *, day: date, pilot_started_day: date, retention_approved: bool
-) -> bool:
-    return retention_approved or 0 <= (day - pilot_started_day).days < 14
-
-
 class GoogleGateway:
+    """Read-only Google metadata used by the single live publisher subclass."""
+
     def __init__(self, session: Any, spreadsheet_id: str) -> None:
         self.session = session
         self.spreadsheet_id = spreadsheet_id
@@ -949,9 +719,6 @@ class GoogleGateway:
     def permissions(self) -> Sequence[Mapping[str, Any]]:
         return self._permissions_for(self.spreadsheet_id)
 
-    def file_permissions(self, file_id: str) -> Sequence[Mapping[str, Any]]:
-        return self._permissions_for(file_id)
-
     def sheets(self) -> Sequence[Mapping[str, Any]]:
         response = self.session.get(
             f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}",
@@ -964,506 +731,11 @@ class GoogleGateway:
             if isinstance(item, Mapping)
         ]
 
-    def protections(self, title: str) -> Sequence[Mapping[str, Any]]:
-        response = self.session.get(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}",
-            params={
-                "fields": (
-                    "sheets(properties(sheetId,title),"
-                    "protectedRanges(range,warningOnly,editors(users,groups,domainUsersCanEdit)))"
-                )
-            },
-            timeout=60,
-        )
-        for sheet in self._json(response).get("sheets") or ():
-            if not isinstance(sheet, Mapping):
-                continue
-            properties = sheet.get("properties")
-            if isinstance(properties, Mapping) and properties.get("title") == title:
-                ranges = sheet.get("protectedRanges") or ()
-                if not isinstance(ranges, Sequence) or isinstance(ranges, (str, bytes)):
-                    raise RuntimeError("Google protection readback is invalid")
-                return [item for item in ranges if isinstance(item, Mapping)]
-        raise RuntimeError("Google sheet protection readback target is missing")
-
-    def column_hidden(self, title: str, column_index: int) -> bool:
-        response = self.session.get(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}",
-            params={
-                "ranges": (
-                    f"{quote_title(title)}!{column_name(column_index + 1)}:"
-                    f"{column_name(column_index + 1)}"
-                ),
-                "includeGridData": "true",
-                "fields": (
-                    "sheets(properties(title),"
-                    "data(startColumn,columnMetadata(hiddenByUser)))"
-                ),
-            },
-            timeout=60,
-        )
-        for sheet in self._json(response).get("sheets") or ():
-            if not isinstance(sheet, Mapping):
-                continue
-            properties = sheet.get("properties")
-            if not isinstance(properties, Mapping) or properties.get("title") != title:
-                continue
-            for data in sheet.get("data") or ():
-                if not isinstance(data, Mapping) or int(data.get("startColumn", -1)) != column_index:
-                    continue
-                metadata = data.get("columnMetadata")
-                return bool(
-                    isinstance(metadata, Sequence)
-                    and not isinstance(metadata, (str, bytes))
-                    and metadata
-                    and isinstance(metadata[0], Mapping)
-                    and metadata[0].get("hiddenByUser") is True
-                )
-        return False
-
-    def read_values(self, title: str) -> Sequence[Sequence[Any]]:
-        response = self.session.get(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/{quote_title(title)}!A2:ZZ",
-            params={"majorDimension": "ROWS"},
-            timeout=60,
-        )
-        return self._json(response).get("values") or ()
-
-    def read_banner(self, title: str) -> str:
-        response = self.session.get(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/"
-            f"{quote_title(title)}!A1",
-            timeout=60,
-        )
-        values = self._json(response).get("values") or ()
-        return str(values[0][0]) if values and values[0] else ""
-
-    def batch_sheet_requests(self, requests: Sequence[Mapping[str, Any]]) -> None:
-        response = self.session.post(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}:batchUpdate",
-            json={"requests": list(requests)},
-            timeout=60,
-        )
-        self._json(response)
-
-    def write_values(self, data: Sequence[Mapping[str, Any]]) -> None:
-        response = self.session.post(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values:batchUpdate",
-            json={"valueInputOption": "RAW", "data": list(data)},
-            timeout=120,
-        )
-        self._json(response)
-
-    def clear_values(self, title: str) -> None:
-        response = self.session.post(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/"
-            f"{quote_title(title)}!A3:ZZ:clear",
-            json={},
-            timeout=60,
-        )
-        self._json(response)
 
 
-def _sheet_map(gateway: Any) -> dict[str, int]:
-    return {
-        str(item.get("title")): int(item.get("sheetId"))
-        for item in gateway.sheets()
-    }
-
-
-def _ensure_sheet(
-    gateway: Any,
-    *,
-    sheets: Mapping[str, int],
-    title: str,
-    headers: Sequence[str],
-    day: date,
-    owner_email: str,
-    rop_editors: Sequence[str],
-    protect_rop: bool,
-) -> tuple[dict[str, int], bool]:
-    created = title not in sheets
-    if created:
-        gateway.batch_sheet_requests([{"addSheet": {"properties": {"title": title}}}])
-        current = _sheet_map(gateway)
-        if title not in current:
-            raise RuntimeError("Google sheet creation readback failed")
-        last_column = column_name(len(headers))
-        banner = f"{BANNER_PREFIX} — {day.isoformat()}"
-        gateway.write_values(
-            [
-                {
-                    "range": f"{quote_title(title)}!A1:{last_column}2",
-                    "majorDimension": "ROWS",
-                    "values": [
-                        [banner, *([""] * (len(headers) - 1))],
-                        list(headers),
-                    ],
-                }
-            ]
-        )
-        requests: list[Mapping[str, Any]] = []
-        if "call_key" in headers:
-            key_index = list(headers).index("call_key")
-            requests.append(
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": current[title],
-                            "dimension": "COLUMNS",
-                            "startIndex": key_index,
-                            "endIndex": key_index + 1,
-                        },
-                        "properties": {"hiddenByUser": True},
-                        "fields": "hiddenByUser",
-                    }
-                }
-            )
-        if protect_rop:
-            start = list(headers).index(ROP_HEADERS[0])
-            requests.append(
-                {
-                    "addProtectedRange": {
-                        "protectedRange": {
-                            "range": {
-                                "sheetId": current[title],
-                                "startRowIndex": 1,
-                                "startColumnIndex": start,
-                                "endColumnIndex": start + len(ROP_HEADERS),
-                            },
-                            "description": "Поля РОПа; служба Mango не редактирует",
-                            "warningOnly": False,
-                            "editors": {
-                                "users": sorted(
-                                    {
-                                        owner_email.strip(),
-                                        *(value.strip() for value in rop_editors if value.strip()),
-                                    }
-                                )
-                            },
-                        }
-                    }
-                }
-            )
-        if requests:
-            gateway.batch_sheet_requests(requests)
-        sheets = current
-    values = gateway.read_values(title)
-    header_map(values[0] if values else (), headers)
-    if "call_key" in headers:
-        key_index = list(headers).index("call_key")
-        if not hasattr(gateway, "column_hidden") or gateway.column_hidden(
-            title, key_index
-        ) is not True:
-            raise RuntimeError("Google call_key hidden-column readback failed")
-    if protect_rop:
-        if not hasattr(gateway, "protections"):
-            raise RuntimeError("Google ROP protection readback is unavailable")
-        start = list(headers).index(ROP_HEADERS[0])
-        expected_editors = {
-            owner_email.strip().casefold(),
-            *(value.strip().casefold() for value in rop_editors if value.strip()),
-        }
-        protection_ok = False
-        for protection in gateway.protections(title):
-            protected_range = protection.get("range")
-            editors = protection.get("editors")
-            if not isinstance(protected_range, Mapping) or not isinstance(editors, Mapping):
-                continue
-            users = {
-                str(value).strip().casefold()
-                for value in editors.get("users", ())
-                if str(value).strip()
-            }
-            protection_ok = protection_ok or bool(
-                protection.get("warningOnly") is not True
-                and int(protected_range.get("sheetId", -1)) == int(sheets[title])
-                and int(protected_range.get("startRowIndex", -1)) == 1
-                and int(protected_range.get("startColumnIndex", -1)) == start
-                and int(protected_range.get("endColumnIndex", -1))
-                == start + len(ROP_HEADERS)
-                and users == expected_editors
-                and not editors.get("groups")
-                and editors.get("domainUsersCanEdit") is not True
-            )
-        if not protection_ok:
-            raise RuntimeError("Google ROP protection readback failed")
-    if hasattr(gateway, "read_banner"):
-        banner = str(gateway.read_banner(title) or "")
-        if (
-            title in {REVIEW_TITLE, SUMMARY_TITLE}
-            and (not banner.startswith(BANNER_PREFIX) or day.isoformat() not in banner)
-        ):
-            gateway.write_values(
-                [
-                    {
-                        "range": f"{quote_title(title)}!A1",
-                        "majorDimension": "ROWS",
-                        "values": [[f"{BANNER_PREFIX} — {day.isoformat()}"]],
-                    }
-                ]
-            )
-            banner = str(gateway.read_banner(title) or "")
-        if not banner.startswith(BANNER_PREFIX) or day.isoformat() not in banner:
-            raise RuntimeError("Google preliminary banner readback failed")
-    return dict(sheets), created
-
-
-def _cell_updates(title: str, updates: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return [
-        {
-            "range": (
-                f"{quote_title(title)}!"
-                f"{column_name(int(item['column']))}{int(item['row'])}"
-            ),
-            "majorDimension": "ROWS",
-            "values": [[item["value"]]],
-        }
-        for item in updates
-    ]
-
-
-def _summary_rows(
-    desired_rows: Sequence[Mapping[str, Any]],
-    stage10_summary: Optional[Mapping[str, Any]] = None,
-    quarantine_rows: Sequence[Mapping[str, Any]] = (),
-) -> list[list[Any]]:
-    stage10 = stage10_summary or {}
-    review = sum(
-        str(row.get("Нужна проверка") or "") == "Да" for row in desired_rows
-    ) + len(quarantine_rows)
-    analyzed = sum(
-        str(row.get("Краткое содержание") or "") != NEUTRAL_SUMMARY
-        for row in desired_rows
-    )
-    return [
-        ["Найдено Mango", int(stage10.get("mango_unique", len(desired_rows)))],
-        [
-            "Полностью готово",
-            int(
-                stage10.get(
-                    "processing_ready_unique",
-                    stage10.get("ready_unique", len(desired_rows)),
-                )
-            ),
-        ],
-        ["Ожидает обработки", int(stage10.get("pending_unique", 0))],
-        ["Карантин", int(stage10.get("quarantine_unique", 0))],
-        ["Непонятные пропуски", int(stage10.get("unexplained_missing", 0))],
-        ["Требуют проверки", review],
-        ["Смысловой анализ завершён", analyzed],
-        ["Баланс подтверждён", "Да" if stage10.get("consistency_ok", True) else "Нет"],
-        ["День закрыт", "Да" if stage10.get("closure_ok", False) else "Нет"],
-    ]
-
-
-def _validate_live_links(
-    gateway: Any,
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    owner_email: str,
-    allowed_emails: Sequence[str],
-    expected_roles: Optional[Mapping[str, str]],
-) -> None:
-    for row in rows:
-        link = str(row.get(TRANSCRIPT_LINK_HEADER) or "")
-        if not link:
-            continue
-        match = DRIVE_FILE_RE.match(link)
-        if match is None or not hasattr(gateway, "file_permissions"):
-            raise RuntimeError("private transcript link cannot be verified live")
-        if not exact_acl_ok(
-            gateway.file_permissions(match.group("id")),
-            owner_email=owner_email,
-            allowed_emails=allowed_emails,
-            expected_roles=expected_roles,
-        ):
-            raise RuntimeError("private transcript link ACL is not the exact whitelist")
-
-
-def publish_current(
-    gateway: Any,
-    *,
-    day: date,
-    desired_rows: Sequence[Mapping[str, Any]],
-    owner_email: str,
-    allowed_emails: Iterable[str],
-    pilot_started_day: date,
-    retention_approved: bool,
-    prior_day: Optional[date],
-    stage10_summary: Optional[Mapping[str, Any]] = None,
-    expected_roles: Optional[Mapping[str, str]] = None,
-    service_account_email: str = "",
-    quarantine_rows: Sequence[Mapping[str, Any]] = (),
-) -> Mapping[str, Any]:
-    if not retention_allows(
-        day=day,
-        pilot_started_day=pilot_started_day,
-        retention_approved=retention_approved,
-    ):
-        raise RuntimeError("Google pilot retention decision is overdue")
-    desired_rows = validate_safe_rows(list(desired_rows))
-    quarantine_rows = validate_safe_rows(list(quarantine_rows))
-    if {str(row["call_key"]) for row in desired_rows} & {
-        str(row["call_key"]) for row in quarantine_rows
-    }:
-        raise RuntimeError("ready and quarantine Google rows overlap")
-    if any(
-        row.get("Тип разговора") != "Карантин данных"
-        or row.get("Нужна проверка") != "Да"
-        or row.get("Телефон")
-        or row.get(TRANSCRIPT_LINK_HEADER)
-        for row in quarantine_rows
-    ):
-        raise RuntimeError("quarantine Google row is not manager-safe")
-    allowed = tuple(allowed_emails)
-    if not exact_acl_ok(
-        gateway.permissions(),
-        owner_email=owner_email,
-        allowed_emails=allowed,
-        expected_roles=expected_roles,
-    ):
-        raise RuntimeError("Google spreadsheet ACL is not the exact approved whitelist")
-    _validate_live_links(
-        gateway,
-        desired_rows,
-        owner_email=owner_email,
-        allowed_emails=allowed,
-        expected_roles=expected_roles,
-    )
-    sheets = _sheet_map(gateway)
-    rotated_from: Optional[str] = None
-    if prior_day and prior_day != day and CURRENT_TITLE in sheets:
-        archive_title = f"Звонки {prior_day.isoformat()} — предварительно"
-        if archive_title in sheets:
-            if not hasattr(gateway, "read_banner") or day.isoformat() not in str(
-                gateway.read_banner(CURRENT_TITLE) or ""
-            ):
-                raise RuntimeError("Google day rotation target already exists")
-        else:
-            gateway.batch_sheet_requests(
-                [
-                    {
-                        "updateSheetProperties": {
-                            "properties": {
-                                "sheetId": sheets[CURRENT_TITLE],
-                                "title": archive_title,
-                            },
-                            "fields": "title",
-                        }
-                    }
-                ]
-            )
-        rotated_from = prior_day.isoformat()
-        sheets = _sheet_map(gateway)
-    rop_editors = tuple(
-        email for email in allowed if email.casefold() != service_account_email.casefold()
-    )
-    sheets, _ = _ensure_sheet(
-        gateway,
-        sheets=sheets,
-        title=CURRENT_TITLE,
-        headers=HEADERS,
-        day=day,
-        owner_email=owner_email,
-        rop_editors=rop_editors,
-        protect_rop=True,
-    )
-    sheets, _ = _ensure_sheet(
-        gateway,
-        sheets=sheets,
-        title=REVIEW_TITLE,
-        headers=REVIEW_HEADERS,
-        day=day,
-        owner_email=owner_email,
-        rop_editors=(),
-        protect_rop=False,
-    )
-    sheets, _ = _ensure_sheet(
-        gateway,
-        sheets=sheets,
-        title=SUMMARY_TITLE,
-        headers=SUMMARY_HEADERS,
-        day=day,
-        owner_email=owner_email,
-        rop_editors=(),
-        protect_rop=False,
-    )
-    existing = gateway.read_values(CURRENT_TITLE)
-    planned = plan_upsert(existing, desired_rows)
-    data = _cell_updates(CURRENT_TITLE, planned["updates"])
-    if data:
-        gateway.write_values(data)
-    readback = gateway.read_values(CURRENT_TITLE)
-    verify_readback(readback, desired_rows, planned["manual_before"])
-    review_rows = [
-        row for row in desired_rows if str(row.get("Нужна проверка") or "") == "Да"
-    ] + list(quarantine_rows)
-    review_existing = gateway.read_values(REVIEW_TITLE)
-    review_plan = plan_named_upsert(
-        review_existing,
-        review_rows,
-        required_headers=REVIEW_HEADERS,
-        managed_headers=REVIEW_HEADERS,
-        clear_absent=True,
-    )
-    review_data = _cell_updates(REVIEW_TITLE, review_plan["updates"])
-    if review_data:
-        gateway.write_values(review_data)
-    verify_named_readback(
-        gateway.read_values(REVIEW_TITLE),
-        review_rows,
-        {},
-        required_headers=REVIEW_HEADERS,
-        managed_headers=REVIEW_HEADERS,
-        require_absent_cleared=True,
-    )
-
-    summary_values = gateway.read_values(SUMMARY_TITLE)
-    header_map(summary_values[0] if summary_values else (), SUMMARY_HEADERS)
-    wanted_summary = _summary_rows(
-        desired_rows, stage10_summary, quarantine_rows
-    )
-    existing_summary = [list(row[:2]) for row in summary_values[1:]]
-    summary_changed = existing_summary != wanted_summary
-    if summary_changed:
-        if hasattr(gateway, "clear_values"):
-            gateway.clear_values(SUMMARY_TITLE)
-        gateway.write_values(
-            [
-                {
-                    "range": f"{quote_title(SUMMARY_TITLE)}!A3:B{2 + len(wanted_summary)}",
-                    "majorDimension": "ROWS",
-                    "values": wanted_summary,
-                }
-            ]
-        )
-    summary_readback = [list(row[:2]) for row in gateway.read_values(SUMMARY_TITLE)[1:]]
-    if summary_readback != wanted_summary:
-        raise RuntimeError("Google summary readback mismatch")
-    if not exact_acl_ok(
-        gateway.permissions(),
-        owner_email=owner_email,
-        allowed_emails=allowed,
-        expected_roles=expected_roles,
-    ):
-        raise RuntimeError("Google spreadsheet ACL changed during update")
-    return {
-        "schema_version": SCHEMA,
-        "status": "updated" if data or review_data or summary_changed else "unchanged",
-        "day": day.isoformat(),
-        "rows": len(desired_rows),
-        "quarantine_rows": len(quarantine_rows),
-        "managed_cell_updates": len(data) + len(review_data) + (
-            len(wanted_summary) * 2 if summary_changed else 0
-        ),
-        "rotated_from": rotated_from,
-        "current_title": CURRENT_TITLE,
-        "review_title": REVIEW_TITLE,
-        "summary_title": SUMMARY_TITLE,
-        "retention_approved": retention_approved,
-        "full_transcript_fields_written": 0,
-    }
+def publish_current(*_args: Any, **_kwargs: Any) -> Mapping[str, Any]:
+    """Refuse the retired preliminary-sheet writer before touching its gateway."""
+    raise RuntimeError(LEGACY_WRITE_MIGRATION)
 
 
 def owner_json(path: Optional[Path]) -> Mapping[str, Any]:
@@ -1629,10 +901,14 @@ def load_google_config(path: Path) -> Mapping[str, Any]:
     }
 
 
-def authorized_session(credentials_info: Mapping[str, Any]) -> Any:
+def authorized_session(credentials_info: Any) -> Any:
     from google.auth.transport.requests import AuthorizedSession
     from google.oauth2.service_account import Credentials
 
+    if isinstance(credentials_info, Path):
+        credentials_info = validate_credentials(credentials_info)
+    if not isinstance(credentials_info, Mapping):
+        raise RuntimeError("Google credentials are invalid")
     scopes = (
         "https://www.googleapis.com/auth/drive.metadata.readonly",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -1642,8 +918,11 @@ def authorized_session(credentials_info: Mapping[str, Any]) -> Any:
     )
 
 
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Update safe preliminary Mango calls Google sheet.")
+    parser = argparse.ArgumentParser(
+        description="Build a safe preliminary Mango calls Google plan."
+    )
     parser.add_argument("--ready-db", type=Path)
     parser.add_argument("--ready-manifest", type=Path)
     parser.add_argument("--day", type=date.fromisoformat, default=datetime.now(MOSCOW).date())
@@ -1656,13 +935,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--safe-plan", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--state", type=Path)
-    parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Retired legacy option; always refuses with migration guidance.",
+    )
     parser.add_argument("--confirmation", default="")
     parser.add_argument(
         "--approved-plan-sha256",
         help="Owner-approved SHA-256 of the exact short-lived safe plan.",
     )
     args = parser.parse_args(argv)
+    if args.execute:
+        raise RuntimeError(LEGACY_WRITE_MIGRATION)
     if not args.execute:
         if not args.ready_db or not args.owner_email:
             raise RuntimeError("dry-run requires ready DB and owner email")
@@ -1702,84 +987,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "full_transcript_fields_written": 0,
             "external_write": False,
         }
-    else:
-        if (
-            args.confirmation != CONFIRMATION
-            or not args.config
-            or not args.safe_plan
-            or not args.state
-            or not re.fullmatch(r"[0-9a-f]{64}", args.approved_plan_sha256 or "")
-        ):
-            raise RuntimeError(
-                "execute requires explicit confirmation, owner config, safe plan, "
-                "its approved SHA-256 and state"
-            )
-        if args.ready_db or args.ready_manifest or args.link_evidence:
-            raise RuntimeError("execute must not read ready DB, manifest or link evidence")
-        config = load_google_config(args.config)
-        safe_plan_payload = owner_json(args.safe_plan)
-        safe_plan_sha256 = _safe_json_sha256(safe_plan_payload)
-        if safe_plan_sha256 != args.approved_plan_sha256:
-            raise RuntimeError("safe Google plan does not match the approved SHA-256")
-        rows = validate_safe_plan_payload(safe_plan_payload, expected_day=args.day)
-        quarantine_rows = quarantine_review_rows(
-            safe_plan_payload.get("quarantine_items"), day=args.day
-        )
-        state = owner_json(args.state) if args.state.exists() else {}
-        prior = (
-            date.fromisoformat(str(state["active_day"]))
-            if state.get("active_day")
-            else None
-        )
-        lock_path = args.state.with_suffix(args.state.suffix + ".lock")
-        with publication_lock(lock_path):
-            atomic_owner_json(
-                args.state,
-                {
-                    "schema_version": SCHEMA,
-                    "status": "write_uncertain",
-                    "active_day": prior.isoformat() if prior else None,
-                    "target_day": args.day.isoformat(),
-                    "spreadsheet_id": config["spreadsheet_id"],
-                    "safe_plan_sha256": safe_plan_sha256,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            report = publish_current(
-                GoogleGateway(
-                    authorized_session(config["credentials_info"]),
-                    str(config["spreadsheet_id"]),
-                ),
-                day=args.day,
-                desired_rows=rows,
-                owner_email=str(config["owner_email"]),
-                allowed_emails=config["allowed_emails"],
-                pilot_started_day=config["pilot_started_day"],
-                retention_approved=bool(
-                    config.get("retention_policy_approved")
-                    or args.retention_approved
-                ),
-                prior_day=prior,
-                stage10_summary={
-                    **dict(safe_plan_payload.get("stage10_counts") or {}),
-                    "consistency_ok": safe_plan_payload.get("consistency_ok") is True,
-                    "closure_ok": safe_plan_payload.get("closure_ok") is True,
-                },
-                expected_roles=config["expected_roles"],
-                service_account_email=str(config["service_account_email"]),
-                quarantine_rows=quarantine_rows,
-            )
-            atomic_owner_json(
-                args.state,
-                {
-                    "schema_version": SCHEMA,
-                    "status": "success",
-                    "active_day": args.day.isoformat(),
-                    "spreadsheet_id": config["spreadsheet_id"],
-                    "safe_plan_sha256": safe_plan_sha256,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

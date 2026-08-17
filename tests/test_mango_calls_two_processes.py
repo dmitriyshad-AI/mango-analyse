@@ -138,12 +138,31 @@ def test_service_transcribe_environment_keeps_whisper_canonical_and_selects_giga
 
 def test_resolve_never_spends_model_tokens_when_mango_roles_are_physical(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = replace(config_for(tmp_path), processing_scope="service")
     controlled = replace(config_for(tmp_path), processing_scope="controlled_1")
+    # The default is proven only with a clean environment: an ambient selective flag on
+    # the test host must not be able to make this assertion pass or fail by accident.
+    monkeypatch.delenv("RESOLVE_SEMANTIC_MERGE_MODE", raising=False)
+    monkeypatch.delenv("CODEX_RESOLVE_REASONING_EFFORT", raising=False)
 
     assert worker_environment(service)["RESOLVE_LLM_PROVIDER"] == "off"
     assert worker_environment(controlled)["RESOLVE_LLM_PROVIDER"] == "off"
+    assert worker_environment(service)["RESOLVE_SEMANTIC_MERGE_MODE"] == "off"
+    assert worker_environment(service)["CODEX_RESOLVE_REASONING_EFFORT"] == "medium"
+
+
+def test_runtime_fingerprint_records_the_semantic_merge_arm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config_for(tmp_path)
+    monkeypatch.setenv("RESOLVE_SEMANTIC_MERGE_MODE", "selective")
+
+    observed = calls_runtime.observe_runtime_fingerprint(config)
+
+    assert observed["fingerprint"]["resolve"]["semantic_merge_mode"] == "selective"
 
 
 @pytest.mark.parametrize("include_batch_counts", [False, True])

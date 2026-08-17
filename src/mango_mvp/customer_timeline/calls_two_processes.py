@@ -6753,6 +6753,7 @@ def observe_runtime_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str,
     fingerprint["analyze"]["model"] = config.codex_analyze_model
     fingerprint["resolve"]["reasoning"] = config.codex_reasoning_effort
     fingerprint["analyze"]["reasoning"] = config.codex_reasoning_effort
+    fingerprint["resolve"]["semantic_merge_mode"] = "selective" if os.environ.get("RESOLVE_SEMANTIC_MERGE_MODE", "").strip().lower() == "selective" else "off"
     errors.extend(validate_runtime_fingerprint(fingerprint))
     return {"ok": not errors, "errors": sorted(set(errors)), "fingerprint": fingerprint}
 
@@ -7017,6 +7018,7 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
     project_root = Path(__file__).resolve().parents[3]
     isolated_codex = project_root / "scripts" / "run_codex_cli_isolated.sh"
     config.transcripts_dir.mkdir(parents=True, exist_ok=True)
+    merge_mode = "selective" if os.environ.get("RESOLVE_SEMANTIC_MERGE_MODE", "").strip().lower() == "selective" else "off"
     return {
         **os.environ,
         "PATH": command_path(config),
@@ -7037,10 +7039,12 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         "MANGO_CODEX_SERVICE_TIER": config.codex_service_tier,
         "CODEX_RESOLVE_MODEL": config.codex_resolve_model,
         "CODEX_ANALYZE_MODEL": config.codex_analyze_model,
-        # Mango's physical channels already bind the speakers. Resolve therefore
-        # stays deterministic in every scope; a model call here adds no trusted
-        # role evidence and duplicates the later Analyze stage.
-        "RESOLVE_LLM_PROVIDER": "off",
+        # Mango's physical channels already bind the speakers, so roles, order and
+        # timecodes stay deterministic.  The transport is only a capability: the mode is
+        # stated here, never inherited, and only selective hands Resolve a model at all.
+        "RESOLVE_SEMANTIC_MERGE_MODE": merge_mode,
+        "RESOLVE_LLM_PROVIDER": "codex_cli" if merge_mode == "selective" else "off",
+        "CODEX_RESOLVE_REASONING_EFFORT": os.environ.get("CODEX_RESOLVE_REASONING_EFFORT", "").strip().lower() or "medium",
         "RESOLVE_DIALOGUE_MODE": "dialogue",
         "RESOLVE_RESCUE_PROVIDER": "none",
         "RESOLVE_RESCUE_DUAL_ENABLED": "0",

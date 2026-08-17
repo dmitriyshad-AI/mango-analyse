@@ -28,9 +28,12 @@ from mango_mvp.services.controlled_call_scope import (
     read_call_artifact_text,
     require_unique_controlled_call,
 )
+from mango_mvp.quality.tenant_text_normalizer import (TENANT_TEXT_ENGINE_VERSION, tenant_ruleset_version,
+    detect_residual_manager_text_artifacts, normalize_manager_text_with_provenance)
 from mango_mvp.services.dialogue_contract import (
     DialogueContractError,
     PROVIDER_EVIDENCE_FIELD,
+    _character_ngrams, _multiset_dice,
     label_is_neutral as dialogue_label_is_neutral,
     label_role as dialogue_label_role,
     label_side as dialogue_label_side,
@@ -92,8 +95,34 @@ Rules:
 }
 Return a single-line minified JSON object. No markdown, no extra keys."""
 
+RESOLVE_EDIT_SYSTEM_PROMPT = """Selective semantic merge, additional rules:
+1) Return the same turn, fixing only word recognition against the second ASR variant, and only for the roles in editable_roles. Return every other turn verbatim. Replace a word by a word in place: add, delete and reorder nothing, inside a turn or between turns.
+2) Every changed word must come from variant_a or variant_b of the same side, or from a glossary canonical form. Add nothing of your own. Never change digits, numerals, sums, dates, currency, phone numbers or personal names, never move or remove negations (не, ни, нет, без, нельзя, никогда) and qualifiers. No confident correction means return the turn verbatim: a copy beats a guess."""
+
 RESOLVE_PAIR_PROMPT_VERSION = "v2"
 RESOLVE_DIALOGUE_PROMPT_VERSION = "v2"
+# Experimental thresholds (ТЗ §3, §12b): retuning one is a prompt_version change plus a new acceptance run.
+SEMANTIC_SIGNAL_THRESHOLDS = (("dice_tokens", 0.82), ("dice_char3", 0.88), ("len_ratio", 0.85))
+SEMANTIC_HARD_LEN_RATIO, SEMANTIC_GUARD_MIN_SUPPORT, SEMANTIC_GUARD_MIN_KEPT_LEN = 0.60, 0.60, 0.85
+SEMANTIC_GUARD_MAX_GROWTH, SEMANTIC_MIN_TOKEN_RATIO = 1.15, 0.80
+SEMANTIC_MIN_SIDE_WORDS, SEMANTIC_MAX_GLOSSARY = 25, 20
+SEMANTIC_PROMPT_VERSION = "resolve_semantic_guard_v1"
+SEMANTIC_NEGATIONS, SEMANTIC_QUALIFIERS = frozenset({"не", "ни", "нет", "без", "нельзя", "никогда"}), frozenset(
+    {"примерно", "около", "почти", "приблизительно", "возможно", "наверное", "только", "лишь"})
+SEMANTIC_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+SEMANTIC_DIGIT_RE = re.compile(r"\d")
+# Closed word forms avoid treating words such as семья and семестр as numerals.
+SEMANTIC_NUMERAL_RE = re.compile(
+    r"(?:ноль|нул|один|одна|одно|одни|одного|одному|одним|одном|дв(?:а|е|ух|ум|умя|ое|ои)|тр(?:и|ех|ем|емя|ое|ои)|четыр|пят|шест|семь(?!я)|семи|семью"
+    r"|восем|восьм|девят|десят|(?:один|две|три|четыр|пят|шест|сем|восем|девят)надцат|двадцат|тридцат|сорок|(?:пят|шест|сем|восем)ьдесят"
+    r"|девяност|сто|ста(?!я)|сот(?:ня|ни|ню|не|ней|ен|ням|нями)?|двест|(?:тр|четыр)ист|(?:пят|шест|сем|восем|девят)ьсот|тысяч|миллион|миллиард|перв|втор|трет|четверт|седьм|половин"
+    r"|процент|рубл|руб|доллар|евро|копе)(?:ь|я|ю|и|е|а|о|у|ы|ей|ем|ом|ой|ов|ах|ам|ами|ями|ый|ая|ое|ые|ых|ым|ыми|ого|ому|ух|ум|умя|ьмя|ью|ьи|ьми)?"
+)
+SEMANTIC_FACT_RE = re.compile(
+    r"(?:(?:январ|феврал|апрел|июн|июл|сентябр|октябр|ноябр|декабр)(?:ь|я|ю|ем|е)|март(?:а|у|ом|е)?|ма(?:й|я|ю|ем|е)|август(?:а|у|ом|е)?"
+    r"|(?:понедельник|вторник|четверг)(?:а|у|ом|е)?|сред(?:а|ы|у|е|ой)|пятниц(?:а|ы|у|е|ой)|суббот(?:а|ы|у|е|ой)|воскресень(?:е|я|ю|ем|и)|выходн(?:ой|ого|ому|ым|ом|ая|ую|ые|ых|ыми)|утр(?:о|а|у|ом|е)|день|дня|дню|днем|дне|дни|дней|днями|вечер(?:а|у|ом|е|ы|ов|ами)?|ноч(?:ь|и|ью|ей|ами)?|час(?:а|у|ом|е|ы|ов|ам|ами)?|минут(?:а|ы|у|е|ой|ам|ами|ах)?|секунд(?:а|ы|у|е|ой|ам|ами|ах)?|сегодня|завтра|вчера|недел(?:я|и|ю|е|ей|ям|ями|ях)|месяц(?:а|у|ем|е|ы|ев|ам|ами|ах)?|год(?:а|у|ом|е|ы|ов|ам|ами|ах)?|лет)"
+)
+SEMANTIC_NAME_CUE_RE = re.compile(r"(?:зов(?:ут|усь|ешься|етесь|емся|утся|ет)|имя|имени|именем|фамили(?:я|и|ю|ей)|отчеств(?:о|а|у|ом|е))")
 
 
 WORD_RE = re.compile(r"\S+", flags=re.UNICODE)
@@ -144,6 +173,7 @@ class ResolveService:
             enabled=settings.llm_cache_enabled,
             root_dir=settings.llm_cache_dir,
         )
+        self._semantic_merge_last: Optional[Dict[str, Any]] = None  # None: no selective run
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -531,7 +561,7 @@ class ResolveService:
             dialogue_lines_source = "mutable_sidecar"
         if dialogue_lines_source:
             meta["dialogue_lines_source"] = dialogue_lines_source
-        if dialogue_lines_source == "mutable_sidecar":
+        if dialogue_lines_source == "mutable_sidecar" and not meta.get("source_artifact_sha256"):
             meta["source_artifact_sha256"] = self._dialogue_lines_sha256(lines)
         rows_before = self._parse_dialogue_lines(call, lines, allow_export_fallback=False)
         if rows_before:
@@ -1019,6 +1049,136 @@ class ResolveService:
             return provider
         return "rule"
 
+    def _semantic_merge_selective(self) -> bool:
+        return (self._settings.resolve_semantic_merge_mode or "off").strip().lower() == "selective"
+
+    @staticmethod
+    def _semantic_tokens(value: Any) -> List[str]:  # comparison only, never stored
+        return SEMANTIC_PUNCT_RE.sub(" ", str(value or "").casefold().replace("ё", "е")).split()
+
+    @staticmethod
+    def _semantic_numbers(words: Sequence[str]) -> List[str]:
+        return [w for w in words if SEMANTIC_DIGIT_RE.search(w) or SEMANTIC_NUMERAL_RE.fullmatch(w)]
+
+    @staticmethod
+    def _semantic_capitals(value: Any) -> set:  # read through quotes, dashes, hyphens (G4)
+        words = SEMANTIC_PUNCT_RE.sub(" ", str(value or "")).split()
+        return {w.casefold().replace("ё", "е") for w in words if w[:1].isupper()}
+
+    def _semantic_is_glossary_edit(self, projection: Mapping[str, Any], baseline: str, final: str) -> bool:
+        for item in projection.get("glossary") or []:
+            alias, canonical = str(item.get("alias") or ""), str(item.get("canonical") or "")
+            if alias and canonical and final == baseline.replace(alias, canonical):
+                return True
+        return False
+
+    def _semantic_glossary(self, role_variants: Mapping[str, Any], tenant: str) -> List[Dict[str, str]]:
+        # Only aliases the live tenant normalizer really found; no second list (ТЗ §6).
+        text = " ".join(f"{b.get('variant_a') or ''} {b.get('variant_b') or ''}" for b in role_variants.values() if isinstance(b, dict))
+        found = [(item.matched_text, normalize_manager_text_with_provenance(item.matched_text, tenant_id=tenant))
+                 for item in detect_residual_manager_text_artifacts(text)]
+        return [{"alias": alias, "canonical": rule.normalized_value, "rule_id": rule.rule_ids[0]}
+                for alias, rule in found if rule.rule_ids and rule.ruleset_version][:SEMANTIC_MAX_GLOSSARY]
+
+    def _semantic_selective_input(self, input_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Divergence gate (ТЗ §3), then the de-identified projection sent to the model (ТЗ §4)."""
+        tenant = (self._settings.controlled_call_tenant_id or "").strip() or "mango"
+        # Thresholds ride in the cache key: retuning one must miss, not reuse.
+        state = self._semantic_merge_last = {
+            "mode": "selective", "eligible": False, "escalated": False, "escalation_reasons": [],
+            "signals": {}, "numeric_conflict": {}, "model_calls": 0, "cache_hit": False,
+            "turns_changed_proposed": 0, "turns_changed_accepted": 0, "turns_reset": {},
+            "fallback_reason": None, "applied": False, "versions": {
+                "model": self._settings.codex_resolve_model, "prompt": SEMANTIC_PROMPT_VERSION,
+                "reasoning": self._settings.codex_resolve_reasoning_effort, "schema_in": "dialogue_resolve_v1+semantic_merge_v1",
+                "thresholds": f"experimental_v1{SEMANTIC_SIGNAL_THRESHOLDS}/{SEMANTIC_HARD_LEN_RATIO}/{SEMANTIC_GUARD_MIN_SUPPORT}/{SEMANTIC_GUARD_MIN_KEPT_LEN}/{SEMANTIC_GUARD_MAX_GROWTH}/{SEMANTIC_MIN_TOKEN_RATIO}",
+                "normalizer": f"{TENANT_TEXT_ENGINE_VERSION}/{tenant_ruleset_version(tenant)}"}}
+        raw_turns = input_payload.get("turns") or []
+        if {str(turn.get("speaker") or "") for turn in raw_turns} - {"manager", "client"}:
+            state["fallback_reason"] = "unconfirmed_roles"  # no confirmed side, nothing to compare
+            return None
+        role_variants = input_payload.get("role_variants") if isinstance(input_payload.get("role_variants"), dict) else {}
+        editable: List[str] = []
+        for role in ("manager", "client"):
+            block = role_variants.get(role) if isinstance(role_variants.get(role), dict) else {}
+            words_a = self._semantic_tokens(block.get("variant_a"))
+            words_b = self._semantic_tokens(block.get("variant_b"))
+            # Each side is judged on its own: a short side never blocks the other.
+            if min(len(words_a), len(words_b)) < SEMANTIC_MIN_SIDE_WORDS:
+                continue
+            side = {"dice_tokens": round(_multiset_dice(words_a, words_b), 4),
+                    "dice_char3": round(_multiset_dice(_character_ngrams(" ".join(words_a)), _character_ngrams(" ".join(words_b))), 4),
+                    "len_ratio": round(min(len(words_a), len(words_b)) / max(len(words_a), len(words_b)), 4)}
+            state["signals"][role] = side
+            state["numeric_conflict"][role] = self._semantic_numbers(words_a) != self._semantic_numbers(words_b)
+            hard = side["len_ratio"] < SEMANTIC_HARD_LEN_RATIO
+            if hard or len([1 for key, limit in SEMANTIC_SIGNAL_THRESHOLDS if side[key] < limit]) >= 2:
+                state["escalation_reasons"].append(f"hard_length_loss:{role}" if hard else f"side_divergent:{role}")
+                editable.append(role)
+        state["eligible"], state["escalated"] = bool(state["signals"]), bool(editable)
+        if not editable:
+            return None
+        variants = {r: {k: str(role_variants[r].get(k) or "") for k in ("variant_a", "variant_b")} for r in editable}
+        return {
+            "schema_version": input_payload.get("schema_version"),
+            "editable_roles": editable,
+            "semantic_merge": {"divergence": {r: state["signals"][r] for r in editable}},
+            "role_variants": variants,
+            "turns": [{k: t.get(k) for k in ("turn_id", "ts_sec", "approximate", "speaker", "baseline_text")} for t in raw_turns],
+            "glossary": self._semantic_glossary(variants, tenant),
+        }
+
+    def _semantic_guard_reset_code(
+        self, projection: Mapping[str, Any], role: str, baseline_text: str, final_text: str
+    ) -> Optional[str]:
+        """The guard (ТЗ §5, §12a, §12b) over one changed turn; a code means reset."""
+        if role not in (projection.get("editable_roles") or []):
+            return "non_editable_role_change"
+        base_words = self._semantic_tokens(baseline_text)
+        new_words = self._semantic_tokens(final_text)
+        if self._semantic_is_glossary_edit(projection, baseline_text, final_text):
+            return None
+        if re.sub(r"[\w\s]", "", baseline_text) != re.sub(r"[\w\s]", "", final_text):
+            return "punctuation_change"
+        if any(word in SEMANTIC_NEGATIONS for word in base_words + new_words) or sorted(
+                w for w in base_words if w[:2] in {"не", "ни"}) != sorted(
+                w for w in new_words if w[:2] in {"не", "ни"}):
+            return "negation_frozen_turn"
+        if any(base_words.count(word) > new_words.count(word) for word in SEMANTIC_QUALIFIERS):
+            return "qualifier_removed"
+        if any(SEMANTIC_NAME_CUE_RE.fullmatch(word) for word in base_words + new_words):
+            return "name_cue_frozen_turn"
+        if self._semantic_numbers(base_words + new_words) or any(SEMANTIC_FACT_RE.fullmatch(w) for w in base_words + new_words):
+            return "numeric_change"
+        block = (projection.get("role_variants") or {}).get(role) or {}
+        names = set(base_words) | {w for item in (projection.get("glossary") or []) for w in self._semantic_tokens(item.get("canonical"))}
+        support = names | set(self._semantic_tokens(block.get("variant_a"))) | set(self._semantic_tokens(block.get("variant_b")))
+        if any(word not in support for word in new_words):
+            return "unsupported_token"
+        # A name is the one thing two ASR guesses cannot confirm each other on.
+        new_caps = self._semantic_capitals(final_text)
+        if self._semantic_capitals(baseline_text) - new_caps or any(w not in names for w in new_caps):
+            return "proper_name_change"
+        if not SEMANTIC_GUARD_MIN_KEPT_LEN * len(base_words) <= len(new_words) <= SEMANTIC_GUARD_MAX_GROWTH * len(base_words):
+            return "length_loss_reset" if len(new_words) < len(base_words) else "length_growth_reset"
+        # Recognition is fixed in place: shared tokens keep their order, nothing is inserted,
+        # deleted or rewritten as a span, and each replaced pair stays close in spelling — a
+        # far pair is another word, not a better hearing of the same one (ТЗ §12b).
+        matcher = difflib.SequenceMatcher(None, base_words, new_words, autojunk=False)
+        if sum(item.size for item in matcher.get_matching_blocks()) < sum(
+                min(base_words.count(w), new_words.count(w)) for w in set(base_words)):
+            return "order_change"
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag != "equal" and (tag != "replace" or i2 - i1 != j2 - j1):
+                return "edit_shape_rejected"
+            if tag == "replace" and any(base_words[i1 + k][:1] != new_words[j1 + k][:1] or
+                    difflib.SequenceMatcher(None, base_words[i1 + k], new_words[j1 + k]).ratio()
+                    < SEMANTIC_MIN_TOKEN_RATIO for k in range(i2 - i1)):
+                return "token_distance_reset"
+        if _multiset_dice(new_words, base_words) < SEMANTIC_GUARD_MIN_SUPPORT:
+            return "low_support_reset"
+        return None
+
     def _build_dialogue_resolve_payload(
         self,
         call: CallRecord,
@@ -1125,13 +1285,20 @@ class ResolveService:
     def _run_dialogue_llm(
         self,
         input_payload: Dict[str, Any],
+        *,
+        selective: bool = False,
     ) -> Dict[str, Any]:
         provider = self._dialogue_resolve_provider()
         if provider == "rule":
             raise RuntimeError("dialogue-level LLM is disabled")
         user_prompt = self._dialogue_turn_output_prompt(input_payload)
-        prompt = f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{user_prompt}"
-        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        # Selective appends its rules, keeps its own depth and carries the threshold and normalizer versions in the cache key (ТЗ §7.2).
+        versions = ((self._semantic_merge_last or {}).get("versions") or {}) if selective else {}
+        system_prompt = f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{RESOLVE_EDIT_SYSTEM_PROMPT}" if selective else DIALOGUE_RESOLVE_SYSTEM_PROMPT
+        prompt_version = f"{SEMANTIC_PROMPT_VERSION}/{versions.get('thresholds')}/{versions.get('normalizer')}" if selective else RESOLVE_DIALOGUE_PROMPT_VERSION
+        prompt = f"{system_prompt}\n\n{user_prompt}"
+        reasoning_effort = ((self._settings.codex_resolve_reasoning_effort if selective
+                             else self._settings.codex_reasoning_effort) or "").strip().lower()
         cached = self._llm_cache.get(
             namespace="resolve_dialogue",
             provider=provider,
@@ -1143,9 +1310,11 @@ class ResolveService:
                 if provider == "openai"
                 else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
             ),
-            prompt_version=RESOLVE_DIALOGUE_PROMPT_VERSION,
+            prompt_version=prompt_version,
             prompt=prompt,
         )
+        if selective:
+            self._semantic_merge_last.update({"cache_hit": True} if cached is not None else {"model_calls": 1})
         if cached is not None:
             return cached
         if provider == "openai":
@@ -1154,7 +1323,7 @@ class ResolveService:
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 messages=[
-                    {"role": "system", "content": DIALOGUE_RESOLVE_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
             )
@@ -1211,7 +1380,7 @@ class ResolveService:
                 model=self._settings.ollama_model,
                 think=self._settings.ollama_think,
                 temperature=self._settings.ollama_temperature,
-                system_prompt=DIALOGUE_RESOLVE_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 num_predict=max(1600, len(input_payload.get("turns") or []) * 120),
             )
@@ -1228,7 +1397,7 @@ class ResolveService:
                 if provider == "openai"
                 else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
             ),
-            prompt_version=RESOLVE_DIALOGUE_PROMPT_VERSION,
+            prompt_version=prompt_version,
             prompt=prompt,
             response=payload,
         )
@@ -1275,6 +1444,11 @@ class ResolveService:
         if not isinstance(role_variants, dict):
             role_variants = {}
 
+        # editable_roles comes only from the selective merge, so today's dialogue path has no
+        # guard at all; an editable input without guard state is an unproven claim.
+        guard = self._semantic_merge_last if isinstance(input_payload.get("editable_roles"), list) else None
+        if guard is None and isinstance(input_payload.get("editable_roles"), list):
+            raise RuntimeError("selective semantic merge state is missing")
         normalized: List[Dict[str, Any]] = []
         warnings: List[str] = []
         speaker_corrections_rejected = 0
@@ -1316,10 +1490,26 @@ class ResolveService:
                 warnings.append(f"oversize_text_reset:{turn_id}")
                 final_text = baseline_text
 
+            if guard is not None and final_text != baseline_text:
+                # Casing, punctuation and ё are no recognition fix: exact baseline, before any
+                # counter sees a proposal.  Every other edit is the guard's decision, not the
+                # model's, and a refused turn keeps its neighbours' accepted ones.
+                if self._semantic_tokens(final_text) == self._semantic_tokens(baseline_text):
+                    final_text = baseline_text
+                else:
+                    guard["turns_changed_proposed"] += 1
+                    code = self._semantic_guard_reset_code(input_payload, role, baseline_text, final_text)
+                    guard["turns_changed_accepted"] += 0 if code else 1
+                    if code:
+                        guard["turns_reset"][code] = guard["turns_reset"].get(code, 0) + 1
+                        final_text = baseline_text
+
             drop = bool(out_turn.get("drop"))
             if drop:
                 drops_requested += 1
-                drop_allowed = "artifact_candidate" in turn_flags or "echo_candidate" in turn_flags
+                # Under the guard the number of turns is fixed: not even an artifact or an echo
+                # may disappear together with a text edit (ТЗ §12a).
+                drop_allowed = guard is None and bool(turn_flags & {"artifact_candidate", "echo_candidate"})
                 if not drop_allowed:
                     warnings.append(f"drop_ignored:{turn_id}")
                     drop = False
@@ -1372,8 +1562,9 @@ class ResolveService:
         if len(kept_turns) < max(1, len(input_turns) // 3):
             raise RuntimeError("dialogue resolve dropped too many turns")
 
-        global_notes = str(llm_payload.get("global_notes") or "").strip()
-        raw_warnings = llm_payload.get("warnings")
+        # Free model text is no evidence: under the guard only these warnings survive.
+        global_notes = "" if guard else str(llm_payload.get("global_notes") or "").strip()
+        raw_warnings = None if guard else llm_payload.get("warnings")
         if isinstance(raw_warnings, list):
             for item in raw_warnings:
                 text = str(item).strip()
@@ -1425,9 +1616,8 @@ class ResolveService:
                 manager_parts.append(text)
             elif role == "client":
                 client_parts.append(text)
-            speaker_label = {
-                "left": "Дорожка левая",
-                "right": "Дорожка правая",
+            speaker_label = str(turn.get("speaker_label") or "").strip() or {
+                "left": "Дорожка левая", "right": "Дорожка правая",
             }.get(side, "Спикер (не определен)")
             dialogue_lines.append(
                 f"{self._transcribe_helper._format_timecode(ts_sec, approximate=approximate)} {speaker_label}: {text}"
@@ -1523,11 +1713,24 @@ class ResolveService:
             variants_payload,
             baseline_dialogue_lines,
         )
+        speaker_labels = {int(t["turn_id"]): str(t.get("speaker_label") or "") for t in (input_payload or {}).get("turns", [])}
+        selective = self._semantic_merge_selective()
+        # The gate and the glossary run under the caller's fail-soft (ТЗ §7.4, §12b).
+        if selective and input_payload:
+            input_payload = self._semantic_selective_input(input_payload)
         if not input_payload:
             return None
-        raw_result = self._run_dialogue_llm(input_payload)
+        raw_result = self._run_dialogue_llm(input_payload, selective=selective)
         llm_meta = raw_result.get("_llm_meta") if isinstance(raw_result.get("_llm_meta"), dict) else None
         normalized_result = self._normalize_dialogue_result(input_payload, raw_result)
+        for turn in normalized_result["turns"]:
+            turn["speaker_label"] = speaker_labels.get(int(turn["turn_id"]), "")
+        state = self._semantic_merge_last if selective else None
+        if state is not None:
+            state["fallback_reason"] = ("reject_rate_exceeded" if sum(state["turns_reset"].values()) * 2 > state["turns_changed_proposed"]
+                                        else None if state["turns_changed_accepted"] else "no_accepted_edits")
+            if state["fallback_reason"]:
+                return None
         if from_sidecar:
             role_mapping = variants_payload.get("role_mapping")
             if isinstance(role_mapping, dict):
@@ -1555,9 +1758,12 @@ class ResolveService:
         call: CallRecord,
         variants_payload: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        self._semantic_merge_last = None
+        selective = self._semantic_merge_selective()
         payload = self._copy_payload(variants_payload)
         mode = str(payload.get("mode") or "")
-        if mode not in {"stereo", "mono_or_fallback"}:
+        # Selective compares two ASR variants of one side: mono has no second one (ТЗ §3).
+        if mode not in ({"stereo"} if selective else {"stereo", "mono_or_fallback"}):
             return None
 
         llm_provider = (self._settings.resolve_llm_provider or "").strip().lower()
@@ -1566,8 +1772,17 @@ class ResolveService:
         contextual_provider = f"{llm_provider}_contextual"
 
         if mode == "stereo":
-            dialogue_candidate = self._resolve_dialogue_with_llm(call, payload)
-            if dialogue_candidate is not None:
+            try:
+                dialogue_candidate = self._resolve_dialogue_with_llm(call, payload)
+            except Exception as exc:
+                # One escalated call, one outcome: gate, glossary, model, guard and candidate
+                # build all end in baseline, never in per-role calls or a failed stage (§7.4).
+                if not selective:
+                    raise
+                if self._semantic_merge_last is not None:
+                    self._semantic_merge_last["fallback_reason"] = safe_error_text("resolve_semantic_merge", exc)
+                return None
+            if dialogue_candidate is not None or selective:
                 return dialogue_candidate
 
             manager = payload.get("manager")
@@ -1804,6 +2019,12 @@ class ResolveService:
                 "reasons": rescue_candidate.get("quality", {}).get("reasons", []),
                 "meta": rescue_candidate.get("meta", {}),
             }
+        if self._semantic_merge_last is not None:
+            # Counts, enum codes and versions only: no quotes, names or sums (ТЗ §8).  applied
+            # means the merged text is really written — the llm candidate won _choose_best()
+            # and the call was accepted; manual review is applied=false.
+            self._semantic_merge_last["applied"] = bool(chosen) and chosen.get("name") == "llm" and decision == "accept_llm"
+            payload["semantic_merge"] = dict(self._semantic_merge_last)
         if chosen:
             payload["chosen"] = {
                 "name": chosen.get("name"),
@@ -1916,6 +2137,7 @@ class ResolveService:
         manual = 0
         skipped = 0
         llm_used = 0
+        semantic: Dict[str, int] = {}
         rescue_used = 0
         handled = 0
         stale = 0
@@ -2007,6 +2229,8 @@ class ResolveService:
             # Nothing is written to the ORM row: the whole result is collected
             # here and applied by one conditional UPDATE below.
             values: Dict[str, Any] = {"resolve_attempts": attempt}
+            # Per call, so no previous call's telemetry can leak into this one (ТЗ §12b).
+            self._semantic_merge_last = None
             export_payload: Optional[Dict[str, Any]] = None
             counted = {"success": 0, "manual": 0}
             try:
@@ -2082,7 +2306,10 @@ class ResolveService:
                 )
                 llm_trigger_reason: Optional[str] = None
 
-                if baseline_score < llm_trigger:
+                if self._semantic_merge_selective():
+                    # The only entry is the A/B divergence checked downstream (ТЗ §2).
+                    llm_trigger_reason = "semantic_merge"
+                elif baseline_score < llm_trigger:
                     llm_trigger_reason = "low_score"
                 elif self._settings.resolve_llm_for_risky and baseline_risky:
                     llm_trigger_reason = "risky_ordering_or_timing"
@@ -2163,6 +2390,12 @@ class ResolveService:
                         session.rollback()
                     stale += 1
                     continue
+                block = self._semantic_merge_last
+                for key, value in () if block is None else (
+                        ("eligible", block["eligible"]), ("escalated", block["escalated"]), ("model_calls", block["model_calls"]),
+                        ("cache_hit", block["cache_hit"]), ("turns_accepted", block["turns_changed_accepted"]),
+                        ("turns_reset", sum(block["turns_reset"].values())), ("fallback", block["fallback_reason"] is not None)):
+                    semantic[f"semantic_{key}"] = semantic.get(f"semantic_{key}", 0) + int(value)
                 if best_score >= accept_threshold:
                     if best_name != "baseline":
                         values["transcript_manager"] = best.get("transcript_manager")
@@ -2343,6 +2576,7 @@ class ResolveService:
             "manual": manual,
             "skipped_short": skipped,
             "llm_used": llm_used,
+            **semantic,
             "rescue_used": rescue_used,
             "stale": stale,
             "export_failed": export_failed,

@@ -15,6 +15,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     CallsTwoProcessesConfig,
     worker_environment,
 )
+from mango_mvp import config as config_module
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
 from mango_mvp.services import resolve as resolve_module
@@ -212,7 +213,7 @@ class ResolveServiceTest(unittest.TestCase):
                 transcript_export_dir=str(export_dir),
                 resolve_llm_provider="codex_cli",
             ))
-            service._run_dialogue_llm = lambda request: {
+            service._run_dialogue_llm = lambda request, **_kwargs: {
                 "turns": [
                     {
                         "turn_id": turn["turn_id"],
@@ -895,7 +896,10 @@ class ResolveServiceTest(unittest.TestCase):
                 codex_home_root=root / "codex",
             )
 
-            environment = worker_environment(config)
+            # The default is asserted against a cleaned environment: an ambient flag of
+            # the host must never be what makes this green.
+            with patch.dict("os.environ", {"RESOLVE_SEMANTIC_MERGE_MODE": ""}):
+                environment = worker_environment(config)
 
             self.assertEqual(environment["RESOLVE_LLM_PROVIDER"], "off")
             # Negative control: Analyse is still the stage that may call a model.
@@ -1064,7 +1068,7 @@ class ResolveServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def fake_dialogue_runner(payload: dict) -> dict:
+            def fake_dialogue_runner(payload: dict, **_kwargs) -> dict:
                 self.assertEqual(payload.get("schema_version"), "dialogue_resolve_v1")
                 turns = payload.get("turns") or []
                 self.assertEqual(len(turns), 2)
@@ -1924,6 +1928,1384 @@ class ResolveStaleResultGuardTest(unittest.TestCase):
 
         self.assertEqual(len(identifiers), 100)
         self.assertTrue(all(value.startswith("resolve-") for value in identifiers))
+
+
+# One stereo call in five turns.  The manager side is heard twice: Whisper as
+# MANAGER_A, GigaAM as MANAGER_B — the same 36 words, 16 of them heard as other
+# words (including the name), the price identical.  The client side is heard the
+# same way twice, so it is eligible but never divergent.
+MANAGER_TURN_1 = "Добрый день, меня зовут Анна, я звоню по вашей заявке на подготовительный курс."
+MANAGER_TURN_2 = (
+    "Мы обсуждали расписание занятий в субботу и стоимость обучения 47250 рублей за первый семестр."
+)
+MANAGER_TURN_3 = "Хорошо, значит тогда я отправляю договор вам на почту."
+CLIENT_TURN_1 = (
+    "Здравствуйте, да, я оставляла заявку, хотела узнать сколько стоит обучение "
+    "и когда начинаются занятия у вас в центре."
+)
+CLIENT_TURN_2 = "А также можно ли оплатить частями после первого урока?"
+MANAGER_A = f"{MANAGER_TURN_1} {MANAGER_TURN_2} {MANAGER_TURN_3}"
+MANAGER_B = (
+    "Добрый вечер, меня зовут Ольга, я пишу про вашу заявку на вводный курс. "
+    "Мы уточняли график уроков в воскресенье и цену учебы 47250 рублей за первый семестр. "
+    "Ладно, значит тогда я отправлю контракт вам на почту."
+)
+CLIENT_SAME = f"{CLIENT_TURN_1} {CLIENT_TURN_2}"
+# The one edit of this fixture that every guard check lets through: one word replaced in
+# place by a near-identical word of the second ASR variant, in a turn that carries no
+# number, no date, no name cue, no negation and no hedge.
+MANAGER_TURN_3_FIXED = MANAGER_TURN_3.replace("отправляю", "отправлю")
+
+
+def semantic_settings(**overrides):
+    values = {
+        "resolve_llm_provider": "codex_cli",
+        "resolve_semantic_merge_mode": "selective",
+        "llm_cache_enabled": False,
+    }
+    values.update(overrides)
+    return replace(make_settings(), **values)
+
+
+def semantic_input(
+    *,
+    manager_a: str = MANAGER_A,
+    manager_b: str = MANAGER_B,
+    client_a: str = CLIENT_SAME,
+    client_b: str = CLIENT_SAME,
+):
+    """The existing dialogue_resolve_v1 payload, as _build_dialogue_resolve_payload builds it."""
+    baselines = [
+        ("manager", MANAGER_TURN_1),
+        ("client", CLIENT_TURN_1),
+        ("manager", MANAGER_TURN_2),
+        ("client", CLIENT_TURN_2),
+        ("manager", MANAGER_TURN_3),
+    ]
+    return {
+        "schema_version": "dialogue_resolve_v1",
+        "call_id": 77,
+        "source_filename": "2026-08-17_Анна_Петрова.mp3",
+        "manager_name": "Анна Петрова",
+        "mode": "stereo",
+        "role_variants": {
+            "manager": {"variant_a": manager_a, "variant_b": manager_b, "baseline_text": manager_a},
+            "client": {"variant_a": client_a, "variant_b": client_b, "baseline_text": client_a},
+        },
+        "turns": [
+            {
+                "turn_id": index + 1,
+                "ts_sec": float(index + 1),
+                "speaker": speaker,
+                "baseline_text": text,
+                "approximate": False,
+                "flags": [],
+            }
+            for index, (speaker, text) in enumerate(baselines)
+        ],
+    }
+
+
+def model_turns(projection, replacements=None, *, drops=(), warnings=None, global_notes=""):
+    """Model answer in the existing dialogue format: same turn_id set, final_text."""
+    replacements = replacements or {}
+    payload = {
+        "turns": [
+            {
+                "turn_id": turn["turn_id"],
+                "speaker": turn["speaker"],
+                "final_text": replacements.get(turn["turn_id"], turn["baseline_text"]),
+                "drop": turn["turn_id"] in drops,
+            }
+            for turn in projection["turns"]
+        ]
+    }
+    if warnings is not None:
+        payload["warnings"] = warnings
+    if global_notes:
+        payload["global_notes"] = global_notes
+    return payload
+
+
+def guard_projection(*, variant_b: str = "", conflict: bool = False, glossary=None, role: str = "manager"):
+    """The minimal shape the output guard reads, so a G-check can be attacked alone."""
+    return {
+        "editable_roles": [role],
+        "semantic_merge": {"numeric_conflict": {role: conflict}},
+        "role_variants": {role: {"variant_a": "", "variant_b": variant_b}},
+        "glossary": glossary or [],
+    }
+
+
+def model_answer(replacements=None):
+    """The same answer, written the way the CLI writes it: every turn, final_text."""
+    replacements = replacements or {}
+    texts = {
+        1: MANAGER_TURN_1,
+        2: CLIENT_TURN_1,
+        3: MANAGER_TURN_2,
+        4: CLIENT_TURN_2,
+        5: MANAGER_TURN_3,
+    }
+    return {
+        "turns": [
+            {"turn_id": turn_id, "final_text": replacements.get(turn_id, text)}
+            for turn_id, text in texts.items()
+        ]
+    }
+
+
+class ResolveSemanticMergeGateTest(unittest.TestCase):
+    """ТЗ §3: who is escalated, and — much more often — who is not."""
+
+    def test_matching_variants_escalate_nothing_and_call_nothing(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        projection = service._semantic_selective_input(
+            semantic_input(manager_b=MANAGER_A)
+        )
+
+        self.assertIsNone(projection)
+        block = service._semantic_merge_last
+        self.assertTrue(block["eligible"])
+        self.assertFalse(block["escalated"])
+        self.assertEqual(block["model_calls"], 0)
+        self.assertEqual(block["escalation_reasons"], [])
+
+    def test_two_signals_below_threshold_escalate_only_that_side(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        projection = service._semantic_selective_input(semantic_input())
+
+        self.assertEqual(projection["editable_roles"], ["manager"])
+        block = service._semantic_merge_last
+        self.assertEqual(block["escalation_reasons"], ["side_divergent:manager"])
+        signals = block["signals"]["manager"]
+        self.assertLess(signals["dice_tokens"], 0.82)
+        self.assertLess(signals["dice_char3"], 0.88)
+        self.assertEqual(signals["len_ratio"], 1.0)
+        self.assertEqual(block["signals"]["client"]["dice_tokens"], 1.0)
+
+    def test_one_signal_below_threshold_does_not_escalate(self) -> None:
+        service = ResolveService(semantic_settings())
+        # 36 vs 43 words: only len_ratio falls below its threshold, the dice do not.
+        longer = MANAGER_A + " и еще раз до новых скорых встреч"
+
+        projection = service._semantic_selective_input(
+            semantic_input(manager_b=longer, client_a="", client_b="")
+        )
+
+        self.assertIsNone(projection)
+        signals = service._semantic_merge_last["signals"]["manager"]
+        self.assertLess(signals["len_ratio"], 0.85)
+        self.assertGreaterEqual(signals["dice_tokens"], 0.82)
+        self.assertGreaterEqual(signals["dice_char3"], 0.88)
+        self.assertFalse(service._semantic_merge_last["escalated"])
+
+    def test_hard_length_loss_escalates_on_its_own_signal(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        projection = service._semantic_selective_input(
+            semantic_input(manager_a=f"{MANAGER_A} {MANAGER_A}", manager_b=MANAGER_A)
+        )
+
+        self.assertEqual(projection["editable_roles"], ["manager"])
+        block = service._semantic_merge_last
+        self.assertEqual(block["escalation_reasons"], ["hard_length_loss:manager"])
+        self.assertLess(block["signals"]["manager"]["len_ratio"], 0.60)
+
+    def test_a_short_side_never_blocks_the_eligible_other_side(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        projection = service._semantic_selective_input(
+            semantic_input(client_a="да хорошо спасибо", client_b="да ладно спасибо")
+        )
+
+        self.assertEqual(projection["editable_roles"], ["manager"])
+        self.assertEqual(sorted(service._semantic_merge_last["signals"]), ["manager"])
+
+    def test_numeric_conflict_is_reported_but_never_escalates_by_itself(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        projection = service._semantic_selective_input(
+            semantic_input(
+                manager_b=MANAGER_A,
+                client_a=f"{CLIENT_SAME} за 47250 рублей",
+                client_b=f"{CLIENT_SAME} за 47 250 рублей",
+            )
+        )
+
+        self.assertIsNone(projection)
+        block = service._semantic_merge_last
+        self.assertTrue(block["numeric_conflict"]["client"])
+        self.assertFalse(block["escalated"])
+
+    def test_the_projection_carries_no_identity_and_no_new_schema(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+
+        projection = service._semantic_selective_input(payload)
+
+        for key in ("call_id", "source_filename", "manager_name", "mode"):
+            self.assertNotIn(key, projection)
+            self.assertIn(key, payload)
+        self.assertEqual(projection["schema_version"], "dialogue_resolve_v1")
+        self.assertEqual([turn["turn_id"] for turn in projection["turns"]], [1, 2, 3, 4, 5])
+        self.assertEqual([turn["baseline_text"] for turn in projection["turns"]],
+                         [turn["baseline_text"] for turn in payload["turns"]])
+
+    def test_a_turn_travels_in_five_fields_and_carries_no_label(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+        for turn in payload["turns"]:
+            # What _build_dialogue_resolve_payload really puts there today.
+            turn.update({"ts_label": "00:07.0", "speaker_label": "Анна Петрова", "flags": ["same_ts_cross"]})
+
+        projection = service._semantic_selective_input(payload)
+
+        for turn in projection["turns"]:
+            self.assertEqual(sorted(turn), ["approximate", "baseline_text", "speaker", "ts_sec", "turn_id"])
+        self.assertNotIn("Анна Петрова", json.dumps(projection, ensure_ascii=False))
+
+    def test_an_unconfirmed_role_never_reaches_a_model(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+        payload["turns"][1]["speaker"] = "channel_left"
+
+        projection = service._semantic_selective_input(payload)
+
+        self.assertIsNone(projection)
+        block = service._semantic_merge_last
+        self.assertEqual(block["fallback_reason"], "unconfirmed_roles")
+        self.assertEqual(block["model_calls"], 0)
+        self.assertFalse(block["escalated"])
+        self.assertEqual(block["signals"], {})
+
+    def test_an_unknown_role_blocks_the_call_as_well(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+        payload["turns"][4]["speaker"] = "unknown"
+
+        self.assertIsNone(service._semantic_selective_input(payload))
+        self.assertEqual(service._semantic_merge_last["fallback_reason"], "unconfirmed_roles")
+
+    def test_the_projection_drops_every_field_nobody_downstream_reads(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+        payload.update({"duration_sec": 12.5, "providers": {"primary": "whisper"},
+                        "quality_hints": {"warnings": ["дословная цитата менеджера"]}})
+
+        projection = service._semantic_selective_input(payload)
+
+        self.assertEqual(sorted(projection), ["editable_roles", "glossary", "role_variants",
+                                              "schema_version", "semantic_merge", "turns"])
+        # Only the escalated side travels, and its duplicated role baseline does not.
+        self.assertEqual(sorted(projection["role_variants"]), ["manager"])
+        self.assertEqual(sorted(projection["role_variants"]["manager"]), ["variant_a", "variant_b"])
+        self.assertNotIn("numeric_conflict", projection["semantic_merge"])
+        self.assertNotIn("дословная цитата менеджера",
+                         json.dumps(projection, ensure_ascii=False))
+
+    def test_telemetry_holds_numbers_versions_and_codes_only(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        service._semantic_selective_input(semantic_input())
+        dumped = json.dumps(service._semantic_merge_last, ensure_ascii=False)
+
+        for secret in ("Анна", "Петрова", "заявке", "47250", "2026-08-17"):
+            self.assertNotIn(secret, dumped)
+        versions = service._semantic_merge_last["versions"]
+        self.assertEqual(versions["prompt"], "resolve_semantic_guard_v1")
+        self.assertEqual(versions["schema_in"], "dialogue_resolve_v1+semantic_merge_v1")
+        self.assertEqual(versions["normalizer"], "tenant_text_engine_v1/tenant_ru_v1")
+        self.assertEqual(versions["reasoning"], "medium")
+
+    def test_the_same_input_twice_gives_the_same_telemetry(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        service._semantic_selective_input(semantic_input())
+        first = json.loads(json.dumps(service._semantic_merge_last, ensure_ascii=False))
+        service._semantic_selective_input(semantic_input())
+
+        self.assertEqual(service._semantic_merge_last, first)
+
+    def test_the_glossary_is_the_live_normalizer_and_nothing_else(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        projection = service._semantic_selective_input(
+            semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
+        )
+
+        self.assertEqual(
+            projection["glossary"],
+            [{"alias": "МПК МФТИ", "canonical": "УНПК МФТИ",
+              "rule_id": "brand.unpk_mfti.known_alias"}],
+        )
+
+    def test_a_foreign_tenant_ruleset_leaves_the_glossary_empty(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        with patch(
+            "mango_mvp.quality.tenant_text_normalizer.TENANT_TEXT_RULESET_VERSIONS", {}
+        ):
+            projection = service._semantic_selective_input(
+                semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
+            )
+
+        self.assertEqual(projection["glossary"], [])
+        self.assertEqual(
+            service._semantic_merge_last["versions"]["normalizer"], "tenant_text_engine_v1/"
+        )
+
+    def test_a_real_foreign_tenant_id_gets_no_glossary_either(self) -> None:
+        service = ResolveService(semantic_settings(controlled_call_tenant_id="another_customer"))
+
+        projection = service._semantic_selective_input(
+            semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
+        )
+
+        self.assertEqual(projection["glossary"], [])
+        self.assertEqual(
+            service._semantic_merge_last["versions"]["normalizer"], "tenant_text_engine_v1/"
+        )
+
+    def test_the_controlled_tenant_of_the_scope_is_the_one_used(self) -> None:
+        service = ResolveService(semantic_settings(controlled_call_tenant_id="mango"))
+
+        projection = service._semantic_selective_input(
+            semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
+        )
+
+        self.assertEqual([item["alias"] for item in projection["glossary"]], ["МПК МФТИ"])
+
+
+class ResolveSemanticMergeGuardTest(unittest.TestCase):
+    """ТЗ §5: what the model returns is a proposal; the guard decides."""
+
+    def _normalize(self, replacements, *, projection=None, service=None, **kwargs):
+        service = service or ResolveService(semantic_settings())
+        projection = projection or service._semantic_selective_input(semantic_input())
+        result = service._normalize_dialogue_result(
+            projection, model_turns(projection, replacements, **kwargs)
+        )
+        return service, projection, result
+
+    @staticmethod
+    def _text(result, turn_id):
+        return next(
+            turn["final_text"] for turn in result["turns"] if turn["turn_id"] == turn_id
+        )
+
+    def test_a_supported_word_from_the_second_asr_is_accepted(self) -> None:
+        service, _, result = self._normalize({5: MANAGER_TURN_3_FIXED})
+
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3_FIXED)
+        block = service._semantic_merge_last
+        self.assertEqual(block["turns_changed_proposed"], 1)
+        self.assertEqual(block["turns_changed_accepted"], 1)
+        self.assertEqual(block["turns_reset"], {})
+
+    def test_g0_a_turn_of_a_non_editable_role_is_reset(self) -> None:
+        service, _, result = self._normalize(
+            {
+                5: MANAGER_TURN_3_FIXED,
+                4: "А также можно ли оплатить частями после первого занятия?",
+            }
+        )
+
+        self.assertEqual(self._text(result, 4), CLIENT_TURN_2)
+        block = service._semantic_merge_last
+        self.assertEqual(block["turns_reset"], {"non_editable_role_change": 1})
+        # The other turn of the same call survives its neighbour's reset.
+        self.assertEqual(block["turns_changed_accepted"], 1)
+
+    def test_g1_a_changed_digit_is_reset(self) -> None:
+        service, _, result = self._normalize(
+            {3: MANAGER_TURN_2.replace("47250", "47 250")}
+        )
+
+        self.assertEqual(self._text(result, 3), MANAGER_TURN_2)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"numeric_change": 1})
+
+    def test_g1_a_turn_holding_a_price_is_frozen_whole(self) -> None:
+        # Not just the number: a turn with a fact in it is not edited at all (ТЗ §12b).
+        service, _, result = self._normalize(
+            {3: MANAGER_TURN_2.replace("обсуждали", "уточняли")}
+        )
+
+        self.assertEqual(self._text(result, 3), MANAGER_TURN_2)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"numeric_change": 1})
+
+    def test_g1_under_a_numeric_conflict_a_numeric_turn_is_frozen(self) -> None:
+        service = ResolveService(semantic_settings())
+        projection = service._semantic_selective_input(
+            semantic_input(manager_b=MANAGER_B.replace("47250", "4725"))
+        )
+
+        _, _, result = self._normalize(
+            {3: MANAGER_TURN_2.replace("обсуждали", "уточняли")},
+            projection=projection,
+            service=service,
+        )
+
+        self.assertTrue(service._semantic_merge_last["numeric_conflict"]["manager"])
+        self.assertEqual(self._text(result, 3), MANAGER_TURN_2)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"numeric_change": 1})
+
+    def test_g2_a_turn_carrying_a_negation_is_frozen_whole(self) -> None:
+        service, _, result = self._normalize(
+            {5: MANAGER_TURN_3.replace("я отправляю", "я не отправляю")}
+        )
+
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3)
+        self.assertEqual(
+            service._semantic_merge_last["turns_reset"], {"negation_frozen_turn": 1}
+        )
+
+    def test_g3_a_word_from_neither_variant_is_reset(self) -> None:
+        service, _, result = self._normalize(
+            {5: MANAGER_TURN_3.replace("отправляю", "отправляем")}
+        )
+
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"unsupported_token": 1})
+
+    def test_g4_a_name_is_not_corrected_even_when_variant_b_spells_it(self) -> None:
+        service, projection, result = self._normalize(
+            {1: MANAGER_TURN_1.replace("Анна", "Ольга")}
+        )
+
+        self.assertIn("Ольга", projection["role_variants"]["manager"]["variant_b"])
+        self.assertEqual(self._text(result, 1), MANAGER_TURN_1)
+        # The name cue freezes the turn before the name check even runs (ТЗ §12a).
+        self.assertEqual(
+            service._semantic_merge_last["turns_reset"], {"name_cue_frozen_turn": 1}
+        )
+
+    def test_g4_a_new_capitalised_token_is_reset(self) -> None:
+        service, _, result = self._normalize(
+            {5: MANAGER_TURN_3.replace("Хорошо", "Ольга")}
+        )
+
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"proper_name_change": 1})
+
+    def test_g5_a_shortened_turn_is_reset(self) -> None:
+        service, _, result = self._normalize(
+            {5: "Хорошо, значит тогда я отправляю."}
+        )
+
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"length_loss_reset": 1})
+
+    def test_an_added_phrase_is_reset_by_the_growth_limit(self) -> None:
+        service, _, result = self._normalize(
+            {5: "Хорошо, значит тогда я отправляю договор вам на почту вашу заявку на курс."}
+        )
+
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3)
+        self.assertEqual(service._semantic_merge_last["turns_reset"], {"length_growth_reset": 1})
+
+    def test_cosmetics_return_the_exact_baseline_before_any_counter(self) -> None:
+        service, _, result = self._normalize({3: MANAGER_TURN_2.lower().replace(",", "")})
+
+        self.assertEqual(self._text(result, 3), MANAGER_TURN_2)
+        block = service._semantic_merge_last
+        self.assertEqual(block["turns_changed_proposed"], 0)
+        self.assertEqual(block["turns_reset"], {})
+        self.assertEqual(block["turns_changed_accepted"], 0)
+
+    def test_a_drop_is_ignored_under_the_guard_even_for_an_artifact(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+        payload["turns"][1]["flags"] = ["artifact_candidate"]
+        projection = service._semantic_selective_input(payload)
+
+        result = service._normalize_dialogue_result(
+            projection, model_turns(projection, {5: MANAGER_TURN_3_FIXED}, drops=(2,))
+        )
+
+        self.assertEqual([turn["turn_id"] for turn in result["turns"]], [1, 2, 3, 4, 5])
+        self.assertIn("drop_ignored:2", result["warnings"])
+        self.assertEqual(self._text(result, 2), CLIENT_TURN_1)
+        # The accepted neighbour edit is not lost together with the refused drop.
+        self.assertEqual(self._text(result, 5), MANAGER_TURN_3_FIXED)
+        self.assertEqual(service._semantic_merge_last["turns_changed_accepted"], 1)
+
+    def test_the_model_free_text_is_not_stored_under_the_guard(self) -> None:
+        _, _, result = self._normalize(
+            {5: MANAGER_TURN_3_FIXED},
+            warnings=["клиент назвал сумму 47250"],
+            global_notes="менеджер Анна Петрова говорила быстро",
+        )
+
+        self.assertEqual(result["global_notes"], "")
+        self.assertNotIn("клиент назвал сумму 47250", result["warnings"])
+
+    def test_the_guard_moves_no_role_no_timecode_and_no_variant(self) -> None:
+        service = ResolveService(semantic_settings())
+        payload = semantic_input()
+        projection = service._semantic_selective_input(payload)
+        before = json.dumps(projection, ensure_ascii=False, sort_keys=True)
+
+        result = service._normalize_dialogue_result(
+            projection, model_turns(projection, {5: MANAGER_TURN_3_FIXED})
+        )
+
+        self.assertEqual(json.dumps(projection, ensure_ascii=False, sort_keys=True), before)
+        self.assertEqual(
+            [(turn["turn_id"], turn["speaker"], turn["ts_sec"]) for turn in result["turns"]],
+            [(turn["turn_id"], turn["speaker"], turn["ts_sec"]) for turn in payload["turns"]],
+        )
+
+    def test_an_editable_input_without_guard_state_fails_closed(self) -> None:
+        service = ResolveService(semantic_settings())
+        projection = service._semantic_selective_input(semantic_input())
+        answer = model_turns(projection, {5: MANAGER_TURN_3_FIXED})
+        service._semantic_merge_last = None
+
+        with self.assertRaises(RuntimeError):
+            service._normalize_dialogue_result(projection, answer)
+
+    def test_the_default_dialogue_path_runs_without_any_guard(self) -> None:
+        service = ResolveService(replace(make_settings(), resolve_llm_provider="codex_cli"))
+        payload = semantic_input()
+
+        result = service._normalize_dialogue_result(
+            payload,
+            model_turns(payload, {1: "Совершенно новый текст реплики."},
+                        warnings=["модельное предупреждение"], global_notes="заметка"),
+        )
+
+        self.assertEqual(self._text(result, 1), "Совершенно новый текст реплики.")
+        self.assertIsNone(service._semantic_merge_last)
+        self.assertIn("модельное предупреждение", result["warnings"])
+        self.assertEqual(result["global_notes"], "заметка")
+
+
+class ResolveSemanticGuardAdversarialTest(unittest.TestCase):
+    """ТЗ §12a: the guard checks attacked one by one, on their own inputs."""
+
+    def setUp(self) -> None:
+        self.service = ResolveService(semantic_settings())
+
+    def _code(self, baseline, final, **kwargs):
+        return self.service._semantic_guard_reset_code(
+            guard_projection(**kwargs), "manager", baseline, final
+        )
+
+    def test_swapping_two_numbers_is_a_numeric_change(self) -> None:
+        code = self._code(
+            "скидка 30 процентов и рассрочка на 20 месяцев",
+            "скидка 20 процентов и рассрочка на 30 месяцев",
+            variant_b="скидка 20 процентов и рассрочка на 30 месяцев",
+        )
+
+        self.assertEqual(code, "numeric_change")
+
+    def test_a_spelled_out_number_is_frozen_like_a_digit(self) -> None:
+        code = self._code(
+            "рассрочка на сорок семь месяцев доступна",
+            "рассрочка на сорок восемь месяцев доступна",
+            variant_b="рассрочка на сорок восемь месяцев доступна",
+        )
+
+        self.assertEqual(code, "numeric_change")
+
+    def test_a_sum_unit_is_frozen_too(self) -> None:
+        code = self._code(
+            "оплата принимается рублями в кассе центра",
+            "оплата принимается процентами в кассе центра",
+            variant_b="оплата принимается процентами в кассе центра",
+        )
+
+        self.assertEqual(code, "numeric_change")
+
+    def test_a_moved_negation_does_not_pass_by_keeping_the_count(self) -> None:
+        code = self._code(
+            "я не отправлю договор сегодня вечером",
+            "я отправлю договор не сегодня вечером",
+            variant_b="я отправлю договор не сегодня вечером",
+        )
+
+        self.assertEqual(code, "negation_frozen_turn")
+
+    def test_an_added_negation_is_refused_as_well(self) -> None:
+        code = self._code(
+            "мы отправим договор сегодня вечером",
+            "мы не отправим договор сегодня вечером",
+            variant_b="мы не отправим договор сегодня вечером",
+        )
+
+        self.assertEqual(code, "negation_frozen_turn")
+
+    def test_a_glued_negation_is_refused_too(self) -> None:
+        code = self._code(
+            "к сожалению это невозможно исправить в договоре",
+            "к сожалению это возможно исправить в договоре",
+            variant_b="к сожалению это возможно исправить в договоре",
+        )
+
+        self.assertEqual(code, "negation_frozen_turn")
+
+    def test_a_dropped_qualifier_is_refused(self) -> None:
+        code = self._code(
+            "договор придет примерно в субботу вечером на почту после обеда",
+            "договор придет в субботу вечером на почту после обеда",
+            variant_b="договор придет в субботу вечером на почту после обеда",
+        )
+
+        self.assertEqual(code, "qualifier_removed")
+
+    def test_a_month_is_frozen_like_a_number(self) -> None:
+        code = self._code(
+            "встреча назначена на пятого января в центре",
+            "встреча назначена на пятого февраля в центре",
+            variant_b="встреча назначена на пятого февраля в центре",
+        )
+
+        self.assertEqual(code, "numeric_change")
+
+    def test_a_currency_is_frozen_like_a_number(self) -> None:
+        code = self._code(
+            "перевод на триста долларов уже поступил",
+            "перевод на триста евро уже поступил",
+            variant_b="перевод на триста евро уже поступил",
+        )
+
+        self.assertEqual(code, "numeric_change")
+
+    def test_ordinary_words_are_not_numbers(self) -> None:
+        # The old prefix regex read дверь, семья and семестр as numerals and froze
+        # every turn holding them; the exact forms below are the closed class.
+        for word in ("дверь", "семья", "семя", "семинар", "семестр", "сотрудник", "сотовый",
+                     "пятно", "стая", "however", "стоимость", "договор"):
+            self.assertIsNone(resolve_module.SEMANTIC_NUMERAL_RE.fullmatch(word), word)
+        for word in ("сорок", "семь", "восемь", "пятого", "триста", "рублей",
+                     "рублями", "долларов", "евро", "процентами", "первый"):
+            self.assertIsNotNone(resolve_module.SEMANTIC_NUMERAL_RE.fullmatch(word), word)
+
+        for word in ("летний", "деньги", "годовой", "именно"):
+            self.assertIsNone(resolve_module.SEMANTIC_FACT_RE.fullmatch(word), word)
+            self.assertIsNone(resolve_module.SEMANTIC_NAME_CUE_RE.fullmatch(word), word)
+        for word in ("января", "пятницу", "утром", "неделю", "месяцев", "лет"):
+            self.assertIsNotNone(resolve_module.SEMANTIC_FACT_RE.fullmatch(word), word)
+
+    def test_a_turn_without_a_fact_is_still_editable(self) -> None:
+        code = self._code(
+            "мы обсудим ваш семинар и ответим на вопросы",
+            "мы обсудим ваш семинар и ответим на вопрос",
+            variant_b="мы обсудим ваш семинар и ответим на вопрос",
+        )
+
+        self.assertIsNone(code)
+
+    def test_a_lowercased_name_is_refused(self) -> None:
+        code = self._code(
+            "Анна отправит договор на почту",
+            "анна вышлет договор на почту",
+            variant_b="анна вышлет договор на почту",
+        )
+
+        self.assertEqual(code, "proper_name_change")
+
+    def test_a_quoted_replacement_name_is_refused(self) -> None:
+        code = self._code(
+            "Анна отправит договор на почту",
+            "«Ольга» вышлет договор на почту",
+            variant_b="Ольга вышлет договор на почту",
+        )
+
+        self.assertEqual(code, "punctuation_change")
+
+    def test_a_hyphenated_second_name_is_refused(self) -> None:
+        code = self._code(
+            "Анна отправит договор на почту",
+            "Анна-Ольга отправит договор на почту",
+            variant_b="Ольга отправит договор на почту",
+        )
+
+        self.assertEqual(code, "punctuation_change")
+
+    def test_a_name_cue_freezes_the_turn(self) -> None:
+        code = self._code(
+            "меня зовут Анна я отправлю договор",
+            "меня зовут Анна я вышлю договор",
+            variant_b="меня зовут Анна я вышлю договор",
+        )
+
+        self.assertEqual(code, "name_cue_frozen_turn")
+
+    def test_a_pure_word_reorder_is_refused(self) -> None:
+        code = self._code(
+            "договор придет вам на почту после оплаты",
+            "после оплаты договор придет вам на почту",
+            variant_b="после оплаты договор придет вам на почту",
+        )
+
+        self.assertEqual(code, "order_change")
+
+    def test_losing_a_third_of_the_words_is_refused(self) -> None:
+        baseline = "договор придет вам на почту после оплаты и подтверждения заявки"
+        code = self._code(baseline, "договор придет вам на почту после оплаты", variant_b=baseline)
+
+        self.assertEqual(code, "length_loss_reset")
+
+    def test_a_far_word_pair_is_refused_even_when_the_variant_holds_it(self) -> None:
+        for baseline, final in (
+            ("все прошло хорошо и клиент остался доволен", "все прошло плохо и клиент остался доволен"),
+            ("мы стараемся закрыть заявку в этот раз", "мы гарантируем закрыть заявку в этот раз"),
+            ("передайте пожалуйста марине эти документы", "передайте пожалуйста ирине эти документы"),
+            ("передайте пожалуйста сергею эти документы", "передайте пожалуйста андрею эти документы"),
+            ("курс включает практические занятия", "курс исключает практические занятия"),
+            ("участие платно для всех учеников", "участие бесплатно для всех учеников"),
+            ("нужно оплатить обучение до начала", "нужно доплатить обучение до начала"),
+        ):
+            self.assertEqual(self._code(baseline, final, variant_b=final), "token_distance_reset", final)
+
+    def test_an_inserted_word_is_refused_by_the_edit_shape(self) -> None:
+        baseline = "договор придет вам на почту после оплаты и подтверждения заявки"
+        final = "договор придет вам на почту сразу после оплаты и подтверждения заявки"
+
+        self.assertEqual(self._code(baseline, final, variant_b=final), "edit_shape_rejected")
+
+    def test_a_phrase_carried_over_from_another_turn_is_refused(self) -> None:
+        baseline = "договор придет вам на почту после оплаты"
+        final = "договор придет вам на почту после оплаты и подтверждения заявки"
+
+        self.assertEqual(self._code(baseline, final, variant_b=final), "length_growth_reset")
+
+    def test_the_glossary_alias_is_replaced_and_nothing_else_is(self) -> None:
+        glossary = [{"alias": "МПК МФТИ", "canonical": "УНПК МФТИ",
+                     "rule_id": "brand.unpk_mfti.known_alias"}]
+
+        self.assertIsNone(self._code(
+            "Мы ждем вас в центре МПК МФТИ на консультации",
+            "Мы ждем вас в центре УНПК МФТИ на консультации",
+            glossary=glossary,
+        ))
+        # The same turn may not carry a second edit under the dictionary exception: without
+        # it the alias itself is a lost baseline capital, which is exactly a name change.
+        self.assertEqual(self._code(
+            "Мы ждем вас в центре МПК МФТИ на консультации",
+            "Мы ждем вас в центре УНПК МФТИ на консультацию",
+            glossary=glossary,
+            variant_b="УНПК МФТИ на консультацию",
+        ), "proper_name_change")
+        self.assertEqual(self._code(
+            "Анна, это МПК МФТИ, звоню по заявке.",
+            "анна, это УНПК МФТИ, звоню по заявке.",
+            glossary=glossary,
+        ), "proper_name_change")
+        self.assertEqual(self._code(
+            "Анна, это МПК МФТИ, звоню по заявке.",
+            "Анна это УНПК МФТИ. звоню по заявке?",
+            glossary=glossary,
+        ), "punctuation_change")
+
+    def test_the_glossary_alias_works_in_its_own_declension(self) -> None:
+        code = self._code(
+            "приглашаем ребенка на летнюю ночную школу в центре",
+            "приглашаем ребенка на летнюю очную школу в центре",
+            glossary=[{"alias": "летнюю ночную школу", "canonical": "летнюю очную школу",
+                       "rule_id": "product.summer_school.asr_artifact"}],
+        )
+
+        self.assertIsNone(code)
+
+    def test_replacing_every_word_by_a_close_one_still_fails_on_support(self) -> None:
+        # The second floor: shape and spelling pass, multiset support does not.
+        baseline, final = "договоры уточняли пометки", "договора уточнили пометке"
+
+        self.assertEqual(self._code(baseline, final, variant_b=final), "low_support_reset")
+        with patch.object(resolve_module, "SEMANTIC_GUARD_MIN_SUPPORT", 0.0):
+            self.assertIsNone(self._code(baseline, final, variant_b=final))
+
+    def test_a_supported_single_word_fix_survives_every_check(self) -> None:
+        code = self._code(
+            "договор отправляем вам на почту после подтверждения",
+            "договор отправляет вам на почту после подтверждения",
+            variant_b="договор отправляет вам на почту после подтверждения",
+        )
+
+        self.assertIsNone(code)
+
+
+class ResolveSemanticMergeCallTest(unittest.TestCase):
+    """ТЗ §7: one call per escalated call, one fallback for every accident."""
+
+    def _stereo_call(self, td):
+        export_dir = Path(td) / "transcripts"
+        path = export_dir / "calls" / "a_text.txt"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f"[00:01.0] Менеджер: {MANAGER_TURN_1}\n"
+            f"[00:02.0] Клиент: {CLIENT_TURN_1}\n"
+            f"[00:03.0] Менеджер: {MANAGER_TURN_2}\n"
+            f"[00:04.0] Клиент: {CLIENT_TURN_2}\n"
+            f"[00:05.0] Менеджер: {MANAGER_TURN_3}\n",
+            encoding="utf-8",
+        )
+        payload = {
+            "mode": "stereo",
+            "call_topology": "simple_two_party",
+            "role_mapping": {"confirmed": True, "manager_quality_allowed": True},
+            "manager": {
+                "physical_channel": "left",
+                "variant_a": MANAGER_A,
+                "variant_b": MANAGER_B,
+                "final": MANAGER_A,
+            },
+            "client": {
+                "physical_channel": "right",
+                "variant_a": CLIENT_SAME,
+                "variant_b": CLIENT_SAME,
+                "final": CLIENT_SAME,
+            },
+        }
+        call = CallRecord(
+            source_file="calls/a.mp3",
+            source_filename="a.mp3",
+            transcript_manager=MANAGER_A,
+            transcript_client=CLIENT_SAME,
+            transcript_variants_json=json.dumps(payload, ensure_ascii=False),
+        )
+        return call, payload, export_dir
+
+    def _service(self, export_dir, **overrides):
+        return ResolveService(semantic_settings(
+            transcript_export_dir=str(export_dir), **overrides
+        ))
+
+    def test_both_diverging_sides_travel_in_one_single_call(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_one_call_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            payload["client"]["variant_b"] = MANAGER_B
+            call.transcript_variants_json = json.dumps(payload, ensure_ascii=False)
+            service = self._service(export_dir)
+            seen = []
+
+            def runner(request, *, selective=False):
+                seen.append((request, selective))
+                return model_turns(request)
+
+            service._run_dialogue_llm = runner  # type: ignore[method-assign]
+
+            candidate = service._resolve_dialogue_with_llm(call, payload)
+
+            self.assertEqual(len(seen), 1)
+            self.assertTrue(seen[0][1])
+            self.assertEqual(seen[0][0]["editable_roles"], ["manager", "client"])
+            # Nothing survived the guard, so the call still ends on baseline.
+            self.assertIsNone(candidate)
+            self.assertEqual(
+                service._semantic_merge_last["fallback_reason"], "no_accepted_edits"
+            )
+
+    def test_matching_variants_reach_no_model_at_all(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_no_call_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            payload["manager"]["variant_b"] = MANAGER_A
+            call.transcript_variants_json = json.dumps(payload, ensure_ascii=False)
+            service = self._service(export_dir)
+            state = {"calls": 0}
+            pair_calls = []
+
+            def runner(request, **kwargs):
+                state["calls"] += 1
+                return model_turns(request)
+
+            service._run_dialogue_llm = runner  # type: ignore[method-assign]
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(state["calls"], 0)
+            self.assertEqual(pair_calls, [])
+            self.assertFalse(service._semantic_merge_last["escalated"])
+
+    def test_a_failed_call_is_baseline_and_never_a_per_role_merge(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_fallback_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+
+            def boom(request, *, selective=False):
+                raise RuntimeError("codex exec failed rc=1: timeout")
+
+            pair_calls = []
+            service._run_dialogue_llm = boom  # type: ignore[method-assign]
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(pair_calls, [])
+            reason = service._semantic_merge_last["fallback_reason"]
+            # safe_error_text: the stage, the class and a digest — never the message.
+            self.assertTrue(reason.startswith("resolve_semantic_merge: RuntimeError:"))
+            self.assertNotIn("codex exec failed", reason)
+            self.assertFalse(service._semantic_merge_last["applied"])
+
+    def test_a_broken_turn_id_set_is_baseline_too(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_turnids_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+            pair_calls = []
+            service._run_dialogue_llm = lambda request, **k: {
+                "turns": [{"turn_id": 1, "final_text": MANAGER_TURN_1}]
+            }
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(pair_calls, [])
+            self.assertTrue(
+                service._semantic_merge_last["fallback_reason"].startswith(
+                    "resolve_semantic_merge: RuntimeError:"
+                )
+            )
+
+    def test_mono_never_reaches_the_model_under_selective(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_mono_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            payload["mode"] = "mono_or_fallback"
+            payload["full"] = {"variant_a": MANAGER_A, "variant_b": MANAGER_B, "final": MANAGER_A}
+            service = self._service(export_dir)
+            pair_calls = []
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(pair_calls, [])
+            self.assertIsNone(service._semantic_merge_last)
+
+    def test_more_than_half_the_edits_reset_drops_the_whole_candidate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_reject_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+            service._run_dialogue_llm = lambda request, **k: model_turns(
+                request,
+                {
+                    1: MANAGER_TURN_1.replace("Анна", "Ольга"),
+                    2: CLIENT_TURN_1.replace("центре", "центрах"),
+                },
+            )
+
+            candidate = service._resolve_dialogue_with_llm(call, payload)
+
+            block = service._semantic_merge_last
+            self.assertIsNone(candidate)
+            self.assertEqual(block["fallback_reason"], "reject_rate_exceeded")
+            self.assertEqual(block["turns_changed_proposed"], 2)
+            self.assertEqual(block["turns_changed_accepted"], 0)
+
+    def test_an_accepted_edit_reaches_the_candidate_and_the_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_applied_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+            service._run_dialogue_llm = lambda request, **k: model_turns(
+                request, {5: MANAGER_TURN_3_FIXED}
+            )
+
+            candidate = service._resolve_dialogue_with_llm(call, payload)
+
+            self.assertIsNotNone(candidate)
+            self.assertIn(MANAGER_TURN_3_FIXED, candidate["dialogue_lines"][4])
+            self.assertIn(CLIENT_TURN_1, candidate["dialogue_lines"][1])
+            self.assertEqual(len(candidate["dialogue_lines"]), 5)
+            self.assertTrue(candidate["dialogue_lines"][0].startswith("[00:01.0] Менеджер:"))
+            self.assertTrue(candidate["dialogue_lines"][1].startswith("[00:02.0] Клиент:"))
+            stored = json.loads(candidate["transcript_variants_json"])
+            self.assertFalse(stored["role_mapping"]["confirmed"])
+            self.assertFalse(stored["role_mapping"]["manager_quality_allowed"])
+            self.assertEqual(stored["role_mapping"]["status"], "mutable_sidecar_timing")
+            self.assertEqual(stored["manager"]["variant_a"], MANAGER_A)
+            self.assertEqual(stored["manager"]["variant_b"], MANAGER_B)
+            block = service._semantic_merge_last
+            self.assertIsNone(block["fallback_reason"])
+            self.assertEqual(block["turns_changed_accepted"], 1)
+            # Built is not applied: only _choose_best() decides that (ТЗ §12a).
+            self.assertFalse(block["applied"])
+
+    def test_an_error_inside_the_gate_is_baseline_and_not_a_failed_stage(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_gate_boom_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+            pair_calls = []
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+            service._run_dialogue_llm = lambda request, **k: model_turns(request)
+
+            def boom(_variants, _tenant):
+                raise RuntimeError("normalizer ruleset unavailable")
+
+            service._semantic_glossary = boom  # type: ignore[method-assign]
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(pair_calls, [])
+            self.assertTrue(
+                service._semantic_merge_last["fallback_reason"].startswith(
+                    "resolve_semantic_merge: RuntimeError:"
+                )
+            )
+
+    def test_a_broken_candidate_build_is_baseline_and_not_a_failed_stage(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_build_boom_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+            pair_calls = []
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+            service._run_dialogue_llm = lambda request, **k: model_turns(
+                request, {5: MANAGER_TURN_3_FIXED}
+            )
+
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("candidate assembly failed")
+
+            # The fail-soft covers everything after the gate, not only the model call.
+            service._dialogue_turns_to_candidate = boom  # type: ignore[method-assign]
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(pair_calls, [])
+            self.assertTrue(
+                service._semantic_merge_last["fallback_reason"].startswith(
+                    "resolve_semantic_merge: RuntimeError:"
+                )
+            )
+
+    def test_a_gate_that_dies_before_its_state_still_ends_on_baseline(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_gate_dead_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir)
+            pair_calls = []
+            service._merge_pair_with_llm = lambda **kw: pair_calls.append(kw)
+
+            def boom(_payload):
+                raise RuntimeError("gate math failed")
+
+            service._semantic_selective_input = boom  # type: ignore[method-assign]
+
+            self.assertIsNone(service._resolve_with_llm(call, payload))
+            self.assertEqual(pair_calls, [])
+            self.assertIsNone(service._semantic_merge_last)
+
+    def test_the_cache_answers_the_repeat_and_a_retuned_threshold_does_not(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_cache_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(
+                export_dir, llm_cache_enabled=True, llm_cache_dir=str(Path(td) / "cache")
+            )
+            answer = model_answer({5: MANAGER_TURN_3_FIXED})
+            state = {"calls": 0}
+
+            def fake_run(cmd, capture_output, text, check, timeout):
+                state["calls"] += 1
+                out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+                out_path.write_text(json.dumps(answer, ensure_ascii=False), encoding="utf-8")
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch("mango_mvp.services.resolve.shutil.which", return_value="/usr/bin/codex"):
+                with patch("mango_mvp.services.resolve.subprocess.run", side_effect=fake_run):
+                    self.assertIsNotNone(service._resolve_dialogue_with_llm(call, payload))
+                    first = service._semantic_merge_last
+                    self.assertEqual(first["model_calls"], 1)
+                    self.assertFalse(first["cache_hit"])
+
+                    self.assertIsNotNone(service._resolve_dialogue_with_llm(call, payload))
+                    repeat = service._semantic_merge_last
+                    self.assertEqual(state["calls"], 1)
+                    self.assertTrue(repeat["cache_hit"])
+                    self.assertEqual(repeat["model_calls"], 0)
+
+                    with patch.object(resolve_module, "SEMANTIC_GUARD_MIN_SUPPORT", 0.55):
+                        self.assertIsNotNone(
+                            service._resolve_dialogue_with_llm(call, payload)
+                        )
+                    self.assertEqual(state["calls"], 2)
+                    self.assertFalse(service._semantic_merge_last["cache_hit"])
+
+    def test_the_selective_prompt_and_its_own_reasoning_depth_reach_the_cli(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_prompt_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            service = self._service(export_dir, codex_resolve_reasoning_effort="high")
+            seen = {}
+
+            def fake_run(cmd, capture_output, text, check, timeout):
+                seen["cmd"] = list(cmd)
+                out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+                out_path.write_text(
+                    json.dumps(model_answer(), ensure_ascii=False), encoding="utf-8"
+                )
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch("mango_mvp.services.resolve.shutil.which", return_value="/usr/bin/codex"):
+                with patch("mango_mvp.services.resolve.subprocess.run", side_effect=fake_run):
+                    service._resolve_dialogue_with_llm(call, payload)
+
+            self.assertIn('model_reasoning_effort="high"', seen["cmd"])
+            self.assertIn(resolve_module.RESOLVE_EDIT_SYSTEM_PROMPT, seen["cmd"][-1])
+            self.assertNotIn('"call_id"', seen["cmd"][-1])
+            self.assertNotIn('"manager_name"', seen["cmd"][-1])
+
+
+class ResolveSemanticMergeDefaultTest(unittest.TestCase):
+    """ТЗ §10: with the default mode nothing above exists."""
+
+    def test_the_default_mode_is_off_and_adds_no_block_to_resolve_json(self) -> None:
+        service = ResolveService(make_settings())
+
+        self.assertFalse(service._semantic_merge_selective())
+        payload = service._build_resolve_payload(
+            duration_sec=1.0,
+            decision="accept_baseline",
+            baseline={"quality": {"score": 90, "reasons": []}},
+            llm_candidate=None,
+            rescue_candidate=None,
+            chosen=None,
+        )
+
+        self.assertNotIn("semantic_merge", payload)
+
+    def test_the_selective_block_is_added_only_when_the_mode_ran(self) -> None:
+        service = ResolveService(semantic_settings())
+        service._semantic_selective_input(semantic_input())
+
+        payload = service._build_resolve_payload(
+            duration_sec=1.0,
+            decision="accept_baseline",
+            baseline={"quality": {"score": 90, "reasons": []}},
+            llm_candidate=None,
+            rescue_candidate=None,
+            chosen=None,
+        )
+
+        self.assertEqual(payload["semantic_merge"]["mode"], "selective")
+
+    def test_applied_follows_the_chosen_candidate_and_nothing_else(self) -> None:
+        service = ResolveService(semantic_settings())
+        service._semantic_selective_input(semantic_input())
+        service._semantic_merge_last["turns_changed_accepted"] = 1
+        common = dict(
+            duration_sec=1.0,
+            baseline={"quality": {"score": 90, "reasons": []}},
+            llm_candidate={"quality": {"score": 91, "reasons": []}, "meta": {}},
+            rescue_candidate=None,
+        )
+
+        lost = service._build_resolve_payload(
+            decision="accept_baseline", chosen={"name": "baseline", "quality": {"score": 90}}, **common
+        )
+        won = service._build_resolve_payload(
+            decision="accept_llm", chosen={"name": "llm", "quality": {"score": 91}}, **common
+        )
+        # Won the comparison but scored below the acceptance threshold: nothing is written,
+        # so nothing is applied either (ТЗ §12b).
+        manual = service._build_resolve_payload(
+            decision="manual_review_required", chosen={"name": "llm", "quality": {"score": 40}}, **common
+        )
+
+        self.assertFalse(lost["semantic_merge"]["applied"])
+        self.assertTrue(won["semantic_merge"]["applied"])
+        self.assertFalse(manual["semantic_merge"]["applied"])
+
+    def test_the_worker_hands_a_transport_only_to_the_selective_mode(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_env_") as td:
+            root = Path(td)
+            timeline_root = root / "timeline"
+            timeline_root.mkdir()
+            config = CallsTwoProcessesConfig(
+                pipeline_root=root / "pipeline",
+                timeline_db=timeline_root / "timeline.sqlite",
+                timeline_allowed_root=timeline_root,
+                python_executable=Path(sys.executable),
+                codex_binary=Path(sys.executable),
+                codex_home_root=root / "codex",
+            )
+
+            # Both new variables are stated by the worker, never inherited silently, so
+            # the ambient shell of the test host cannot decide the default.
+            with patch.dict(
+                "os.environ",
+                {"RESOLVE_SEMANTIC_MERGE_MODE": "", "CODEX_RESOLVE_REASONING_EFFORT": ""},
+            ):
+                env = worker_environment(config)
+            self.assertEqual(env["RESOLVE_LLM_PROVIDER"], "off")
+            self.assertEqual(env["RESOLVE_SEMANTIC_MERGE_MODE"], "off")
+            self.assertEqual(env["CODEX_RESOLVE_REASONING_EFFORT"], "medium")
+
+            with patch.dict(
+                "os.environ",
+                {"RESOLVE_SEMANTIC_MERGE_MODE": "Selective",
+                 "CODEX_RESOLVE_REASONING_EFFORT": "High"},
+            ):
+                env = worker_environment(config)
+            self.assertEqual(env["RESOLVE_LLM_PROVIDER"], "codex_cli")
+            self.assertEqual(env["RESOLVE_SEMANTIC_MERGE_MODE"], "selective")
+            self.assertEqual(env["CODEX_RESOLVE_REASONING_EFFORT"], "high")
+
+    def test_the_mode_and_the_resolve_depth_come_from_the_environment(self) -> None:
+        config_module.get_settings.cache_clear()
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "RESOLVE_SEMANTIC_MERGE_MODE": "Selective",
+                    "CODEX_RESOLVE_REASONING_EFFORT": "High",
+                },
+            ):
+                settings = config_module.get_settings()
+            self.assertEqual(settings.resolve_semantic_merge_mode, "selective")
+            self.assertEqual(settings.codex_resolve_reasoning_effort, "high")
+            config_module.get_settings.cache_clear()
+            with patch.dict(
+                "os.environ",
+                {"RESOLVE_SEMANTIC_MERGE_MODE": "", "CODEX_RESOLVE_REASONING_EFFORT": ""},
+            ):
+                defaults = config_module.get_settings()
+            self.assertEqual(defaults.resolve_semantic_merge_mode, "off")
+            self.assertEqual(defaults.codex_resolve_reasoning_effort, "medium")
+        finally:
+            config_module.get_settings.cache_clear()
+
+
+class ResolveSemanticMergeLiveRunTest(unittest.TestCase):
+    """ТЗ §12b: the same mechanism through ResolveService.run(), not only its helpers."""
+
+    DIALOGUE = (
+        f"[00:01.0] Менеджер: {MANAGER_TURN_1}\n"
+        f"[00:02.0] Клиент: {CLIENT_TURN_1}\n"
+        f"[00:03.0] Менеджер: {MANAGER_TURN_2}\n"
+        f"[00:04.0] Клиент: {CLIENT_TURN_2}\n"
+        f"[00:05.0] Менеджер: {MANAGER_TURN_3}\n"
+    )
+
+    def _prepare(self, td, **overrides):
+        export_dir = Path(td) / "export"
+        settings = replace(make_settings(), **{
+            "database_url": f"sqlite:///{Path(td) / 'run.db'}",
+            "resolve_llm_provider": "codex_cli",
+            "resolve_semantic_merge_mode": "selective",
+            "resolve_rescue_provider": "none",
+            "llm_cache_enabled": False,
+            "transcript_export_dir": str(export_dir),
+            **overrides,
+        })
+        init_db(settings)
+        session_factory = build_session_factory(settings)
+        with session_factory() as session:
+            # Two calls in one run: the first diverges between the two ASR variants, the
+            # second is heard identically twice and must reach no model at all.
+            for name, manager_b in (("a", MANAGER_B), ("b", MANAGER_A)):
+                path = export_dir / "calls" / f"{name}_text.txt"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(self.DIALOGUE, encoding="utf-8")
+                session.add(CallRecord(
+                    source_call_id=f"call-{name}",
+                    source_file=f"calls/{name}.mp3",
+                    source_filename=f"{name}.mp3",
+                    duration_sec=120.0,
+                    transcription_status="done",
+                    resolve_status="pending",
+                    analysis_status="pending",
+                    transcript_text=f"MANAGER:\n{MANAGER_A}\n\nCLIENT:\n{CLIENT_SAME}",
+                    transcript_manager=MANAGER_A,
+                    transcript_client=CLIENT_SAME,
+                    transcript_variants_json=json.dumps({
+                        "mode": "stereo",
+                        "call_topology": "simple_two_party",
+                        "role_mapping": {"confirmed": True, "manager_quality_allowed": True},
+                        "manager": {"physical_channel": "left", "variant_a": MANAGER_A,
+                                    "variant_b": manager_b, "final": MANAGER_A},
+                        "client": {"physical_channel": "right", "variant_a": CLIENT_SAME,
+                                   "variant_b": CLIENT_SAME, "final": CLIENT_SAME},
+                    }, ensure_ascii=False),
+                ))
+            session.commit()
+        return settings, session_factory
+
+    @staticmethod
+    def _blocks(session_factory):
+        with session_factory() as session:
+            return {
+                call.source_call_id: json.loads(call.resolve_json or "{}")
+                for call in session.query(CallRecord).all()
+            }
+
+    def test_a_run_escalates_only_the_diverging_call_and_leaks_nothing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_run_") as td:
+            settings, session_factory = self._prepare(td)
+            service = ResolveService(settings)
+            seen = []
+
+            def fake_run(cmd, capture_output, text, check, timeout):
+                request = json.loads(cmd[-1].split("Call dialogue payload JSON:\n", 1)[1])
+                seen.append(request)
+                out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+                out_path.write_text(
+                    json.dumps(model_turns(request, {5: MANAGER_TURN_3_FIXED}), ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch("mango_mvp.services.resolve.shutil.which", return_value="/usr/bin/codex"):
+                with patch("mango_mvp.services.resolve.subprocess.run", side_effect=fake_run):
+                    with session_factory() as session:
+                        result = service.run(session, limit=2)
+
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(result["semantic_eligible"], 2)
+            self.assertEqual(result["semantic_escalated"], 1)
+            self.assertEqual(result["semantic_model_calls"], 1)
+            self.assertEqual(result["semantic_turns_accepted"], 1)
+            self.assertEqual(result["semantic_cache_hit"], 0)
+
+            payloads = self._blocks(session_factory)
+            diverging = payloads["call-a"]["semantic_merge"]
+            identical = payloads["call-b"]["semantic_merge"]
+            self.assertEqual(diverging["model_calls"], 1)
+            self.assertEqual(diverging["turns_changed_accepted"], 1)
+            self.assertEqual(diverging["applied"], payloads["call-a"]["decision"] == "accept_llm")
+            # The second call carries its own counters, not the first call's ones.
+            self.assertEqual(identical["model_calls"], 0)
+            self.assertEqual(identical["turns_changed_accepted"], 0)
+            self.assertFalse(identical["escalated"])
+            self.assertIsNone(identical["fallback_reason"])
+            self.assertEqual(identical["turns_reset"], {})
+
+    def test_stale_candidates_do_not_enter_semantic_run_totals(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_stale_") as td:
+            settings, session_factory = self._prepare(td)
+            service = ResolveService(settings)
+
+            def fake_run(cmd, capture_output, text, check, timeout):
+                request = json.loads(cmd[-1].split("Call dialogue payload JSON:\n", 1)[1])
+                Path(cmd[cmd.index("--output-last-message") + 1]).write_text(
+                    json.dumps(model_turns(request, {5: MANAGER_TURN_3_FIXED}), ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch("mango_mvp.services.resolve.shutil.which", return_value="/usr/bin/codex"), \
+                    patch("mango_mvp.services.resolve.subprocess.run", side_effect=fake_run), \
+                    patch.object(service, "_candidate_source_is_current", return_value=False):
+                with session_factory() as session:
+                    result = service.run(session, limit=2)
+
+            self.assertEqual(result["stale"], 2)
+            self.assertFalse(any(key.startswith("semantic_") for key in result))
+
+    def test_the_default_run_calls_no_model_and_writes_no_block(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_run_off_") as td:
+            settings, session_factory = self._prepare(
+                td, resolve_semantic_merge_mode="off", resolve_llm_provider="off"
+            )
+            service = ResolveService(settings)
+
+            def runner(request, **_kwargs):
+                raise AssertionError("the default mode may not reach a model")
+
+            service._run_dialogue_llm = runner  # type: ignore[method-assign]
+            with session_factory() as session:
+                result = service.run(session, limit=2)
+
+            self.assertNotIn("semantic_model_calls", result)
+            self.assertNotIn("semantic_escalated", result)
+            for payload in self._blocks(session_factory).values():
+                self.assertNotIn("semantic_merge", payload)
 
 
 if __name__ == "__main__":

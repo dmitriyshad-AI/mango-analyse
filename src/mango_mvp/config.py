@@ -151,6 +151,8 @@ class Settings:
     controlled_call_audio_snapshot_path: Optional[str] = None
     controlled_call_audio_snapshot_sha256: Optional[str] = None
     controlled_call_audio_snapshot_size_bytes: Optional[int] = None
+    resolve_semantic_merge_mode: str = "off"  # off = zero model calls in Resolve (D-122)
+    codex_resolve_reasoning_effort: str = "medium"
 
 
 def _optional_int(raw: Optional[str]) -> Optional[int]:
@@ -338,4 +340,6 @@ def get_settings() -> Settings:
         controlled_call_audio_snapshot_size_bytes=_optional_int(
             os.getenv("MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SIZE_BYTES")
         ),
+        resolve_semantic_merge_mode=os.getenv("RESOLVE_SEMANTIC_MERGE_MODE", "").strip().lower() or "off",
+        codex_resolve_reasoning_effort=os.getenv("CODEX_RESOLVE_REASONING_EFFORT", "").strip().lower() or "medium",
     )

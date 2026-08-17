@@ -3263,6 +3263,69 @@ def test_each_stage_timeout_is_capped_by_shared_four_hour_cycle() -> None:
     )
 
 
+def test_transcribe_worker_is_terminated_when_log_progress_stalls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        heavy_stage_timeout_seconds=3600,
+        transcribe_progress_timeout_seconds=60,
+    )
+    clock = {"now": 100.0}
+    terminated: list[int] = []
+
+    class StalledProcess:
+        pid = 454545
+        returncode = None
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def poll(self):
+            return self.returncode
+
+    def terminate(proc) -> None:
+        terminated.append(proc.pid)
+        proc.returncode = -signal.SIGTERM
+
+    def sleep(seconds: float) -> None:
+        clock["now"] += max(31.0, seconds)
+
+    monkeypatch.setattr(calls_runtime, "pipeline_stages", lambda *_a, **_k: ("transcribe",))
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", StalledProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+    monkeypatch.setattr(calls_runtime.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(calls_runtime.time, "sleep", sleep)
+
+    reports = run_sequential_pipeline_workers(
+        config,
+        {},
+        calls_runtime.run_command,
+        run_id="stalled-transcribe",
+    )
+
+    assert reports[0]["rc"] == 124
+    assert reports[0]["timed_out"] is True
+    assert reports[0]["timeout_scope"] == "transcribe_progress"
+    assert terminated
+    assert "stage_timeout:transcribe_progress" in Path(
+        str(reports[0]["log_path"])
+    ).read_text(encoding="utf-8")
+
+
+def test_pipeline_termination_signal_sets_cooperative_stop_event() -> None:
+    stop_event = threading.Event()
+    previous = signal.getsignal(signal.SIGTERM)
+
+    with calls_runtime.stop_event_on_termination(stop_event):
+        installed = signal.getsignal(signal.SIGTERM)
+        assert callable(installed)
+        installed(signal.SIGTERM, None)
+        assert stop_event.is_set()
+
+    assert signal.getsignal(signal.SIGTERM) is previous
+
+
 def test_prelude_command_obeys_shared_heavy_cycle_deadline(tmp_path: Path) -> None:
     timed_out = run_command(
         [sys.executable, "-c", "import time; time.sleep(60)"],

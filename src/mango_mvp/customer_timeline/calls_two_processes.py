@@ -223,6 +223,7 @@ class CallsTwoProcessesConfig:
     controlled_call_allowlist_sha256: Optional[str] = None
     mlx_whisper_snapshot_path: Optional[Path] = None
     heavy_stage_timeout_seconds: int = 4 * 60 * 60
+    transcribe_progress_timeout_seconds: int = 30 * 60
     expected_code_sha: Optional[str] = None
     host_id_path: Optional[Path] = None
     cutover_manifest_path: Optional[Path] = None
@@ -340,6 +341,9 @@ class CallsTwoProcessesConfig:
             ),
             heavy_stage_timeout_seconds=int(
                 payload.get("heavy_stage_timeout_seconds", 4 * 60 * 60)
+            ),
+            transcribe_progress_timeout_seconds=int(
+                payload.get("transcribe_progress_timeout_seconds", 30 * 60)
             ),
             expected_code_sha=optional_text(
                 payload.get("expected_code_sha")
@@ -519,6 +523,10 @@ class CallsTwoProcessesConfig:
             raise ValueError("min_free_gib must be at least 1")
         if self.heavy_stage_timeout_seconds < 60:
             raise ValueError("heavy_stage_timeout_seconds must be at least 60")
+        if self.transcribe_progress_timeout_seconds < 60:
+            raise ValueError(
+                "transcribe_progress_timeout_seconds must be at least 60"
+            )
         if self.max_catch_up_days < 1:
             raise ValueError("max_catch_up_days must be positive")
         if (
@@ -7305,6 +7313,28 @@ def controlled_stage_report(
     }
 
 
+@contextmanager
+def stop_event_on_termination(stop_event: threading.Event) -> Iterator[None]:
+    """Convert launchd TERM/INT into cooperative stage-group shutdown."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous_handlers = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        stop_event.set()
+
+    try:
+        for signum in previous_handlers:
+            signal.signal(signum, request_stop)
+        yield
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
 def run_sequential_pipeline_workers(
     config: CallsTwoProcessesConfig,
     base_env: Mapping[str, str],
@@ -7367,68 +7397,70 @@ def run_sequential_pipeline_workers(
                     )
                     for worker_key, _stage, _instance in worker_specs
                 }
-                with ThreadPoolExecutor(
-                    max_workers=len(worker_specs),
-                    thread_name_prefix="mango-stage",
-                ) as pool:
-                    stop_parallel_workers = threading.Event()
-                    futures = {
-                        worker_key: pool.submit(
-                            run_sequential_pipeline_workers,
-                            config,
-                            (
-                                {
-                                    **base_env,
-                                    "MANGO_GIGAAM_WORKER_INDEX": str(instance),
-                                    "MANGO_GIGAAM_WORKER_COUNT": str(
-                                        config.gigaam_worker_count
-                                    ),
-                                }
-                                if stage == "backfill-second-asr"
-                                else base_env
-                            ),
-                            runner,
-                            include_llm=True,
-                            run_id=f"{parallel_run_id}-{worker_key}",
-                            cycle_deadline=cycle_deadline,
-                            stages_override=(stage,),
-                            heartbeat_path_override=(
-                                config.pipeline_root
-                                / "state"
-                                / (
-                                    "process_a_gigaam_heartbeat.json"
-                                    if stage == "backfill-second-asr" and instance == 1
-                                    else f"process_a_gigaam_{instance}_heartbeat.json"
+                stop_parallel_workers = threading.Event()
+                with stop_event_on_termination(stop_parallel_workers):
+                    with ThreadPoolExecutor(
+                        max_workers=len(worker_specs),
+                        thread_name_prefix="mango-stage",
+                    ) as pool:
+                        futures = {
+                            worker_key: pool.submit(
+                                run_sequential_pipeline_workers,
+                                config,
+                                (
+                                    {
+                                        **base_env,
+                                        "MANGO_GIGAAM_WORKER_INDEX": str(instance),
+                                        "MANGO_GIGAAM_WORKER_COUNT": str(
+                                            config.gigaam_worker_count
+                                        ),
+                                    }
                                     if stage == "backfill-second-asr"
-                                    else "process_a_"
-                                    + stage.replace("-", "_")
-                                    + "_heartbeat.json"
-                                )
-                            ),
-                            codex_runtime_override=worker_runtimes[worker_key],
-                            stop_event=stop_parallel_workers,
-                        )
-                        for worker_key, stage, instance in worker_specs
-                    }
-
-                    def stop_peers_on_failure(future: Any) -> None:
-                        try:
-                            failed = any(
-                                int(report.get("rc") or 0) != 0
-                                for report in future.result()
+                                    else base_env
+                                ),
+                                runner,
+                                include_llm=True,
+                                run_id=f"{parallel_run_id}-{worker_key}",
+                                cycle_deadline=cycle_deadline,
+                                stages_override=(stage,),
+                                heartbeat_path_override=(
+                                    config.pipeline_root
+                                    / "state"
+                                    / (
+                                        "process_a_gigaam_heartbeat.json"
+                                        if stage == "backfill-second-asr"
+                                        and instance == 1
+                                        else f"process_a_gigaam_{instance}_heartbeat.json"
+                                        if stage == "backfill-second-asr"
+                                        else "process_a_"
+                                        + stage.replace("-", "_")
+                                        + "_heartbeat.json"
+                                    )
+                                ),
+                                codex_runtime_override=worker_runtimes[worker_key],
+                                stop_event=stop_parallel_workers,
                             )
-                        except BaseException:
-                            failed = True
-                        if failed:
-                            stop_parallel_workers.set()
+                            for worker_key, stage, instance in worker_specs
+                        }
 
-                    for future in futures.values():
-                        future.add_done_callback(stop_peers_on_failure)
-                    stage_reports = [
-                        report
-                        for worker_key, _stage, _instance in worker_specs
-                        for report in futures[worker_key].result()
-                    ]
+                        def stop_peers_on_failure(future: Any) -> None:
+                            try:
+                                failed = any(
+                                    int(report.get("rc") or 0) != 0
+                                    for report in future.result()
+                                )
+                            except BaseException:
+                                failed = True
+                            if failed:
+                                stop_parallel_workers.set()
+
+                        for future in futures.values():
+                            future.add_done_callback(stop_peers_on_failure)
+                        stage_reports = [
+                            report
+                            for worker_key, _stage, _instance in worker_specs
+                            for report in futures[worker_key].result()
+                        ]
         finally:
             aggregate_heartbeat.unlink(missing_ok=True)
         stage_reports = [
@@ -7527,6 +7559,7 @@ def run_sequential_pipeline_workers(
         lifeline_read_fd = -1
         lifeline_write_fd = -1
         timed_out = False
+        timeout_scope: Optional[str] = None
         peer_failed = False
         authority_scope = controlled_worker_authority_environment(
             config,
@@ -7577,8 +7610,17 @@ def run_sequential_pipeline_workers(
                     os.close(lifeline_read_fd)
                     lifeline_read_fd = -1
                 last_heartbeat = 0.0
+                last_progress_at = time.monotonic()
+                last_progress_size = log_path.stat().st_size
                 while proc.poll() is None:
                     current = time.monotonic()
+                    try:
+                        current_progress_size = log_path.stat().st_size
+                    except OSError:
+                        current_progress_size = last_progress_size
+                    if current_progress_size != last_progress_size:
+                        last_progress_size = current_progress_size
+                        last_progress_at = current
                     if stop_event is not None and stop_event.is_set():
                         peer_failed = True
                         terminate_process_group(proc)
@@ -7591,11 +7633,25 @@ def run_sequential_pipeline_workers(
                                 "stage": stage,
                                 "pid": proc.pid,
                                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                                "progress_log_size_bytes": last_progress_size,
+                                "progress_age_seconds": round(
+                                    max(0.0, current - last_progress_at), 3
+                                ),
                             },
                         )
                         last_heartbeat = current
+                    if (
+                        stage == "transcribe"
+                        and current - last_progress_at
+                        >= config.transcribe_progress_timeout_seconds
+                    ):
+                        timed_out = True
+                        timeout_scope = "transcribe_progress"
+                        terminate_process_group(proc)
+                        break
                     if current >= deadline:
                         timed_out = True
+                        timeout_scope = "heavy_stage"
                         terminate_process_group(proc)
                         break
                     time.sleep(1)
@@ -7606,7 +7662,7 @@ def run_sequential_pipeline_workers(
                 else:
                     rc = int(proc.returncode or 0)
                 if timed_out:
-                    log_handle.write("stage_timeout\n")
+                    log_handle.write(f"stage_timeout:{timeout_scope}\n")
                 elif peer_failed:
                     log_handle.write("parallel_peer_failed\n")
         finally:
@@ -7646,6 +7702,7 @@ def run_sequential_pipeline_workers(
                     max(0, int(after_usage.ru_nswap - before_usage.ru_nswap)),
                 ),
                 "timed_out": rc == 124,
+                "timeout_scope": timeout_scope,
                 "metrics": worker_metrics,
             },
         )

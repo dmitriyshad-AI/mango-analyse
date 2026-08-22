@@ -4,7 +4,7 @@
 
 ## Что нужно сделать
 
-Интегрировать ветку `codex/mango-calls-quality-v3-m4-20260816` в отдельном
+Интегрировать ветку `codex/calls-utm-google-v3-20260822` в отдельном
 чистом worktree M1, проверить её на локальных данных и доказать качество на
 лестнице `1 -> повтор 1 -> 10 -> калибровка 50 -> 50+50 -> 200`. Не сливать в `main`, не менять
 живую службу, Google-таблицу, AMO, Tallanto и Customer Timeline до отдельного
@@ -35,10 +35,10 @@
 
 ```bash
 cd <M1_REPOSITORY>
-git fetch origin codex/mango-calls-quality-v3-m4-20260816
+git fetch origin codex/calls-utm-google-v3-20260822
 git worktree add ../Mango_calls_quality_v3_m1 \
   -b codex/mango-calls-quality-v3-m1-integration \
-  origin/codex/mango-calls-quality-v3-m4-20260816
+  origin/codex/calls-utm-google-v3-20260822
 cd ../Mango_calls_quality_v3_m1
 git status --short --branch
 git rev-parse HEAD
@@ -61,6 +61,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3.12 -m pytest -q \
   tests/test_analyze_xa_safe_pack.py \
   tests/test_controlled_call_scope.py \
   tests/test_publish_live_mango_calls_google.py \
+  tests/test_amo_call_utm.py \
   tests/test_publish_current_mango_calls_google.py \
   tests/test_mango_calls_publication_coordinator.py \
   tests/test_export_daily_mango_calls_resolve.py \
@@ -208,12 +209,13 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3.12 -m pytest -q \
 Массовый повтор исторических звонков запрещён до отчёта по 50 звонкам: число
 новых вызовов, точные токены провайдера и согласованный Дмитрием бюджет.
 
-До bootstrap Google выполнить только чтение заголовка. Текущий контракт содержит
-17 столбцов и добавляет столбец `Основание ключевых выводов` перед
-`Что проверить РОПу`. Если живой лист имеет прежние точные 16 столбцов,
-остановиться и подготовить отдельный план миграции: вставить новый столбец O,
-проверить формулы/ширины/readback и получить явное разрешение владельца. Код не
-меняет заголовок живого листа автоматически.
+До bootstrap Google выполнить только чтение заголовка. Решение D-123 от
+22.08.2026 заменяет прежний 17-столбцовый порядок: первые 16 столбцов A:P
+остаются без изменений, `Основание ключевых выводов` занимает Q (17), `UTM и
+страница заявки` — R (18). Если живой лист имеет прежние 16 или 17 столбцов,
+остановиться и использовать отдельную вкладку по плану
+`M1_GOOGLE_UTM_CUTOVER_2026-08-22.md`. Код не меняет заголовок живого листа
+автоматически.
 
 ## Лестница реальной проверки
 

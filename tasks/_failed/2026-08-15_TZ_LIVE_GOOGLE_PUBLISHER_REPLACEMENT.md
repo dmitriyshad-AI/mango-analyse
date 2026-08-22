@@ -1,3 +1,5 @@
+> FAIL 2026-08-22 19:53 | ветка codex/calls-utm-google-v3-20260822 | codex | причина: Старый 16-столбцовый cutover не завершён и заменён решениями D-119/D-123; продолжать его нельзя, актуальное ТЗ — 2026-08-22_TZ_CALLS_LIVE_GOOGLE_UTM.md.
+
 > TAKE 2026-08-15 11:35 | ветка codex/google-publisher-20260815 | codex
 
 Ветка: codex/google-publisher-20260815

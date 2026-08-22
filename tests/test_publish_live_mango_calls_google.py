@@ -55,6 +55,7 @@ def record(**overrides):
         "transcript_text": "",
         "analysis_status": "done",
         "sync_status": "pending",
+        "amocrm_lead_id": None,
     }
     payload.update(overrides)
     if not explicit_recording_id and payload["source_call_id"] != "call-7":
@@ -62,8 +63,14 @@ def record(**overrides):
     return payload
 
 
-def projected(**overrides):
-    return publisher.call_projection(record(**overrides), {"mango_manager_1": "Иван Иванов"})
+def projected(*, utm_text="—", **overrides):
+    return publisher.call_projection(
+        record(**overrides), {"mango_manager_1": "Иван Иванов"}, utm_text=utm_text
+    )
+
+
+def transcript_from_call(call):
+    return call["tail"][publisher.TRANSCRIPT_COLUMN_INDEX - 1]
 
 
 # --- A call whose sides Mango itself proved ---------------------------------
@@ -451,9 +458,10 @@ def trusted_record(**overrides):
     return payload
 
 
-def trusted_projected(**overrides):
+def trusted_projected(*, utm_text="—", **overrides):
     return publisher.call_projection(
-        trusted_record(**overrides), {"mango_manager_1": "Иван Иванов"}
+        trusted_record(**overrides), {"mango_manager_1": "Иван Иванов"},
+        utm_text=utm_text,
     )
 
 
@@ -612,12 +620,13 @@ def _sqlite(tmp_path: Path, records):
         "manager_name TEXT, direction TEXT, duration_sec REAL, analysis_json TEXT, "
         "analysis_attempts_json TEXT, "
         "transcript_variants_json TEXT, transcript_text TEXT, analysis_status TEXT, "
-        "sync_status TEXT, sync_attempts INTEGER NOT NULL DEFAULT 0)"
+        "sync_status TEXT, sync_attempts INTEGER NOT NULL DEFAULT 0, amocrm_lead_id INTEGER)"
     )
     columns = (
         "id", "source_call_id", "source_recording_id", "started_at", "phone", "manager_name", "direction",
         "duration_sec", "analysis_json", "analysis_attempts_json", "transcript_variants_json", "transcript_text",
         "analysis_status", "sync_status",
+        "amocrm_lead_id",
     )
     connection.executemany(
         f"INSERT INTO call_records ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
@@ -639,7 +648,7 @@ def _decode_cell(cell):
 class FakeLiveGoogleGateway:
     def __init__(self, rows=(), *, title="Звонки", sheet_id=0):
         self.rows = [list(row) for row in rows]
-        self.row_heights = [publisher.row_height(row[9]) for row in self.rows]
+        self.row_heights = [publisher.published_row_height(row) for row in self.rows]
         self.title = title
         self.sheet_id = sheet_id
         self.batch_calls = 0
@@ -706,8 +715,10 @@ class FakeLiveGoogleGateway:
             raise TimeoutError("simulated lost Google response")
 
     def layout(self, _title, _last_row):
-        column_metadata = [{} for _ in range(10)]
+        column_metadata = [{} for _ in range(publisher.MANAGED_COLUMN_COUNT)]
         column_metadata[9] = {"pixelSize": 320}
+        column_metadata[publisher.EVIDENCE_COLUMN_INDEX] = {"pixelSize": 320}
+        column_metadata[publisher.UTM_COLUMN_INDEX] = {"pixelSize": 320}
         return {
             "sheets": [{
                 "data": [{
@@ -721,7 +732,10 @@ class FakeLiveGoogleGateway:
                                 {
                                     "userEnteredFormat": (
                                         {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}
-                                        if index == 9
+                                        if index in {
+                                            9, publisher.EVIDENCE_COLUMN_INDEX,
+                                            publisher.UTM_COLUMN_INDEX,
+                                        }
                                         else {"wrapStrategy": "CLIP", "verticalAlignment": "TOP"}
                                         if index == publisher.TRANSCRIPT_COLUMN_INDEX
                                         else {}
@@ -737,7 +751,10 @@ class FakeLiveGoogleGateway:
         }
 
 
-def _harness(tmp_path, monkeypatch, *, records, rows=(), state=None, fake=None, sheet_id=0):
+def _harness(
+    tmp_path, monkeypatch, *, records, rows=(), state=None, fake=None, sheet_id=0,
+    prefill_utm=True, live_utm=False,
+):
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
     os.chmod(private, 0o700)
@@ -746,10 +763,26 @@ def _harness(tmp_path, monkeypatch, *, records, rows=(), state=None, fake=None, 
     manager = private / "manager.json"
     state_path = private / "state.json"
     lock = private / "publisher.lock"
+    amo_env = private / "amo.env"
     config = private / "config.json"
     _owner_json(credentials, {"client_email": "publisher@example.invalid"})
     _owner_json(manager, {"mapping": {"mango_manager_1": "Иван Иванов"}})
+    amo_env.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n", encoding="utf-8")
+    os.chmod(amo_env, 0o600)
+    cache_entries = {}
+    for item in records:
+        try:
+            identity = publisher.call_identity(item)
+            call_key = identity["call_key"]
+        except ValueError:
+            continue
+        if prefill_utm:
+            cache_entries[publisher.utm_cache_key(
+                call_key, item.get("phone"), identity["started_epoch"],
+                item.get("amocrm_lead_id"),
+            )] = "—"
     if state is not None:
+        state.setdefault("utm_entries", {}).update(cache_entries)
         _owner_json(state_path, state)
     _owner_json(
         config,
@@ -763,6 +796,7 @@ def _harness(tmp_path, monkeypatch, *, records, rows=(), state=None, fake=None, 
             "credentials": str(credentials),
             "state": str(state_path),
             "lock": str(lock),
+            "amo_read_env": str(amo_env),
             "summary_width_px": 320,
             "batch_limit": 25,
             "expected_code_sha": "a" * 40,
@@ -778,6 +812,36 @@ def _harness(tmp_path, monkeypatch, *, records, rows=(), state=None, fake=None, 
         "check_output",
         lambda command, text=True: "a" * 40 + "\n" if command[-1] == "HEAD" else "",
     )
+    if not live_utm:
+        def cached_utm_only(*, config, calls, selected, cache, latest=None):
+            del config
+            latest = latest if latest is not None else {}
+            received = changed = 0
+            for key in selected:
+                call = calls[key]
+                digest = publisher.utm_cache_key(
+                    key, call["phone"], int(call["started_epoch"]),
+                    call.get("amocrm_lead_id"),
+                )
+                if digest in cache:
+                    latest.setdefault(publisher.call_key_digest(key), digest)
+                    continue
+                previous = latest.get(publisher.call_key_digest(key))
+                cache[digest] = "—"
+                latest[publisher.call_key_digest(key)] = digest
+                if previous and previous != digest:
+                    cache.pop(previous, None)
+                    changed += 1
+                received += 1
+            return {}, {
+                "mode": "incremental", "selected": len(selected), "received": received,
+                "new": received - changed, "changed": changed, "skipped": 0,
+                "reused": len(selected) - received, "amo_api_calls": 0,
+                "attributed": 0, "probable": 0, "unattributed": len(selected),
+                "elapsed_seconds": 0.0,
+            }
+
+        monkeypatch.setattr(publisher, "enrich_selected_utm", cached_utm_only)
     return {
         "config": config,
         "db": db_path,
@@ -810,9 +874,22 @@ def test_live_headers_are_exact_production_contract():
         "№", "Дата и время (МСК)", "Менеджер", "Направление", "Длительность",
         "Категория", "Телефон клиента", "Нужна проверка", "Тема",
         "Конспект разговора", "Результат", "Возражение / причина",
-        "Следующий шаг", "Срок", "Основание ключевых выводов",
-        "Что проверить РОПу", "Полная расшифровка",
+        "Следующий шаг", "Срок", "Что проверить РОПу", "Полная расшифровка",
+        "Основание ключевых выводов", "UTM и страница заявки",
     )
+    assert publisher.LIVE_HEADERS[:16] == (
+        "№", "Дата и время (МСК)", "Менеджер", "Направление", "Длительность",
+        "Категория", "Телефон клиента", "Нужна проверка", "Тема",
+        "Конспект разговора", "Результат", "Возражение / причина",
+        "Следующий шаг", "Срок", "Что проверить РОПу", "Полная расшифровка",
+    )
+    assert publisher.LIVE_HEADERS[16:] == (
+        "Основание ключевых выводов", "UTM и страница заявки"
+    )
+    assert publisher.REVIEW_COLUMN_INDEX == 14
+    assert publisher.TRANSCRIPT_COLUMN_INDEX == 15
+    assert publisher.EVIDENCE_COLUMN_INDEX == 16
+    assert publisher.UTM_COLUMN_INDEX == 17
 
 
 def test_repository_launchd_template_is_shadow_only():
@@ -825,6 +902,14 @@ def test_repository_launchd_template_is_shadow_only():
     assert "--execute" not in template
     assert "PUBLISH_MANGO_CALLS_LIVE" not in template
     assert "StartInterval" not in template
+
+
+def test_previous_config_schema_is_rejected_instead_of_running_partly(tmp_path):
+    path = tmp_path / "config.json"
+    _owner_json(path, {"schema_version": "mango_calls_live_google_config_v1"})
+
+    with pytest.raises(RuntimeError, match="config schema mismatch"):
+        publisher.load_config(path, execute=False)
 
 
 @pytest.mark.parametrize(
@@ -866,6 +951,67 @@ def test_a_proven_call_publishes_the_named_sides():
     assert "Возражение или причина" in evidence
     assert "T0002 [00:02.0]" in evidence
     assert "беспокоит цена" in evidence
+
+
+def test_projection_keeps_historical_sixteen_then_evidence_and_utm():
+    row = with_number(trusted_projected(utm_text="utm_source: yandex"))
+
+    assert row[14] == "—"
+    assert row[15].startswith("[00:01.0] Менеджер:")
+    assert "T0002 [00:02.0]" in row[16]
+    assert row[17] == "utm_source: yandex"
+
+    safe = with_number(
+        publisher.safe_call_projection(
+            record(analysis_status="pending"), {}, utm_text="UTM не найдены"
+        )
+    )
+    assert safe[14] == "Смысловой анализ звонка ещё не завершён."
+    assert safe[15].startswith("[00:01.0]")
+    assert safe[16] == "—"
+    assert safe[17] == "UTM не найдены"
+
+
+def test_utm_changes_projection_fingerprint_without_touching_first_sixteen_columns():
+    first = with_number(projected(utm_text="utm_source: yandex"))
+    second = with_number(projected(utm_text="utm_source: direct"))
+
+    assert first[:17] == second[:17]
+    assert first[17] != second[17]
+    assert projected(utm_text="utm_source: yandex")["source_fingerprint"] != projected(
+        utm_text="utm_source: direct"
+    )["source_fingerprint"]
+
+
+def test_utm_cache_basis_changes_with_phone_time_or_direct_lead():
+    call_key = publisher.validated_call_key("call-7")
+    baseline = publisher.utm_cache_key(call_key, "+70000000000", 1_000, None)
+
+    assert baseline != publisher.utm_cache_key(call_key, "+71111111111", 1_000, None)
+    assert baseline != publisher.utm_cache_key(call_key, "+70000000000", 1_001, None)
+    assert baseline != publisher.utm_cache_key(call_key, "+70000000000", 1_000, 77)
+    assert publisher.utm_cache_key(
+        call_key, "+7 000 000-00-00", 1_000, None
+    ) == publisher.utm_cache_key(call_key, "8 (000) 000-00-00", 1_000, None)
+
+
+def test_changed_source_after_utm_lookup_is_blocked_before_publication():
+    key = "mango:mango_office:call-1"
+    old = {
+        "phone": "+70000000000", "started_epoch": 1_000,
+        "amocrm_lead_id": None,
+    }
+    changed = {**old, "phone": "+71111111111"}
+    cache = {
+        publisher.utm_cache_key(key, old["phone"], old["started_epoch"], None):
+            "Связь с заявкой: точный телефон"
+    }
+
+    with pytest.raises(RuntimeError, match="source changed during UTM enrichment"):
+        publisher.require_current_utm_basis(
+            calls={key: changed}, selected=[key], cache=cache, volatile={}
+        )
+    assert projected(amocrm_lead_id=77)["amocrm_lead_id"] == 77
 
 
 def test_projection_converts_only_generated_summary_prefix_to_moscow():
@@ -1056,7 +1202,7 @@ def test_transcript_fallback_removes_technical_labels():
     call = projected(
         transcript_variants_json=json.dumps({"full": {"final": "CHANNEL_LEFT: Текст\nsha256: secret"}})
     )
-    assert call["tail"][-1] == "[00:00.0] Не определено: Текст"
+    assert transcript_from_call(call) == "[00:00.0] Не определено: Текст"
 
 
 def test_projection_rejects_an_empty_transcript():
@@ -1135,7 +1281,7 @@ def test_identity_matching_hashes_exactly_the_published_cell():
         transcript_variants_json=json.dumps(oversized_variants(), ensure_ascii=False)
     )
     identity = publisher.call_identity(raw)
-    published = publisher.call_projection(raw, {})["tail"][-1]
+    published = transcript_from_call(publisher.call_projection(raw, {}))
 
     assert identity["transcript_sha"] == publisher.hashlib.sha256(
         published.encode("utf-8")
@@ -1144,7 +1290,7 @@ def test_identity_matching_hashes_exactly_the_published_cell():
 
 def test_pending_identity_hashes_the_real_transcript_that_is_published():
     raw = record(analysis_status="pending", analysis_json=None)
-    published = publisher.call_projection(raw, {})["tail"][-1]
+    published = transcript_from_call(publisher.call_projection(raw, {}))
     identity = publisher.call_identity(raw)
 
     assert published != publisher.SAFE_PENDING_TRANSCRIPT_RU
@@ -1195,7 +1341,7 @@ def test_projection_keeps_unknown_and_unmapped_roles_instead_of_dropping_them(
     variants, expected
 ):
     call = projected(transcript_variants_json=json.dumps(variants, ensure_ascii=False))
-    assert call["tail"][-1] == expected
+    assert transcript_from_call(call) == expected
 
 
 def test_legacy_identity_renderer_still_matches_a_row_written_before_the_contract():
@@ -1212,7 +1358,7 @@ def test_legacy_identity_renderer_still_matches_a_row_written_before_the_contrac
     legacy = "[00:01.0] Менеджер: Старый текст"
     current = "[00:01.0] Спикер A: Старый текст"
     assert publisher.render_legacy_identity_transcript(raw) == legacy
-    assert publisher.call_projection(raw, {})["tail"][-1] == current
+    assert transcript_from_call(publisher.call_projection(raw, {})) == current
     assert identity["transcript_sha"] == publisher.hashlib.sha256(
         current.encode("utf-8")
     ).hexdigest()
@@ -1487,10 +1633,17 @@ def test_google_cells_never_emit_formula_values():
         }
 
 
-def test_height_depends_only_on_summary():
-    summary = "Короткий конспект"
-    assert publisher.row_height(summary) == publisher.row_height(summary)
-    assert publisher.row_height(summary) != publisher.row_height("д" * 900)
+def test_published_height_accounts_for_summary_evidence_and_utm():
+    row = with_number(projected(utm_text="коротко"))
+    baseline = publisher.published_row_height(row)
+
+    long_evidence = list(row)
+    long_evidence[publisher.EVIDENCE_COLUMN_INDEX] = "д" * 900
+    long_utm = list(row)
+    long_utm[publisher.UTM_COLUMN_INDEX] = "у" * 900
+
+    assert publisher.published_row_height(long_evidence) > baseline
+    assert publisher.published_row_height(long_utm) > baseline
 
 
 def test_height_requests_skip_rows_that_already_have_the_target_height():
@@ -1538,6 +1691,27 @@ def test_live_gateway_uses_extended_timeout_for_atomic_batch():
     assert session.timeout == 180
 
 
+def test_live_gateway_layout_reads_all_eighteen_managed_columns():
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"sheets": [{"data": [{}]}]}
+
+    class Session:
+        params = None
+
+        def get(self, _url, **kwargs):
+            self.params = kwargs["params"]
+            return Response()
+
+    session = Session()
+    publisher.LiveGoogleGateway(session, "sheet").layout("Звонки", 1)
+
+    assert session.params["ranges"] == "'Звонки'!A2:R2"
+
+
 def test_layout_formula_error_names_cell_and_display_number():
     row = with_number(projected())
     fake = FakeLiveGoogleGateway([row])
@@ -1547,7 +1721,19 @@ def test_layout_formula_error_names_cell_and_display_number():
         "formulaValue": '="hidden"'
     }
 
-    with pytest.raises(RuntimeError, match=r"Q2 \(№ 10\)"):
+    with pytest.raises(RuntimeError, match=r"P2 \(№ 10\)"):
+        publisher.verify_layout(payload, [row], 320)
+
+
+def test_layout_rejects_formula_in_utm_column():
+    row = with_number(projected(utm_text="utm_term: =IMPORTXML()"))
+    payload = FakeLiveGoogleGateway([row]).layout("Звонки", 2)
+    values = payload["sheets"][0]["data"][0]["rowData"][0]["values"]
+    values[publisher.UTM_COLUMN_INDEX]["userEnteredValue"] = {
+        "formulaValue": "=IMPORTXML()"
+    }
+
+    with pytest.raises(RuntimeError, match=r"R2 \(№ 10\)"):
         publisher.verify_layout(payload, [row], 320)
 
 
@@ -1896,6 +2082,18 @@ def _change_phone(db_path, phone, call_id=7):
 def test_source_change_during_google_write_is_compensated_before_sync_done(
     tmp_path, monkeypatch
 ):
+    class FakeAmo:
+        def __init__(self):
+            self.calls = 0
+
+    class PhoneResolver:
+        def __init__(self, client):
+            self.client = client
+
+        def resolve(self, phone, _started_epoch, _lead_id=None):
+            self.client.calls += 1
+            return f"Связь с заявкой: прямая из записи звонка\nutm_source: phone-{phone}"
+
     fake = FakeLiveGoogleGateway()
     env = _harness(
         tmp_path,
@@ -1903,7 +2101,12 @@ def test_source_change_during_google_write_is_compensated_before_sync_done(
         records=[record()],
         state=publisher.default_state(_destination()),
         fake=fake,
+        prefill_utm=False,
+        live_utm=True,
     )
+    amo = FakeAmo()
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: amo)
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", PhoneResolver)
     monkeypatch.setattr(
         publisher, "sqlite_source_write_fence", lambda _path: nullcontext()
     )
@@ -1919,6 +2122,11 @@ def test_source_change_during_google_write_is_compensated_before_sync_done(
     assert report["status"] == "published"
     assert fake.batch_calls == 2
     assert fake.rows[0][publisher.LIVE_HEADERS.index("Телефон клиента")] == "+71111111111"
+    utm = fake.rows[0][publisher.UTM_COLUMN_INDEX]
+    assert "phone-+71111111111" in utm
+    assert "phone-+70000000000" not in utm
+    assert "UTM ещё не загружены" not in utm
+    assert amo.calls == 2
     assert _db_status(env["db"]) == ("done", 1)
 
 
@@ -3233,3 +3441,427 @@ def test_a_second_unchanged_run_issues_no_batch_update_and_no_duplicate(
     assert len(fake.rows) == 1
     assert second["balance"]["balanced"] is True
     assert second["balance"]["verified_current"] == 1
+
+
+def test_execute_enriches_only_selected_call_then_reuses_owner_cache(
+    tmp_path, monkeypatch
+):
+    phone = "+70000000000"
+
+    class FakeAmo:
+        def __init__(self):
+            self.calls = 0
+            self.call_paths = []
+
+        def amo_api_get(self, *, path, params=None, limit=50):
+            self.calls += 1
+            self.call_paths.append(path)
+            if path == "contacts":
+                return {
+                    "_embedded": {
+                        "contacts": [{
+                            "id": 1,
+                            "custom_fields_values": [{
+                                "field_code": "PHONE", "values": [{"value": phone}]
+                            }],
+                            "_embedded": {"leads": [{"id": 10}]},
+                        }]
+                    },
+                    "_links": {},
+                }
+            if path == "leads":
+                return {
+                    "_embedded": {"leads": [{
+                        "id": 10,
+                        "created_at": int(datetime(2026, 8, 14, 8, tzinfo=timezone.utc).timestamp()),
+                        "custom_fields_values": [
+                            {"field_code": "UTM_SOURCE", "values": [{"value": "yandex"}]},
+                            {"field_code": "UTM_MEDIUM", "values": [{"value": "cpc"}]},
+                        ],
+                        "_embedded": {"contacts": [{"id": 1}]},
+                    }]},
+                    "_links": {},
+                }
+            if path == "leads/10/notes":
+                return {
+                    "_embedded": {"notes": [{
+                            "note_type": "common", "created_at": 1_500,
+                        "params": {"text": "url: https://kmipt.ru/courses/test/"},
+                    }]},
+                    "_links": {},
+                }
+            raise AssertionError(path)
+
+    state = publisher.default_state(_destination())
+    google = FakeLiveGoogleGateway()
+    env = _harness(
+        tmp_path, monkeypatch, records=[record()], state=state, fake=google,
+        prefill_utm=False, live_utm=True,
+    )
+    amo = FakeAmo()
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: amo)
+
+    first = _run_execute(env["config"])
+    amo_calls_after_first = list(amo.call_paths)
+    second = _run_execute(env["config"])
+
+    assert first["status"] == "published"
+    assert google.rows[0][publisher.UTM_COLUMN_INDEX] == (
+        "Предполагаемая связь с заявкой: точный телефон; "
+        "ближайшая заявка создана за 1 ч до звонка\n"
+        "UTM ниже — снимок карточки AMO при первом сопоставлении, а не "
+        "исторические данные на момент звонка\n"
+        "utm_source: yandex\nutm_medium: cpc\nurl: https://kmipt.ru/courses/test/"
+    )
+    assert amo_calls_after_first == ["contacts", "leads", "leads/10/notes"]
+    assert amo.call_paths == amo_calls_after_first
+    first_utm = dict(first["utm_enrichment"])
+    assert first_utm.pop("elapsed_seconds") >= 0
+    assert first_utm == {
+        "mode": "incremental", "selected": 1, "received": 1, "new": 1,
+        "changed": 0, "skipped": 0, "reused": 0, "amo_api_calls": 3,
+        "attributed": 0, "probable": 1, "unattributed": 0,
+    }
+    assert second["status"] == "no_change"
+    assert second["utm_enrichment"] == {
+        "mode": "incremental", "selected": 0, "received": 0, "new": 0,
+        "changed": 0, "skipped": 0, "reused": 0, "amo_api_calls": 0,
+        "attributed": 0, "probable": 0, "unattributed": 0,
+        "elapsed_seconds": 0.0,
+    }
+    stored_state = json.loads(env["state"].read_text())
+    assert len(stored_state["utm_entries"]) == 1
+
+
+def test_temporary_amo_failure_is_visible_but_not_persisted_as_missing_utm(
+    tmp_path, monkeypatch
+):
+    class DownAmo:
+        def __init__(self):
+            self.calls = 0
+
+        def amo_api_get(self, **_kwargs):
+            self.calls += 1
+            raise publisher.AmoMcpError("safe failure", category="connection_error")
+
+    state = publisher.default_state(_destination())
+    google = FakeLiveGoogleGateway()
+    env = _harness(
+        tmp_path, monkeypatch, records=[record()], state=state, fake=google,
+        prefill_utm=False, live_utm=True,
+    )
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: DownAmo())
+
+    result = _run_execute(env["config"])
+    batch_calls = google.batch_calls
+    repeated = _run_execute(env["config"])
+
+    assert result["status"] == "published"
+    assert google.rows[0][publisher.UTM_COLUMN_INDEX] == (
+        "Данные AMO временно недоступны: UTM не обновлены"
+    )
+    assert result["utm_enrichment"]["skipped"] == 1
+    assert repeated["status"] == "no_change"
+    assert google.batch_calls == batch_calls
+    assert repeated["utm_enrichment"]["skipped"] == 1
+    stored_state = json.loads(env["state"].read_text())
+    assert stored_state["utm_entries"] == {}
+
+
+def test_source_change_during_utm_lookup_blocks_before_google_write(
+    tmp_path, monkeypatch
+):
+    class FakeAmo:
+        calls = 0
+
+    google = FakeLiveGoogleGateway()
+    state = publisher.default_state(_destination())
+    env = _harness(
+        tmp_path, monkeypatch, records=[record()], state=state, fake=google,
+        prefill_utm=False, live_utm=True,
+    )
+
+    class MutatingResolver:
+        def __init__(self, client):
+            self.client = client
+
+        def resolve(self, _phone, _started_epoch, _lead_id=None):
+            self.client.calls += 1
+            connection = sqlite3.connect(env["db"])
+            connection.execute(
+                "UPDATE call_records SET phone='+72222222222' WHERE id=7"
+            )
+            connection.commit()
+            connection.close()
+            return "Связь с заявкой: прямая из записи звонка\nutm_source: yandex"
+
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: FakeAmo())
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", MutatingResolver)
+
+    with pytest.raises(RuntimeError, match="source changed during UTM enrichment"):
+        _run_execute(env["config"])
+
+    assert google.batch_calls == 0
+    assert json.loads(env["state"].read_text())["utm_entries"] == {}
+
+
+def test_shadow_preflights_utm_once_without_google_write(tmp_path, monkeypatch):
+    class FakeAmo:
+        def __init__(self):
+            self.calls = 0
+
+    class FakeResolver:
+        lead_ids = []
+
+        def __init__(self, client):
+            self.client = client
+
+        def resolve(self, _phone, _started_epoch, _lead_id=None):
+            self.client.calls += 1
+            self.lead_ids.append(_lead_id)
+            return "utm_source: yandex\nurl: https://kmipt.ru/courses/test/"
+
+    google = FakeLiveGoogleGateway()
+    env = _harness(
+        tmp_path, monkeypatch, records=[record(amocrm_lead_id=77)], fake=google,
+        prefill_utm=False, live_utm=True,
+    )
+    amo = FakeAmo()
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: amo)
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", FakeResolver)
+
+    first = publisher.run(["--config", str(env["config"])])
+    second = publisher.run(["--config", str(env["config"])])
+
+    assert first["status"] == second["status"] == "shadow_ok"
+    assert first["external_write"] is second["external_write"] is False
+    assert first["utm_enrichment"]["new"] == 1
+    assert second["utm_enrichment"]["reused"] == 1
+    assert amo.calls == 1
+    assert FakeResolver.lead_ids == [77]
+    assert google.batch_calls == 0
+    stored_state = json.loads(env["state"].read_text())
+    assert len(stored_state["utm_entries"]) == 1
+
+
+def test_unresolved_attribution_is_counted_separately_from_success(
+    tmp_path, monkeypatch
+):
+    class FakeAmo:
+        calls = 0
+
+    class UnresolvedResolver:
+        def __init__(self, _client):
+            pass
+
+        def resolve(self, _phone, _started_epoch, _lead_id=None):
+            return "UTM не определены: номер связан с несколькими контактами"
+
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o600)
+    cache = {}
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: FakeAmo())
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", UnresolvedResolver)
+    call = projected()
+
+    _volatile, report = publisher.enrich_selected_utm(
+        config={"amo_read_env": str(env_file)},
+        calls={call["call_key"]: call}, selected=[call["call_key"]], cache=cache,
+    )
+
+    assert report["attributed"] == 0
+    assert report["probable"] == 0
+    assert report["unattributed"] == 1
+    assert report["skipped"] == 0
+    assert len(cache) == 1
+
+
+def test_resolver_integrity_failure_is_visible_and_not_cached(tmp_path, monkeypatch):
+    class FakeAmo:
+        calls = 0
+
+    class BrokenResolver:
+        def __init__(self, _client):
+            pass
+
+        def resolve(self, _phone, _started_epoch, _lead_id=None):
+            raise publisher.AmoCallUtmError("partial AMO snapshot")
+
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o600)
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: FakeAmo())
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", BrokenResolver)
+    call = projected()
+    cache = {}
+
+    volatile, report = publisher.enrich_selected_utm(
+        config={"amo_read_env": str(env_file)},
+        calls={call["call_key"]: call}, selected=[call["call_key"]], cache=cache,
+    )
+
+    assert cache == {}
+    assert report["skipped"] == 1 and report["received"] == 0
+    assert set(volatile.values()) == {"UTM не обновлены: данные AMO требуют проверки"}
+
+
+def test_amo_outage_is_deduplicated_for_same_phone_in_one_batch(
+    tmp_path, monkeypatch
+):
+    class DownAmo:
+        def __init__(self):
+            self.calls = 0
+
+        def amo_api_get(self, **_kwargs):
+            self.calls += 1
+            raise publisher.AmoMcpError("down", category="connection_error")
+
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o600)
+    client = DownAmo()
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: client)
+    first = projected(source_call_id="call-1", phone="+70000000000")
+    second = projected(source_call_id="call-2", phone="+70000000000")
+
+    volatile, report = publisher.enrich_selected_utm(
+        config={"amo_read_env": str(env_file)},
+        calls={first["call_key"]: first, second["call_key"]: second},
+        selected=[first["call_key"], second["call_key"]], cache={},
+    )
+
+    assert client.calls == 1
+    assert report["skipped"] == 2
+    assert len(volatile) == 2
+
+
+def test_outage_of_one_direct_lead_does_not_hide_another_for_same_phone(
+    tmp_path, monkeypatch
+):
+    class FakeAmo:
+        calls = 0
+
+    class OneFailureResolver:
+        def __init__(self, _client):
+            self.calls = 0
+
+        def resolve(self, _phone, _started_epoch, _lead_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise publisher.AmoMcpError("down", category="connection_error")
+            return "Связь с заявкой: прямая из записи звонка"
+
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o600)
+    resolver = OneFailureResolver(None)
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: FakeAmo())
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", lambda _client: resolver)
+    first = projected(source_call_id="call-1", amocrm_lead_id=1)
+    second = projected(source_call_id="call-2", amocrm_lead_id=2)
+
+    _volatile, report = publisher.enrich_selected_utm(
+        config={"amo_read_env": str(env_file)},
+        calls={first["call_key"]: first, second["call_key"]: second},
+        selected=[first["call_key"], second["call_key"]], cache={},
+    )
+
+    assert resolver.calls == 2
+    assert report["received"] == report["skipped"] == 1
+
+
+def test_utm_metric_and_cache_distinguish_new_from_changed_basis(
+    tmp_path, monkeypatch
+):
+    class FakeAmo:
+        calls = 0
+
+    class FakeResolver:
+        def __init__(self, _client):
+            pass
+
+        def resolve(self, _phone, _started_epoch, _lead_id=None):
+            return "Предполагаемая связь с заявкой: точный телефон"
+
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o600)
+    monkeypatch.setattr(publisher, "AmoMcpClient", lambda _config: FakeAmo())
+    monkeypatch.setattr(publisher, "AmoCallUtmResolver", FakeResolver)
+    first = projected(source_call_id="call-1", phone="+70000000000")
+    changed = {**first, "phone": "+71111111111"}
+    cache = {}
+    latest = {}
+
+    _volatile, initial = publisher.enrich_selected_utm(
+        config={"amo_read_env": str(env_file)}, calls={first["call_key"]: first},
+        selected=[first["call_key"]], cache=cache, latest=latest,
+    )
+    old_key = next(iter(cache))
+    _volatile, updated = publisher.enrich_selected_utm(
+        config={"amo_read_env": str(env_file)},
+        calls={changed["call_key"]: changed}, selected=[changed["call_key"]],
+        cache=cache, latest=latest,
+    )
+
+    assert (initial["new"], initial["changed"]) == (1, 0)
+    assert (updated["new"], updated["changed"]) == (0, 1)
+    assert old_key not in cache
+    assert len(cache) == len(latest) == 1
+
+
+def test_amo_read_env_must_be_owner_only_regular_file(tmp_path):
+    call = projected()
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o644)
+
+    with pytest.raises(RuntimeError, match="amo_read_env_must_be_owner_only_0600"):
+        publisher.enrich_selected_utm(
+            config={"amo_read_env": str(env_file)},
+            calls={call["call_key"]: call}, selected=[call["call_key"]], cache={},
+        )
+
+
+def test_cached_utm_does_not_bypass_amo_env_permissions(tmp_path):
+    call = projected()
+    env_file = tmp_path / "amo.env"
+    env_file.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(env_file, 0o644)
+    digest = publisher.utm_cache_key(
+        call["call_key"], call["phone"], int(call["started_epoch"]),
+        call.get("amocrm_lead_id"),
+    )
+
+    with pytest.raises(RuntimeError, match="amo_read_env_must_be_owner_only_0600"):
+        publisher.enrich_selected_utm(
+            config={"amo_read_env": str(env_file)},
+            calls={call["call_key"]: call}, selected=[call["call_key"]],
+            cache={digest: "—"},
+        )
+
+
+def test_amo_read_env_symlink_is_rejected(tmp_path):
+    call = projected()
+    target = tmp_path / "target.env"
+    target.write_text("CONNECTOR_URL=https://example.invalid\nBEARER_TOKEN=test\n")
+    os.chmod(target, 0o600)
+    env_file = tmp_path / "amo.env"
+    env_file.symlink_to(target)
+
+    with pytest.raises(RuntimeError, match="amo_read_env_unsafe_or_missing"):
+        publisher.enrich_selected_utm(
+            config={"amo_read_env": str(env_file)},
+            calls={call["call_key"]: call}, selected=[call["call_key"]], cache={},
+        )
+
+
+def test_corrupt_utm_state_fails_closed(tmp_path):
+    path = tmp_path / "state.json"
+    state = publisher.default_state(_destination())
+    state["utm_entries"] = []
+    _owner_json(path, state)
+
+    with pytest.raises(RuntimeError, match="UTM entries are invalid"):
+        publisher.load_state(path, _destination(), required=True)

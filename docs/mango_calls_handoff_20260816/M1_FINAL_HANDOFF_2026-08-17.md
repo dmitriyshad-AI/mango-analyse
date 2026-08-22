@@ -1,6 +1,6 @@
-# Пакет передачи на M1: Mango Calls Quality v3
+# Пакет передачи на M1: Mango Calls Quality v3 + UTM
 
-Дата: 2026-08-17. Документ исполнимый и компактный. Полное объяснение «зачем» —
+Дата: 2026-08-17, обновлено 2026-08-22. Документ исполнимый и компактный. Полное объяснение «зачем» —
 в [MANGO_CALLS_QUALITY_V3_EXECUTIVE_GUIDE_2026-08-17.md](./MANGO_CALLS_QUALITY_V3_EXECUTIVE_GUIDE_2026-08-17.md).
 Полная лестница пилота и критерии — в
 [M1_QUALITY_V3_INTEGRATION_PROMPT.md](./M1_QUALITY_V3_INTEGRATION_PROMPT.md);
@@ -10,16 +10,14 @@
 
 | Поле | Значение |
 |---|---|
-| Ветка | `codex/mango-calls-quality-v3-m4-20260816` |
-| Кодовый SHA (проверенный выпуск) | `fb7eed4233f70c434f757eb78bde0847da04c47d` |
-| Дата кодового SHA | 2026-08-17 12:45:15 +0300 |
-| База сравнения (подтверждённый handoff) | `c18ca4c830b9ac122363b2369567add37a11ca8d` |
-| Объём | 65 файлов, +20 664 / −2 698 строк |
-| Финальный документальный SHA | будет передан Дмитрием отдельным сообщением после коммита документов |
+| Ветка | `codex/calls-utm-google-v3-20260822` |
+| Проверяемый SHA | Дмитрий передаёт вместе с этим документом после финального коммита |
+| База текущего дополнения | `237576455c28c4824b63bd36e05f2435eae61415` |
+| Состав | Quality v3, выключенный selective Resolve, 18 столбцов Google и read-only UTM из AMO |
 
-Кодовый SHA `fb7eed42` — то, что проверено офлайн. Документальный SHA появится позже
-и добавит только документы. Если получен только документальный SHA, кодовая часть в
-нём та же самая; проверять всё равно оба.
+SHA технически нельзя записать внутрь самого коммита. Поэтому использовать только
+точный SHA из сообщения Дмитрия и проверить его побайтно. Старый SHA `fb7eed42`
+не содержит UTM-дополнение и для этой передачи не подходит.
 
 **Граница правды.** Сравнение сделано с подтверждённой базой handoff `c18ca4c8` и с
 последним документированным устройством службы. Мы **не** подключены к живому M1:
@@ -30,10 +28,10 @@
 
 ```bash
 cd <M1_REPOSITORY>
-git fetch origin codex/mango-calls-quality-v3-m4-20260816
+git fetch origin codex/calls-utm-google-v3-20260822
 git worktree add ../Mango_calls_quality_v3_m1 \
   -b codex/mango-calls-quality-v3-m1-integration \
-  origin/codex/mango-calls-quality-v3-m4-20260816
+  origin/codex/calls-utm-google-v3-20260822
 cd ../Mango_calls_quality_v3_m1
 git status --short --branch
 git rev-parse HEAD
@@ -75,7 +73,8 @@ Python 3.12 и существующая среда M1. В системный Pyt
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3.12 -m pytest -q \
   tests/test_dialogue_contract.py tests/test_analysis_schema.py tests/test_analyze.py \
   tests/test_analyze_xa_safe_pack.py tests/test_controlled_call_scope.py \
-  tests/test_publish_live_mango_calls_google.py tests/test_publish_current_mango_calls_google.py \
+  tests/test_publish_live_mango_calls_google.py tests/test_amo_call_utm.py \
+  tests/test_publish_current_mango_calls_google.py \
   tests/test_mango_calls_publication_coordinator.py tests/test_export_daily_mango_calls_resolve.py \
   tests/test_dialogue_format.py tests/test_tenant_text_normalizer.py \
   tests/test_crm_writeback_quality_detector.py tests/test_resolve.py \
@@ -91,7 +90,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3.12 -m pytest -q \
 git diff --check
 ```
 
-Ожидание: всё зелёное. На машине автора выпуска этот профиль дал 1 553/1 553 passed
+Ожидание: всё зелёное. На машине автора выпуска этот профиль дал 1 670/1 670 passed
 (4 системных теста прошли вне песочницы) — на M1 результат подтвердить самостоятельно,
 чужой отчёт доказательством не является.
 
@@ -199,10 +198,12 @@ migration` (`src/mango_mvp/db.py:111`) и уникальный индекс не
 
 ## 7. Google: проверить заголовок до чего-либо ещё
 
-Текущий контракт — 17 столбцов; новый столбец «Основание ключевых выводов» стоит перед
-«Что проверить РОПу». Если живой лист имеет прежние точные 16 столбцов — **STOP**: код
-заголовок автоматически не мигрирует. Нужен отдельный план вставки столбца, проверка
-формул и ширин, полный readback и явное разрешение Дмитрия.
+Дополнение от 22.08.2026 устанавливает контракт из 18 столбцов: первые 16 не
+меняются, «Основание ключевых выводов» занимает столбец 17, «UTM и страница
+заявки» — столбец 18. Если живой лист имеет прежние 16 или 17 столбцов —
+**STOP**: код заголовок автоматически не мигрирует. Использовать отдельную
+вкладку и план из
+[M1_GOOGLE_UTM_CUTOVER_2026-08-22.md](./M1_GOOGLE_UTM_CUTOVER_2026-08-22.md).
 
 Чтение заголовка — сетевой доступ к живому Google-листу: выполнять его только после
 отдельного разрешения Дмитрия. `--execute` не запускать.

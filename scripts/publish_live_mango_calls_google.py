@@ -12,12 +12,15 @@ Write policy, explicitly:
 * The owner-only ``state`` sidecar (local file, mode 0600) is the single
   exception: a dry run may record durable incidents there, because losing the
   reason a call could not be published is worse than an owner-local write.  The
-  sidecar holds hashes, codes and timestamps — no transcript and no personal
-  data — so it is a journal, not a publication.
+  sidecar holds the operational call key, hashes, codes, timestamps and the
+  exact published UTM/URL block.  It never stores a transcript, phone or client
+  name, but URL parameters can be sensitive, so owner-only permissions are
+  required.
 """
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -28,6 +31,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -40,6 +44,19 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.contracts import stable_event_key  # noqa: E402
+from mango_mvp.productization.owner_only_io import read_stable_regular_bytes  # noqa: E402
+from mango_mvp.utils.phone import normalize_phone as canonical_phone  # noqa: E402
+from mango_mvp.existing_clients.amo_step1_snapshot import (  # noqa: E402
+    AmoMcpConfig,
+    AmoMcpClient,
+    AmoMcpError,
+)
+from mango_mvp.integrations.amo_call_utm import (  # noqa: E402
+    AmoCallUtmError,
+    AmoCallUtmResolver,
+    is_probable_attribution,
+    is_resolved_attribution,
+)
 from mango_mvp.quality.tenant_text_normalizer import (  # noqa: E402
     TENANT_TEXT_ENGINE_VERSION,
     tenant_ruleset_version,
@@ -85,7 +102,7 @@ except ImportError:  # pragma: no cover - direct ``python scripts/...`` executio
     )
 
 
-CONFIG_SCHEMA = "mango_calls_live_google_config_v1"
+CONFIG_SCHEMA = "mango_calls_live_google_config_v2"
 # v2 adds durable classed ``incidents`` in place of the transient
 # ``data_errors`` map; ``load_state`` still reads a v1 sidecar and migrates it.
 STATE_SCHEMA = "mango_calls_live_google_state_v2"
@@ -95,7 +112,9 @@ STATE_SCHEMA_LEGACY = "mango_calls_live_google_state_v1"
 # flag that can no longer contradict its own reason column.
 # v6 = the contract fingerprint below is part of every row's identity.
 # v7 = pending/quarantined calls share the same closed publication path.
-PROJECTION_VERSION = "mango_calls_live_google_projection_v8"
+# v9 = the historical 16-column manager view stays intact; evidence and UTM
+# occupy new columns 17 and 18 and are covered by row hashes/readback.
+PROJECTION_VERSION = "mango_calls_live_google_projection_v9"
 # Every code-side contract whose change alters what a published row *means*
 # while the stored columns stay byte-identical: a new dialogue/role contract, a
 # new claim contract, a new normalizer ruleset, a new timezone rule, a new
@@ -182,13 +201,16 @@ LIVE_HEADERS = (
     "Возражение / причина",
     "Следующий шаг",
     "Срок",
-    "Основание ключевых выводов",
     "Что проверить РОПу",
     "Полная расшифровка",
+    "Основание ключевых выводов",
+    "UTM и страница заявки",
 )
 MANAGED_COLUMN_COUNT = len(LIVE_HEADERS)
 TRANSCRIPT_COLUMN_INDEX = LIVE_HEADERS.index("Полная расшифровка")
 REVIEW_COLUMN_INDEX = LIVE_HEADERS.index("Что проверить РОПу")
+EVIDENCE_COLUMN_INDEX = LIVE_HEADERS.index("Основание ключевых выводов")
+UTM_COLUMN_INDEX = LIVE_HEADERS.index("UTM и страница заявки")
 SORT_KEY_COLUMN_INDEX = MANAGED_COLUMN_COUNT
 LINE_RE = re.compile(r"^\[([^]]+)]\s+([^:]+):\s*(.*)$")
 # The pre-contract projection: it never stripped MANAGER:/CLIENT: prefixes, so
@@ -332,6 +354,13 @@ def row_height(summary: Any) -> int:
     return min(260, max(42, 12 + 18 * logical))
 
 
+def published_row_height(row: Sequence[Any]) -> int:
+    return max(
+        row_height(row[9]), row_height(row[EVIDENCE_COLUMN_INDEX]),
+        row_height(row[UTM_COLUMN_INDEX]),
+    )
+
+
 def list_text(value: Any) -> str:
     if isinstance(value, list):
         return "; ".join(str(item).strip() for item in value if str(item).strip())
@@ -459,6 +488,7 @@ SOURCE_FINGERPRINT_COLUMNS = (
     "transcript_variants_json",
     "transcript_text",
     "analysis_status",
+    "amocrm_lead_id",
 )
 
 
@@ -519,6 +549,13 @@ def projection_result(
 ) -> dict[str, Any]:
     started = parse_utc(record.get("started_at"))
     duration = float(record.get("duration_sec") or 0)
+    lead_id = (
+        int(record["amocrm_lead_id"])
+        if record.get("amocrm_lead_id") not in (None, "")
+        else None
+    )
+    if lead_id is not None and lead_id <= 0:
+        raise ValueError("amocrm_lead_id is invalid")
     meta = json_object(analysis.get("analysis_meta"))
     source = {
         "projection_version": PROJECTION_VERSION,
@@ -623,6 +660,7 @@ def projection_result(
         "started_epoch": source["started_epoch"],
         "duration_sec": duration,
         "phone": str(record.get("phone") or ""),
+        "amocrm_lead_id": lead_id,
         "transcript_sha": hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
         "tail": list(values),
         "sync_status": str(record.get("sync_status") or ""),
@@ -865,6 +903,7 @@ def require_closed_analysis_cost(summary: Mapping[str, Any]) -> None:
 
 def safe_call_projection(
     record: Mapping[str, Any], manager_map: Mapping[str, Any], *, failed: bool = False,
+    utm_text: str = "—",
 ) -> dict[str, Any]:
     """Visible closed row for pending, malformed or stale analysis."""
     started = parse_utc(record.get("started_at"))
@@ -899,14 +938,16 @@ def safe_call_projection(
             str(record.get("direction") or "").lower(), "Не определено"
         ),
         format_duration(duration), "Не определено", str(record.get("phone") or ""),
-        "Да", "—", summary, result, "—", "—", "—", "—", review, transcript,
+        "Да", "—", summary, result, "—", "—", "—", review, transcript, "—", utm_text,
     ]
     return projection_result(record, values, transcript, {}, analysis_done=False)
 
 
-def call_projection(record: Mapping[str, Any], manager_map: Mapping[str, Any]) -> dict[str, Any]:
+def call_projection(
+    record: Mapping[str, Any], manager_map: Mapping[str, Any], *, utm_text: str = "—"
+) -> dict[str, Any]:
     if str(record.get("analysis_status") or "") != "done":
-        return safe_call_projection(record, manager_map)
+        return safe_call_projection(record, manager_map, utm_text=utm_text)
     started = parse_utc(record.get("started_at"))
     duration = float(record.get("duration_sec"))
     stored_analysis = required_json_object(record.get("analysis_json"), "analysis_json")
@@ -989,9 +1030,10 @@ def call_projection(record: Mapping[str, Any], manager_map: Mapping[str, Any]) -
         objections,
         action or "—",
         due or "—",
-        manager_claim_evidence_ru(analysis) or "—",
         review,
         transcript,
+        manager_claim_evidence_ru(analysis) or "—",
+        utm_text,
     ]
     if any(len(str(value)) > MAX_CELL_CHARS for value in values):
         raise ValueError("cell exceeds 50000 characters")
@@ -1054,7 +1096,19 @@ def sheet_duration(value: Any) -> tuple[str, float]:
 
 def normalized_phone(value: Any) -> str:
     raw = str(value or "").strip()
-    return raw[1:] if raw.startswith("'+") else raw
+    raw = raw[1:] if raw.startswith("'+") else raw
+    return canonical_phone(raw) or raw
+
+
+def utm_cache_key(
+    call_key: str, phone: Any, started_epoch: int, lead_id: Any = None
+) -> str:
+    return canonical_hash({
+        "call_key": call_key,
+        "phone": normalized_phone(phone),
+        "started_epoch": int(started_epoch),
+        "amocrm_lead_id": int(lead_id) if lead_id not in (None, "") else None,
+    })
 
 
 def sheet_identity(row: Sequence[Any]) -> dict[str, Any]:
@@ -1154,7 +1208,8 @@ def normalize_values(values: Sequence[Sequence[Any]]) -> tuple[list[Any], list[l
 
 
 def load_calls(
-    db_path: Path, manager_map: Mapping[str, Any]
+    db_path: Path, manager_map: Mapping[str, Any],
+    utm_by_call: Optional[Mapping[str, str]] = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Mapping[str, Any]]]:
     connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     connection.row_factory = sqlite3.Row
@@ -1177,8 +1232,13 @@ def load_calls(
         if "analysis_attempts_json" in columns
         else "NULL AS analysis_attempts_json"
     )
+    lead_column = (
+        "amocrm_lead_id"
+        if "amocrm_lead_id" in columns
+        else "NULL AS amocrm_lead_id"
+    )
     rows = connection.execute(
-        f"SELECT id,source_call_id,{recording_column},{attempts_column},started_at,phone,manager_name,direction,duration_sec,"
+        f"SELECT id,source_call_id,{recording_column},{attempts_column},{lead_column},started_at,phone,manager_name,direction,duration_sec,"
         "analysis_json,transcript_variants_json,transcript_text,analysis_status,sync_status "
         "FROM call_records ORDER BY id"
     ).fetchall()
@@ -1217,7 +1277,14 @@ def load_calls(
             recording_owners[recording_id] = int(record["id"])
             record["source_recording_id"] = recording_id
         try:
-            call = call_projection(record, manager_map)
+            utm_text = (utm_by_call or {}).get(
+                utm_cache_key(
+                    identity["call_key"], record.get("phone"),
+                    int(identity["started_epoch"]), record.get("amocrm_lead_id"),
+                ),
+                "UTM ещё не загружены",
+            )
+            call = call_projection(record, manager_map, utm_text=utm_text)
         except (ValueError, TypeError, OverflowError) as exc:
             errors[incident_key(record)] = {
                 "call_digest": call_key_digest(identity["call_key"]),
@@ -1233,6 +1300,8 @@ def default_state(destination_id: str) -> dict[str, Any]:
         "schema_version": STATE_SCHEMA,
         "destination_id": destination_id,
         "entries": {},
+        "utm_entries": {},
+        "utm_latest": {},
         "incidents": {},
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1555,6 +1624,25 @@ def load_state(path: Path, destination_id: str, *, required: bool) -> dict[str, 
     if not isinstance(state.get("entries"), Mapping):
         raise RuntimeError("publisher state entries are invalid")
     entries = {str(key): dict(value) for key, value in state["entries"].items()}
+    raw_utm_entries = state.get("utm_entries", {})
+    if not isinstance(raw_utm_entries, Mapping):
+        raise RuntimeError("publisher state UTM entries are invalid")
+    utm_entries = {str(key): str(value) for key, value in raw_utm_entries.items()}
+    if any(not HASH_RE.fullmatch(key) or len(value) > MAX_CELL_CHARS for key, value in utm_entries.items()):
+        raise RuntimeError("publisher state UTM entry is invalid")
+    state["utm_entries"] = utm_entries
+    raw_utm_latest = state.get("utm_latest", {})
+    if not isinstance(raw_utm_latest, Mapping):
+        raise RuntimeError("publisher state UTM latest map is invalid")
+    utm_latest = {str(key): str(value) for key, value in raw_utm_latest.items()}
+    if any(
+        not re.fullmatch(r"[0-9a-f]{32}", key)
+        or not HASH_RE.fullmatch(value)
+        or value not in utm_entries
+        for key, value in utm_latest.items()
+    ):
+        raise RuntimeError("publisher state UTM latest entry is invalid")
+    state["utm_latest"] = utm_latest
     seen_numbers: set[int] = set()
     for call_key, entry in entries.items():
         if not CALL_KEY_RE.fullmatch(call_key):
@@ -1664,7 +1752,7 @@ def reconcile(
 
 def desired_row(call: Mapping[str, Any], display_number: int) -> list[Any]:
     if not 0 < display_number < 1_000_000:
-        raise ValueError("display_number is outside the safe Q range")
+        raise ValueError("display_number is outside the safe range")
     return [display_number, *call["tail"]]
 
 
@@ -1860,7 +1948,7 @@ def build_batch(
         for key in physical_keys
     ]
     if any(value >= 2**53 for value in q_values):
-        raise ValueError("Q sort key is outside exact IEEE-754 integer range")
+        raise ValueError("sort key is outside exact IEEE-754 integer range")
     requests.extend(
         [
             {
@@ -1938,11 +2026,45 @@ def build_batch(
                 "repeatCell": {
                     "range": {
                         **data_range,
+                        "startColumnIndex": EVIDENCE_COLUMN_INDEX,
+                        "endColumnIndex": EVIDENCE_COLUMN_INDEX + 1,
+                    },
+                    "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}},
+                    "fields": "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment",
+                }
+            },
+            {
+                "repeatCell": {
+                    "range": {
+                        **data_range,
+                        "startColumnIndex": UTM_COLUMN_INDEX,
+                        "endColumnIndex": UTM_COLUMN_INDEX + 1,
+                    },
+                    "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}},
+                    "fields": "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment",
+                }
+            },
+            {
+                "repeatCell": {
+                    "range": {
+                        **data_range,
                         "startColumnIndex": TRANSCRIPT_COLUMN_INDEX,
                         "endColumnIndex": TRANSCRIPT_COLUMN_INDEX + 1,
                     },
                     "cell": {"userEnteredFormat": {"wrapStrategy": "CLIP", "verticalAlignment": "TOP"}},
                     "fields": "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment",
+                }
+            },
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": EVIDENCE_COLUMN_INDEX,
+                        "endIndex": EVIDENCE_COLUMN_INDEX + 1,
+                    },
+                    "properties": {"pixelSize": summary_width_px},
+                    "fields": "pixelSize",
                 }
             },
             {
@@ -1957,12 +2079,24 @@ def build_batch(
                     "fields": "pixelSize",
                 }
             },
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": UTM_COLUMN_INDEX,
+                        "endIndex": UTM_COLUMN_INDEX + 1,
+                    },
+                    "properties": {"pixelSize": summary_width_px},
+                    "fields": "pixelSize",
+                }
+            },
         ]
     )
     requests.extend(
         height_requests(
             sheet_id,
-            [row_height(row[9]) for row in final_rows],
+            [published_row_height(row) for row in final_rows],
             current_heights,
         )
     )
@@ -1980,10 +2114,11 @@ class LiveGoogleGateway(GoogleGateway):
         return self._json(response).get("values") or ()
 
     def layout(self, title: str, last_row: int) -> Mapping[str, Any]:
+        last_row = max(2, int(last_row))
         response = self.session.get(
             f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}",
             params={
-                "ranges": f"'{title}'!A2:Q{last_row}",
+                "ranges": f"'{title}'!A2:R{last_row}",
                 "includeGridData": "true",
                 "fields": (
                     "sheets(data(startRow,startColumn,columnMetadata(pixelSize),"
@@ -2022,14 +2157,18 @@ def verify_layout(payload: Mapping[str, Any], rows: Sequence[Sequence[Any]], wid
     sheets = payload.get("sheets") or ()
     data = (sheets[0].get("data") or ())[0] if sheets else {}
     columns = data.get("columnMetadata") or ()
-    if len(columns) < 10 or int(columns[9].get("pixelSize") or 0) != width:
+    if len(columns) <= UTM_COLUMN_INDEX or int(columns[9].get("pixelSize") or 0) != width:
         raise RuntimeError("summary column width readback mismatch")
+    if int(columns[EVIDENCE_COLUMN_INDEX].get("pixelSize") or 0) != width:
+        raise RuntimeError("evidence column width readback mismatch")
+    if int(columns[UTM_COLUMN_INDEX].get("pixelSize") or 0) != width:
+        raise RuntimeError("UTM column width readback mismatch")
     metadata = data.get("rowMetadata") or ()
     row_data = data.get("rowData") or ()
     if len(metadata) < len(rows) or len(row_data) < len(rows):
         raise RuntimeError("layout readback is incomplete")
     for index, row in enumerate(rows):
-        if int(metadata[index].get("pixelSize") or 0) != row_height(row[9]):
+        if int(metadata[index].get("pixelSize") or 0) != published_row_height(row):
             raise RuntimeError(
                 f"row height readback mismatch at Google row {index + 2} (№ {row[0]})"
             )
@@ -2046,6 +2185,8 @@ def verify_layout(payload: Mapping[str, Any], rows: Sequence[Sequence[Any]], wid
                 )
         j_format = values[9].get("userEnteredFormat") or {}
         transcript_format = values[TRANSCRIPT_COLUMN_INDEX].get("userEnteredFormat") or {}
+        evidence_format = values[EVIDENCE_COLUMN_INDEX].get("userEnteredFormat") or {}
+        utm_format = values[UTM_COLUMN_INDEX].get("userEnteredFormat") or {}
         if j_format.get("wrapStrategy") != "WRAP" or j_format.get("verticalAlignment") != "TOP":
             raise RuntimeError(
                 f"summary format readback mismatch at Google row {index + 2} (№ {row[0]})"
@@ -2053,6 +2194,14 @@ def verify_layout(payload: Mapping[str, Any], rows: Sequence[Sequence[Any]], wid
         if transcript_format.get("wrapStrategy") != "CLIP" or transcript_format.get("verticalAlignment") != "TOP":
             raise RuntimeError(
                 f"transcript format readback mismatch at Google row {index + 2} (№ {row[0]})"
+            )
+        if evidence_format.get("wrapStrategy") != "WRAP" or evidence_format.get("verticalAlignment") != "TOP":
+            raise RuntimeError(
+                f"evidence format readback mismatch at Google row {index + 2} (№ {row[0]})"
+            )
+        if utm_format.get("wrapStrategy") != "WRAP" or utm_format.get("verticalAlignment") != "TOP":
+            raise RuntimeError(
+                f"UTM format readback mismatch at Google row {index + 2} (№ {row[0]})"
             )
 
 
@@ -2071,7 +2220,7 @@ def load_config(path: Path, *, execute: bool) -> dict[str, Any]:
         raise RuntimeError("publisher config schema mismatch")
     required = (
         "spreadsheet_id", "sheet_id", "sheet_title", "working_db", "manager_identity",
-        "credentials", "state", "lock", "summary_width_px",
+        "credentials", "state", "lock", "summary_width_px", "amo_read_env",
     )
     if any(payload.get(field) in (None, "") for field in required):
         raise RuntimeError("publisher config is incomplete")
@@ -2128,7 +2277,7 @@ def verify_sheet_snapshot(
 
 def write_sync_done(
     db_path: Path, expected: Mapping[str, Mapping[str, Any]],
-    manager_map: Mapping[str, Any],
+    manager_map: Mapping[str, Any], utm_by_call: Mapping[str, str],
 ) -> None:
     if not expected:
         return
@@ -2151,16 +2300,32 @@ def write_sync_done(
             if "analysis_attempts_json" in columns
             else "NULL AS analysis_attempts_json"
         )
+        lead_column = (
+            "amocrm_lead_id"
+            if "amocrm_lead_id" in columns
+            else "NULL AS amocrm_lead_id"
+        )
         for call_key, proof in expected.items():
             row = connection.execute(
-                f"SELECT id,source_call_id,{recording_column},{attempts_column},started_at,phone,manager_name,direction,duration_sec,"
+                f"SELECT id,source_call_id,{recording_column},{attempts_column},{lead_column},started_at,phone,manager_name,direction,duration_sec,"
                 "analysis_json,transcript_variants_json,transcript_text,analysis_status,sync_status "
                 "FROM call_records WHERE id=?",
                 (int(proof["id"]),),
             ).fetchone()
             if row is None:
                 raise RuntimeError("verified source row disappeared")
-            current = call_projection(dict(row), manager_map)
+            current_record = dict(row)
+            current = call_projection(
+                current_record, manager_map,
+                utm_text=utm_by_call.get(
+                    utm_cache_key(
+                        call_key, current_record.get("phone"),
+                        int(parse_utc(current_record.get("started_at")).timestamp()),
+                        current_record.get("amocrm_lead_id"),
+                    ),
+                    "UTM ещё не загружены",
+                ),
+            )
             if (
                 current["call_key"] != call_key
                 or current["source_fingerprint"] != proof["source_fingerprint"]
@@ -2419,6 +2584,133 @@ def sync_proofs(
     return proofs
 
 
+def enrich_selected_utm(
+    *, config: Mapping[str, Any], calls: Mapping[str, Mapping[str, Any]],
+    selected: Sequence[str], cache: dict[str, str],
+    latest: Optional[dict[str, str]] = None,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    latest = latest if latest is not None else {}
+    cache_keys = {
+        key: utm_cache_key(
+            key, calls[key]["phone"], int(calls[key]["started_epoch"]),
+            calls[key].get("amocrm_lead_id"),
+        )
+        for key in selected
+    }
+    missing = [key for key in selected if cache_keys[key] not in cache]
+    reused_values = [cache[cache_keys[key]] for key in selected if key not in missing]
+    for key in selected:
+        if key not in missing:
+            latest.setdefault(call_key_digest(key), cache_keys[key])
+    volatile: dict[str, str] = {}
+    report: dict[str, Any] = {
+        "mode": "incremental", "selected": len(selected), "received": 0,
+        "new": 0, "changed": 0, "skipped": 0,
+        "reused": len(selected) - len(missing), "amo_api_calls": 0,
+        "attributed": sum(is_resolved_attribution(value) for value in reused_values),
+        "probable": sum(is_probable_attribution(value) for value in reused_values),
+        "unattributed": sum(
+            not (is_resolved_attribution(value) or is_probable_attribution(value))
+            for value in reused_values
+        ),
+        "elapsed_seconds": 0.0,
+    }
+    env_path = Path(str(config["amo_read_env"])).expanduser()
+    raw_env = read_stable_regular_bytes(
+        env_path, label="amo_read_env", owner_only_mode=0o600
+    ).decode("utf-8")
+    env_values: dict[str, str] = {}
+    for raw_line in raw_env.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        env_values[key] = value
+    if not env_values.get("CONNECTOR_URL") or not env_values.get("BEARER_TOKEN"):
+        raise RuntimeError("amo_read_env lacks read-only connector credentials")
+    if not missing:
+        return volatile, report
+    started = monotonic()
+    client = AmoMcpClient(AmoMcpConfig(
+        connector_url=env_values["CONNECTOR_URL"],
+        bearer_token=env_values["BEARER_TOKEN"],
+    ))
+    resolver = AmoCallUtmResolver(client)
+    outage_by_phone: dict[tuple[str, Any], str] = {}
+    for key in missing:
+        digest = cache_keys[key]
+        outage_key = (
+            normalized_phone(calls[key]["phone"]),
+            calls[key].get("amocrm_lead_id"),
+        )
+        if outage_key in outage_by_phone:
+            volatile[digest] = outage_by_phone[outage_key]
+            report["skipped"] += 1
+            continue
+        try:
+            value = resolver.resolve(
+                calls[key]["phone"], int(calls[key]["started_epoch"]),
+                calls[key].get("amocrm_lead_id"),
+            )
+            call_digest = call_key_digest(key)
+            previous = latest.get(call_digest)
+            cache[digest] = value
+            report["received"] += 1
+            report["changed" if previous and previous != digest else "new"] += 1
+            if previous and previous != digest:
+                cache.pop(previous, None)
+            latest[call_digest] = digest
+            metric = (
+                "attributed" if is_resolved_attribution(value)
+                else "probable" if is_probable_attribution(value)
+                else "unattributed"
+            )
+            report[metric] += 1
+        except AmoMcpError:
+            value = "Данные AMO временно недоступны: UTM не обновлены"
+            volatile[digest] = value
+            outage_by_phone[outage_key] = value
+            report["skipped"] += 1
+        except (AmoCallUtmError, KeyError, TypeError, ValueError):
+            volatile[digest] = "UTM не обновлены: данные AMO требуют проверки"
+            report["skipped"] += 1
+    report["amo_api_calls"] = int(client.calls)
+    report["elapsed_seconds"] = round(monotonic() - started, 3)
+    return volatile, report
+
+
+def require_current_utm_basis(
+    *, calls: Mapping[str, Mapping[str, Any]], selected: Sequence[str],
+    cache: Mapping[str, str], volatile: Mapping[str, str],
+) -> None:
+    """Block publication if a source reread invalidated the AMO lookup basis."""
+    for key in selected:
+        call = calls.get(key)
+        if call is None:
+            continue
+        digest = utm_cache_key(
+            key, call["phone"], int(call["started_epoch"]),
+            call.get("amocrm_lead_id"),
+        )
+        if digest not in cache and digest not in volatile:
+            raise RuntimeError("selected source changed during UTM enrichment")
+
+
+def merge_utm_reports(target: dict[str, Any], extra: Mapping[str, Any]) -> None:
+    for key in (
+        "selected", "received", "new", "changed", "skipped", "reused",
+        "amo_api_calls", "attributed", "probable", "unattributed",
+    ):
+        target[key] = int(target.get(key) or 0) + int(extra.get(key) or 0)
+    target["elapsed_seconds"] = round(
+        float(target.get("elapsed_seconds") or 0)
+        + float(extra.get("elapsed_seconds") or 0),
+        3,
+    )
+
+
 def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
     parser = argparse.ArgumentParser(description="Publish the production Mango calls Google sheet")
     parser.add_argument("--config", type=Path, required=True)
@@ -2434,6 +2726,16 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
     if args.execute and args.confirmation != CONFIRMATION:
         raise RuntimeError("execute requires explicit confirmation")
     config = load_config(args.config, execute=args.execute or args.bootstrap)
+    configured_limit = config.get("batch_limit")
+    limit = int(
+        args.limit
+        if args.limit is not None
+        else configured_limit
+        if configured_limit is not None
+        else 25
+    )
+    if not 1 <= limit <= 25:
+        raise RuntimeError("batch limit must be between 1 and 25")
     state_path = Path(str(config["state"]))
     db_path = Path(str(config["working_db"]))
     manager_path = Path(str(config["manager_identity"]))
@@ -2445,11 +2747,16 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
     with publication_lock(Path(str(config["lock"]))):
         manager_map = read_manager_map(manager_path)
         state = load_state(state_path, destination, required=args.execute)
+        utm_by_call = state.setdefault("utm_entries", {})
+        utm_latest = state.setdefault("utm_latest", {})
+        volatile_utm: dict[str, str] = {}
 
         def scanned(current_manager_map: Mapping[str, Any]):
             """Read the database and leave a durable incident before dying."""
             try:
-                return load_calls(db_path, current_manager_map)
+                return load_calls(
+                    db_path, current_manager_map, {**utm_by_call, **volatile_utm}
+                )
             except DurableIncidentError as exc:
                 # The scan aborted mid-way, so it may add what it saw and close
                 # nothing: the calls it never reached are not proven healthy.
@@ -2534,6 +2841,30 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
                     now=datetime.now(timezone.utc).isoformat(),
                 )
                 entries = audit_state["entries"]
+            _preview_state, planned_selected = reserve(
+                deepcopy(audit_state), calls, rows, call_to_row, limit=limit
+            )
+            shadow_volatile, utm_enrichment = enrich_selected_utm(
+                config=config, calls=calls, selected=planned_selected,
+                cache=utm_by_call, latest=utm_latest,
+            )
+            volatile_utm.update(shadow_volatile)
+            if utm_enrichment["received"] or utm_enrichment["skipped"]:
+                calls, identities, data_errors = scanned(manager_map)
+                block_on_identity_errors(state, state_path, data_errors)
+                require_current_utm_basis(
+                    calls=calls, selected=planned_selected, cache=utm_by_call,
+                    volatile=volatile_utm,
+                )
+            candidate_calls = {
+                key: calls[key] for key in planned_selected if key in calls
+            }
+            _after_state, after_selected = reserve(
+                deepcopy(audit_state), candidate_calls, rows, call_to_row,
+                limit=max(1, len(planned_selected)),
+            )
+            if not set(after_selected) <= set(planned_selected):
+                raise RuntimeError("UTM enrichment changed the bounded publication selection")
             verify_sheet_snapshot(
                 rows=rows,
                 call_to_row=call_to_row,
@@ -2560,6 +2891,7 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
                 "data_errors": len(data_errors),
                 "data_error_codes": data_error_counts(data_errors),
                 "analysis_cost": analysis_cost_summary(calls),
+                "utm_enrichment": utm_enrichment,
                 "balance": publication_balance(
                     identities, calls, data_errors, audit_state, rows, call_to_row
                 ),
@@ -2607,20 +2939,36 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
             recovered_proofs = finalize_verified(
                 state, recovered, calls, physical, state_path
             )
-            write_sync_done(db_path, recovered_proofs, manager_map)
+            write_sync_done(
+                db_path, recovered_proofs, manager_map, {**utm_by_call, **volatile_utm}
+            )
 
-        configured_limit = config.get("batch_limit")
-        limit = int(
-            args.limit
-            if args.limit is not None
-            else configured_limit
-            if configured_limit is not None
-            else 25
-        )
-        if not 1 <= limit <= 25:
-            raise RuntimeError("batch limit must be between 1 and 25")
         health = apply_incidents(state, data_errors)
-        state, selected = reserve(state, calls, rows, call_to_row, limit=limit)
+        _preview_state, planned_selected = reserve(
+            deepcopy(state), calls, rows, call_to_row, limit=limit
+        )
+        new_volatile, utm_enrichment = enrich_selected_utm(
+            config=config, calls=calls, selected=planned_selected,
+            cache=utm_by_call, latest=utm_latest,
+        )
+        volatile_utm.update(new_volatile)
+        if utm_enrichment["received"] or utm_enrichment["skipped"]:
+            calls, identities, data_errors = scanned(manager_map)
+            block_on_identity_errors(state, state_path, data_errors)
+            require_closed_analysis_cost(analysis_cost_summary(calls))
+            require_current_utm_basis(
+                calls=calls, selected=planned_selected, cache=utm_by_call,
+                volatile=volatile_utm,
+            )
+        candidate_calls = {
+            key: calls[key] for key in planned_selected if key in calls
+        }
+        state, selected = reserve(
+            state, candidate_calls, rows, call_to_row,
+            limit=max(1, len(planned_selected)),
+        )
+        if not set(selected) <= set(planned_selected):
+            raise RuntimeError("UTM enrichment changed the bounded publication selection")
         if not selected:
             pending = [
                 key for key, call in calls.items()
@@ -2647,13 +2995,16 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
             )
             require_closed_balance(balance)
             atomic_owner_json(state_path, state)
-            write_sync_done(db_path, proofs, manager_map)
+            write_sync_done(
+                db_path, proofs, manager_map, {**utm_by_call, **volatile_utm}
+            )
             return {
                 "status": "no_change",
                 "google_rows": len(rows),
                 "data_errors": len(data_errors),
                 "data_error_codes": data_error_counts(data_errors),
                 "analysis_cost": analysis_cost_summary(calls),
+                "utm_enrichment": utm_enrichment,
                 "balance": balance,
                 "health": health,
                 "external_write": False,
@@ -2760,6 +3111,25 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
                     break
                 if _cas_attempt == 3:
                     raise RuntimeError("source kept changing during compensating publication")
+                correction_volatile, correction_utm_report = enrich_selected_utm(
+                    config=config, calls=latest_calls, selected=changed,
+                    cache=utm_by_call, latest=utm_latest,
+                )
+                volatile_utm.update(correction_volatile)
+                merge_utm_reports(utm_enrichment, correction_utm_report)
+                if (
+                    correction_utm_report["received"]
+                    or correction_utm_report["skipped"]
+                ):
+                    latest_calls, latest_identities, latest_errors = scanned(
+                        latest_manager_map
+                    )
+                    block_on_identity_errors(state, state_path, latest_errors)
+                    require_closed_analysis_cost(analysis_cost_summary(latest_calls))
+                    require_current_utm_basis(
+                        calls=latest_calls, selected=changed,
+                        cache=utm_by_call, volatile=volatile_utm,
+                    )
                 state, correction_selected = reserve(
                     state,
                     latest_calls,
@@ -2804,7 +3174,9 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
             verified = finalize_verified(
                 state, selected, latest_calls, physical, state_path
             )
-        write_sync_done(db_path, verified, latest_manager_map)
+        write_sync_done(
+            db_path, verified, latest_manager_map, {**utm_by_call, **volatile_utm}
+        )
         return {
             "status": "published",
             "published": len(selected),
@@ -2813,6 +3185,7 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
             "data_errors": len(latest_errors),
             "data_error_codes": data_error_counts(latest_errors),
             "analysis_cost": latest_cost,
+            "utm_enrichment": utm_enrichment,
             "balance": publication_balance(
                 latest_identities, latest_calls, latest_errors, state,
                 final_rows, final_call_to_row,

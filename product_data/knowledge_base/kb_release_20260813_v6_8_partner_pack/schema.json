@@ -1,0 +1,66 @@
+{
+  "$id": "kb_partner_fact_v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bot_template_required": {
+      "type": "boolean"
+    },
+    "brand": {
+      "enum": [
+        "foton",
+        "unpk"
+      ]
+    },
+    "client_safe_text": {
+      "type": "string"
+    },
+    "fact_id": {
+      "type": "string"
+    },
+    "fact_type": {
+      "type": "string"
+    },
+    "freshness_status": {
+      "type": "string"
+    },
+    "product": {
+      "type": "string"
+    },
+    "refresh_before_launch": {
+      "type": "boolean"
+    },
+    "risk_level": {
+      "type": "string"
+    },
+    "usage_mode": {
+      "enum": [
+        "answer_source",
+        "manager_review_required"
+      ]
+    },
+    "valid_from": {
+      "pattern": "^$|^\\d{4}-\\d{2}-\\d{2}$",
+      "type": "string"
+    },
+    "valid_until": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "fact_id",
+    "brand",
+    "fact_type",
+    "product",
+    "client_safe_text",
+    "risk_level",
+    "freshness_status",
+    "valid_from",
+    "valid_until",
+    "bot_template_required",
+    "usage_mode",
+    "refresh_before_launch"
+  ],
+  "type": "object"
+}

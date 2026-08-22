@@ -1,0 +1,44 @@
+{
+  "completed_action_claims_neutralized": 2,
+  "excluded_by_external_policy": 1,
+  "excluded_non_client_safe_facts": 335,
+  "facts_by_brand": {
+    "foton": 197,
+    "unpk": 273
+  },
+  "facts_total": 470,
+  "files": {
+    "KB_ALL.csv": "48c30b0d5f0e3b66d6662ebd00aeda6c2f26574f5a24f5906550e66b0ae6b2f1",
+    "KB_FOTON.md": "a53f590d9fe6ffe16018c481f3dfb187cf050ea90cbdb3ea378960a9aa4d6b2b",
+    "KB_FOTON_AUTO.md": "ad646f584d8b0069e9c01823ef531bf7b81a0ad405a3ec20a4a9e1e22ce931a1",
+    "KB_UNPK.md": "dc5197bcbaaa9fe374fa70deaf2ebf97a716de6a94520dca7a2c019b7cc5ad23",
+    "KB_UNPK_AUTO.md": "69ca74398c086111c0287a79fd8a89369545b11a24658ad876e0bd14af3f1976",
+    "QUALITY_AND_FRESHNESS.md": "357e8453e9fd8473bd16c365b4ae28cdc0daa3b1336abfa3bf5759bb21ddef36",
+    "README.md": "4ec2fae1d72c03bece159f509c04149acfa9e1e5a13f474eae41bfb78824d9c6",
+    "README_FOR_PARTNERS.docx": "a1df0d8014a8fc0dd72632f247230e417b84eaaec8850e7ee21c7637799f8ec1",
+    "SYSTEM_PROMPT_TEMPLATE.md": "7a3bdae60abce2a2a64d209530247c457d2a37b4f5d1728ca82821272c3e5ca6",
+    "kb_foton.jsonl": "f385ffcabfb3de1882826024a6fa4c4416870a72aed0af43a0c84279496e9865",
+    "kb_unpk.jsonl": "a1d6db3515919160f10f62af0dcf21772a7b5f7421847b90dbcfb18905a0cd80",
+    "schema.json": "e819441ad8ee1989595a83867eeacbb76b0b0fe3830da2b3e27fe47b141d0b18"
+  },
+  "freshness_review": {
+    "action": "refresh volatile facts before partner launch",
+    "blocking_findings": 0,
+    "checked_on": "2026-08-22",
+    "facts_requiring_refresh_before_launch": 239,
+    "p2_freshness_findings": 213,
+    "scope": "canonical source semantic review plus partner export gates",
+    "semantic_pass": true
+  },
+  "public_business_contacts_included": true,
+  "schema_version": "kb_partner_pack_v1",
+  "source_client_safe_facts": 471,
+  "source_facts_total": 806,
+  "source_release": "kb_release_20260813_v6_8_owner_approved",
+  "source_snapshot_sha256": "352f594bab6ad424948a55a38fc3d51156298bfe46d34abfaabbf7661f58e495",
+  "usage_modes": {
+    "answer_source": 310,
+    "manager_review_required": 160
+  },
+  "volatile_facts_require_refresh_before_launch": true
+}

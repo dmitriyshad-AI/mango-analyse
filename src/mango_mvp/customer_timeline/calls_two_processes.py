@@ -118,6 +118,7 @@ from mango_mvp.services.controlled_call_scope import (
     load_controlled_capture_request,
     load_controlled_call_allowlist,
 )
+from mango_mvp.services.pipeline_claims import stage_worker_id_is_valid
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
@@ -129,6 +130,12 @@ SEQUENTIAL_PIPELINE_STAGES = (
     "resolve",
     "analyze",
 )
+STAGE_WORKER_PREFIX = {
+    "transcribe": "tr",
+    "backfill-second-asr": "bf",
+    "resolve": "rs",
+    "analyze": "an",
+}
 REQUIRED_PIPELINE_MODULES = ("sqlalchemy", "dotenv", "mlx_whisper", "gigaam", "mango_mvp.cli")
 PHONE_RE = re.compile(r"(?:\+7|\b8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -232,6 +239,7 @@ class CallsTwoProcessesConfig:
     controlled_call_allowlist_sha256: Optional[str] = None
     mlx_whisper_snapshot_path: Optional[Path] = None
     heavy_stage_timeout_seconds: int = 4 * 60 * 60
+    transcribe_progress_timeout_seconds: int = 0
     expected_code_sha: Optional[str] = None
     host_id_path: Optional[Path] = None
     cutover_manifest_path: Optional[Path] = None
@@ -349,6 +357,9 @@ class CallsTwoProcessesConfig:
             ),
             heavy_stage_timeout_seconds=int(
                 payload.get("heavy_stage_timeout_seconds", 4 * 60 * 60)
+            ),
+            transcribe_progress_timeout_seconds=int(
+                payload.get("transcribe_progress_timeout_seconds", 0)
             ),
             expected_code_sha=optional_text(
                 payload.get("expected_code_sha")
@@ -528,6 +539,13 @@ class CallsTwoProcessesConfig:
             raise ValueError("min_free_gib must be at least 1")
         if self.heavy_stage_timeout_seconds < 60:
             raise ValueError("heavy_stage_timeout_seconds must be at least 60")
+        if (
+            self.transcribe_progress_timeout_seconds != 0
+            and self.transcribe_progress_timeout_seconds < 60
+        ):
+            raise ValueError(
+                "transcribe_progress_timeout_seconds must be 0 or at least 60"
+            )
         if self.max_catch_up_days < 1:
             raise ValueError("max_catch_up_days must be positive")
         if (
@@ -7260,6 +7278,9 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
         "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_PATH": "",
         "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SHA256": "",
         "MANGO_CALLS_CONTROLLED_AUDIO_SNAPSHOT_SIZE_BYTES": "",
+        # The orchestrator replaces this for every stage.  Never inherit a
+        # stale lease owner from launchd or an interactive shell.
+        "MANGO_CALLS_STAGE_WORKER_ID": "",
         **(
             {
                 "LLM_CACHE_ENABLED": "0",
@@ -7497,6 +7518,105 @@ def controlled_stage_report(
     }
 
 
+def new_stage_worker_id(stage: str) -> str:
+    prefix = STAGE_WORKER_PREFIX.get(stage)
+    if prefix is None:
+        raise ValueError(f"unknown pipeline stage: {stage}")
+    worker_id = f"{prefix}-{uuid.uuid4().hex}"
+    if not stage_worker_id_is_valid(prefix, worker_id):
+        raise RuntimeError("failed to create a valid stage worker id")
+    return worker_id
+
+
+def update_exact_stage_claims(
+    database: Path,
+    *,
+    stage: str,
+    worker_id: str,
+    requeue: bool,
+) -> int:
+    """Renew or release only leases owned by one orchestrated stage process."""
+    prefix = STAGE_WORKER_PREFIX.get(stage)
+    if prefix is None or not stage_worker_id_is_valid(prefix, worker_id):
+        raise ValueError("invalid stage worker claim identity")
+    if not database.is_file():
+        return 0
+    timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+    if stage == "analyze":
+        if requeue:
+            sql = """
+                UPDATE call_records
+                   SET analysis_status = 'pending', analysis_worker_id = NULL,
+                       analysis_claimed_at = NULL, updated_at = ?
+                 WHERE analysis_status = 'in_progress' AND analysis_worker_id = ?
+            """
+        else:
+            sql = """
+                UPDATE call_records SET analysis_claimed_at = ?
+                 WHERE analysis_status = 'in_progress' AND analysis_worker_id = ?
+            """
+    else:
+        status_column = {
+            "transcribe": "transcription_status",
+            "resolve": "resolve_status",
+        }.get(stage)
+        status_guard = (
+            f"AND {status_column} = 'in_progress'" if status_column else ""
+        )
+        if requeue:
+            status_set = f"{status_column} = 'pending'," if status_column else ""
+            sql = f"""
+                UPDATE call_records
+                   SET {status_set} pipeline_stage = NULL,
+                       pipeline_worker_id = NULL, pipeline_claimed_at = NULL,
+                       updated_at = ?
+                 WHERE pipeline_stage = ? AND pipeline_worker_id = ? {status_guard}
+            """
+        else:
+            sql = f"""
+                UPDATE call_records SET pipeline_claimed_at = ?
+                 WHERE pipeline_stage = ? AND pipeline_worker_id = ?
+                   {status_guard}
+            """
+    uri = database.resolve(strict=False).as_uri() + "?mode=rw"
+    with sqlite3.connect(uri, uri=True, timeout=60) as connection:
+        connection.execute("PRAGMA busy_timeout = 60000")
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'call_records'"
+        ).fetchone()
+        if table_exists is None:
+            raise sqlite3.OperationalError("call_records table is missing")
+        parameters = (
+            (timestamp, worker_id)
+            if stage == "analyze"
+            else (timestamp, stage, worker_id)
+        )
+        cursor = connection.execute(sql, parameters)
+        return max(0, int(cursor.rowcount or 0))
+
+
+@contextmanager
+def stop_event_on_termination(stop_event: threading.Event) -> Iterator[None]:
+    """Convert TERM/INT into cooperative shutdown of the current stage group."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        stop_event.set()
+
+    try:
+        for signum in previous:
+            signal.signal(signum, request_stop)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def run_sequential_pipeline_workers(
     config: CallsTwoProcessesConfig,
     base_env: Mapping[str, str],
@@ -7510,6 +7630,21 @@ def run_sequential_pipeline_workers(
     codex_runtime_override: Optional[Mapping[str, str]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> list[Mapping[str, Any]]:
+    if stop_event is None:
+        termination_event = threading.Event()
+        with stop_event_on_termination(termination_event):
+            return run_sequential_pipeline_workers(
+                config,
+                base_env,
+                runner,
+                include_llm=include_llm,
+                run_id=run_id,
+                cycle_deadline=cycle_deadline,
+                stages_override=stages_override,
+                heartbeat_path_override=heartbeat_path_override,
+                codex_runtime_override=codex_runtime_override,
+                stop_event=termination_event,
+            )
     stages = (
         tuple(stages_override)
         if stages_override is not None
@@ -7563,7 +7698,7 @@ def run_sequential_pipeline_workers(
                     max_workers=len(worker_specs),
                     thread_name_prefix="mango-stage",
                 ) as pool:
-                    stop_parallel_workers = threading.Event()
+                    stop_parallel_workers = stop_event or threading.Event()
                     futures = {
                         worker_key: pool.submit(
                             run_sequential_pipeline_workers,
@@ -7640,6 +7775,15 @@ def run_sequential_pipeline_workers(
     if runner is not run_command:
         reports: list[Mapping[str, Any]] = []
         for stage in stages:
+            if stop_event is not None and stop_event.is_set():
+                reports.append(
+                    {
+                        "rc": 125,
+                        "command": f"worker:{stage}",
+                        "orchestrator_stop_reason": "termination_requested",
+                    }
+                )
+                break
             controlled_call_scope_for_config(config)
             with controlled_worker_authority_environment(
                 config,
@@ -7667,10 +7811,22 @@ def run_sequential_pipeline_workers(
                                 ),
                                 **authority_env,
                                 **codex_runtime,
+                                "MANGO_CALLS_STAGE_WORKER_ID": new_stage_worker_id(
+                                    stage
+                                ),
                             },
                             config.working_dir,
                         ),
                     )
+                    if stop_event is not None and stop_event.is_set() and int(
+                        stage_report.get("rc") or 0
+                    ) == 0:
+                        stage_report = {
+                            **dict(stage_report),
+                            "worker_rc": 0,
+                            "rc": 125,
+                            "orchestrator_stop_reason": "termination_requested",
+                        }
                     reports.append(stage_report)
                     if int(stage_report.get("rc") or 0) != 0:
                         break
@@ -7690,6 +7846,22 @@ def run_sequential_pipeline_workers(
         label = stage.replace("-", "_")
         log_path = logs_dir / f"stage_{label}_{log_run_id}.log"
         started_at = time.monotonic()
+        if stop_event is not None and stop_event.is_set():
+            log_path.write_text("termination_requested_before_stage\n", encoding="utf-8")
+            log_path.chmod(0o600)
+            reports.append(
+                {
+                    "rc": 125,
+                    "command": f"worker:{stage}",
+                    "log_path": str(log_path),
+                    "log_size_bytes": log_path.stat().st_size,
+                    "log_sha256": sha256_file(log_path),
+                    "wall_seconds": 0.0,
+                    "timed_out": False,
+                    "orchestrator_stop_reason": "termination_requested",
+                }
+            )
+            break
         if started_at >= heavy_cycle_deadline:
             log_path.write_text("heavy_cycle_timeout_before_stage\n", encoding="utf-8")
             log_path.chmod(0o600)
@@ -7719,7 +7891,14 @@ def run_sequential_pipeline_workers(
         lifeline_read_fd = -1
         lifeline_write_fd = -1
         timed_out = False
+        timeout_scope: Optional[str] = None
         peer_failed = False
+        claim_heartbeat_updates = 0
+        claim_heartbeat_error: Optional[str] = None
+        claim_recovery_ok: Optional[bool] = None
+        claim_recovery_rows = 0
+        claim_recovery_error: Optional[str] = None
+        stage_worker_id = new_stage_worker_id(stage)
         authority_scope = controlled_worker_authority_environment(
             config,
             stage=stage,
@@ -7743,6 +7922,7 @@ def run_sequential_pipeline_workers(
                 **stage_worker_environment_for(config, base_env, stage),
                 **authority_env,
                 **codex_runtime,
+                "MANGO_CALLS_STAGE_WORKER_ID": stage_worker_id,
             }
             pass_fds: tuple[int, ...] = ()
             if config.processing_scope == "controlled_1":
@@ -7768,39 +7948,74 @@ def run_sequential_pipeline_workers(
                 if lifeline_read_fd >= 0:
                     os.close(lifeline_read_fd)
                     lifeline_read_fd = -1
-                last_heartbeat = 0.0
+                last_heartbeat = started_at - 30
+                last_progress_at = time.monotonic()
+                last_progress_size = log_path.stat().st_size
                 while proc.poll() is None:
                     current = time.monotonic()
+                    try:
+                        current_progress_size = log_path.stat().st_size
+                    except OSError:
+                        current_progress_size = last_progress_size
+                    if current_progress_size > last_progress_size:
+                        last_progress_size = current_progress_size
+                        last_progress_at = current
                     if stop_event is not None and stop_event.is_set():
                         peer_failed = True
-                        terminate_process_group(proc)
                         break
-                    if current - last_heartbeat >= 30:
-                        write_json(
-                            heartbeat_path,
-                            {
-                                "schema_version": "mango_calls_heavy_heartbeat_v1",
-                                "stage": stage,
-                                "pid": proc.pid,
-                                "updated_at": datetime.now(timezone.utc).isoformat(),
-                            },
-                        )
-                        last_heartbeat = current
                     if current >= deadline:
                         timed_out = True
-                        terminate_process_group(proc)
+                        timeout_scope = "heavy_stage"
                         break
+                    if (
+                        stage == "transcribe"
+                        and config.transcribe_progress_timeout_seconds > 0
+                        and current - last_progress_at
+                        >= config.transcribe_progress_timeout_seconds
+                    ):
+                        timed_out = True
+                        timeout_scope = "transcribe_progress"
+                        break
+                    if current - last_heartbeat >= 30:
+                        try:
+                            claim_heartbeat_updates += update_exact_stage_claims(
+                                config.working_db,
+                                stage=stage,
+                                worker_id=stage_worker_id,
+                                requeue=False,
+                            )
+                            write_json(
+                                heartbeat_path,
+                                {
+                                    "schema_version": "mango_calls_heavy_heartbeat_v1",
+                                    "stage": stage,
+                                    "pid": proc.pid,
+                                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                                    "progress_log_size_bytes": last_progress_size,
+                                    "progress_age_seconds": round(
+                                        max(0.0, current - last_progress_at), 3
+                                    ),
+                                },
+                            )
+                        except Exception as exc:
+                            claim_heartbeat_error = type(exc).__name__
+                            break
+                        last_heartbeat = current
                     time.sleep(1)
-                if peer_failed:
+                if claim_heartbeat_error is not None:
+                    rc = 70
+                elif peer_failed:
                     rc = 125
                 elif timed_out:
                     rc = 124
                 else:
                     rc = int(proc.returncode or 0)
                 if timed_out:
-                    log_handle.write("stage_timeout\n")
+                    log_handle.write(f"stage_timeout:{timeout_scope}\n")
                 elif peer_failed:
                     log_handle.write("parallel_peer_failed\n")
+                elif claim_heartbeat_error is not None:
+                    log_handle.write("claim_heartbeat_failed\n")
         finally:
             try:
                 if proc is not None:
@@ -7820,6 +8035,23 @@ def run_sequential_pipeline_workers(
                                 codex_runtime_scope.__exit__(None, None, None)
                         finally:
                             authority_scope.__exit__(None, None, None)
+        if rc == 0 and stop_event is not None and stop_event.is_set():
+            rc = 125
+            peer_failed = True
+        if rc != 0:
+            try:
+                claim_recovery_rows = update_exact_stage_claims(
+                    config.working_db,
+                    stage=stage,
+                    worker_id=stage_worker_id,
+                    requeue=True,
+                )
+                claim_recovery_ok = True
+            except Exception as exc:
+                worker_rc = rc
+                rc = 70
+                claim_recovery_ok = False
+                claim_recovery_error = type(exc).__name__
         after_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         stage_metrics = parse_macos_time_metrics(log_path)
         worker_metrics = parse_worker_stage_metrics(log_path, stage)
@@ -7837,7 +8069,18 @@ def run_sequential_pipeline_workers(
                     "swap_operations",
                     max(0, int(after_usage.ru_nswap - before_usage.ru_nswap)),
                 ),
-                "timed_out": rc == 124,
+                "timed_out": timed_out,
+                "timeout_scope": timeout_scope,
+                "stage_worker_id": stage_worker_id,
+                "claim_heartbeat_updates": claim_heartbeat_updates,
+                "claim_heartbeat_error": claim_heartbeat_error,
+                "claim_recovery_ok": claim_recovery_ok,
+                "claim_recovery_rows": claim_recovery_rows,
+                "claim_recovery_error": claim_recovery_error,
+                "orchestrator_stop_reason": (
+                    "termination_or_parallel_peer_failure" if peer_failed else None
+                ),
+                **({"worker_rc": worker_rc} if claim_recovery_ok is False else {}),
                 "metrics": worker_metrics,
             },
         )

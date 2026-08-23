@@ -159,6 +159,14 @@ def _safe_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _truthy(value: Any) -> bool:
+    return _safe_text(value).casefold() in {"1", "true", "yes", "да"}
+
+
+def _commercial_review_acknowledged(value: Any) -> bool:
+    return _safe_text(value) == "Да"
+
+
 def _to_dt(value: Any) -> Optional[datetime]:
     if value in (None, ""):
         return None
@@ -388,12 +396,18 @@ def _candidate_score(
 
     latest_call = phone_context.call_rows[0] if phone_context.call_rows else {}
     call_type = _safe_text(latest_call.get("Тип звонка"))
+    commercial_review = _truthy(
+        latest_call.get("Коммерческая проверка") or latest_call.get("commercial_review")
+    )
     if call_type == "sales_call" and pipeline_name in DEFAULT_TARGET_PIPELINE_NAMES:
         score += 6
         reasons.append("sales_context_match")
     elif call_type == "service_call" and pipeline_name == "Сделки B2C":
-        score -= 4
-        reasons.append("service_context_penalty")
+        if commercial_review:
+            reasons.append("commercial_review_service_penalty_neutralized")
+        else:
+            score -= 4
+            reasons.append("service_context_penalty")
 
     confidence = max(0.05, min(0.99, score / 100.0))
     return LeadCandidate(
@@ -655,6 +669,14 @@ def _analysis_from_selected_lead(
         "tasks_count": len(tasks),
         "close_too_fast": close_too_fast,
         "latest_call_type": _safe_text(phone_context.call_rows[0].get("Тип звонка") if phone_context.call_rows else ""),
+        "commercial_review": _truthy(phone_context.contact_row.get("Коммерческая проверка"))
+        or any(
+            _truthy(row.get("Коммерческая проверка") or row.get("commercial_review"))
+            for row in phone_context.call_rows
+        ),
+        "commercial_review_reviewed": _commercial_review_acknowledged(
+            phone_context.contact_row.get("Коммерческая проверка подтверждена")
+        ),
         "latest_call_summary": _safe_text(phone_context.contact_row.get("Краткое резюме последнего свежего звонка") if phone_context.contact_row else "") or _safe_text(phone_context.call_rows[0].get("Краткое резюме разговора") if phone_context.call_rows else ""),
         "history_summary": phone_context.history_summary,
         "chronology": phone_context.chronology,
@@ -717,6 +739,10 @@ def _writeback_blockers(
         blockers.append("manual_review_verdict")
     if bool(analysis.get("needs_manual_review")):
         blockers.append("needs_manual_review")
+    if bool(analysis.get("commercial_review")) and not bool(
+        analysis.get("commercial_review_reviewed")
+    ):
+        blockers.append("commercial_review")
     try:
         match_confidence = float(analysis.get("match_confidence") or 0)
     except (TypeError, ValueError):
@@ -824,6 +850,12 @@ def _finalize_analysis(
             "analysis_mode": mode,
         }
 
+    final["commercial_review"] = bool(heuristic_analysis.get("commercial_review"))
+    final["commercial_review_reviewed"] = bool(
+        final["commercial_review"]
+        and heuristic_analysis.get("commercial_review_reviewed")
+    )
+
     blockers = _writeback_blockers(analysis=final, mode=mode, comparison=comparison)
     final["writeback_allowed"] = not blockers
     final["writeback_blockers"] = blockers
@@ -879,6 +911,7 @@ def _phone_context_from_dossier(
             "Краткое резюме разговора": _safe_text(item.get("summary")),
             "Возражения": _safe_text(item.get("objections")),
             "Следующий шаг": _safe_text(item.get("next_step")),
+            "Коммерческая проверка": "Да" if item.get("commercial_review") else "Нет",
         }
         for item in history
         if isinstance(item, dict)
@@ -894,6 +927,9 @@ def _phone_context_from_dossier(
             ),
             "Возражения": _safe_text(rollup.get("objections_summary")),
             "Следующий шаг": _safe_text(rollup.get("recommended_next_step")),
+            "Коммерческая проверка подтверждена": _safe_text(
+                phone_context.contact_row.get("Коммерческая проверка подтверждена")
+            ),
         },
         call_rows=call_rows,
         call_ids=[row["ID звонка"] for row in call_rows if row["ID звонка"]],

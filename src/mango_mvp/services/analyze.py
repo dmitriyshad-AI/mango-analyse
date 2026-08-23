@@ -67,7 +67,10 @@ from mango_mvp.services.dialogue_contract import (
     value_sha256,
 )
 from mango_mvp.services.llm_response_cache import LLMResponseCache
-from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
+from mango_mvp.services.pipeline_claims import (
+    configured_stage_worker_id,
+    release_stale_pipeline_claims,
+)
 from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 # The only paths the model may claim, and the only ones the service will
@@ -205,6 +208,54 @@ SERVICE_CALL_PATTERNS = (
         r"посещаемост\w*|доступ к урокам|доступ к материалам",
         re.I,
     ),
+)
+
+COMMERCIAL_REVIEW_VERSION = "commercial_review_v2"
+FINAL_NON_SALES_CALL_TYPES = frozenset({"service_call", "technical_call", "existing_client_progress"})
+COMMERCIAL_EVENT_SPLIT_RE = re.compile(r"(?:[.!?]+|\n+)")
+DEMO_RECEIVED_RE = re.compile(
+    r"(?:демо\w*|пробн\w*|материал\w*)[^.!?\n]{0,50}(?<!не\s)(?:получ\w*|приш[её]л|пришли|дош[её]л|дошли|отправил\w*)|"
+    r"(?<!не\s)(?:получ\w*|приш[её]л|пришли|дош[её]л|дошли|отправил\w*)[^.!?\n]{0,50}(?:демо\w*|пробн\w*|материал\w*)",
+    re.I,
+)
+PAYMENT_SETTLED_RE = re.compile(
+    r"(?:оплат\w*|плат[её]ж\w*)(?:(?!\bне\b)[^.!?\n]){0,80}"
+    r"(?:поступ\w*|получ\w*|внес\w*)(?:(?!\bне\b)[^.!?\n]){0,40}"
+    r"(?:полност\w*|вс[еёя]\s+сумм\w*)|"
+    r"(?<!не\s)(?:поступ\w*|получ\w*|внес\w*)(?:(?!\bне\b)[^.!?\n]){0,40}"
+    r"(?:оплат\w*|плат[её]ж\w*)(?:(?!\bне\b)[^.!?\n]){0,40}"
+    r"(?:полност\w*|вс[еёя]\s+сумм\w*)|"
+    r"(?<!не\s)(?:поступ\w*|получ\w*|внес\w*)(?:(?!\bне\b)[^.!?\n]){0,40}"
+    r"вс[еёя]\s+сумм\w*|"
+    r"(?<!не\s)вс[еёя]\s+сумм\w*(?:(?!\bне\b)[^.!?\n]){0,60}"
+    r"(?:поступ\w*|получ\w*|внес\w*)|"
+    r"остат\w*(?:(?!\bне\b)[^.!?\n]){0,30}(?:закры\w*|погаш\w*)|"
+    r"(?<!не\s)без\s+остат\w*",
+    re.I,
+)
+NEGATED_RETENTION_RE = re.compile(
+    r"\bне\s+(?:(?:буд\w*|собира\w*|хот\w*)\s+)?(?:откаж\w*|отказ\w*|отмен\w*|передум\w*)",
+    re.I,
+)
+COMMERCIAL_REVIEW_RULES = (
+    ("commercial_demo_material_missing", 1, (
+        re.compile(r"(?:демо\w*|пробн\w*)[^.!?\n]{0,120}(?:урок\w*|заняти\w*|материал\w*|запис\w*)", re.I),
+        re.compile(r"(?:так\s+и\s+не|до\s+сих\s+пор\s+не|не)\s+(?:получ\w*|приш\w*|дош\w*|отправ\w*)", re.I),
+    ), (DEMO_RECEIVED_RE,)),
+    ("commercial_course_followup_pending", 3, (
+        re.compile(r"(?:ран(?:ее|ьше)|до\s+этого)[^.!?\n]{0,140}(?:общал\w*|созван\w*|говор\w*|обсужд\w*)", re.I),
+        re.compile(r"курс\w*|обучен\w*|математ\w*|физик\w*|информат\w*", re.I),
+        re.compile(r"перезвон\w*|позвон\w*|созвон\w*|продолж\w*", re.I),
+    ), ()),
+    ("commercial_payment_outstanding", 2, (
+        re.compile(r"курс\w*|лагер\w*|смен\w*|обучен\w*|договор\w*|квитанц\w*", re.I),
+        re.compile(r"(?:оплат\w*|плат[её]ж\w*|денежн\w*\s+средств\w*)[^.!?\n]{0,120}(?:не\s+(?:поступ\w*|получ\w*|вс[еёя]|полност\w*)|остат\w*|доплат\w*|ожида\w*|обещ\w*|планир\w*)|(?:остат\w*|доплат\w*|обещ\w*)[^.!?\n]{0,80}оплат\w*", re.I),
+    ), (PAYMENT_SETTLED_RE,)),
+    ("commercial_retention_risk", 4, (
+        re.compile(r"откаж\w*|отказ\w*|отмен\w*|передум\w*", re.I),
+        re.compile(r"дум\w*|реш\w*|сомнева\w*", re.I),
+        re.compile(r"курс\w*|лагер\w*|смен\w*|обучен\w*|заняти\w*", re.I),
+    ), (NEGATED_RETENTION_RE,)),
 )
 
 CURRENT_CAMP_PICKUP_RE = re.compile(
@@ -1089,7 +1140,7 @@ class AnalyzeService:
 
     @staticmethod
     def _analysis_worker_id() -> str:
-        return f"an-{uuid.uuid4().hex[:12]}"
+        return configured_stage_worker_id("an") or f"an-{uuid.uuid4().hex[:12]}"
 
     def _analysis_lease_cutoff(self, now: datetime) -> datetime:
         timeout_sec = max(60, int(self._settings.analyze_lease_timeout_sec))
@@ -2194,6 +2245,52 @@ class AnalyzeService:
             "review_reasons": self._unique(reasons),
         }
 
+    def _commercial_review_reason_codes(self, text: str, call_type: str) -> list[str]:
+        if call_type not in FINAL_NON_SALES_CALL_TYPES:
+            return []
+        sentences = [
+            sentence.strip()
+            for sentence in COMMERCIAL_EVENT_SPLIT_RE.split(text or "")
+            if sentence.strip()
+        ]
+        reason_codes: list[str] = []
+        for code, event_size, required_patterns, resolved_patterns in COMMERCIAL_REVIEW_RULES:
+            for index in range(len(sentences)):
+                event = " ".join(sentences[index : index + event_size])
+                if not all(pattern.search(event) for pattern in required_patterns):
+                    continue
+                remaining_call = " ".join(sentences[index:])
+                if any(pattern.search(remaining_call) for pattern in resolved_patterns):
+                    continue
+                reason_codes.append(code)
+                break
+        return reason_codes
+
+    def _apply_commercial_review(
+        self, normalized: Dict[str, Any], *, text: str
+    ) -> Dict[str, Any]:
+        flags = normalized.get("quality_flags")
+        flags = flags if isinstance(flags, dict) else {}
+        reason_codes = self._commercial_review_reason_codes(
+            text, self._clean_text(flags.get("call_type")) or ""
+        )
+        flags["commercial_review_version"] = COMMERCIAL_REVIEW_VERSION
+        flags["commercial_review"] = bool(reason_codes)
+        flags["commercial_review_reason_codes"] = reason_codes
+        flags["commercial_review_reviewed"] = False
+        normalized["quality_flags"] = flags
+        if reason_codes:
+            reasons = self._unique(
+                [str(item) for item in (normalized.get("review_reasons") or [])]
+                + reason_codes
+            )
+            flags["needs_review"] = True
+            flags["review_reasons"] = reasons
+            normalized["needs_review"] = True
+            normalized["review_reasons"] = reasons
+            normalized["review_reasons_ru"] = review_reasons_ru(reasons)
+        return normalized
+
     def _transcript_quality_guardrails(
         self,
         call: CallRecord,
@@ -3145,7 +3242,8 @@ class AnalyzeService:
             "needs_review": needs_review,
             "review_reasons": review_reasons,
         }
-        return self._apply_non_conversation_hard_validation(call, normalized)
+        normalized = self._apply_non_conversation_hard_validation(call, normalized)
+        return self._apply_commercial_review(normalized, text=text)
 
     # ----------------------------------------------------------------------
     # ТЗ-03 §6: every published high-risk value is traced back to one reply.

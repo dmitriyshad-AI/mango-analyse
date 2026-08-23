@@ -262,6 +262,7 @@ class AmoCRMSyncService:
                 contract_invalid = quality_flags.get("analysis_contract_invalid") or (
                     "analysis_contract_invalid" in {*review_reasons, *flag_reasons}
                 )
+                commercial_review_pending = bool(quality_flags.get("commercial_review"))
                 terminal_reason = (
                     "analysis_contract_invalid"
                     if contract_invalid
@@ -283,6 +284,14 @@ class AmoCRMSyncService:
                     call.next_retry_at = None
                     call.dead_letter_stage = None
                     call.last_error = f"sync:{terminal_reason}"
+                    skipped += 1
+                    session.add(call)
+                    continue
+                if commercial_review_pending:
+                    call.sync_status = "failed"
+                    call.next_retry_at = now + self._retry_delay(1)
+                    call.dead_letter_stage = None
+                    call.last_error = "sync:commercial_review_pending"
                     skipped += 1
                     session.add(call)
                     continue

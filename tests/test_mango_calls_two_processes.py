@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import signal
 import shlex
 import subprocess
@@ -3025,6 +3026,12 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     assert calls[1][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert calls[2][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert calls[3][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
+    worker_ids = [env["MANGO_CALLS_STAGE_WORKER_ID"] for _command, env in calls]
+    assert len(set(worker_ids)) == 4
+    assert all(
+        re.fullmatch(rf"{prefix}-[0-9a-f]{{32}}", worker_id)
+        for prefix, worker_id in zip(("tr", "bf", "rs", "an"), worker_ids)
+    )
     assert all("sync" not in command for command, _ in calls)
     assert len({path.parent for path in ephemeral_paths}) == 4
     assert all(not path.exists() for path in ephemeral_paths)
@@ -3110,6 +3117,9 @@ def test_parallel_pipeline_starts_configured_gigaam_workers(
         "3",
     }
     assert {env["MANGO_GIGAAM_WORKER_COUNT"] for env in gigaam_envs} == {"3"}
+    assert len(
+        {env["MANGO_CALLS_STAGE_WORKER_ID"] for _stage, env in calls}
+    ) == 6
     assert len({env["CODEX_HOME"] for _stage, env in calls}) == 6
     assert reports[0]["parallel_pipeline"]["max_workers"] == 6
     assert reports[0]["parallel_pipeline"]["gigaam_workers"] == 3
@@ -3162,6 +3172,7 @@ def test_parallel_pipeline_stops_peers_when_one_stage_fails(
     terminated: set[str] = set()
     pid_lock = threading.Lock()
     next_pid = {"value": 43000}
+    claim_operations: list[tuple[str, str, bool]] = []
 
     class StageProcess:
         def __init__(self, command, **_kwargs) -> None:
@@ -3180,8 +3191,13 @@ def test_parallel_pipeline_stops_peers_when_one_stage_fails(
             terminated.add(proc.stage)
             proc.returncode = -signal.SIGTERM
 
+    def update_claims(_database, *, stage, worker_id, requeue):
+        claim_operations.append((stage, worker_id, requeue))
+        return 0
+
     monkeypatch.setattr(calls_runtime.subprocess, "Popen", StageProcess)
     monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+    monkeypatch.setattr(calls_runtime, "update_exact_stage_claims", update_claims)
 
     started = time.monotonic()
     reports = run_sequential_pipeline_workers(
@@ -3196,11 +3212,112 @@ def test_parallel_pipeline_stops_peers_when_one_stage_fails(
         "worker:analyze": 125,
     }
     assert terminated == {"transcribe", "backfill-second-asr", "analyze"}
+    recovered = [(stage, worker_id) for stage, worker_id, requeue in claim_operations if requeue]
+    assert {stage for stage, _worker_id in recovered} == set(SEQUENTIAL_PIPELINE_STAGES)
+    assert len({worker_id for _stage, worker_id in recovered}) == 4
+    prefixes = {
+        "transcribe": "tr",
+        "backfill-second-asr": "bf",
+        "resolve": "rs",
+        "analyze": "an",
+    }
+    assert all(
+        re.fullmatch(rf"{prefixes[stage]}-[0-9a-f]{{32}}", worker_id)
+        for stage, worker_id in recovered
+    )
     assert all(
         "parallel_peer_failed" in Path(str(report["log_path"])).read_text()
         for report in reports
         if report["rc"] == 125
     )
+
+
+def test_parallel_pipeline_external_sigterm_stops_every_peer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), parallel_asr_enabled=True)
+    all_started = threading.Event()
+    all_terminated = threading.Event()
+    fallback_seen = threading.Event()
+    signal_sent = threading.Event()
+    launched: list[str] = []
+    launches_after_signal: list[str] = []
+    terminated: set[str] = set()
+    recoveries: list[tuple[str, str]] = []
+    controller_errors: list[str] = []
+    lock = threading.Lock()
+    next_pid = 43500
+
+    class WaitingProcess:
+        def __init__(self, command, **_kwargs) -> None:
+            nonlocal next_pid
+            self.stage = command[command.index("--stages") + 1]
+            self.returncode = None
+            with lock:
+                next_pid += 1
+                self.pid = next_pid
+                launched.append(self.stage)
+                if signal_sent.is_set():
+                    launches_after_signal.append(self.stage)
+                if len(launched) == len(SEQUENTIAL_PIPELINE_STAGES):
+                    all_started.set()
+
+        def poll(self):
+            if fallback_seen.is_set():
+                self.returncode = 98
+            return self.returncode
+
+    def terminate(proc) -> None:
+        with lock:
+            terminated.add(proc.stage)
+            if len(terminated) == len(SEQUENTIAL_PIPELINE_STAGES):
+                all_terminated.set()
+        proc.returncode = -signal.SIGTERM
+
+    def update_claims(_database, *, stage, worker_id, requeue):
+        if requeue:
+            recoveries.append((stage, worker_id))
+        return 0
+
+    def send_external_sigterm() -> None:
+        if not all_started.wait(timeout=2):
+            controller_errors.append("parallel peers did not start")
+            fallback_seen.set()
+            return
+        signal_sent.set()
+        os.kill(os.getpid(), signal.SIGTERM)
+        if not all_terminated.wait(timeout=2):
+            controller_errors.append("parallel peers did not stop")
+            fallback_seen.set()
+
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, lambda *_args: fallback_seen.set())
+    controller = threading.Thread(target=send_external_sigterm, daemon=True)
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", WaitingProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+    monkeypatch.setattr(calls_runtime, "update_exact_stage_claims", update_claims)
+    try:
+        controller.start()
+        reports = run_sequential_pipeline_workers(
+            config, {}, calls_runtime.run_command, run_id="external-term"
+        )
+    finally:
+        controller.join(timeout=2)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+    assert controller_errors == []
+    assert controller.is_alive() is False
+    assert signal_sent.is_set() is True
+    assert fallback_seen.is_set() is False
+    assert len(launched) == len(SEQUENTIAL_PIPELINE_STAGES)
+    assert set(launched) == set(SEQUENTIAL_PIPELINE_STAGES)
+    assert launches_after_signal == []
+    assert terminated == set(SEQUENTIAL_PIPELINE_STAGES)
+    assert {report["rc"] for report in reports} == {125}
+    assert {stage for stage, _worker_id in recoveries} == set(
+        SEQUENTIAL_PIPELINE_STAGES
+    )
+    assert len({worker_id for _stage, worker_id in recoveries}) == 4
 
 
 def test_parallel_pipeline_stops_all_peers_when_one_gigaam_replica_fails(
@@ -3333,6 +3450,477 @@ def test_real_stage_cleans_runtime_and_checks_group_after_parent_exit(
     assert runtime_paths
     assert all(not path.exists() for path in runtime_paths)
     assert not list(config.codex_home_root.iterdir())
+
+
+def test_progress_watchdog_is_opt_in_and_bounded(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+
+    assert config.transcribe_progress_timeout_seconds == 0
+    replace(config, transcribe_progress_timeout_seconds=0).validate()
+    replace(config, transcribe_progress_timeout_seconds=60).validate()
+    with pytest.raises(ValueError, match="must be 0 or at least 60"):
+        replace(config, transcribe_progress_timeout_seconds=59).validate()
+
+
+def test_worker_environment_clears_ambient_stage_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MANGO_CALLS_STAGE_WORKER_ID", "tr-" + "a" * 32)
+
+    assert worker_environment(config_for(tmp_path))["MANGO_CALLS_STAGE_WORKER_ID"] == ""
+
+
+def test_stage_services_use_only_matching_orchestrator_worker_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mango_mvp.services.analyze import AnalyzeService
+    from mango_mvp.services.resolve import ResolveService
+    from mango_mvp.services.transcribe import TranscribeService
+
+    identities = {
+        "tr": "tr-" + "1" * 32,
+        "bf": "bf-" + "2" * 32,
+        "rs": "rs-" + "3" * 32,
+        "an": "an-" + "4" * 32,
+    }
+    for prefix in ("tr", "bf"):
+        monkeypatch.setenv("MANGO_CALLS_STAGE_WORKER_ID", identities[prefix])
+        assert TranscribeService._pipeline_worker_id(prefix) == identities[prefix]
+    monkeypatch.setenv("MANGO_CALLS_STAGE_WORKER_ID", identities["rs"])
+    assert ResolveService._pipeline_worker_id("rs") == identities["rs"]
+    monkeypatch.setenv("MANGO_CALLS_STAGE_WORKER_ID", identities["an"])
+    assert AnalyzeService._analysis_worker_id() == identities["an"]
+
+    monkeypatch.setenv("MANGO_CALLS_STAGE_WORKER_ID", identities["rs"])
+    with pytest.raises(RuntimeError, match="invalid for stage tr"):
+        TranscribeService._pipeline_worker_id("tr")
+
+
+def test_exact_claim_heartbeat_and_requeue_never_touch_peer_workers(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "claims.sqlite"
+    stages = {
+        "transcribe": ("tr-" + "1" * 32, "tr-" + "9" * 32),
+        "backfill-second-asr": ("bf-" + "2" * 32, "bf-" + "8" * 32),
+        "resolve": ("rs-" + "3" * 32, "rs-" + "7" * 32),
+        "analyze": ("an-" + "4" * 32, "an-" + "6" * 32),
+    }
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE call_records(
+                id INTEGER PRIMARY KEY,
+                transcription_status TEXT, resolve_status TEXT,
+                analysis_status TEXT, pipeline_stage TEXT,
+                pipeline_worker_id TEXT, pipeline_claimed_at TEXT,
+                analysis_worker_id TEXT, analysis_claimed_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        for index, (stage, (owner, peer)) in enumerate(stages.items(), start=1):
+            for offset, worker_id in enumerate((owner, peer)):
+                connection.execute(
+                    """
+                    INSERT INTO call_records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        index * 10 + offset,
+                        "in_progress" if stage == "transcribe" else "pending",
+                        "in_progress" if stage == "resolve" else "pending",
+                        "in_progress" if stage == "analyze" else "pending",
+                        None if stage == "analyze" else stage,
+                        None if stage == "analyze" else worker_id,
+                        "old" if stage != "analyze" else None,
+                        worker_id if stage == "analyze" else None,
+                        "old" if stage == "analyze" else None,
+                        "old",
+                    ),
+                )
+
+    for stage, (owner, peer) in stages.items():
+        assert calls_runtime.update_exact_stage_claims(
+            database, stage=stage, worker_id=owner, requeue=False
+        ) == 1
+        with sqlite3.connect(database) as connection:
+            claim_column = (
+                "analysis_claimed_at" if stage == "analyze" else "pipeline_claimed_at"
+            )
+            owner_claim = connection.execute(
+                f"SELECT {claim_column} FROM call_records WHERE "
+                + ("analysis_worker_id" if stage == "analyze" else "pipeline_worker_id")
+                + " = ?",
+                (owner,),
+            ).fetchone()[0]
+            peer_claim = connection.execute(
+                f"SELECT {claim_column} FROM call_records WHERE "
+                + ("analysis_worker_id" if stage == "analyze" else "pipeline_worker_id")
+                + " = ?",
+                (peer,),
+            ).fetchone()[0]
+        assert owner_claim != "old"
+        assert peer_claim == "old"
+        assert calls_runtime.update_exact_stage_claims(
+            database, stage=stage, worker_id=owner, requeue=True
+        ) == 1
+
+    with sqlite3.connect(database) as connection:
+        for stage, (_owner, peer) in stages.items():
+            if stage == "analyze":
+                exact = connection.execute(
+                    "SELECT analysis_status, analysis_worker_id FROM call_records WHERE id = 40"
+                ).fetchone()
+                other = connection.execute(
+                    "SELECT analysis_status, analysis_worker_id FROM call_records WHERE analysis_worker_id = ?",
+                    (peer,),
+                ).fetchone()
+            else:
+                row_id = {"transcribe": 10, "backfill-second-asr": 20, "resolve": 30}[stage]
+                exact = connection.execute(
+                    "SELECT transcription_status, resolve_status, pipeline_stage, pipeline_worker_id FROM call_records WHERE id = ?",
+                    (row_id,),
+                ).fetchone()
+                other = connection.execute(
+                    "SELECT transcription_status, resolve_status, pipeline_stage, pipeline_worker_id FROM call_records WHERE pipeline_worker_id = ?",
+                    (peer,),
+                ).fetchone()
+            if stage == "analyze":
+                assert exact == ("pending", None)
+                assert other == ("in_progress", peer)
+            elif stage == "transcribe":
+                assert exact == ("pending", "pending", None, None)
+                assert other == ("in_progress", "pending", stage, peer)
+            elif stage == "resolve":
+                assert exact == ("pending", "pending", None, None)
+                assert other == ("pending", "in_progress", stage, peer)
+            else:
+                assert exact == ("pending", "pending", None, None)
+                assert other == ("pending", "pending", stage, peer)
+
+
+@pytest.mark.parametrize("progress_timeout, expected_rc", [(0, 0), (60, 124)])
+def test_silent_transcribe_is_killed_only_when_progress_watchdog_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    progress_timeout: int,
+    expected_rc: int,
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        heavy_stage_timeout_seconds=300,
+        transcribe_progress_timeout_seconds=progress_timeout,
+    )
+    clock = {"value": 0.0}
+    killed = {"count": 0}
+
+    class SilentProcess:
+        pid = 51001
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.returncode = None
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if progress_timeout == 0 and self.poll_count >= 6:
+                self.returncode = 0
+            return self.returncode
+
+    def terminate(proc) -> None:
+        if proc.returncode is None:
+            killed["count"] += 1
+            proc.returncode = -signal.SIGTERM
+
+    monkeypatch.setattr(calls_runtime.time, "monotonic", lambda: clock["value"])
+    monkeypatch.setattr(
+        calls_runtime.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("value", clock["value"] + 30),
+    )
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", SilentProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+
+    report = run_sequential_pipeline_workers(
+        config,
+        {},
+        calls_runtime.run_command,
+        stages_override=("transcribe",),
+        run_id=f"silent-{progress_timeout}",
+    )[0]
+
+    assert report["rc"] == expected_rc
+    assert killed["count"] == (1 if progress_timeout else 0)
+    assert report["timeout_scope"] == (
+        "transcribe_progress" if progress_timeout else None
+    )
+
+
+def test_transcribe_log_growth_resets_progress_watchdog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(
+        config_for(tmp_path),
+        heavy_stage_timeout_seconds=300,
+        transcribe_progress_timeout_seconds=60,
+    )
+    clock = {"value": 0.0}
+    killed = {"count": 0}
+
+    class GrowingProcess:
+        pid = 51002
+
+        def __init__(self, *_args, **kwargs) -> None:
+            self.returncode = None
+            self.poll_count = 0
+            self.output = kwargs["stdout"]
+
+        def poll(self):
+            self.poll_count += 1
+            if self.poll_count >= 6:
+                self.returncode = 0
+            else:
+                self.output.write("progress\n")
+                self.output.flush()
+            return self.returncode
+
+    def terminate(proc) -> None:
+        if proc.returncode is None:
+            killed["count"] += 1
+            proc.returncode = -signal.SIGTERM
+
+    monkeypatch.setattr(calls_runtime.time, "monotonic", lambda: clock["value"])
+    monkeypatch.setattr(
+        calls_runtime.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("value", clock["value"] + 30),
+    )
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", GrowingProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+
+    report = run_sequential_pipeline_workers(
+        config,
+        {},
+        calls_runtime.run_command,
+        stages_override=("transcribe",),
+        run_id="growing",
+    )[0]
+
+    assert report["rc"] == 0
+    assert report["timeout_scope"] is None
+    assert killed["count"] == 0
+
+
+def test_crashed_stage_requeues_exact_claim_only_after_group_is_gone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            CREATE TABLE call_records(
+                id INTEGER PRIMARY KEY, transcription_status TEXT,
+                resolve_status TEXT, analysis_status TEXT,
+                pipeline_stage TEXT, pipeline_worker_id TEXT,
+                pipeline_claimed_at TEXT, analysis_worker_id TEXT,
+                analysis_claimed_at TEXT, updated_at TEXT
+            )
+            """
+        )
+    group_gone = {"value": False}
+    original_update = calls_runtime.update_exact_stage_claims
+
+    class CrashedProcess:
+        pid = 52001
+        returncode = 9
+
+        def __init__(self, *_args, **kwargs) -> None:
+            worker_id = kwargs["env"]["MANGO_CALLS_STAGE_WORKER_ID"]
+            with sqlite3.connect(config.working_db) as connection:
+                connection.execute(
+                    "INSERT INTO call_records VALUES (1, 'in_progress', 'pending', 'pending', 'transcribe', ?, 'old', NULL, NULL, 'old')",
+                    (worker_id,),
+                )
+                connection.execute(
+                    "INSERT INTO call_records VALUES (2, 'in_progress', 'pending', 'pending', 'transcribe', ?, 'old', NULL, NULL, 'old')",
+                    ("tr-" + "f" * 32,),
+                )
+
+        def poll(self):
+            return self.returncode
+
+    def terminate(_proc) -> None:
+        group_gone["value"] = True
+
+    def checked_update(database, *, stage, worker_id, requeue):
+        if requeue:
+            assert group_gone["value"] is True
+        return original_update(
+            database, stage=stage, worker_id=worker_id, requeue=requeue
+        )
+
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", CrashedProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+    monkeypatch.setattr(calls_runtime, "update_exact_stage_claims", checked_update)
+
+    report = run_sequential_pipeline_workers(
+        config,
+        {},
+        calls_runtime.run_command,
+        stages_override=("transcribe",),
+        run_id="crash-recovery",
+    )[0]
+
+    assert report["rc"] == 9
+    assert report["claim_recovery_ok"] is True
+    assert report["claim_recovery_rows"] == 1
+    with sqlite3.connect(config.working_db) as connection:
+        exact = connection.execute(
+            "SELECT transcription_status, pipeline_worker_id FROM call_records WHERE id = 1"
+        ).fetchone()
+        peer = connection.execute(
+            "SELECT transcription_status, pipeline_worker_id FROM call_records WHERE id = 2"
+        ).fetchone()
+    assert exact == ("pending", None)
+    assert peer == ("in_progress", "tr-" + "f" * 32)
+
+
+def test_claim_recovery_failure_blocks_the_next_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = config_for(tmp_path)
+    launched: list[str] = []
+
+    class FailedProcess:
+        pid = 52002
+        returncode = 9
+
+        def __init__(self, command, **_kwargs) -> None:
+            launched.append(command[command.index("--stages") + 1])
+
+        def poll(self):
+            return self.returncode
+
+    def failed_recovery(_database, *, requeue, **_kwargs):
+        if requeue:
+            raise RuntimeError("synthetic recovery failure")
+        return 0
+
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", FailedProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", lambda _proc: None)
+    monkeypatch.setattr(calls_runtime, "update_exact_stage_claims", failed_recovery)
+
+    reports = run_sequential_pipeline_workers(
+        config,
+        {},
+        calls_runtime.run_command,
+        stages_override=("transcribe", "resolve"),
+        run_id="recovery-failure",
+    )
+
+    assert launched == ["transcribe"]
+    assert reports[0]["rc"] == 70
+    assert reports[0]["worker_rc"] == 9
+    assert reports[0]["claim_recovery_ok"] is False
+    assert reports[0]["claim_recovery_error"] == "RuntimeError"
+
+
+def test_sigterm_scope_wraps_the_entire_sequential_pipeline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    entered: list[threading.Event] = []
+    runner_called = {"value": False}
+
+    class StopImmediately:
+        def __init__(self, event: threading.Event) -> None:
+            self.event = event
+
+        def __enter__(self):
+            entered.append(self.event)
+            self.event.set()
+
+        def __exit__(self, *_args):
+            return False
+
+    def runner(*_args):
+        runner_called["value"] = True
+        return {"rc": 0}
+
+    monkeypatch.setattr(calls_runtime, "stop_event_on_termination", StopImmediately)
+
+    reports = run_sequential_pipeline_workers(
+        config_for(tmp_path), {}, runner, stages_override=("transcribe",)
+    )
+
+    assert len(entered) == 1
+    assert entered[0].is_set()
+    assert runner_called["value"] is False
+    assert reports == [
+        {
+            "rc": 125,
+            "command": "worker:transcribe",
+            "orchestrator_stop_reason": "termination_requested",
+        }
+    ]
+
+
+def test_sequential_stop_event_terminates_group_and_recovers_exact_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stop_event = threading.Event()
+    terminated: list[int] = []
+    recoveries: list[tuple[str, str]] = []
+
+    class WaitingProcess:
+        pid = 52003
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.returncode = None
+
+        def poll(self):
+            stop_event.set()
+            return self.returncode
+
+    def terminate(proc) -> None:
+        terminated.append(proc.pid)
+        proc.returncode = -signal.SIGTERM
+
+    def update_claims(_database, *, stage, worker_id, requeue):
+        if requeue:
+            recoveries.append((stage, worker_id))
+        return 0
+
+    monkeypatch.setattr(calls_runtime.subprocess, "Popen", WaitingProcess)
+    monkeypatch.setattr(calls_runtime, "terminate_process_group", terminate)
+    monkeypatch.setattr(calls_runtime, "update_exact_stage_claims", update_claims)
+
+    report = run_sequential_pipeline_workers(
+        config_for(tmp_path),
+        {},
+        calls_runtime.run_command,
+        stages_override=("transcribe",),
+        stop_event=stop_event,
+        run_id="sequential-term",
+    )[0]
+
+    assert report["rc"] == 125
+    assert report["claim_recovery_ok"] is True
+    assert terminated == [52003]
+    assert recoveries == [("transcribe", report["stage_worker_id"])]
+
+
+def test_sigterm_handler_sets_event_and_restores_previous_handler() -> None:
+    event = threading.Event()
+    previous = signal.getsignal(signal.SIGTERM)
+
+    with calls_runtime.stop_event_on_termination(event):
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        assert event.is_set()
+
+    assert signal.getsignal(signal.SIGTERM) is previous
 
 
 def test_each_stage_timeout_is_capped_by_shared_four_hour_cycle() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sqlite3
@@ -890,6 +891,42 @@ def test_live_headers_are_exact_production_contract():
     assert publisher.TRANSCRIPT_COLUMN_INDEX == 15
     assert publisher.EVIDENCE_COLUMN_INDEX == 16
     assert publisher.UTM_COLUMN_INDEX == 17
+
+
+def test_commercial_review_reaches_stage1_through_existing_18_columns(tmp_path):
+    from mango_mvp.deal_aware.stage1_snapshot import build_call_rollup
+
+    raw = trusted_record()
+    analysis = json.loads(raw["analysis_json"])
+    reason = "commercial_payment_outstanding"
+    analysis["quality_flags"].update(
+        {
+            "call_type": "service_call",
+            "commercial_review": True,
+            "commercial_review_reason_codes": [reason],
+            "needs_review": True,
+            "review_reasons": [reason],
+        }
+    )
+    analysis["needs_review"] = True
+    analysis["review_reasons"] = [reason]
+    analysis["review_reasons_ru"] = contract.review_reasons_ru([reason])
+    raw["analysis_json"] = json.dumps(with_current_output_hash(analysis), ensure_ascii=False)
+
+    published = with_number(publisher.call_projection(raw, {}))
+    assert len(published) == len(publisher.LIVE_HEADERS) == 18
+    assert published[publisher.LIVE_HEADERS.index("Категория")] == "Сервис"
+    assert published[publisher.LIVE_HEADERS.index("Нужна проверка")] == "Да"
+
+    source = tmp_path / "publisher_rows.csv"
+    with source.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=publisher.LIVE_HEADERS)
+        writer.writeheader()
+        writer.writerow(dict(zip(publisher.LIVE_HEADERS, published)))
+
+    rollup = build_call_rollup(source)[0]
+    assert rollup["commercial_review_calls"] == 1
+    assert rollup["sales_calls"] == 0
 
 
 def test_repository_launchd_template_is_shadow_only():

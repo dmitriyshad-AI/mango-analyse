@@ -72,6 +72,127 @@ def _v3_answer(claim_requests=None, **overrides: Any) -> dict[str, Any]:
 
 
 class AnalyzeServiceTest(unittest.TestCase):
+    def test_commercial_review_marks_four_non_sales_risks_without_reclassification(self) -> None:
+        service = AnalyzeService(make_settings())
+        cases = (
+            (
+                "demo_missing",
+                "Менеджер: Обещали прислать демоурок, но клиент так и не получил материал.",
+                "service_call",
+                "commercial_demo_material_missing",
+            ),
+            (
+                "course_followup",
+                "Менеджер: Ранее обсуждали курс математики; клиент ждёт, когда ему перезвонят.",
+                "existing_client_progress",
+                "commercial_course_followup_pending",
+            ),
+            (
+                "payment_balance",
+                "Менеджер: По смене лагеря оплата поступила не вся, осталась доплата.",
+                "service_call",
+                "commercial_payment_outstanding",
+            ),
+            (
+                "retention",
+                "Клиент: Думаю отказаться от курса до оформления договора и оплаты.",
+                "service_call",
+                "commercial_retention_risk",
+            ),
+        )
+
+        for case_id, text, call_type, expected_reason in cases:
+            with self.subTest(case_id=case_id):
+                normalized = service._apply_commercial_review(
+                    {
+                        "quality_flags": {"call_type": call_type, "needs_review": False},
+                        "needs_review": False,
+                        "review_reasons": [],
+                    },
+                    text=text,
+                )
+                flags = normalized["quality_flags"]
+                self.assertEqual(flags["call_type"], call_type)
+                self.assertTrue(flags["commercial_review"])
+                self.assertIn(expected_reason, flags["commercial_review_reason_codes"])
+                self.assertTrue(normalized["needs_review"])
+                self.assertIn(expected_reason, normalized["review_reasons"])
+                self.assertTrue(any("РОП" in reason for reason in normalized["review_reasons_ru"]))
+
+    def test_commercial_review_ignores_four_administrative_neighbors(self) -> None:
+        service = AnalyzeService(make_settings())
+        cases = (
+            "Менеджер: Повторно отправлю документы по договору на почту.",
+            "Клиент: Нужно перевести ребёнка между сменами лагеря.",
+            "Менеджер: Оплата за обучение поступила полностью, осталось отправить договор.",
+            "Клиент: Во сколько трансфер на смену лагеря? Менеджер: Автобус отправляется утром.",
+        )
+
+        for text in cases:
+            with self.subTest(text=text):
+                normalized = service._apply_commercial_review(
+                    {
+                        "quality_flags": {"call_type": "service_call", "needs_review": False},
+                        "needs_review": False,
+                        "review_reasons": [],
+                    },
+                    text=text,
+                )
+                flags = normalized["quality_flags"]
+                self.assertEqual(flags["call_type"], "service_call")
+                self.assertFalse(flags["commercial_review"])
+                self.assertEqual(flags["commercial_review_reason_codes"], [])
+                self.assertFalse(normalized["needs_review"])
+                self.assertEqual(normalized["review_reasons"], [])
+
+    def test_commercial_review_does_not_join_events_or_ignore_resolved_state(self) -> None:
+        service = AnalyzeService(make_settings())
+        false_positives = (
+            "Демо-урок получили вчера. Договор так и не пришёл.",
+            "Хотим отменить одно занятие, потому что уже оплатили обучение.",
+            "Не будем отменять курс, договор и оплата остаются в силе.",
+            "Ранее обсуждали курс математики. Документы отправили. Расписание уточнили. Доступ работает. Позже нужно перезвонить по справке.",
+            "Демо-урок не получили. Позже получили демоурок и материалы.",
+            "Оплата по курсу не поступила полностью. Затем оплату получили полностью.",
+            "Клиент думает о курсе, но не будем отменять занятия.",
+            "Мы не отказываемся от курса и продолжим занятия.",
+        )
+
+        for text in false_positives:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    service._commercial_review_reason_codes(text, "service_call"),
+                    [],
+                )
+
+    def test_commercial_review_payment_settlement_requires_explicit_full_payment(self) -> None:
+        service = AnalyzeService(make_settings())
+        outstanding = (
+            "По курсу получили оплату частично, остался остаток.",
+            "По курсу получили оплату частично, осталась доплата.",
+            "По курсу оплата не получена полностью, остался остаток.",
+        )
+        for text in outstanding:
+            with self.subTest(text=text):
+                self.assertIn(
+                    "commercial_payment_outstanding",
+                    service._commercial_review_reason_codes(text, "service_call"),
+                )
+
+        settled = (
+            "Оплата по курсу не поступила. Позже оплату получили полностью.",
+            "Оплата по курсу не поступила. Позже поступила вся сумма.",
+            "Оплата по курсу не поступила. Позже остаток закрыт.",
+            "Оплата по курсу не поступила. Позже остаток погашен.",
+            "Оплата по курсу не поступила. Позже оплату внесли без остатка.",
+        )
+        for text in settled:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    service._commercial_review_reason_codes(text, "service_call"),
+                    [],
+                )
+
     def test_compact_prompt_asks_only_for_fields_and_claims(self) -> None:
         prompt = AnalyzeService(make_settings())._analysis_system_prompt("compact")
 

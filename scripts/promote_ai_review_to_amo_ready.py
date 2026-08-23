@@ -9,8 +9,8 @@ from typing import Iterable
 
 try:
     import pandas as pd
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("pandas is required for this script") from exc
+except ImportError:  # pragma: no cover
+    pd = None
 
 
 AMO_EXPORT_HEADERS = [
@@ -64,6 +64,8 @@ def write_csv(path: Path, rows: Iterable[dict[str, str]], headers: list[str]) ->
 
 
 def write_xlsx(path: Path, rows: list[dict[str, str]], sheet_name: str) -> None:
+    if pd is None:
+        raise SystemExit("pandas is required for this script")
     path.parent.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(rows)
     with pd.ExcelWriter(path) as writer:
@@ -106,7 +108,34 @@ def build_amo_row(contact: dict[str, str]) -> dict[str, str]:
     }
 
 
+def promote_contacts(contacts: list[dict[str, str]]) -> int:
+    promoted_count = 0
+    for row in contacts:
+        commercial_review = (row.get("Коммерческая проверка") or "").strip() == "Да"
+        commercial_reviewed = (
+            row.get("Коммерческая проверка подтверждена") or ""
+        ).strip() == "Да"
+        if commercial_review and not commercial_reviewed:
+            row["Нужна ручная проверка"] = "Да"
+            row["Готово к записи в AMO"] = "Нет"
+            row["Причина статуса AMO"] = "требуется коммерческая проверка РОПа"
+            continue
+        if (row.get("Нужна ручная проверка") or "").strip() != "Да":
+            continue
+        row["Нужна ручная проверка"] = "Нет"
+        row["Готово к записи в AMO"] = "Да"
+        row["Причина статуса AMO"] = (
+            "готово к записи в AMO после подтверждения коммерческой проверки РОПом"
+            if commercial_review
+            else "готово к записи в AMO после снятия AI-review"
+        )
+        promoted_count += 1
+    return promoted_count
+
+
 def main() -> None:
+    if pd is None:
+        raise SystemExit("pandas is required for this script")
     args = parse_args()
     source_root = Path(args.source_root).expanduser().resolve()
     out_root = Path(args.out_root).expanduser().resolve()
@@ -123,13 +152,7 @@ def main() -> None:
     contacts = read_csv_rows(source_contacts_csv)
     contact_headers = list(contacts[0].keys()) if contacts else []
 
-    promoted_count = 0
-    for row in contacts:
-        if (row.get("Нужна ручная проверка") or "").strip() == "Да":
-            row["Нужна ручная проверка"] = "Нет"
-            row["Готово к записи в AMO"] = "Да"
-            row["Причина статуса AMO"] = "готово к записи в AMO после снятия AI-review"
-            promoted_count += 1
+    promoted_count = promote_contacts(contacts)
 
     amo_rows = [build_amo_row(row) for row in contacts if (row.get("Готово к записи в AMO") or "").strip() == "Да"]
     review_rows = [row for row in contacts if (row.get("Нужна ручная проверка") or "").strip() == "Да"]

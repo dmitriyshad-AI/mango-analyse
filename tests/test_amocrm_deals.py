@@ -916,6 +916,94 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertIn("shadow_mode", final["writeback_blockers"])
         self.assertTrue(comparison["verdict_changed"])
 
+    def test_commercial_service_neutralizes_only_service_penalty(self) -> None:
+        def context(commercial: bool) -> PhoneContext:
+            return PhoneContext(
+                phone="+70000000000",
+                source_dir="",
+                contact_row={},
+                call_rows=[
+                    {
+                        "Тип звонка": "service_call",
+                        "Коммерческая проверка": "Да" if commercial else "Нет",
+                    }
+                ],
+                call_ids=["test-call"],
+                first_call_at=None,
+                last_call_at=None,
+                manager_history=[],
+                interest_summary="",
+                objections_summary="",
+                current_sales_temperature="",
+                recommended_next_step="",
+                follow_up_due_at=None,
+                history_summary="",
+                chronology="",
+                tallanto_id="",
+                tallanto_match_status="",
+            )
+
+        kwargs = {
+            "lead": {"id": 10, "pipeline_id": 100, "status_id": 200},
+            "pipeline_map": {100: {"name": "Сделки B2C"}},
+            "status_map": {(100, 200): {"name": "В работе"}},
+            "user_map": {},
+            "target_pipeline_ids": {100},
+            "reference_dt": None,
+            "contact_id": 1,
+        }
+        ordinary = deals_module._candidate_score(phone_context=context(False), **kwargs)
+        commercial = deals_module._candidate_score(phone_context=context(True), **kwargs)
+
+        self.assertEqual(commercial.score, ordinary.score + 4)
+        self.assertNotIn("sales_context_match", commercial.reason)
+        self.assertIn("commercial_review_service_penalty_neutralized", commercial.reason)
+
+    def test_commercial_review_acknowledgement_accepts_only_literal_russian_yes(self) -> None:
+        self.assertTrue(deals_module._commercial_review_acknowledged(" Да "))
+        for value in ("yes", "true", "1"):
+            with self.subTest(value=value):
+                self.assertFalse(deals_module._commercial_review_acknowledged(value))
+
+    def test_commercial_review_survives_llm_merge_and_blocks_writeback(self) -> None:
+        heuristic = {
+            "close_verdict": "closed_valid",
+            "premature_close_risk": "no_risk",
+            "match_confidence": 0.95,
+            "analysis_source": "heuristic",
+            "commercial_review": True,
+        }
+        llm = {
+            "close_verdict": "closed_valid",
+            "premature_close_risk": "no_risk",
+            "confidence": 0.95,
+            "needs_manual_review": False,
+            "commercial_review": False,
+            "commercial_review_reviewed": True,
+            "conflict_flags": [],
+        }
+
+        with patch.object(deals_module, "_analysis_mode", return_value="llm_primary"):
+            final, _, _ = deals_module._finalize_analysis(
+                heuristic_analysis=heuristic,
+                llm_analysis=llm,
+            )
+
+        self.assertTrue(final["commercial_review"])
+        self.assertFalse(final["commercial_review_reviewed"])
+        self.assertFalse(final["writeback_allowed"])
+        self.assertIn("commercial_review", final["writeback_blockers"])
+
+        heuristic["commercial_review_reviewed"] = True
+        with patch.object(deals_module, "_analysis_mode", return_value="llm_primary"):
+            reviewed, _, _ = deals_module._finalize_analysis(
+                heuristic_analysis=heuristic,
+                llm_analysis=llm,
+            )
+        self.assertTrue(reviewed["commercial_review_reviewed"])
+        self.assertTrue(reviewed["writeback_allowed"])
+        self.assertNotIn("commercial_review", reviewed["writeback_blockers"])
+
     def test_finalize_analysis_allows_business_contradictions_in_conflict_flags(self) -> None:
         heuristic = {
             "close_verdict": "closed_valid",

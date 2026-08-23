@@ -61,6 +61,7 @@ CALLS_HEADERS = [
     "recommended_followup_date",
     "recommended_followup_reason",
     "call_type",
+    "commercial_review",
     "needs_review",
     "review_reasons",
     "quality_mode",
@@ -94,6 +95,7 @@ CONTACTS_HEADERS = [
     "recommended_followup_date",
     "recommended_followup_reason",
     "latest_call_type",
+    "commercial_review",
     "needs_review",
     "review_reasons_latest",
     "last_next_step_action",
@@ -269,6 +271,7 @@ def call_to_row(call: CallRecord, analysis: Dict[str, Any]) -> Dict[str, Any]:
     tags = _join_unique(_as_list(analysis.get("tags")))
     quality_flags = _as_dict(analysis.get("quality_flags"))
     call_type = _clean_text(quality_flags.get("call_type"))
+    commercial_review = bool(quality_flags.get("commercial_review"))
     needs_review = bool(analysis.get("needs_review") if analysis.get("needs_review") is not None else quality_flags.get("needs_review"))
     review_reasons = _join_unique(
         # The fail-closed projection already carries one Russian sentence per
@@ -336,6 +339,7 @@ def call_to_row(call: CallRecord, analysis: Dict[str, Any]) -> Dict[str, Any]:
         "recommended_followup_date": recommended_followup_date,
         "recommended_followup_reason": recommended_followup_reason,
         "call_type": call_type,
+        "commercial_review": commercial_review,
         "needs_review": needs_review,
         "review_reasons": review_reasons,
         "quality_mode": quality_mode,
@@ -438,6 +442,7 @@ def build_contact_rows(call_rows: Iterable[Dict[str, Any]]) -> list[Dict[str, An
                 "recommended_followup_date": _clean_text(latest.get("recommended_followup_date")),
                 "recommended_followup_reason": _clean_text(latest.get("recommended_followup_reason")),
                 "latest_call_type": _clean_text(latest.get("call_type")),
+                "commercial_review": any(bool(row.get("commercial_review")) for row in rows),
                 "needs_review": any(bool(row.get("needs_review")) for row in rows),
                 "review_reasons_latest": _clean_text(latest.get("review_reasons")),
                 "last_next_step_action": _clean_text(latest.get("next_step_action")),

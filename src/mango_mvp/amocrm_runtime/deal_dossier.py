@@ -264,7 +264,7 @@ def _analysis_summary(analysis: dict[str, Any]) -> str:
     return ""
 
 
-def _analysis_call_fields(analysis: dict[str, Any]) -> dict[str, str]:
+def _analysis_call_fields(analysis: dict[str, Any]) -> dict[str, Any]:
     """Project the current guarded analysis; never revive an older export row."""
     fields = analysis.get("display_fields")
     if not isinstance(fields, dict):
@@ -272,6 +272,8 @@ def _analysis_call_fields(analysis: dict[str, Any]) -> dict[str, str]:
     fields = fields if isinstance(fields, dict) else {}
     interests = fields.get("interests") if isinstance(fields.get("interests"), dict) else {}
     next_step = fields.get("next_step") if isinstance(fields.get("next_step"), dict) else {}
+    quality_flags = analysis.get("quality_flags")
+    quality_flags = quality_flags if isinstance(quality_flags, dict) else {}
 
     def joined(value: Any) -> str:
         if isinstance(value, list):
@@ -286,6 +288,7 @@ def _analysis_call_fields(analysis: dict[str, Any]) -> dict[str, str]:
         "follow_up_due_at": _safe_text(next_step.get("due")),
         "probability_percent": _safe_text(analysis.get("follow_up_score")),
         "lead_priority": _safe_text(fields.get("lead_priority")),
+        "commercial_review": bool(quality_flags.get("commercial_review")),
     }
 
 
@@ -398,6 +401,8 @@ def build_deal_dossier(
             "analyze_status": _safe_text(row.get("Статус Analyze")),
             "summary": summary,
             **analysis_fields,
+            "commercial_review": bool(analysis_fields.get("commercial_review"))
+            or _safe_text(row.get("Коммерческая проверка")).casefold() in {"1", "true", "yes", "да"},
             "source_filename": source_filename,
             "source_db_path": source_db_path,
         }

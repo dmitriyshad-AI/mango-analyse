@@ -43,7 +43,10 @@ from mango_mvp.services.dialogue_contract import (
     safe_error_text,
 )
 from mango_mvp.services.llm_response_cache import LLMResponseCache
-from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
+from mango_mvp.services.pipeline_claims import (
+    configured_stage_worker_id,
+    release_stale_pipeline_claims,
+)
 from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
 from mango_mvp.utils.codex_cli import append_codex_service_tier
 
@@ -274,7 +277,9 @@ class TranscribeService:
 
     @staticmethod
     def _pipeline_worker_id(prefix: str) -> str:
-        return f"{prefix}-{os.getpid()}-{uuid.uuid4().hex}"
+        return configured_stage_worker_id(prefix) or (
+            f"{prefix}-{os.getpid()}-{uuid.uuid4().hex}"
+        )
 
     def _claim_transcribe_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
         if limit <= 0:

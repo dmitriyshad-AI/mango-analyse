@@ -132,6 +132,56 @@ def test_sync_dry_run_does_not_mark_contract_invalid_analysis_done(tmp_path) -> 
     assert stored.dead_letter_stage is None
 
 
+def test_live_sync_keeps_commercial_review_retryable_until_reanalysis(tmp_path) -> None:
+    settings = replace(
+        make_settings(),
+        database_url=f"sqlite:///{tmp_path / 'sync.db'}",
+        legacy_amocrm_sync_enabled=True,
+        sync_dry_run=False,
+    )
+    init_db(settings)
+    factory = build_session_factory(settings)
+    with factory() as session:
+        call = CallRecord(
+            source_file=str(tmp_path / "call.mp3"),
+            source_filename="call.mp3",
+            source_call_id="commercial-review-call",
+            phone="+70000000000",
+            transcript_variants_json=_variants(
+                trusted=True, source_call_id="commercial-review-call"
+            ),
+            analysis_status="done",
+            sync_status="pending",
+            analysis_json=json.dumps({"analysis_schema_version": "v3"}),
+        )
+        session.add(call)
+        session.commit()
+        call_id = call.id
+
+    guarded = {
+        "quality_flags": {
+            "commercial_review": True,
+            "commercial_review_reviewed": True,
+        },
+        "review_reasons": ["commercial_payment_outstanding"],
+    }
+    with patch(
+        "mango_mvp.services.sync_amocrm.guard_stored_analysis",
+        return_value=guarded,
+    ), patch("mango_mvp.services.sync_amocrm.AmoCRMClient") as client_class:
+        with factory() as session:
+            result = AmoCRMSyncService(settings).run(session, limit=1)
+            stored = session.get(CallRecord, call_id)
+
+    assert result["skipped"] == 1
+    assert stored.sync_status == "failed"
+    assert stored.sync_attempts == 0
+    assert stored.next_retry_at is not None
+    assert stored.dead_letter_stage is None
+    assert stored.last_error == "sync:commercial_review_pending"
+    client_class.return_value.find_contact_by_phone.assert_not_called()
+
+
 def test_live_sync_rechecks_source_after_contact_lookup_before_any_amo_write(
     tmp_path,
 ) -> None:

@@ -12,9 +12,30 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mango_mvp.utils.phone import normalize_phone
+from mango_mvp.services.dialogue_contract import ANALYSIS_REASON_RU
 
 
 SCHEMA_VERSION = "deal_aware_stage1_snapshot_v1"
+COMMERCIAL_REVIEW_REASON_CODES = frozenset(
+    code for code in ANALYSIS_REASON_RU if code.startswith("commercial_")
+)
+
+
+def _commercial_review(row: dict[str, Any]) -> bool:
+    explicit = safe_text(
+        row.get("commercial_review") or row.get("Коммерческая проверка")
+    ).casefold()
+    if explicit in {"1", "true", "yes", "да"}:
+        return True
+    reasons = safe_text(
+        row.get("review_reasons")
+        or row.get("Причины ручной проверки")
+        or row.get("Что проверить РОПу")
+    )
+    return any(
+        code in reasons or ANALYSIS_REASON_RU[code] in reasons
+        for code in COMMERCIAL_REVIEW_REASON_CODES
+    )
 
 
 @dataclass(frozen=True)
@@ -181,6 +202,7 @@ def build_call_snapshot(path: Path | None) -> list[dict[str, Any]]:
                 "full_pipeline_done": safe_text(row.get("Полная цепочка выполнена")),
                 "contentful": safe_text(row.get("Содержательный звонок") or row.get("contentful")),
                 "needs_review": safe_text(row.get("Нужна ручная проверка") or row.get("needs_review")),
+                "commercial_review": _commercial_review(row),
                 "call_summary": safe_text(row.get("Краткое резюме разговора") or row.get("history_summary")),
                 "call_type": safe_text(row.get("Тип звонка") or row.get("call_type")),
                 "parent_name": safe_text(row.get("ФИО родителя")),
@@ -293,6 +315,7 @@ def build_call_rollup(path: Path) -> list[dict[str, Any]]:
                 "service_calls": 0,
                 "existing_client_progress_calls": 0,
                 "technical_calls": 0,
+                "commercial_review_calls": 0,
                 "first_call_at": "",
                 "last_call_at": "",
                 "managers": set(),
@@ -320,6 +343,8 @@ def build_call_rollup(path: Path) -> list[dict[str, Any]]:
             item["existing_client_progress_calls"] += 1
         elif call_type == "technical_call":
             item["technical_calls"] += 1
+        if _commercial_review(row):
+            item["commercial_review_calls"] += 1
         started = safe_text(row.get("started_at") or row.get("Дата и время звонка"))
         if started:
             if not item["first_call_at"] or started < item["first_call_at"]:

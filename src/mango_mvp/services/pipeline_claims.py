@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
@@ -7,6 +9,26 @@ from sqlalchemy.orm import Session
 
 from mango_mvp.config import Settings
 from mango_mvp.services.controlled_call_scope import require_unique_controlled_call
+
+STAGE_WORKER_ID_ENV = "MANGO_CALLS_STAGE_WORKER_ID"
+STAGE_WORKER_ID_RE = re.compile(r"(?:tr|bf|rs|an)-[0-9a-f]{32}")
+
+
+def stage_worker_id_is_valid(prefix: str, worker_id: str) -> bool:
+    return bool(
+        STAGE_WORKER_ID_RE.fullmatch(worker_id)
+        and worker_id.startswith(f"{prefix}-")
+    )
+
+
+def configured_stage_worker_id(prefix: str) -> str | None:
+    """Return the orchestrator-owned claim identity, rejecting any mismatch."""
+    worker_id = os.getenv(STAGE_WORKER_ID_ENV, "").strip()
+    if not worker_id:
+        return None
+    if not stage_worker_id_is_valid(prefix, worker_id):
+        raise RuntimeError(f"{STAGE_WORKER_ID_ENV} is invalid for stage {prefix}")
+    return worker_id
 
 
 def utc_now() -> datetime:

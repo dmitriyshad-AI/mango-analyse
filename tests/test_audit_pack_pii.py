@@ -108,8 +108,9 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert (pack / "prebuild_inventory.json").read_bytes() == inventory.read_bytes()
     manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
     assert set(manifest["files"]) == {"task.md", "prebuild_inventory.json", "git_context.txt", "context_files.json", "review_prompt.md"}
-    assert manifest["pii_redaction"] == ["ru_phone", "email"]
-    assert manifest["secret_handling"] == "listed patterns blocked, not redacted"
+    assert manifest["pii_redaction"] == ["phone", "email"]
+    assert "not copied" in manifest["secret_handling"]
+    assert manifest["code_surface_sha256"] != make_audit_pack._sha(b"")
     assert f"PACK_DIR: {manifest['pack_path']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert f"NONCE: {manifest['review_nonce']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert not make_audit_pack._valid_review_result(
@@ -155,6 +156,21 @@ def test_claude_context_blocks_pii_in_byte_exact_inventory(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="PII-like"):
         make_audit_pack.create_claude_context_pack(root, "blocked_pii", task, inventory)
     assert not list((root / "audits/_inbox").glob("blocked_pii_*"))
+
+
+def test_claude_context_auto_includes_safe_files_named_by_task_without_copying_contents(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    test_file = root / "tests/test_owner.py"
+    test_file.parent.mkdir()
+    synthetic = "OPENAI_API_KEY=sk-proj-syntheticexamplevalue"
+    test_file.write_text(f"FIXTURE = {synthetic!r}\n", encoding="utf-8")
+    task.write_text(task.read_text(encoding="utf-8") + "Тест-команда: pytest tests/test_owner.py\n", encoding="utf-8")
+
+    pack = make_audit_pack.create_claude_context_pack(root, "auto_context", task, inventory)
+
+    context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))["files"]
+    assert "tests/test_owner.py" in context
+    assert all(synthetic not in item.read_text(encoding="utf-8") for item in pack.iterdir())
 
 
 def test_claude_context_rejects_forbidden_and_symlink_sources_without_reading(tmp_path, monkeypatch):
@@ -209,6 +225,26 @@ def test_claude_context_receipt_comes_from_restricted_cli_and_deduplicates(tmp_p
     stored = pack.with_name(pack.name + "_claude_cli.json")
     stored.write_bytes(stored.read_bytes() + b"\n")
     assert any("Claude output" in item for item in make_audit_pack.verify_claude_context(root, pack, receipt))
+
+
+def test_claude_stop_verdict_creates_evidence_but_blocks_receipt(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    pack = make_audit_pack.create_claude_context_pack(root, "stopped", task, inventory)
+    binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o700)
+
+    def fake_run(command, **_kwargs):
+        session = command[command.index("--session-id") + 1]
+        review = _valid_review(pack).replace("VERDICT: PASS", "VERDICT: STOP")
+        return make_audit_pack.subprocess.CompletedProcess(
+            command, 0, json.dumps({"session_id": session, "result": review}), "",
+        )
+
+    monkeypatch.setattr(make_audit_pack.subprocess, "run", fake_run)
+    receipt = make_audit_pack.run_claude_review(root, pack, claude_bin=binary)
+
+    assert any("verdict is not PASS: STOP" in item for item in make_audit_pack.verify_claude_context(root, pack, receipt))
 
 
 def test_claude_context_surface_detects_new_untracked_code(tmp_path, monkeypatch):

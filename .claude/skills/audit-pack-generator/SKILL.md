@@ -22,7 +22,8 @@ Create `audits/_inbox/<block>_<YYYYMMDD_HHMMSS>/` with:
 - `risk_review.md`
 - `backward_compatibility.md`
 
-Use `scripts/create_audit_pack.py` to create the skeleton when useful.
+Use the canonical `scripts/make_audit_pack.py` to create the skeleton. The
+legacy `.claude` entrypoint is only a compatibility wrapper.
 
 ## Content Rules
 
@@ -36,7 +37,7 @@ Use `scripts/create_audit_pack.py` to create the skeleton when useful.
 ## Minimal Command
 
 ```bash
-python3 .claude/skills/audit-pack-generator/scripts/create_audit_pack.py <block-name>
+python3 scripts/make_audit_pack.py <block-name>
 ```
 
 Then fill in the placeholders from actual git diff and test output.

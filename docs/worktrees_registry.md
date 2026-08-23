@@ -1,6 +1,7 @@
 # Реестр worktree
 
-Обновлено: 2026-08-23. Локальный источник факта: `git worktree list --porcelain`.
+Обновлено: 2026-08-23. Базовая сверка: 2026-08-13.
+Локальный источник факта: `git worktree list --porcelain`.
 Состояние M1 указано отдельно: главный Mac не видит его PID и рабочую папку.
 
 ## Правила
@@ -21,6 +22,7 @@
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/final-cleanup-regex-20260812` | `codex/final-cleanup-regex-20260812`, поглощена `main` в `a3593d74` | Завершённая перепись смысловых regex и удаление мёртвого кода. | Можно удалить после проверки чистоты по ранее данному разрешению владельца. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/kb-owner-update-20260813` | `codex/kb-owner-update-20260813`, база `a3593d74` | Новый неизменяемый релиз базы знаний по подтверждённым владельцем фактам и переключение рабочего указателя. | После слияния релиза в `main` и проверки рабочего указателя. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/unpk-partnership-playbook-20260816` | `279dc0ba`, `codex/unpk-partnership-playbook-20260816` | Документация партнёрской модели УНПК; чистый отдельный worktree. | После приёмки и слияния партнёрского playbook владельцем. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/context-reuse-gate-20260823` | `dbabf787`, `codex/context-reuse-gate-20260823` | Проектирование обязательного поиска существующей реализации и воспроизводимого контекста Claude CLI. | После приёмки и слияния ТЗ владельцем. |
 | `/Users/dmitrijfabarisov/Projects/Mango_asr_model_benchmark_20260808` | `0bd51462`, `codex/asr-model-benchmark-20260808` | Завершённый ASR-бенчмарк; относится к активному Calls-треку. | После приёмки владельцем Calls-трека. |
 | `/Users/dmitrijfabarisov/Projects/Mango_calls_quality_v3_m4_20260816` | `23757645`, `codex/mango-calls-quality-v3-m4-20260816` | Документация качества звонков и выборочного Resolve; чистый отдельный worktree. | После приёмки и слияния документации Calls владельцем. |
 | `/Users/dmitrijfabarisov/Projects/Mango_calls_utm_google_20260822` | `db63ee2b`, `codex/calls-utm-google-20260822` | Чужой незавершённый Calls-трек UTM/Google; 22.08 дерево грязное. Не использовать и не менять из других задач. | Только после завершения, коммита и отдельной приёмки владельцем Calls-трека. |

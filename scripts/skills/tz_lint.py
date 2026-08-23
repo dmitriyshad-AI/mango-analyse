@@ -16,7 +16,7 @@ for _path in (REPO_ROOT, REPO_ROOT / "src"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from scripts.preflight import parse_tz_header
+from scripts.preflight import is_code_task, parse_tz_header
 
 
 FOREIGN_USER_PATH_RE = re.compile(r"/Users/(dmitriy|dmitry|dima)(?:/|$)", re.I)
@@ -57,6 +57,15 @@ def lint_tz(path: Path) -> TzLintResult:
         issues.append(TzLintIssue("missing_header_test_command", 1, "В машинной шапке нет поля 'Тест-команда'."))
     if not header.semantic:
         issues.append(TzLintIssue("missing_header_semantic", 1, "В машинной шапке нет поля 'Семантический-аудит'."))
+    if is_code_task(header, text):
+        for code, label, value in (
+            ("missing_feature_id", "Feature-ID", header.feature_id),
+            ("missing_problem_id", "Problem-ID", header.problem_id),
+            ("missing_change", "Изменение", header.change),
+            ("missing_inventory_queries", "Ключевые-символы/слова", header.symbols or header.keywords),
+        ):
+            if not value:
+                issues.append(TzLintIssue(code, 1, f"Code-ТЗ требует поле '{label}'."))
 
     for lineno, line in enumerate(text.splitlines(), start=1):
         if FOREIGN_USER_PATH_RE.search(line) and "/Users/dmitrijfabarisov/" not in line:

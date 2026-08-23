@@ -93,3 +93,58 @@ def test_project_now_cli_accepts_explicit_root_and_out(tmp_path, monkeypatch):
 
     assert out.exists()
     assert "PROJECT_NOW" in out.read_text(encoding="utf-8")
+
+
+def test_project_now_groups_open_problem_attempts_without_queue_limit(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    for index in range(13):
+        _touch(root / f"tasks/_inbox_codex/filler_{index:02d}.md")
+    _touch(
+        root / "tasks/_inbox_codex/deep.md",
+        "Feature-ID: feature.deep\nProblem-ID: problem.deep\nСледующий шаг: взять в работу\n",
+    )
+    _touch(
+        root / "tasks/_running/active_a.md",
+        "Ветка: codex/a\nFeature-ID: feature.shared\nProblem-ID: problem.open\nСледующий шаг: завершить A\n",
+    )
+    _touch(
+        root / "tasks/_running/active_b.md",
+        "Ветка: codex/b\nFeature-ID: feature.shared\nProblem-ID: problem.other\n",
+    )
+    _touch(
+        root / "tasks/_done/done_open.md",
+        "> DONE 2026-08-22 10:00 | branch\n\nProblem-ID: problem.open\nИсход: attempt_complete\n",
+    )
+    _touch(
+        root / "tasks/_done/done_closed.md",
+        "> DONE 2026-08-23 10:00 | branch\n\nProblem-ID: problem.closed\nИсход: problem_closed\n",
+    )
+    _touch(
+        root / "tasks/_done/done_missing.md",
+        "> DONE 2026-08-23 11:00 | branch\n\nProblem-ID: problem.missing\n",
+    )
+
+    def fake_git(_root: Path, *args: str) -> str:
+        command = " ".join(args)
+        if command == "rev-parse --abbrev-ref HEAD":
+            return "codex/a"
+        if command == "rev-parse --short HEAD":
+            return "abc1234"
+        if command == "worktree list --porcelain":
+            return (
+                f"worktree {root}/wt-a\nHEAD aaaaaaaaaaaa1111\nbranch refs/heads/codex/a\n\n"
+                f"worktree {root}/wt-b\nHEAD bbbbbbbbbbbb2222\nbranch refs/heads/codex/b"
+            )
+        return ""
+
+    monkeypatch.setattr(project_now, "_run_git", fake_git)
+    monkeypatch.setattr(project_now, "_live_snapshot", lambda _root: {"status": "PASS", "processes": []})
+
+    text = project_now.build_project_now(root)
+
+    assert "`problem.open`" in text and "done_open.md (attempt_complete)" in text
+    assert "active_a.md | codex/a | wt-a@aaaaaaaaaaaa" in text
+    assert "`problem.deep`" in text
+    assert "`problem.closed`" not in text
+    assert "`problem.missing`" in text and "done_missing.md (outcome_missing)" in text
+    assert "`feature.shared`: active_a.md, active_b.md" in text

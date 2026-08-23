@@ -57,7 +57,7 @@
 - `tasks/_done/` — завершённые ТЗ и отчёты.
 - `tasks/_failed/` — остановленные ТЗ с причиной.
 
-Перемещай ТЗ только через `python3 scripts/task_move.py`: `--take`, `--done`, `--fail`. Старый inbox не триажить массово без отдельной команды; для залежавшихся задач делай только отчёт `python3 scripts/task_stale_report.py`.
+Перемещай ТЗ только через `python3 scripts/task_move.py`: `--take`, `--done`, `--fail`. Для завершения ТЗ с `Problem-ID` обязателен `--outcome attempt_complete|problem_closed|blocked|superseded`; `problem_closed` требует `Closure-evidence`, а завершённая попытка не закрывает проблему автоматически. Старый inbox не триажить массово без отдельной команды; для залежавшихся задач делай только отчёт `python3 scripts/task_stale_report.py`.
 
 ## Preflight
 
@@ -65,9 +65,16 @@
 
 1. `python3 scripts/project_now.py`
 2. `python3 scripts/task_move.py --take <TZ.md>`
-3. `python3 scripts/preflight.py --tz tasks/_running/<TZ.md>`
+3. `python3 scripts/skills/inventory_before_build.py --feature-id ... --problem-id ... --change ... --symbols ... --keywords ... --out-dir <audit-dir>`
+4. Собрать Claude context pack и получить read-only receipt по
+   `.agents/skills/mango-development-process/SKILL.md`.
+5. `python3 scripts/preflight.py --tz tasks/_running/<TZ.md> --inventory <audit-dir>/prebuild_inventory.json --claude-receipt <receipt.json>`
 
-`preflight.py` должен остановить работу, если ТЗ не в `_running`, заявленные зоны пересекают запретные live/runtime пути, есть новая грязь вне зон ТЗ, `PROJECT_NOW.md` устарел, активный worktree не внесён в `docs/worktrees_registry.md`, или тест-команда из шапки не собирается в безопасном `--collect-only` режиме.
+Для code-ТЗ это hard gate: до кода обязательны доказательный inventory и роли,
+вычисленные preflight. Канонический порядок и контракт Claude-контекста:
+`.agents/skills/mango-development-process/SKILL.md`. Уже открытый диалог не
+освобождается от этих доказательств. `task_move --done` отдельно проверяет
+явный исход попытки и evidence закрытия проблемы, но не заменяет preflight.
 
 ## Interfaces
 
@@ -84,7 +91,7 @@
 Скрипты в `scripts/skills/` read-only и fail-soft, кроме `live_truth.py` перед live-действиями.
 
 - При взятии ТЗ запускай `python3 scripts/skills/tz_lint.py <TZ.md>` как advisory-проверку.
-- Перед новой фичей запускай `python3 scripts/skills/inventory_before_build.py --keywords "..." --symbols "..."` как advisory-проверку, что это уже не сделано.
+- Перед любой code-задачей запускай canonical inventory с идентификаторами и запросами из шапки ТЗ; `decision=stop` запрещает реализацию.
 - При любом FAIL регрейда обязательно запускай `python3 scripts/skills/fail_raw_export.py <run_dir>` и прикладывай сырьё.
 - Перед изменениями Wappi draft-loop обязательно запускай `python3 scripts/skills/wappi_draft_loop_replay.py --replay <jsonl>` только в dry-run/read-only режиме.
 - Перед деплоем или включением live-флага `python3 scripts/skills/live_truth.py` — жёсткий гейт; без фактического PID/worktree/HEAD/env дальше не идти.
@@ -110,6 +117,11 @@
 Зоны: scripts/, tests/, docs/, tasks/, AGENTS.md, .gitignore
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/...
 Семантический-аудит: да/нет
+Feature-ID: feature.stable_id
+Problem-ID: problem.stable_id
+Изменение: new/extend/fix/remove
+Ключевые-символы: exact_symbol_1,exact_symbol_2
+Ключевые-слова: business capability,existing implementation
 ```
 
 Зоны должны быть минимальными. Запретные runtime/live-write зоны (`stable_runtime/`, `~/.codex`, AMO/Tallanto/CRM write, M1 queue, `runs/`, `transcripts/`) не включать без отдельного явного подтверждения Дмитрия.

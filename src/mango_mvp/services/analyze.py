@@ -213,6 +213,12 @@ CURRENT_CAMP_PICKUP_RE = re.compile(
     re.I,
 )
 
+CAMP_PICKUP_SALES_OVERRIDE_RE = re.compile(
+    r"запис\w*|остав\w+\s+заявк\w*|подал\w+\s+заявк\w*|"
+    r"хоч\w+\s+(?:узнать\s+)?стоимост\w*|куп\w+\s+(?:курс|обучен)",
+    re.I,
+)
+
 EXISTING_CLIENT_PROGRESS_PATTERNS = (
     re.compile(
         r"обратн\w* связ\w*|как проходит|как вам курс|втор\w* семестр|"
@@ -2057,7 +2063,11 @@ class AnalyzeService:
             has_followup and meaningful_dialogue
         )
 
-        if service_signal and CURRENT_CAMP_PICKUP_RE.search(raw):
+        if (
+            service_signal
+            and CURRENT_CAMP_PICKUP_RE.search(raw)
+            and not CAMP_PICKUP_SALES_OVERRIDE_RE.search(raw)
+        ):
             return "service_call"
 
         if any(marker in lowered for marker in STRONG_NON_CONVERSATION_MARKERS) and not has_business_content:

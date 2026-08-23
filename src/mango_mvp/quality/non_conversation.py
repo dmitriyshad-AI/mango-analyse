@@ -93,8 +93,8 @@ VIRTUAL_SECRETARY_SCRIPT_RE = re.compile(
 )
 
 VIRTUAL_SECRETARY_HIGH_PRECISION_RE = re.compile(
-    r"(?:я|это)\s+(?:миа|мия|ния)\b.{0,80}(?:абонент|помощник|сообщени|трубк|звонк)|"
-    r"(?:абонент|помощник|сообщени|трубк|звонк).{0,80}(?:я|это)\s+(?:миа|мия|ния)\b|"
+    r"(?:я|это)\s+(?:миа|мия|ния)\b.{0,80}абонент|"
+    r"абонент.{0,80}(?:я|это)\s+(?:миа|мия|ния)\b|"
     r"электронн\w+\s+помощник|"
     r"у\s+абонента\s+нет\s+возможности\s+взять\s+трубку|"
     r"абоненту\s+пока\s+неудобно\s+разговаривать|"
@@ -324,10 +324,10 @@ def detect_non_conversation_signals(
     third_party_ivr_raw = bool(THIRD_PARTY_IVR_RE.search(combined))
     virtual_secretary = bool(
         VIRTUAL_SECRETARY_RE.search(client_text)
-        or VIRTUAL_SECRETARY_HIGH_PRECISION_RE.search(combined)
+        or VIRTUAL_SECRETARY_HIGH_PRECISION_RE.search(transcript)
         or (
-            VIRTUAL_SECRETARY_SELF_ID_RE.search(combined)
-            and VIRTUAL_SECRETARY_SCRIPT_RE.search(combined)
+            VIRTUAL_SECRETARY_SELF_ID_RE.search(transcript)
+            and VIRTUAL_SECRETARY_SCRIPT_RE.search(transcript)
         )
     )
     hard_no_live = bool(HARD_NO_LIVE_RE.search(combined))

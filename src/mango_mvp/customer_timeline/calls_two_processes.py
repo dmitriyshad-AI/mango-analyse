@@ -5743,24 +5743,20 @@ def prepare_ingest_inputs(
             for entry in early_latest.values()
         ):
             raise RuntimeError("controlled capture manifest contains another call")
-    config.working_audio_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    config.working_audio_dir.chmod(0o700)
-    validate_owner_only_directory(
-        config.working_audio_dir,
-        label="working_audio",
-        owner_only_mode=0o700,
-    )
+    config.working_audio_dir.mkdir(parents=True, exist_ok=True)
     legacy_topology = normalize_recoverable_legacy_call_states(
         config.working_db
     )
     rows: list[dict[str, str]] = []
     actions: dict[str, int] = {}
     skipped: dict[str, int] = {}
+    provider_untrusted: dict[str, int] = {}
     stable_before = datetime.now(timezone.utc) - timedelta(
         minutes=max(0, config.recording_set_stabilization_minutes)
     )
     fully_ready_call_ids = read_fully_ready_call_ids(config)
     working_call_ids = read_ingested_call_ids(config.working_db)
+    working_recording_ids = read_ingested_recording_ids(config.working_db)
     if controlled_request is not None and (
         working_call_ids - {controlled_request.source_call_id}
     ):
@@ -5821,12 +5817,21 @@ def prepare_ingest_inputs(
                 atomic_replace_owner_only_bytes(provider_evidence_sidecar(target),
                     read_stable_regular_bytes(evidence_source, label="provider_role_evidence", owner_only_mode=0o600), label="provider_role_evidence")
             except (OSError, RuntimeError):
-                skipped["provider_evidence_untrusted"] = skipped.get("provider_evidence_untrusted", 0) + 1
+                provider_untrusted["sidecar_copy_failed"] = provider_untrusted.get("sidecar_copy_failed", 0) + 1
         if entry.provider_call_id in working_call_ids:
             skipped["already_in_working"] = skipped.get("already_in_working", 0) + 1
             continue
         source_recording_id = _entry_recording_id(entry)
-        if recording_id_counts[source_recording_id] > 1:
+        if source_recording_id and (
+            recording_id_counts[source_recording_id] > 1
+            or source_recording_id in working_recording_ids
+        ):
+            reason = (
+                "duplicate_in_snapshot"
+                if recording_id_counts[source_recording_id] > 1
+                else "duplicate_in_working_db"
+            )
+            provider_untrusted[reason] = provider_untrusted.get(reason, 0) + 1
             source_recording_id = ""
         rows.append(
             {
@@ -5859,6 +5864,8 @@ def prepare_ingest_inputs(
         "metadata_rows": len(rows),
         "skipped": skipped,
         "skipped_total": sum(skipped.values()),
+        "provider_evidence_untrusted": sum(provider_untrusted.values()),
+        "provider_evidence_untrusted_reasons": provider_untrusted,
         "asset_integrity_failures": sum(
             skipped.get(reason, 0)
             for reason in (
@@ -6389,6 +6396,27 @@ def read_ingested_call_ids(path: Path) -> set[str]:
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
             return {str(row[0]) for row in con.execute("SELECT source_call_id FROM call_records WHERE source_call_id IS NOT NULL")}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            return set()
+        raise
+
+
+def read_ingested_recording_ids(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
+            columns = {str(row[1]) for row in con.execute("PRAGMA table_info(call_records)")}
+            if "source_recording_id" not in columns:
+                return set()
+            return {
+                str(row[0]).strip()
+                for row in con.execute(
+                    "SELECT source_recording_id FROM call_records "
+                    "WHERE source_recording_id IS NOT NULL AND TRIM(source_recording_id) <> ''"
+                )
+            }
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc).casefold():
             return set()

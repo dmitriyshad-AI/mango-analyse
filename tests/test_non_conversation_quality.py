@@ -613,6 +613,31 @@ def test_live_person_named_miya_is_not_a_virtual_secretary() -> None:
     assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
 
 
+def test_live_person_named_miya_may_offer_to_take_a_message() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nЭто Мия, учебный центр Фотон. Оставьте сообщение куратору.\n\n"
+        "CLIENT:\nХочу записать ребёнка на курс и уточнить стоимость.",
+        call_type="sales_call",
+        duration_sec=70,
+    )
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+
+
+def test_generated_history_cannot_turn_a_live_call_into_a_virtual_secretary() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nРасскажу про курс и договор.\n\n"
+        "CLIENT:\nХочу записать ребёнка на математику и уточнить стоимость.",
+        history_summary="Я передам это абоненту.",
+        call_type="sales_call",
+        duration_sec=80,
+    )
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+
+
 @pytest.mark.parametrize(
     "system_reply",
     [

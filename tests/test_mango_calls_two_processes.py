@@ -2726,7 +2726,9 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
     ) == evidence
     provider_evidence_sidecar(source).chmod(0o644)
     unsafe_repeat = prepare_ingest_inputs(config)
-    assert unsafe_repeat["skipped"]["provider_evidence_untrusted"] == 1
+    assert unsafe_repeat["provider_evidence_untrusted_reasons"] == {
+        "sidecar_copy_failed": 1
+    }
     assert unsafe_repeat["metadata_rows"] == 1
 
 
@@ -11166,6 +11168,52 @@ def test_prepare_ingest_quarantines_duplicate_recording_ids(tmp_path: Path) -> N
 
     assert report["audio_files"] == 3
     assert [row["recording_id"] for row in rows] == ["", "", "rec-healthy"]
+    assert report["provider_evidence_untrusted_reasons"] == {
+        "duplicate_in_snapshot": 2
+    }
+
+
+def test_prepare_ingest_quarantines_recording_id_already_in_working_db(
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore
+
+    config = replace(config_for(tmp_path), recording_set_stabilization_minutes=0)
+    audio = config.recordings_dir / "call-new.mp3"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"audio")
+    CaptureManifestStore(config.capture_manifest).append(
+        _downloaded_entry("call-new", "rec-existing", audio)
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute(
+            "CREATE TABLE call_records(source_call_id TEXT, source_recording_id TEXT)"
+        )
+        con.execute("INSERT INTO call_records VALUES ('call-old', 'rec-existing')")
+
+    report = prepare_ingest_inputs(config)
+    with config.metadata_csv.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert rows[0]["recording_id"] == ""
+    assert report["audio_files"] == 1
+    assert report["skipped_total"] == 0
+    assert report["provider_evidence_untrusted_reasons"] == {
+        "duplicate_in_working_db": 1
+    }
+
+
+def test_prepare_ingest_does_not_restrict_an_existing_working_audio_directory(
+    tmp_path: Path,
+) -> None:
+    config = replace(config_for(tmp_path), recording_set_stabilization_minutes=0)
+    config.working_audio_dir.mkdir(parents=True, mode=0o755)
+    config.working_audio_dir.chmod(0o755)
+
+    prepare_ingest_inputs(config)
+
+    assert config.working_audio_dir.stat().st_mode & 0o777 == 0o755
 
 
 def test_capture_rejects_the_whole_batch_when_mango_returns_an_extra_record(

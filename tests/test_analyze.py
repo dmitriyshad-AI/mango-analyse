@@ -523,6 +523,15 @@ class AnalyzeServiceTest(unittest.TestCase):
 
         self.assertEqual(service._detect_call_type(text), "sales_call")
 
+    def test_arrived_sales_lead_with_pickup_words_still_remains_sales(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\nВстречу вас у входа и расскажу про договор и оплату.\n\n"
+            "CLIENT:\nЯ уже приехала, хочу записать ребёнка на курс и обсудить стоимость."
+        )
+
+        self.assertEqual(service._detect_call_type(text), "sales_call")
+
     def test_email_delivery_discussion_is_not_technical_from_rassylki_substring(self) -> None:
         service = AnalyzeService(make_settings())
         text = (

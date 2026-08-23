@@ -45,7 +45,7 @@ AMO_TEMPLATES = {
 CONTEXT_PREFIXES = ("src", "scripts", "tests", ".agents", ".claude")
 CONTEXT_EXACT = frozenset({
     "AGENTS.md", "CLAUDE.md", "README.md", "ARCHITECTURE.md",
-    "docs/PROJECT_NOW.md", "docs/RUNBOOK.md", "docs/DECISIONS_LOG.md",
+    "docs/PROJECT_NOW.md", "docs/RUNBOOK.md", "docs/DECISIONS_LOG.md", "docs/worktrees_registry.md",
     "scripts/skills/inventory_before_build.py",
 })
 CONTEXT_BLOCKED = frozenset({

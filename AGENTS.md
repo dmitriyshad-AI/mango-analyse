@@ -66,7 +66,9 @@
 1. `python3 scripts/project_now.py`
 2. `python3 scripts/task_move.py --take <TZ.md>`
 3. `python3 scripts/skills/inventory_before_build.py --feature-id ... --problem-id ... --change ... --symbols ... --keywords ... --out-dir <audit-dir>`
-4. `python3 scripts/preflight.py --tz tasks/_running/<TZ.md> --inventory <audit-dir>/prebuild_inventory.json`
+4. Собрать Claude context pack и получить read-only receipt по
+   `.agents/skills/mango-development-process/SKILL.md`.
+5. `python3 scripts/preflight.py --tz tasks/_running/<TZ.md> --inventory <audit-dir>/prebuild_inventory.json --claude-receipt <receipt.json>`
 
 Для code-ТЗ это hard gate: до кода обязательны доказательный inventory и роли,
 вычисленные preflight. Канонический порядок и контракт Claude-контекста:

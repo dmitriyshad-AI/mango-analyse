@@ -24,8 +24,10 @@ python3 scripts/skills/inventory_before_build.py \
 
 4. Следуй `decision`: `reuse/extend/port` используют указанного владельца;
    `new` допустим только с `ABSENT_PROVEN`; `stop` запрещает код.
-5. Запусти `preflight.py --tz ... --inventory ...`. Его `REQUIRED_ROLES` —
-   вычисленный план ролей, не заменяй его ручным `role_plan.json`.
+5. Собери Claude context pack каноническим `make_audit_pack.py`, выполни один
+   read-only вызов Claude, сохрани сырой ответ и создай receipt.
+6. Запусти `preflight.py --tz ... --inventory ... --claude-receipt ...`. Его
+   `REQUIRED_ROLES` — вычисленный план ролей, не заменяй его ручным файлом.
 
 ## Роли и контекст
 
@@ -37,8 +39,25 @@ python3 scripts/skills/inventory_before_build.py \
 Claude получает не пересказ чата, а context pack: ТЗ, inventory, HEAD/ветку,
 выбранного владельца, релевантные исходники и тесты, актуальные решения и точную
 приёмку. Для одинакового `HEAD + prompt_hash + files_hash` повторный внешний
-вызов запрещён без записанной причины. Receipt и отчёты ролей входят в audit
-pack; если обязательного инструмента нет, остановись, а не объявляй аудит.
+вызов запрещён без записанной причины. Unsigned receipt лежит рядом с
+неизменяемым pack и доказывает связь ответа с HEAD, prompt и файлами, но не
+личность автора и не является криптографическим доказательством запуска против
+локального процесса с правом записи. Это жёсткий процессный gate от случайного
+обхода, а не защита от переписывания самого проверяющего. Receipt и сырые
+отчёты ролей входят в итоговый audit pack;
+если обязательного инструмента нет, остановись, а не объявляй аудит.
+
+Канонический вызов выполняется из worktree, без повторного login:
+
+```bash
+python3 scripts/make_audit_pack.py <slug> --claude-task <TZ> --inventory <inventory>
+python3 scripts/make_audit_pack.py --run-claude <pack> --model opus
+```
+
+Вторая команда сама запускает Claude CLI только с `Read/Glob/Grep`, в `plan` и
+`safe-mode`, сохраняет JSON-ответ и receipt. Ручной receipt запрещён. Команду
+`claude auth status` используй только для диагностики: успешный status не требует
+login; ошибку авторизации передай Дмитрию, не запускай login сам.
 
 ## После решения
 

@@ -119,8 +119,8 @@ def is_code_task(header: TzHeader, text: str = "") -> bool:
             normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in NON_CODE_ZONES
         )
     body = re.sub(r"^(?:Зоны|Тест-команда|Ключевые-(?:символы|слова)):\s*.*$", "", text, flags=re.M)
-    code_path = re.search(r"(?<![\w/])(?:src|scripts|tests|\.agents|\.claude)/\S+\.(?:py|sh|js|ts|tsx|go|rs|java)\b", body)
-    return bool(code_path) or not header.zones or not all(non_code(zone) for zone in header.zones)
+    code_paths = re.findall(r"(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.(?:py|sh|js|ts|tsx|go|rs|java))\b", body)
+    return any(not non_code(path) for path in code_paths) or not header.zones or not all(non_code(zone) for zone in header.zones)
 
 
 def required_roles(header: TzHeader, text: str) -> list[dict[str, str]]:
@@ -370,7 +370,26 @@ def _validate_inventory(root: Path, header: TzHeader, path: Path) -> list[str]:
             failures.append("inventory протух или подделан: повторный scan отличается")
     return failures
 
-def run_preflight(root: Path, tz_path: Path, *, inventory_path: Path | None = None, run_collect: bool = True) -> tuple[bool, list[str]]:
+
+def _validate_claude_receipt(root: Path, receipt: Path, task: Path, inventory: Path) -> list[str]:
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/make_audit_pack.py"), "--root", str(root),
+         "--verify-receipt", str(receipt), "--expected-task", str(task),
+         "--expected-inventory", str(inventory)],
+        cwd=root, capture_output=True, text=True, timeout=30,
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return ["Claude receipt verifier не вернул JSON: " + (result.stderr or result.stdout)[-500:]]
+    return [] if result.returncode == 0 and payload.get("ok") is True else [
+        "Claude receipt невалиден: " + "; ".join(payload.get("errors") or ["unknown error"])
+    ]
+
+def run_preflight(
+    root: Path, tz_path: Path, *, inventory_path: Path | None = None,
+    claude_receipt: Path | None = None, run_collect: bool = True,
+) -> tuple[bool, list[str]]:
     failures: list[str] = []
     root = root.resolve()
     tz_path = tz_path.resolve()
@@ -399,6 +418,10 @@ def run_preflight(root: Path, tz_path: Path, *, inventory_path: Path | None = No
             failures.append("code-ТЗ требует --inventory")
         elif not missing:
             failures.extend(_validate_inventory(root, header, inventory_path.resolve()))
+        if claude_receipt is None:
+            failures.append("code-ТЗ требует --claude-receipt")
+        elif inventory_path is not None and not missing:
+            failures.extend(_validate_claude_receipt(root, claude_receipt.resolve(), tz_path, inventory_path.resolve()))
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
     if header.branch and header.branch != branch:
         failures.append(f"ветка {branch} != заявленной в ТЗ {header.branch}")
@@ -435,9 +458,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--tz", required=True, type=Path)
     parser.add_argument("--inventory", type=Path)
+    parser.add_argument("--claude-receipt", type=Path)
     parser.add_argument("--skip-collect-only", action="store_true")
     args = parser.parse_args(argv)
-    ok, failures = run_preflight(args.root, args.tz, inventory_path=args.inventory, run_collect=not args.skip_collect_only)
+    ok, failures = run_preflight(
+        args.root, args.tz, inventory_path=args.inventory, claude_receipt=args.claude_receipt,
+        run_collect=not args.skip_collect_only,
+    )
     if not ok:
         print("PREFLIGHT: СТОП")
         for failure in failures:

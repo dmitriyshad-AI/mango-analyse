@@ -1,6 +1,6 @@
 ---
 name: mango-development-process
-description: Обязательный процесс code-задач Mango: Graphify, доказательный inventory, полный Claude-контекст, вычисленные роли и закрытие Problem-ID.
+description: "Обязательный процесс code-задач Mango: Graphify, доказательный inventory, полный Claude-контекст, вычисленные роли и закрытие Problem-ID."
 ---
 
 # Процесс разработки Mango для Claude

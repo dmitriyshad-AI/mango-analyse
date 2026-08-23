@@ -1,17 +1,28 @@
+> TAKE 2026-08-23 15:15 | ветка codex/context-reuse-gate-20260823 | codex
+
 # ТЗ B: воспроизводимый контекст Claude CLI
 
-Ветка: codex/context-reuse-claude-pack-20260823
-Зоны: scripts/make_audit_pack.py, tests/test_audit_pack_pii.py, .claude/skills/audit-pack-generator/SKILL.md, .claude/skills/audit-pack-generator/scripts/create_audit_pack.py, .claude/skills/mango-development-process/SKILL.md, docs/, tasks/
-Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_audit_pack_pii.py
+Ветка: codex/context-reuse-gate-20260823
+Зоны: AGENTS.md, CLAUDE.md, scripts/make_audit_pack.py, scripts/preflight.py, tests/test_audit_pack_pii.py, tests/test_preflight.py, .agents/skills/mango-development-process/SKILL.md, .claude/skills/audit-pack-generator/SKILL.md, .claude/skills/audit-pack-generator/scripts/create_audit_pack.py, .claude/skills/mango-development-process/SKILL.md, docs/, tasks/
+Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_audit_pack_pii.py tests/test_preflight.py
 Семантический-аудит: нет
 Feature-ID: process.context_reuse_gate.claude_pack_v1
 Problem-ID: process.context_loss_and_duplicate_builds
 Изменение: extend
-Ключевые-символы: make_audit_pack,create_audit_pack,mask_pii
-Ключевые-слова: Claude context pack,manifest sha256,read only review
+Ключевые-символы: create_audit_pack
+Ключевые-слова: Claude context pack,manifest sha256,read only review,audit PII masking
 
 Дата: 2026-08-23.
 Предусловие: ТЗ A1 и A2 приняты и влиты.
+
+## Решение по бюджету Бритвы
+
+Независимый review до кода подтвердил, что защищённые pack, verifier, unsigned
+receipt и hard gate не помещаются в 150 строк одним безопасным патчем. Поэтому
+это umbrella-ТЗ исполняется атомарными волнами B1–B5: безопасные path/privacy
+примитивы; prompt+code-surface; builder; verifier+runner; preflight+wrapper.
+Каждая волна укладывается в 150 строк нетестового кода; второго builder,
+файла-модуля или сервиса не создаётся.
 
 ## Контекст
 
@@ -35,14 +46,21 @@ pack-builder: расширить `scripts/make_audit_pack.py`.
    inventory JSON.
 7. Claude skill получает правило: функциональный smoke выполнять в той же
    sandbox/escalated-среде; `auth status` сам по себе не основание для login.
-8. Одинаковый ручной повтор сверять по `prompt_hash + manifest_hash + HEAD`;
-   отдельный persistent-cache/service не создавать.
+8. Одинаковый ручной повтор сверять по стабильному
+   `HEAD + prompt_hash + files_hash`; timestamped `manifest_hash` хранить в
+   receipt для целостности, но не включать в dedupe-key, иначе одинаковые
+   пересборки никогда не совпадут. Persistent-cache/service не создавать.
 9. `.claude/skills/audit-pack-generator/scripts/create_audit_pack.py` больше не
    содержит второй builder: оставить совместимый wrapper на канонический
    `scripts/make_audit_pack.py`; skill-команду переключить на канон.
 10. До записи manifest выполнить fail-closed scan всех файлов пакета на
     присваивания ключей с суффиксами `_TOKEN`, `_SECRET`, `_API_KEY`, маркеры
     `Bearer`, `sk-` и bot-token-подобные строки. Находка блокирует пакет.
+11. Для code-ТЗ `preflight.py` требует `--claude-receipt`; канонический receipt
+    создаётся только штатным read-only Claude-вызовом и проверяет
+    manifest/prompt/files/HEAD. Он является process gate, но как локальный
+    unsigned-файл не доказывает запуск против процесса с правом переписать сам
+    verifier. До валидного receipt код запрещён.
 
 ## СТОП
 

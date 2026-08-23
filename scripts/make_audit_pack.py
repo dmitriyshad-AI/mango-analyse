@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +41,24 @@ AMO_TEMPLATES = {
     "readback_plan.md": "# Readback plan\n\n",
     "not_written_live.md": "# Что не было записано live\n\n",
 }
+CONTEXT_PREFIXES = ("src", "scripts", "tests", ".agents", ".claude")
+CONTEXT_EXACT = frozenset({
+    "AGENTS.md", "CLAUDE.md", "README.md", "ARCHITECTURE.md",
+    "docs/PROJECT_NOW.md", "docs/RUNBOOK.md", "docs/DECISIONS_LOG.md",
+})
+CONTEXT_BLOCKED = frozenset({
+    ".codex", ".codex_local", "product_data", "stable_runtime", "runtime", "runs",
+    "transcripts", "audio", "mail", "calls", "graphify-out",
+})
+CLAUDE_PACK_FILES = frozenset({
+    "task.md", "prebuild_inventory.json", "git_context.txt", "context_files.json", "review_prompt.md",
+})
+SECRET_RE = re.compile(
+    r"(?ix)(?:\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY|PASSWORD)\b|"
+    r"[\"']?(?:token|secret|api_key|password|authorization)[\"']?)[ \t]*[:=][ \t]*[\"']?"
+    r"(?!\[|<|redacted|required\b)[^\s\"',#}]{8,}|Authorization\s*:\s*Bearer\s+[A-Za-z0-9._-]{12,}|"
+    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|\b\d{6,12}:[A-Za-z0-9_-]{20,}\b"
+)
 
 
 def _run_git(root: Path, *args: str) -> str:
@@ -77,6 +98,142 @@ def _assert_safe_output_path(root: Path, path: Path) -> None:
 def _write_text(path: Path, text: str, written: list[str]) -> None:
     path.write_text(mask_pii(text), encoding="utf-8")
     written.append(path.name)
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _git_required(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-c", "core.quotepath=off", *args], cwd=root,
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode:
+        raise ValueError(f"git {' '.join(args)} failed: {result.stderr[-300:]}")
+    return result.stdout
+
+
+def _forbidden_context_path(rel: Path) -> bool:
+    parts = tuple(part.casefold() for part in rel.parts)
+    name = rel.name.casefold()
+    envish = any(part == ".env" or part.startswith(".env.") for part in parts) or name.endswith((".env", ".env.example"))
+    return envish or any(part in CONTEXT_BLOCKED for part in parts)
+
+
+def _repo_file(root: Path, value: Path, kind: str = "context") -> tuple[Path, str]:
+    raw = value.expanduser()
+    lexical = Path(os.path.abspath(raw if raw.is_absolute() else root / raw))
+    try:
+        rel = lexical.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{kind} path outside repository") from exc
+    cursor = root
+    for part in rel.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError(f"{kind} path contains symlink: {rel}")
+    if not lexical.is_file() or _forbidden_context_path(rel):
+        raise ValueError(f"unsafe {kind} path: {rel}")
+    posix = rel.as_posix()
+    if mask_pii(posix) != posix:
+        raise ValueError(f"{kind} path contains PII-like value: {rel}")
+    if kind == "task" and not (posix.startswith("tasks/_running/") and rel.suffix == ".md"):
+        raise ValueError("task must be a markdown file in tasks/_running")
+    if kind == "inventory" and not (posix.startswith("audits/_inbox/") and rel.name == "prebuild_inventory.json"):
+        raise ValueError("inventory must be audits/_inbox/.../prebuild_inventory.json")
+    if kind == "context" and not (
+        posix in CONTEXT_EXACT or rel.parts[0] in CONTEXT_PREFIXES
+    ):
+        raise ValueError(f"context path is not allowlisted: {rel}")
+    if kind == "context" and (rel.name == "graph.json" or rel.suffix.casefold() in {".db", ".sqlite", ".jsonl", ".mp3", ".wav", ".m4a"}):
+        raise ValueError(f"unsafe context file type: {rel}")
+    return lexical, posix
+
+
+def _assert_no_secret(name: str, data: bytes) -> None:
+    if SECRET_RE.search(data.decode("utf-8", errors="ignore")):
+        raise ValueError(f"secret-like value in {name}; package blocked")
+
+
+def _assert_no_pii(name: str, data: bytes) -> None:
+    text = data.decode("utf-8", errors="ignore")
+    if mask_pii(text) != text:
+        raise ValueError(f"PII-like value in {name}; package blocked")
+
+
+def _audit_evidence_path(root: Path, value: Path) -> Path:
+    lexical = Path(os.path.abspath(value if value.is_absolute() else root / value))
+    try:
+        rel = lexical.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Claude evidence outside repository") from exc
+    cursor = root
+    linked = False
+    for part in rel.parts:
+        cursor /= part
+        linked = linked or cursor.is_symlink()
+    if rel.parts[:2] != ("audits", "_inbox") or linked:
+        raise ValueError("Claude evidence must be under audits/_inbox")
+    return lexical
+
+
+def _field(text: str, name: str) -> str:
+    match = re.search(rf"^{re.escape(name)}:\s*([^\n]+)$", text, re.M)
+    value = match.group(1).strip() if match else ""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+        raise ValueError(f"missing or unsafe {name}")
+    return value
+
+
+def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
+    manifest_rel = f"{pack_rel}/manifest.json"
+    return (
+        "Проведи независимый read-only аудит задачи. Не меняй файлы и внешние системы.\n"
+        f"PACK_DIR: {pack_rel}\nMANIFEST: {manifest_rel}\nNONCE: {nonce}\n"
+        "Читай файлы только из PACK_DIR: task.md, prebuild_inventory.json, git_context.txt, "
+        "context_files.json и manifest.json; затем открой перечисленные context-файлы в worktree.\n"
+        "Начни ответ отдельными строками: `MODE: READ_ONLY`, точные `PACK_DIR`, `NONCE`, "
+        "`CONTEXT_READ: task.md, prebuild_inventory.json, git_context.txt, context_files.json, "
+        "manifest.json`, затем `HEAD: ...` и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
+        f"Назови полный HEAD {head} и дай конкретные замечания минимум в 200 символах. "
+        "Не повторяй значения или синтетические примеры токенов/ключей.\n"
+    ).encode()
+
+
+def _valid_review_result(text: str, head: str, pack_rel: str, nonce: str) -> bool:
+    folded = text.casefold()
+    return (
+        len(text) >= 200 and f"head: {head}" in folded and "mode: read_only" in folded
+        and re.search(rf"^PACK_DIR:\s*{re.escape(pack_rel)}\s*$", text, re.M)
+        and re.search(rf"^MANIFEST:\s*{re.escape(pack_rel)}/manifest\.json\s*$", text, re.M)
+        and re.search(rf"^NONCE:\s*{re.escape(nonce)}\s*$", text, re.M)
+        and "verdict:" in folded and all(name in folded for name in CLAUDE_PACK_FILES - {"review_prompt.md"})
+    )
+
+
+def _code_surface(root: Path) -> tuple[str, str, tuple[Path, ...]]:
+    status = _git_required(root, "status", "--porcelain", "--untracked-files=all").splitlines()
+    hashes, safe_status, safe_files, blocked = [], [], [], 0
+    for line in status:
+        rel = line[3:].split(" -> ")[-1].strip().strip('"')
+        rel_path = Path(rel)
+        allowed = rel in CONTEXT_EXACT or (rel_path.parts and rel_path.parts[0] in CONTEXT_PREFIXES)
+        if not allowed or _forbidden_context_path(rel_path):
+            blocked += 1
+            hashes.append(f"blocked:{line[:2]}:{_sha(rel.encode())}")
+            continue
+        try:
+            source, safe_rel = _repo_file(root, rel_path)
+            hashes.append(f"{line[:2]}:{safe_rel}:{_sha(source.read_bytes())}")
+            safe_files.append(Path(safe_rel))
+        except ValueError:
+            if (root / rel_path).exists() or (root / rel_path).is_symlink():
+                raise
+            hashes.append(f"{line[:2]}:{rel}:deleted")
+        safe_status.append(mask_pii(line))
+    surface = _sha("\n".join(sorted(hashes)).encode())
+    return surface, "\n".join([*safe_status, f"blocked_paths: {blocked}"]), tuple(safe_files)
 
 
 def _changed_files(root: Path, base: str) -> str:
@@ -149,9 +306,261 @@ def create_audit_pack(
     return pack
 
 
+def create_claude_context_pack(
+    root: Path, slug: str, task_path: Path, inventory_path: Path, *,
+    context_files: tuple[Path, ...] = (), out_root: Path | None = None,
+) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", slug):
+        raise ValueError("unsafe slug")
+    root = root.resolve()
+    task, task_rel = _repo_file(root, task_path, "task")
+    inventory, inventory_rel = _repo_file(root, inventory_path, "inventory")
+    task_raw, inventory_raw = task.read_bytes(), inventory.read_bytes()
+    _assert_no_secret(task_rel, task_raw)
+    _assert_no_secret(inventory_rel, inventory_raw)
+    _assert_no_pii(inventory_rel, inventory_raw)
+    inventory_json = json.loads(inventory_raw)
+    owner = inventory_json.get("selected_owner") or {}
+    head = _git_required(root, "rev-parse", "HEAD").strip()
+    branch = _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    surface_hash, safe_status, dirty_context = _code_surface(root)
+    defaults = [Path(name) for name in CONTEXT_EXACT if (root / name).is_file()]
+    requested = [*defaults, *context_files, *dirty_context]
+    if owner.get("path"):
+        requested.append(Path(owner["path"]))
+    sources: dict[str, str] = {}
+    for requested_path in dict.fromkeys(requested):
+        source, rel = _repo_file(root, requested_path)
+        raw = source.read_bytes()
+        _assert_no_secret(rel, raw)
+        _assert_no_pii(rel, raw)
+        sources[rel] = _sha(raw)
+    pack = (out_root or root / "audits/_inbox") / f"{slug}_{datetime.now():%Y%m%d%H%M%S}"
+    _assert_safe_output_path(root, pack)
+    pack = _audit_evidence_path(root, pack)
+    pack_rel = pack.relative_to(root).as_posix()
+    context_json = json.dumps(
+        {"schema_version": "mango_claude_context_files_v1", "files": dict(sorted(sources.items()))},
+        ensure_ascii=False, indent=2,
+    ).encode() + b"\n"
+    git_context = mask_pii(
+        f"head: {head}\nbranch: {branch}\nworktree: {root}\nstatus:\n"
+        + safe_status
+    ).encode()
+    task_copy = mask_pii(task_raw.decode("utf-8", errors="replace")).encode()
+    evidence_hashes = {"task.md": _sha(task_raw), "prebuild_inventory.json": _sha(inventory_raw), **sources}
+    files_hash = _sha("\n".join(f"{name}:{sha}" for name, sha in sorted(evidence_hashes.items())).encode())
+    prompt_template_hash = _sha(_review_prompt(head, "<PACK_DIR>", "<NONCE>"))
+    nonce = _sha(f"{head}\n{files_hash}\n{prompt_template_hash}".encode())[:32]
+    prompt = _review_prompt(head, pack_rel, nonce)
+    files = {
+        "task.md": task_copy, "prebuild_inventory.json": inventory_raw,
+        "git_context.txt": git_context, "context_files.json": context_json,
+        "review_prompt.md": prompt,
+    }
+    for name, data in files.items():
+        _assert_no_secret(name, data)
+    prompt_hash = _sha(prompt)
+    manifest = {
+        "schema_version": "mango_claude_context_pack_v1", "slug": slug,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "head": head, "branch": branch, "worktree": str(root),
+        "pack_path": pack_rel, "review_nonce": nonce,
+        "feature_id": _field(task_raw.decode(errors="ignore"), "Feature-ID"),
+        "problem_id": _field(task_raw.decode(errors="ignore"), "Problem-ID"),
+        "task_source": {"path": task_rel, "sha256": _sha(task_raw)},
+        "inventory_source": {"path": inventory_rel, "sha256": _sha(inventory_raw)},
+        "files": {name: _sha(data) for name, data in files.items()},
+        "prompt_sha256": prompt_hash, "prompt_template_sha256": prompt_template_hash,
+        "files_hash": files_hash,
+        "code_surface_sha256": surface_hash,
+        "dedupe_key": _sha(f"{head}\n{prompt_template_hash}\n{files_hash}".encode()),
+        "pii_redaction": ["ru_phone", "email"], "secret_handling": "listed patterns blocked, not redacted",
+    }
+    pack.mkdir(parents=True, exist_ok=False)
+    for name, data in files.items():
+        (pack / name).write_bytes(data)
+    (pack / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return pack
+
+
+def verify_claude_context(
+    root: Path, pack: Path, receipt: Path | None = None, *,
+    expected_task: Path | None = None, expected_inventory: Path | None = None,
+) -> list[str]:
+    root, pack = root.resolve(), _audit_evidence_path(root.resolve(), pack).resolve()
+    errors: list[str] = []
+    try:
+        manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("schema_version") != "mango_claude_context_pack_v1":
+            errors.append("invalid context pack schema")
+        pack_rel = pack.relative_to(root).as_posix()
+        if manifest.get("pack_path") != pack_rel:
+            errors.append("context pack path mismatch")
+        nonce = str(manifest.get("review_nonce", ""))
+        if not re.fullmatch(r"[0-9a-f]{32}", nonce):
+            errors.append("invalid review nonce")
+        expected_files = manifest.get("files") or {}
+        actual_files = {item.name for item in pack.iterdir() if item.is_file() and item.name != "manifest.json"}
+        if actual_files != set(expected_files) or actual_files != CLAUDE_PACK_FILES:
+            errors.append("context pack file set mismatch")
+        for name, wanted in expected_files.items():
+            if not (pack / name).is_file() or _sha((pack / name).read_bytes()) != wanted:
+                errors.append(f"context pack byte mismatch: {name}")
+        context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))["files"]
+        for rel, wanted in context.items():
+            source, _ = _repo_file(root, Path(rel))
+            if _sha(source.read_bytes()) != wanted:
+                errors.append(f"context source drift: {rel}")
+        evidence_hashes = {
+            "task.md": manifest["task_source"]["sha256"],
+            "prebuild_inventory.json": manifest["inventory_source"]["sha256"], **context,
+        }
+        files_hash = _sha("\n".join(f"{name}:{sha}" for name, sha in sorted(evidence_hashes.items())).encode())
+        prompt_raw = (pack / "review_prompt.md").read_bytes()
+        template_hash = _sha(_review_prompt(manifest["head"], "<PACK_DIR>", "<NONCE>"))
+        expected_nonce = _sha(f"{manifest['head']}\n{files_hash}\n{template_hash}".encode())[:32]
+        expected_dedupe = _sha(f"{manifest['head']}\n{template_hash}\n{files_hash}".encode())
+        if (
+            files_hash != manifest.get("files_hash") or _sha(prompt_raw) != manifest.get("prompt_sha256")
+            or prompt_raw != _review_prompt(manifest["head"], pack_rel, nonce)
+            or template_hash != manifest.get("prompt_template_sha256") or nonce != expected_nonce
+            or manifest.get("dedupe_key") != expected_dedupe
+        ):
+            errors.append("prompt/files hash mismatch")
+        if _git_required(root, "rev-parse", "HEAD").strip() != manifest.get("head"):
+            errors.append("HEAD mismatch")
+        if _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip() != manifest.get("branch") or str(root) != manifest.get("worktree"):
+            errors.append("branch/worktree mismatch")
+        if _code_surface(root)[0] != manifest.get("code_surface_sha256"):
+            errors.append("code surface mismatch")
+        for label, expected, key in (("task", expected_task, "task_source"), ("inventory", expected_inventory, "inventory_source")):
+            source, rel = _repo_file(root, Path(manifest[key]["path"]), label)
+            if _sha(source.read_bytes()) != manifest[key]["sha256"]:
+                errors.append(f"{label} source drift")
+            if expected is not None and _repo_file(root, expected, label)[1] != rel:
+                errors.append(f"{label} binding mismatch")
+        if receipt is not None:
+            receipt = _audit_evidence_path(root, receipt)
+            expected_receipt = pack.with_name(pack.name + "_claude_receipt.json")
+            expected_output = pack.with_name(pack.name + "_claude_cli.json")
+            if receipt.resolve() != expected_receipt.resolve():
+                errors.append("receipt path is not canonical")
+            data = json.loads(receipt.read_text(encoding="utf-8"))
+            required = {
+                "schema_version": "mango_claude_receipt_v1", "created_by": "run_claude_review_v1",
+                "command_profile": "claude_readonly_v1", "receipt_kind": "local_unsigned",
+                "status": "completed_read_only", "mode": "read_only",
+            }
+            if (
+                any(data.get(key) != value for key, value in required.items())
+                or data.get("claude_exit_code") != 0 or data.get("permission_mode") != "plan"
+                or data.get("allowed_tools") != ["Read", "Glob", "Grep"] or data.get("safe_mode") is not True
+                or not isinstance(data.get("output_secret_like_redactions"), int)
+            ):
+                errors.append("receipt status/mode invalid")
+            if data.get("head") != manifest.get("head") or data.get("manifest_sha256") != _sha((pack / "manifest.json").read_bytes()):
+                errors.append("receipt HEAD/manifest mismatch")
+            if data.get("prompt_sha256") != manifest.get("prompt_sha256") or data.get("files_hash") != manifest.get("files_hash"):
+                errors.append("receipt prompt/files mismatch")
+            if data.get("dedupe_key") != manifest.get("dedupe_key") or data.get("manifest_path") != str((pack / "manifest.json").relative_to(root)):
+                errors.append("receipt pack binding mismatch")
+            if data.get("pack_path") != pack_rel or data.get("review_nonce") != nonce:
+                errors.append("receipt nonce/path mismatch")
+            command = data.get("command")
+            command_tail = [
+                "--safe-mode", "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
+                "--strict-mcp-config", "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
+                "--effort", "high", "--model", data.get("model"), "--session-id", data.get("session"),
+                "--output-format", "json", "-p", "<review_prompt.md>",
+            ]
+            if not isinstance(command, list) or len(command) < 2 or command[1:] != command_tail:
+                errors.append("receipt command mismatch")
+            output = _audit_evidence_path(root, Path(str(data.get("output_path", ""))))
+            if output.resolve() != expected_output.resolve():
+                errors.append("Claude output path is not canonical")
+            output_json = json.loads(output.read_text(encoding="utf-8")) if output.is_file() else {}
+            if output.is_file():
+                _assert_no_secret("Claude output", output.read_bytes())
+            if (
+                not output.is_file() or _sha(output.read_bytes()) != data.get("output_sha256")
+                or output_json.get("session_id") != data.get("session")
+                or not _valid_review_result(str(output_json.get("result", "")), manifest["head"], pack_rel, nonce)
+            ):
+                errors.append("Claude output missing, changed or does not name HEAD")
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid Claude context evidence: {exc}")
+    return errors
+
+
+def run_claude_review(
+    root: Path, pack: Path, *, model: str = "opus", repeat_reason: str = "",
+    claude_bin: Path | None = None, timeout: int = 1800,
+) -> Path:
+    root, pack = root.resolve(), _audit_evidence_path(root.resolve(), pack).resolve()
+    errors = verify_claude_context(root, pack)
+    if errors:
+        raise ValueError("; ".join(errors))
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    for old in pack.parent.glob("*_claude_receipt.json"):
+        try:
+            if json.loads(old.read_text(encoding="utf-8")).get("dedupe_key") == manifest["dedupe_key"] and not repeat_reason:
+                raise ValueError("duplicate Claude review requires --repeat-reason")
+        except json.JSONDecodeError:
+            continue
+    binary = (claude_bin or Path.home() / ".local/bin/claude").resolve()
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError("Claude CLI executable not found")
+    session = str(uuid4())
+    command = [
+        str(binary), "--safe-mode", "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
+        "--strict-mcp-config", "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
+        "--effort", "high", "--model", model, "--session-id", session,
+        "--output-format", "json", "-p", (pack / "review_prompt.md").read_text(encoding="utf-8"),
+    ]
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        detail = SECRET_RE.sub("[redacted_secret_like]", mask_pii(result.stderr[-500:]))
+        raise ValueError(f"Claude CLI failed rc={result.returncode}: {detail}")
+    output_json = json.loads(result.stdout)
+    review, redactions = SECRET_RE.subn("[redacted_secret_like]", str(output_json.get("result", "")))
+    output_json["result"] = review
+    output_raw = (json.dumps(output_json, ensure_ascii=False) + "\n").encode()
+    _assert_no_secret("sanitized Claude output", output_raw)
+    if output_json.get("session_id") != session or not _valid_review_result(
+        review, manifest["head"], manifest["pack_path"], manifest["review_nonce"],
+    ):
+        raise ValueError("Claude JSON lacks session_id or required structured review")
+    if verify_claude_context(root, pack):
+        raise ValueError("Claude review changed or invalidated the reviewed surface")
+    stored = pack.with_name(pack.name + "_claude_cli.json")
+    receipt = pack.with_name(pack.name + "_claude_receipt.json")
+    stored.write_bytes(output_raw)
+    payload = {
+        "schema_version": "mango_claude_receipt_v1", "created_by": "run_claude_review_v1",
+        "command_profile": "claude_readonly_v1", "receipt_kind": "local_unsigned",
+        "proves": "local pack integrity + HEAD binding under the cooperative workflow",
+        "does_not_prove": "Claude execution or reviewer identity against a malicious local writer",
+        "status": "completed_read_only", "mode": "read_only", "head": manifest["head"],
+        "manifest_path": str((pack / "manifest.json").relative_to(root)),
+        "pack_path": manifest["pack_path"], "review_nonce": manifest["review_nonce"],
+        "manifest_sha256": _sha((pack / "manifest.json").read_bytes()),
+        "prompt_sha256": manifest["prompt_sha256"], "files_hash": manifest["files_hash"],
+        "dedupe_key": manifest["dedupe_key"], "model": model, "session": session,
+        "claude_exit_code": result.returncode, "permission_mode": "plan",
+        "allowed_tools": ["Read", "Glob", "Grep"], "safe_mode": True,
+        "command": [*command[:-1], "<review_prompt.md>"],
+        "output_secret_like_redactions": redactions,
+        "output_path": str(stored.relative_to(root)), "output_sha256": _sha(output_raw),
+        "repeat_reason": repeat_reason,
+    }
+    receipt.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("slug")
+    parser.add_argument("slug", nargs="?")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--out-root", type=Path)
     parser.add_argument("--tests", type=Path)
@@ -159,7 +568,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", default="main")
     parser.add_argument("--semantic", action="store_true")
     parser.add_argument("--amo", action="store_true")
+    parser.add_argument("--claude-task", type=Path)
+    parser.add_argument("--inventory", type=Path)
+    parser.add_argument("--context-file", action="append", type=Path, default=[])
+    parser.add_argument("--run-claude", type=Path)
+    parser.add_argument("--model", default="opus")
+    parser.add_argument("--repeat-reason", default="")
+    parser.add_argument("--verify-receipt", type=Path)
+    parser.add_argument("--expected-task", type=Path)
+    parser.add_argument("--expected-inventory", type=Path)
     args = parser.parse_args(argv)
+    if args.verify_receipt:
+        args.verify_receipt = _audit_evidence_path(args.root.resolve(), args.verify_receipt)
+        data = json.loads(args.verify_receipt.read_text(encoding="utf-8"))
+        pack = (args.root / data["manifest_path"]).resolve().parent
+        errors = verify_claude_context(
+            args.root, pack, args.verify_receipt,
+            expected_task=args.expected_task, expected_inventory=args.expected_inventory,
+        )
+        print(json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False))
+        return int(bool(errors))
+    if args.run_claude:
+        print(run_claude_review(
+            args.root, args.run_claude, model=args.model, repeat_reason=args.repeat_reason,
+        ))
+        return 0
+    if args.claude_task:
+        if not args.slug or not args.inventory:
+            parser.error("context mode requires slug and --inventory")
+        print(create_claude_context_pack(
+            args.root, args.slug, args.claude_task, args.inventory,
+            context_files=tuple(args.context_file), out_root=args.out_root,
+        ))
+        return 0
+    if not args.slug:
+        parser.error("slug is required")
     pack = create_audit_pack(
         args.root,
         args.slug,

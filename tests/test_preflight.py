@@ -373,3 +373,51 @@ def test_required_roles_are_computed_from_task_risk(tmp_path):
 
     docs_header = preflight.parse_tz_header(_tz(tmp_path, zones="docs/").read_text(encoding="utf-8"))
     assert preflight.required_roles(docs_header, "Обновить внутренний runbook") == []
+
+
+def test_relative_code_path_still_triggers_code_gate(tmp_path):
+    path = _tz(tmp_path, zones="docs/")
+    text = path.read_text(encoding="utf-8") + "\nИзменить `channels/subscription_llm_parts/direct_path.py`.\n"
+    assert preflight.is_code_task(preflight.parse_tz_header(text), text)
+
+
+def test_code_preflight_requires_and_validates_claude_receipt(tmp_path, monkeypatch):
+    root = _prepare_root(tmp_path)
+    tz = _code_tz(root)
+    inventory = tmp_path / "inventory.json"
+    receipt = tmp_path / "receipt.json"
+    payload = _inventory_payload()
+    inventory.write_text(json.dumps(payload), encoding="utf-8")
+    receipt.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(preflight, "_refresh_inventory", lambda *_args: (payload, None))
+    monkeypatch.setattr(preflight, "_validate_claude_receipt", lambda *_args: [])
+
+    def fake_git(_root: Path, *args: str) -> str:
+        command = " ".join(args)
+        return "main\n" if command == "rev-parse --abbrev-ref HEAD" else f"worktree {root}\nbranch refs/heads/main\n" if command == "worktree list --porcelain" else ""
+
+    monkeypatch.setattr(preflight, "_run_git", fake_git)
+    ok, failures = preflight.run_preflight(root, tz, inventory_path=inventory, run_collect=False)
+    assert not ok
+    assert "code-ТЗ требует --claude-receipt" in failures
+
+    ok, failures = preflight.run_preflight(
+        root, tz, inventory_path=inventory, claude_receipt=receipt, run_collect=False,
+    )
+    assert ok, failures
+
+
+def test_claude_receipt_verifier_fails_closed_on_bad_json_and_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        preflight.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, "not-json", "boom"),
+    )
+    failures = preflight._validate_claude_receipt(tmp_path, tmp_path / "r", tmp_path / "t", tmp_path / "i")
+    assert any("не вернул JSON" in item for item in failures)
+
+    monkeypatch.setattr(
+        preflight.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, json.dumps({"ok": False, "errors": ["HEAD mismatch"]}), ""),
+    )
+    failures = preflight._validate_claude_receipt(tmp_path, tmp_path / "r", tmp_path / "t", tmp_path / "i")
+    assert failures == ["Claude receipt невалиден: HEAD mismatch"]

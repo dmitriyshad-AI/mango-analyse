@@ -1,6 +1,8 @@
+> TAKE 2026-08-23 17:07 | ветка codex/context-reuse-gate-20260823 | codex
+
 # ТЗ C: попытка не равна закрытой проблеме
 
-Ветка: codex/context-reuse-problem-lifecycle-20260823
+Ветка: codex/context-reuse-gate-20260823
 Зоны: scripts/task_move.py, scripts/project_now.py, tests/test_task_move.py, tests/test_project_now.py, AGENTS.md, docs/, tasks/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_task_move.py tests/test_project_now.py
 Семантический-аудит: нет
@@ -11,7 +13,7 @@ Problem-ID: process.context_loss_and_duplicate_builds
 Ключевые-слова: attempt complete,problem closed,superseded,blocked
 
 Дата: 2026-08-23.
-Предусловие: ТЗ A1 и A2 приняты и влиты.
+Предусловие: ТЗ A1, A2 и B приняты в интеграционной ветке.
 
 ## Контекст
 

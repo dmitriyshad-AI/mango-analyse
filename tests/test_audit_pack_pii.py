@@ -127,6 +127,7 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert f"PACK_DIR: {manifest['pack_path']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert f"NONCE: {manifest['review_nonce']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert "только точное значение selected_owner.path" in (pack / "review_prompt.md").read_text(encoding="utf-8")
+    assert "SELECTED_OWNER: scripts/owner.py" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert not make_audit_pack._valid_review_result(
         _valid_review(pack).replace(f"MANIFEST: {manifest['pack_path']}/manifest.json\n", ""),
         manifest["head"], manifest["pack_path"], manifest["review_nonce"],
@@ -134,6 +135,22 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     )
     assert (pack / "manifest.json").stat().st_mtime_ns >= max(
         item.stat().st_mtime_ns for item in pack.iterdir() if item.name != "manifest.json"
+    )
+    assert make_audit_pack.verify_claude_context(root, pack) == []
+
+
+def test_claude_context_prompt_explicitly_uses_none_without_selected_owner(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    inventory.write_text(json.dumps({"selected_owner": {}}), encoding="utf-8")
+
+    pack = make_audit_pack.create_claude_context_pack(root, "context-none", task, inventory)
+
+    prompt = (pack / "review_prompt.md").read_text(encoding="utf-8")
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    assert "используй ровно `SELECTED_OWNER: NONE`" in prompt
+    assert make_audit_pack._valid_review_result(
+        _valid_review(pack), manifest["head"], manifest["pack_path"], manifest["review_nonce"],
+        manifest["files_hash"], "NONE",
     )
     assert make_audit_pack.verify_claude_context(root, pack) == []
 

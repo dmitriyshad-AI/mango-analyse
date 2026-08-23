@@ -273,7 +273,7 @@ def _branch_diff(root: Path, base: str = "main") -> tuple[str, tuple[str, ...], 
     return _sha(raw.encode()), tuple(sorted(set(safe))), tuple(sorted(numstat, key=lambda item: item["path"]))
 
 
-def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
+def _review_prompt(head: str, pack_rel: str, nonce: str, owner_path: str) -> bytes:
     manifest_rel = f"{pack_rel}/manifest.json"
     return (
         "Проведи независимый read-only аудит задачи. Не меняй файлы и внешние системы.\n"
@@ -285,6 +285,8 @@ def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
         "manifest.json`, затем `HEAD: ...`, `FILES_HASH: ...` из manifest, "
         "`SELECTED_OWNER: ...` — только точное значение selected_owner.path без symbol/sha, "
         "и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
+        f"Для строки подтверждения используй ровно `SELECTED_OWNER: {owner_path}`. "
+        "Если selected_owner.path пуст или отсутствует, его точное значение здесь — `NONE`.\n"
         "Ставь PASS, если приёмка выполнена, даже при наличии неблокирующих нот. "
         "PASS_WITH_FIXES означает обязательную правку до preflight; STOP — сработавшее STOP-условие ТЗ.\n"
         f"Назови полный HEAD {head} и дай конкретные замечания минимум в 200 символах. "
@@ -424,6 +426,7 @@ def create_claude_context_pack(
     _assert_no_pii(inventory_rel, inventory_raw)
     inventory_json = json.loads(inventory_raw)
     owner = inventory_json.get("selected_owner") or {}
+    owner_path = str(owner.get("path") or "NONE")
     head = _git_required(root, "rev-parse", "HEAD").strip()
     branch = _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
     surface_hash, safe_status, dirty_context = _code_surface(root, head)
@@ -470,9 +473,9 @@ def create_claude_context_pack(
     inventory_copy = _safe_pack_copy(inventory_raw, root)
     evidence_hashes = {"task.md": _sha(task_raw), "prebuild_inventory.json": _sha(inventory_raw), **sources}
     files_hash = _sha("\n".join(f"{name}:{sha}" for name, sha in sorted(evidence_hashes.items())).encode())
-    prompt_template_hash = _sha(_review_prompt(head, "<PACK_DIR>", "<NONCE>"))
+    prompt_template_hash = _sha(_review_prompt(head, "<PACK_DIR>", "<NONCE>", owner_path))
     nonce = _sha(f"{head}\n{files_hash}\n{prompt_template_hash}".encode())[:32]
-    prompt = _review_prompt(head, pack_rel, nonce)
+    prompt = _review_prompt(head, pack_rel, nonce, owner_path)
     files = {
         "task.md": task_copy, "prebuild_inventory.json": inventory_copy,
         "git_context.txt": git_context, "context_files.json": context_json,
@@ -544,12 +547,14 @@ def verify_claude_context(
         }
         files_hash = _sha("\n".join(f"{name}:{sha}" for name, sha in sorted(evidence_hashes.items())).encode())
         prompt_raw = (pack / "review_prompt.md").read_bytes()
-        template_hash = _sha(_review_prompt(manifest["head"], "<PACK_DIR>", "<NONCE>"))
+        inventory_payload = json.loads((pack / "prebuild_inventory.json").read_text(encoding="utf-8"))
+        owner_path = str((inventory_payload.get("selected_owner") or {}).get("path") or "NONE")
+        template_hash = _sha(_review_prompt(manifest["head"], "<PACK_DIR>", "<NONCE>", owner_path))
         expected_nonce = _sha(f"{manifest['head']}\n{files_hash}\n{template_hash}".encode())[:32]
         expected_dedupe = _sha(f"{manifest['head']}\n{template_hash}\n{files_hash}".encode())
         if (
             files_hash != manifest.get("files_hash") or _sha(prompt_raw) != manifest.get("prompt_sha256")
-            or prompt_raw != _review_prompt(manifest["head"], pack_rel, nonce)
+            or prompt_raw != _review_prompt(manifest["head"], pack_rel, nonce, owner_path)
             or template_hash != manifest.get("prompt_template_sha256") or nonce != expected_nonce
             or manifest.get("dedupe_key") != expected_dedupe
         ):

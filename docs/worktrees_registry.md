@@ -36,12 +36,40 @@
 
 ## M1
 
-- По сообщению владельца на M1 активен только трек Calls. Последняя видимая
-  ветка: `yandex/codex/m1-calls-service-integration-20260811`, `868bacd6`.
-- Customer Timeline на M1 завершён как код-кандидат; его старые worktree не
-  перечисляются здесь как активные. Артефакты и ветки остаются в Git/Yandex.
-- Точный путь, PID, HEAD и env Calls-worktree проверяются на M1 перед cutover;
-  главный Mac не может подтвердить их этим реестром.
+- Факт сверки 2026-08-24: `git worktree list --porcelain` выполнен локально на
+  M1. Ни одно дерево при регистрации не удалялось и не переключалось.
+- Два ранее грязных Calls-дерева сохранены собственными WIP-коммитами:
+  `codex/selective-gigaam-v2-20260814` и `codex/gigaam-batch-20260814`.
+- Текущая интеграция ведётся отдельно в
+  `codex/m1-calls-provider-selective-integration-20260824`; preflight не требует
+  регистрировать собственный текущий worktree.
+
+| Путь M1 | Ветка | Назначение / статус |
+|---|---|---|
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.asr-single-call-progress.20260818` | `codex/asr-single-call-progress-20260818` | Отдельная попытка прогресса одного ASR-звонка; не менять из интеграции. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.gigaam-batch.2Wg1KM` | `codex/gigaam-batch-20260814` | Сохранённый WIP пакетного GigaAM; чистое дерево. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.gigaam-parallel.JGmNSc` | `codex/gigaam-parallel-20260814` | Отдельная попытка параллельного GigaAM. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.gigaam-v3-batch.20260814` | `codex/gigaam-v3-batch-20260814` | Отдельная попытка GigaAM v3 batch. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.google-publisher.20260815` | `codex/google-publisher-20260815` | Отдельная ветка Google publisher. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.m4-handoff.20260816` | `codex/mango-calls-m4-handoff-20260816` | Старый пакет передачи Calls с M4. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.pipeline-interactive.20260814` | `codex/pipeline-interactive-20260814` | Отдельная попытка интерактивного pipeline. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.pipeline-stall-watchdog.20260818` | `codex/pipeline-stall-watchdog-20260818` | Донор watchdog; не менять напрямую. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.selective-gigaam-v2.A77tnJ` | `codex/selective-gigaam-v2-20260814` | Сохранённый WIP selective GigaAM; чистое дерево. |
+| `/Users/dmitriy/Projects/Mango_m1_autonomous_bootstrap_20260807` | `codex/m1-autonomous-bootstrap-20260807` | Старый bootstrap M1. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_cutover_20260807` | `codex/m1-calls-cutover-20260807` | Старый Calls cutover. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_provider_selective_integration_20260823` | `codex/m1-calls-provider-selective-integration-20260823` | Заблокированная попытка с отчётом STOP; не сливать. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_real_service_final_20260812` | `codex/m1-calls-real-service-final-20260812` | Канонический Calls-код до новой интеграции. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_service_fast_value_20260811` | `codex/m1-calls-service-fast-value-20260811` | Предыдущая ветка службы Calls. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_exam_regrade_20260812` | `codex/m1-customer-timeline-exam-regrade-20260812` | Старый Customer Timeline exam. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_finalization_20260807` | `codex/m1-customer-timeline-finalization-20260807` | Старый Customer Timeline finalization. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_followup_20260811` | `codex/m1-customer-timeline-followup-20260811` | Старый Customer Timeline follow-up. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_release_evidence_20260811` | `codex/m1-customer-timeline-release-evidence-20260811` | Старые release evidence Customer Timeline. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_working_final_20260812` | `codex/m1-customer-timeline-working-final-20260812` | Старый рабочий финал Customer Timeline. |
+| `/Users/dmitriy/Projects/Mango_memory_selection_20260731` | `codex/memory-selection-quality-20260731` | Отдельная ветка качества памяти. |
+| `/Users/dmitriy/Projects/Mango_p0_live_exam_20260731` | `codex/p0-live-exam-20260731` | Отдельный P0 live exam. |
+| `/Users/dmitriy/Projects/Mango_p0_output_floor_20260730` | `codex/p0-output-floor-20260730` | Отдельный P0 output floor. |
+| `/Users/dmitriy/Projects/Mango_timeline_quality_20260731` | `codex/timeline-quality-20260731` | Отдельная ветка качества timeline. |
+| `/Users/dmitriy/Projects/Mango_unblock_memory_filters_20260730` | `codex/unblock-memory-filters-20260730` | Отдельная ветка фильтров памяти. |
 
 ## Runtime
 

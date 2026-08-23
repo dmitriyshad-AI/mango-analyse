@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-08-13. Локальный источник факта: `git worktree list --porcelain`.
+Обновлено: 2026-08-23. Локальный источник факта: `git worktree list --porcelain`.
 Состояние M1 указано отдельно: главный Mac не видит его PID и рабочую папку.
 
 ## Правила
@@ -16,6 +16,7 @@
 | Путь | HEAD / ветка | Назначение | Условие удаления |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `676cc772`, `claude/timeline-final-20260803` | Канонический путь данных и старого Customer Timeline. Ветку не использовать для нового кода. | Только после отдельного cutover на проверенный `main` и новой проверки PID/HEAD/env. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/context-reuse-gate-20260823` | `950eef0b`, `codex/context-reuse-gate-20260823` | Незавершённый грязный worktree отдельного context-reuse gate. Не использовать и не менять из Wappi-задачи. | После завершения, коммита и отдельной приёмки context-reuse gate. |
 | `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main`, `a3593d74` на момент сверки | Чистый канонический код. | После переноса канонического `main` в основной путь. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/final-cleanup-regex-20260812` | `codex/final-cleanup-regex-20260812`, поглощена `main` в `a3593d74` | Завершённая перепись смысловых regex и удаление мёртвого кода. | Можно удалить после проверки чистоты по ранее данному разрешению владельца. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/kb-owner-update-20260813` | `codex/kb-owner-update-20260813`, база `a3593d74` | Новый неизменяемый релиз базы знаний по подтверждённым владельцем фактам и переключение рабочего указателя. | После слияния релиза в `main` и проверки рабочего указателя. |

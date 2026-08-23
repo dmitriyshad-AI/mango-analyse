@@ -2,24 +2,49 @@ from __future__ import annotations
 
 import csv
 import difflib
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from openai import OpenAI
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, select, text, update as sa_update
 from sqlalchemy.orm import Session
 
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.services.controlled_call_scope import (
+    call_artifact_directory,
+    read_call_artifact_text,
+    require_unique_controlled_call,
+)
+from mango_mvp.quality.tenant_text_normalizer import (TENANT_TEXT_ENGINE_VERSION, tenant_ruleset_version,
+    detect_residual_manager_text_artifacts, normalize_manager_text_with_provenance)
+from mango_mvp.services.dialogue_contract import (
+    build_dialogue_input,
+    DialogueContractError,
+    PROVIDER_EVIDENCE_FIELD,
+    _character_ngrams, _multiset_dice,
+    label_is_neutral as dialogue_label_is_neutral,
+    label_role as dialogue_label_role,
+    label_side as dialogue_label_side,
+    parse_dialogue_lines as parse_shared_dialogue_lines,
+    parse_line as parse_dialogue_line,
+    # One shared implementation: a stage-local copy is how one of the two
+    # pipelines keeps leaking the conversation after the other is fixed.
+    safe_error_text,
+    stored_side_by_role,
+)
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.services.transcribe import TranscribeService
@@ -48,15 +73,16 @@ Rules:
 3) Keep ts_sec unchanged. Do not rewrite timestamps.
 4) final_text must stay close to baseline/variant wording. If uncertain, keep baseline_text.
 5) You may set drop=true only for obvious artifact, exact echo, or duplicated garbage.
-6) You may set swap_with_next=true only when two adjacent turns are clearly in the wrong order.
-7) Speaker should normally stay unchanged. Change speaker only if the baseline speaker is clearly wrong.
-8) Return strict JSON only:
+6) You must NOT reorder turns. swap_with_next must always be false: only the recording decides who spoke first.
+7) You must NOT change speaker. Echo the baseline speaker of the turn unchanged. Only the telephony channel markup decides who spoke, never the words.
+8) If you believe a speaker or the order is wrong, say so in notes. Do not act on it.
+9) Return strict JSON only:
 {
   "schema_version": "dialogue_resolve_result_v1",
   "turns": [
     {
       "turn_id": 1,
-      "speaker": "manager|client|unknown",
+      "speaker": "same as baseline",
       "final_text": "...",
       "selection": "A|B|MIX|BASELINE",
       "drop": false,
@@ -70,20 +96,71 @@ Rules:
 }
 Return a single-line minified JSON object. No markdown, no extra keys."""
 
+RESOLVE_EDIT_SYSTEM_PROMPT = """Selective semantic merge, additional rules:
+1) Return the same turn, fixing only word recognition against the second ASR variant, and only for the roles in editable_roles. Return every other turn verbatim. Replace a word by a word in place: add, delete and reorder nothing, inside a turn or between turns.
+2) Every changed word must come from variant_a or variant_b of the same side, or from a glossary canonical form. Add nothing of your own. Never change digits, numerals, sums, dates, currency, phone numbers or personal names, never move or remove negations (не, ни, нет, без, нельзя, никогда) and qualifiers. No confident correction means return the turn verbatim: a copy beats a guess."""
+
 RESOLVE_PAIR_PROMPT_VERSION = "v2"
 RESOLVE_DIALOGUE_PROMPT_VERSION = "v2"
-
-
-TIMED_LINE_RE = re.compile(
-    r"^\[(?P<approx>~)?(?:(?P<hh>\d{2,}):)?(?P<mm>[0-5]\d):(?P<ss>[0-5]\d(?:\.\d)?)\]\s+"
-    r"(?P<speaker>Менеджер(?:\s*\([^)]+\))?|Клиент|Спикер\s*\(не определен\)):\s*(?P<text>.*)$"
+# Experimental thresholds (ТЗ §3, §12b): retuning one is a prompt_version change plus a new acceptance run.
+SEMANTIC_SIGNAL_THRESHOLDS = (("dice_tokens", 0.82), ("dice_char3", 0.88), ("len_ratio", 0.85))
+SEMANTIC_HARD_LEN_RATIO, SEMANTIC_GUARD_MIN_SUPPORT, SEMANTIC_GUARD_MIN_KEPT_LEN = 0.60, 0.60, 0.85
+SEMANTIC_GUARD_MAX_GROWTH, SEMANTIC_MIN_TOKEN_RATIO = 1.15, 0.80
+SEMANTIC_MIN_SIDE_WORDS, SEMANTIC_MAX_GLOSSARY = 25, 20
+SEMANTIC_PROMPT_VERSION = "resolve_semantic_guard_v1"
+SEMANTIC_NEGATIONS, SEMANTIC_QUALIFIERS = frozenset({"не", "ни", "нет", "без", "нельзя", "никогда"}), frozenset(
+    {"примерно", "около", "почти", "приблизительно", "возможно", "наверное", "только", "лишь"})
+SEMANTIC_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+SEMANTIC_DIGIT_RE = re.compile(r"\d")
+# Closed word forms avoid treating words such as семья and семестр as numerals.
+SEMANTIC_NUMERAL_RE = re.compile(
+    r"(?:ноль|нул|один|одна|одно|одни|одного|одному|одним|одном|дв(?:а|е|ух|ум|умя|ое|ои)|тр(?:и|ех|ем|емя|ое|ои)|четыр|пят|шест|семь(?!я)|семи|семью"
+    r"|восем|восьм|девят|десят|(?:один|две|три|четыр|пят|шест|сем|восем|девят)надцат|двадцат|тридцат|сорок|(?:пят|шест|сем|восем)ьдесят"
+    r"|девяност|сто|ста(?!я)|сот(?:ня|ни|ню|не|ней|ен|ням|нями)?|двест|(?:тр|четыр)ист|(?:пят|шест|сем|восем|девят)ьсот|тысяч|миллион|миллиард|перв|втор|трет|четверт|седьм|половин"
+    r"|процент|рубл|руб|доллар|евро|копе)(?:ь|я|ю|и|е|а|о|у|ы|ей|ем|ом|ой|ов|ах|ам|ами|ями|ый|ая|ое|ые|ых|ым|ыми|ого|ому|ух|ум|умя|ьмя|ью|ьи|ьми)?"
 )
+SEMANTIC_FACT_RE = re.compile(
+    r"(?:(?:январ|феврал|апрел|июн|июл|сентябр|октябр|ноябр|декабр)(?:ь|я|ю|ем|е)|март(?:а|у|ом|е)?|ма(?:й|я|ю|ем|е)|август(?:а|у|ом|е)?"
+    r"|(?:понедельник|вторник|четверг)(?:а|у|ом|е)?|сред(?:а|ы|у|е|ой)|пятниц(?:а|ы|у|е|ой)|суббот(?:а|ы|у|е|ой)|воскресень(?:е|я|ю|ем|и)|выходн(?:ой|ого|ому|ым|ом|ая|ую|ые|ых|ыми)|утр(?:о|а|у|ом|е)|день|дня|дню|днем|дне|дни|дней|днями|вечер(?:а|у|ом|е|ы|ов|ами)?|ноч(?:ь|и|ью|ей|ами)?|час(?:а|у|ом|е|ы|ов|ам|ами)?|минут(?:а|ы|у|е|ой|ам|ами|ах)?|секунд(?:а|ы|у|е|ой|ам|ами|ах)?|сегодня|завтра|вчера|недел(?:я|и|ю|е|ей|ям|ями|ях)|месяц(?:а|у|ем|е|ы|ев|ам|ами|ах)?|год(?:а|у|ом|е|ы|ов|ам|ами|ах)?|лет)"
+)
+SEMANTIC_NAME_CUE_RE = re.compile(r"(?:зов(?:ут|усь|ешься|етесь|емся|утся|ет)|имя|имени|именем|фамили(?:я|и|ю|ей)|отчеств(?:о|а|у|ом|е))")
+
+
 WORD_RE = re.compile(r"\S+", flags=re.UNICODE)
 ARTIFACT_RE = re.compile(r"продолжение следует|голосовой ассистент|абонент недоступен", re.I)
 
 
 def _clamp_score(value: int) -> int:
     return max(0, min(100, int(value)))
+
+
+# Every stored field Resolve reads to build its answer, plus the identity of
+# the artefact it exports.  The whole tuple is the stale guard: if any of it
+# moved while ASR/LLM/rescue were running, our answer describes another call.
+RESOLVE_INPUT_COLUMNS = (
+    "source_call_id",
+    "source_recording_id",
+    # Mono vs stereo decides which candidates Resolve is even allowed to build,
+    # so a re-ingest that changes it invalidates the answer in flight.
+    "channels",
+    "transcript_variants_json",
+    "transcript_text",
+    "transcript_manager",
+    "transcript_client",
+    "manager_name",
+    "phone",
+    "direction",
+    "started_at",
+    "duration_sec",
+    "source_filename",
+    "source_file",
+)
+
+def resolve_input_snapshot(record: Any) -> Dict[str, Any]:
+    """One immutable read of the input, taken before any provider runs."""
+    if isinstance(record, Mapping):
+        return {name: record.get(name) for name in RESOLVE_INPUT_COLUMNS}
+    return {name: getattr(record, name, None) for name in RESOLVE_INPUT_COLUMNS}
 
 
 class ResolveService:
@@ -97,6 +174,7 @@ class ResolveService:
             enabled=settings.llm_cache_enabled,
             root_dir=settings.llm_cache_dir,
         )
+        self._semantic_merge_last: Optional[Dict[str, Any]] = None  # None: no selective run
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -118,7 +196,7 @@ class ResolveService:
 
     @staticmethod
     def _pipeline_worker_id(prefix: str) -> str:
-        return f"{prefix}-{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+        return f"{prefix}-{os.getpid()}-{uuid.uuid4().hex}"
 
     def _claim_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
         if limit <= 0:
@@ -126,9 +204,21 @@ class ResolveService:
         now = self._utc_now()
         max_attempts = max(1, self._settings.resolve_max_attempts)
         release_stale_pipeline_claims(session, self._settings, now)
+        scope = require_unique_controlled_call(session, self._settings)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {
+            "worker_id": worker_id,
+            "now": now,
+            "max_attempts": max_attempts,
+            "limit": int(limit),
+        }
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET resolve_status = 'in_progress',
                        pipeline_stage = 'resolve',
@@ -144,32 +234,29 @@ class ResolveService:
                        AND resolve_attempts < :max_attempts
                        AND (next_retry_at IS NULL OR next_retry_at <= :now)
                        AND pipeline_stage IS NULL
+                       {scope_sql}
                      ORDER BY id ASC
                      LIMIT :limit
                  )
                 """
             ),
-            {
-                "worker_id": worker_id,
-                "now": now,
-                "max_attempts": max_attempts,
-                "limit": int(limit),
-            },
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE resolve_status = 'in_progress'
                        AND pipeline_stage = 'resolve'
                        AND pipeline_worker_id = :worker_id
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
@@ -177,14 +264,28 @@ class ResolveService:
 
     def count_queue_state(self, session: Session) -> Dict[str, int]:
         now = self._utc_now()
-        candidate_calls = session.scalars(
+        scope = require_unique_controlled_call(session, self._settings)
+        candidate_query = (
             select(CallRecord)
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.resolve_status.in_(["pending", "failed"]))
             .where(CallRecord.resolve_attempts < max(1, self._settings.resolve_max_attempts))
             .order_by(CallRecord.id.asc())
-        ).all()
+        )
+        progress_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.resolve_status == "in_progress")
+            .where(CallRecord.pipeline_stage == "resolve")
+        )
+        if scope:
+            candidate_query = candidate_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+            progress_query = progress_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        candidate_calls = session.scalars(candidate_query).all()
         ready = 0
         blocked_waiting_secondary = 0
         for call in candidate_calls:
@@ -193,11 +294,7 @@ class ResolveService:
             elif self._is_retry_due(call.next_retry_at, now):
                 ready += 1
         in_progress = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.resolve_status == "in_progress")
-                .where(CallRecord.pipeline_stage == "resolve")
-            )
+            session.scalar(progress_query)
             or 0
         )
         return {
@@ -281,10 +378,16 @@ class ResolveService:
         if not export_dir:
             return None
         source_path = Path(call.source_file)
-        return Path(export_dir) / source_path.parent.name / f"{source_path.stem}_text.txt"
+        return call_artifact_directory(
+            self._settings,
+            export_dir=Path(export_dir),
+            source_file=source_path,
+            source_call_id=call.source_call_id,
+        ) / f"{source_path.stem}_text.txt"
 
     def _load_dialogue_lines_from_export(self, call: CallRecord) -> List[str]:
         payload = self._safe_json(call.transcript_variants_json or "")
+        physical_roles = self._physical_role_map(payload)
         stored = payload.get("dialogue_lines")
         if isinstance(stored, list) and stored:
             lines = [str(line).strip() for line in stored if str(line).strip()]
@@ -292,12 +395,28 @@ class ResolveService:
             path = self._dialogue_export_path(call)
             if not path or not path.exists():
                 return []
-            lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+            lines = [
+                line.strip()
+                for line in read_call_artifact_text(
+                    self._settings,
+                    path,
+                    errors="ignore",
+                ).splitlines()
+                if line.strip()
+            ]
         parsed = [self._parse_timed_line(line) for line in lines]
         if any(item is None for item in parsed):
             return []
-        manager = " ".join(str(item["text"]) for item in parsed if item and item["role"] == "manager")
-        client = " ".join(str(item["text"]) for item in parsed if item and item["role"] == "client")
+        manager = " ".join(
+            str(item["text"])
+            for item in parsed
+            if item and physical_roles.get(str(item["role"]), item["role"]) == "manager"
+        )
+        client = " ".join(
+            str(item["text"])
+            for item in parsed
+            if item and physical_roles.get(str(item["role"]), item["role"]) == "client"
+        )
         normalize = self._transcribe_helper._normalize_artifact_text
         if (normalize(manager), normalize(client)) != (
             normalize(call.transcript_manager or ""),
@@ -307,28 +426,52 @@ class ResolveService:
         return lines
 
     @staticmethod
-    def _parse_timed_line(line: str) -> Optional[Dict[str, Any]]:
-        match = TIMED_LINE_RE.match(str(line).strip())
-        if not match:
-            return None
-        hh = int(match.group("hh") or 0)
-        mm = int(match.group("mm"))
-        ss = float(match.group("ss"))
-        ts = hh * 3600.0 + mm * 60.0 + ss
-        speaker = (match.group("speaker") or "").strip()
-        if speaker.startswith("Менеджер"):
-            role = "manager"
-        elif speaker.startswith("Клиент"):
-            role = "client"
-        else:
-            role = "unknown"
+    def _accepted_role(label: str) -> Optional[str]:
+        """Read the shared contract vocabulary without assigning an unproven role."""
+        role = dialogue_label_role(label)
+        if role is not None:
+            return role
+        side = dialogue_label_side(label)
+        if side is not None:
+            return f"channel_{side}"
+        return "unknown" if dialogue_label_is_neutral(label) else None
+
+    @staticmethod
+    def _physical_role_map(payload: Mapping[str, Any]) -> Dict[str, str]:
+        """Map proven physical Mango channels to business roles, or nothing."""
+        manager = payload.get("manager") if isinstance(payload.get("manager"), Mapping) else {}
+        client = payload.get("client") if isinstance(payload.get("client"), Mapping) else {}
+        manager_side = str(manager.get("physical_channel") or "").strip().lower()
+        client_side = str(client.get("physical_channel") or "").strip().lower()
+        if (
+            manager_side not in {"left", "right"}
+            or client_side not in {"left", "right"}
+            or manager_side == client_side
+        ):
+            return {}
         return {
-            "ts_sec": ts,
-            "approximate": bool(match.group("approx")),
+            f"channel_{manager_side}": "manager",
+            f"channel_{client_side}": "client",
+        }
+
+    @classmethod
+    def _parse_timed_line(cls, line: str) -> Optional[Dict[str, Any]]:
+        """Shared contract grammar plus the contract's own label vocabulary."""
+        try:
+            parsed = parse_dialogue_line(line)
+        except DialogueContractError:
+            return None
+        speaker = str(parsed["label"])
+        role = cls._accepted_role(speaker)
+        if role is None:
+            return None
+        return {
+            "ts_sec": float(parsed["start_sec"]),
+            "approximate": bool(parsed["approximate"]),
             "speaker_label": speaker,
             "role": role,
-            "text": (match.group("text") or "").strip(),
-            "raw_line": str(line).strip(),
+            "text": str(parsed["text"]),
+            "raw_line": str(parsed["raw_line"]),
         }
 
     def _parse_dialogue_lines(
@@ -338,26 +481,64 @@ class ResolveService:
         *,
         allow_export_fallback: bool = False,
     ) -> List[Tuple[float, str, str]]:
-        rows: List[Tuple[float, str, str]] = []
+        """Parse every line or return nothing: partial parse loss is forbidden.
+
+        The grammar and the ordering check come from the shared contract, so a
+        line Resolve accepts and a line the publisher accepts are the same line.
+        One unreadable line invalidates the whole dialogue: scoring or merging
+        the surviving part is exactly how a reply disappears without a reason.
+        """
         lines: List[str] = []
-        if dialogue_lines:
-            lines = [str(line).strip() for line in dialogue_lines if str(line).strip()]
+        if dialogue_lines is not None:
+            lines = [str(line).strip() for line in dialogue_lines]
         elif allow_export_fallback:
             path = self._dialogue_export_path(call)
             if path and path.exists():
-                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        for raw in lines:
-            parsed = self._parse_timed_line(raw)
-            if parsed is None:
-                continue
-            rows.append(
-                (
-                    float(parsed.get("ts_sec", 0.0)),
-                    str(parsed.get("role") or "unknown"),
-                    str(parsed.get("text") or "").strip(),
-                )
-            )
+                lines = [
+                    line.strip()
+                    for line in read_call_artifact_text(
+                        self._settings,
+                        path,
+                        errors="ignore",
+                    ).splitlines()
+                    if line.strip()
+                ]
+        if not lines:
+            return []
+        try:
+            parsed_lines = parse_shared_dialogue_lines(lines)
+        except DialogueContractError:
+            return []
+        physical_roles = self._physical_role_map(
+            self._safe_json(call.transcript_variants_json or "")
+        )
+        rows: List[Tuple[float, str, str]] = []
+        for item in parsed_lines:
+            role = self._accepted_role(str(item["label"]))
+            if role is None:
+                return []
+            role = physical_roles.get(role, role)
+            rows.append((float(item["start_sec"]), role, str(item["text"]).strip()))
         return rows
+
+    @staticmethod
+    def _dialogue_lines_sha256(lines: Sequence[str]) -> str:
+        raw = json.dumps(list(lines), ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _candidate_source_is_current(
+        self, call: CallRecord, candidate: Mapping[str, Any]
+    ) -> bool:
+        meta = candidate.get("meta")
+        expected = (
+            str(meta.get("source_artifact_sha256") or "")
+            if isinstance(meta, Mapping)
+            else ""
+        )
+        if not expected:
+            return True
+        current = self._load_dialogue_lines_from_export(call)
+        return bool(current) and self._dialogue_lines_sha256(current) == expected
 
     def _maybe_postfilter_candidate_dialogue(
         self,
@@ -381,6 +562,8 @@ class ResolveService:
             dialogue_lines_source = "mutable_sidecar"
         if dialogue_lines_source:
             meta["dialogue_lines_source"] = dialogue_lines_source
+        if dialogue_lines_source == "mutable_sidecar" and not meta.get("source_artifact_sha256"):
+            meta["source_artifact_sha256"] = self._dialogue_lines_sha256(lines)
         rows_before = self._parse_dialogue_lines(call, lines, allow_export_fallback=False)
         if rows_before:
             before_metrics = self._line_metrics(rows_before)
@@ -867,6 +1050,139 @@ class ResolveService:
             return provider
         return "rule"
 
+    def _semantic_merge_selective(self) -> bool:
+        return (self._settings.resolve_semantic_merge_mode or "off").strip().lower() == "selective"
+
+    @staticmethod
+    def _semantic_tokens(value: Any) -> List[str]:  # comparison only, never stored
+        return SEMANTIC_PUNCT_RE.sub(" ", str(value or "").casefold().replace("ё", "е")).split()
+
+    @staticmethod
+    def _semantic_numbers(words: Sequence[str]) -> List[str]:
+        return [w for w in words if SEMANTIC_DIGIT_RE.search(w) or SEMANTIC_NUMERAL_RE.fullmatch(w)]
+
+    @staticmethod
+    def _semantic_capitals(value: Any) -> set:  # read through quotes, dashes, hyphens (G4)
+        words = SEMANTIC_PUNCT_RE.sub(" ", str(value or "")).split()
+        return {w.casefold().replace("ё", "е") for w in words if w[:1].isupper()}
+
+    def _semantic_is_glossary_edit(self, projection: Mapping[str, Any], baseline: str, final: str) -> bool:
+        for item in projection.get("glossary") or []:
+            alias, canonical = str(item.get("alias") or ""), str(item.get("canonical") or "")
+            if alias and canonical and final == baseline.replace(alias, canonical):
+                return True
+        return False
+
+    def _semantic_glossary(self, role_variants: Mapping[str, Any], tenant: str) -> List[Dict[str, str]]:
+        # Only aliases the live tenant normalizer really found; no second list (ТЗ §6).
+        text = " ".join(f"{b.get('variant_a') or ''} {b.get('variant_b') or ''}" for b in role_variants.values() if isinstance(b, dict))
+        found = [(item.matched_text, normalize_manager_text_with_provenance(item.matched_text, tenant_id=tenant))
+                 for item in detect_residual_manager_text_artifacts(text)]
+        return [{"alias": alias, "canonical": rule.normalized_value, "rule_id": rule.rule_ids[0]}
+                for alias, rule in found if rule.rule_ids and rule.ruleset_version][:SEMANTIC_MAX_GLOSSARY]
+
+    def _semantic_selective_input(self, input_payload: Dict[str, Any], *, provider_roles_trusted: bool) -> Optional[Dict[str, Any]]:
+        """Divergence gate (ТЗ §3), then the de-identified projection sent to the model (ТЗ §4)."""
+        tenant = (self._settings.controlled_call_tenant_id or "").strip() or "mango"
+        # Thresholds ride in the cache key: retuning one must miss, not reuse.
+        state = self._semantic_merge_last = {
+            "mode": "selective", "eligible": False, "escalated": False, "escalation_reasons": [],
+            "signals": {}, "numeric_conflict": {}, "model_calls": 0, "cache_hit": False,
+            "turns_changed_proposed": 0, "turns_changed_accepted": 0, "turns_reset": {},
+            "fallback_reason": None, "applied": False, "versions": {
+                "model": self._settings.codex_resolve_model, "prompt": SEMANTIC_PROMPT_VERSION,
+                "reasoning": self._settings.codex_resolve_reasoning_effort, "schema_in": "dialogue_resolve_v1+semantic_merge_v1",
+                "thresholds": f"experimental_v1{SEMANTIC_SIGNAL_THRESHOLDS}/{SEMANTIC_HARD_LEN_RATIO}/{SEMANTIC_GUARD_MIN_SUPPORT}/{SEMANTIC_GUARD_MIN_KEPT_LEN}/{SEMANTIC_GUARD_MAX_GROWTH}/{SEMANTIC_MIN_TOKEN_RATIO}",
+                "normalizer": f"{TENANT_TEXT_ENGINE_VERSION}/{tenant_ruleset_version(tenant)}"}}
+        if not provider_roles_trusted:
+            state["fallback_reason"] = "unconfirmed_roles"
+            return None
+        raw_turns = input_payload.get("turns") or []
+        if {str(turn.get("speaker") or "") for turn in raw_turns} - {"manager", "client"}:
+            state["fallback_reason"] = "unconfirmed_roles"  # no confirmed side, nothing to compare
+            return None
+        role_variants = input_payload.get("role_variants") if isinstance(input_payload.get("role_variants"), dict) else {}
+        editable: List[str] = []
+        for role in ("manager", "client"):
+            block = role_variants.get(role) if isinstance(role_variants.get(role), dict) else {}
+            words_a = self._semantic_tokens(block.get("variant_a"))
+            words_b = self._semantic_tokens(block.get("variant_b"))
+            # Each side is judged on its own: a short side never blocks the other.
+            if min(len(words_a), len(words_b)) < SEMANTIC_MIN_SIDE_WORDS:
+                continue
+            side = {"dice_tokens": round(_multiset_dice(words_a, words_b), 4),
+                    "dice_char3": round(_multiset_dice(_character_ngrams(" ".join(words_a)), _character_ngrams(" ".join(words_b))), 4),
+                    "len_ratio": round(min(len(words_a), len(words_b)) / max(len(words_a), len(words_b)), 4)}
+            state["signals"][role] = side
+            state["numeric_conflict"][role] = self._semantic_numbers(words_a) != self._semantic_numbers(words_b)
+            hard = side["len_ratio"] < SEMANTIC_HARD_LEN_RATIO
+            if hard or len([1 for key, limit in SEMANTIC_SIGNAL_THRESHOLDS if side[key] < limit]) >= 2:
+                state["escalation_reasons"].append(f"hard_length_loss:{role}" if hard else f"side_divergent:{role}")
+                editable.append(role)
+        state["eligible"], state["escalated"] = bool(state["signals"]), bool(editable)
+        if not editable:
+            return None
+        variants = {r: {k: str(role_variants[r].get(k) or "") for k in ("variant_a", "variant_b")} for r in editable}
+        return {
+            "schema_version": input_payload.get("schema_version"),
+            "editable_roles": editable,
+            "semantic_merge": {"divergence": {r: state["signals"][r] for r in editable}},
+            "role_variants": variants,
+            "turns": [{k: t.get(k) for k in ("turn_id", "ts_sec", "approximate", "speaker", "baseline_text")} for t in raw_turns],
+            "glossary": self._semantic_glossary(variants, tenant),
+        }
+
+    def _semantic_guard_reset_code(
+        self, projection: Mapping[str, Any], role: str, baseline_text: str, final_text: str
+    ) -> Optional[str]:
+        """The guard (ТЗ §5, §12a, §12b) over one changed turn; a code means reset."""
+        if role not in (projection.get("editable_roles") or []):
+            return "non_editable_role_change"
+        base_words = self._semantic_tokens(baseline_text)
+        new_words = self._semantic_tokens(final_text)
+        if self._semantic_is_glossary_edit(projection, baseline_text, final_text):
+            return None
+        if re.sub(r"[\w\s]", "", baseline_text) != re.sub(r"[\w\s]", "", final_text):
+            return "punctuation_change"
+        if any(word in SEMANTIC_NEGATIONS for word in base_words + new_words) or sorted(
+                w for w in base_words if w[:2] in {"не", "ни"}) != sorted(
+                w for w in new_words if w[:2] in {"не", "ни"}):
+            return "negation_frozen_turn"
+        if any(base_words.count(word) > new_words.count(word) for word in SEMANTIC_QUALIFIERS):
+            return "qualifier_removed"
+        if any(SEMANTIC_NAME_CUE_RE.fullmatch(word) for word in base_words + new_words):
+            return "name_cue_frozen_turn"
+        if self._semantic_numbers(base_words + new_words) or any(SEMANTIC_FACT_RE.fullmatch(w) for w in base_words + new_words):
+            return "numeric_change"
+        block = (projection.get("role_variants") or {}).get(role) or {}
+        names = set(base_words) | {w for item in (projection.get("glossary") or []) for w in self._semantic_tokens(item.get("canonical"))}
+        support = names | set(self._semantic_tokens(block.get("variant_a"))) | set(self._semantic_tokens(block.get("variant_b")))
+        if any(word not in support for word in new_words):
+            return "unsupported_token"
+        # A name is the one thing two ASR guesses cannot confirm each other on.
+        new_caps = self._semantic_capitals(final_text)
+        if self._semantic_capitals(baseline_text) - new_caps or any(w not in names for w in new_caps):
+            return "proper_name_change"
+        if not SEMANTIC_GUARD_MIN_KEPT_LEN * len(base_words) <= len(new_words) <= SEMANTIC_GUARD_MAX_GROWTH * len(base_words):
+            return "length_loss_reset" if len(new_words) < len(base_words) else "length_growth_reset"
+        # Recognition is fixed in place: shared tokens keep their order, nothing is inserted,
+        # deleted or rewritten as a span, and each replaced pair stays close in spelling — a
+        # far pair is another word, not a better hearing of the same one (ТЗ §12b).
+        matcher = difflib.SequenceMatcher(None, base_words, new_words, autojunk=False)
+        if sum(item.size for item in matcher.get_matching_blocks()) < sum(
+                min(base_words.count(w), new_words.count(w)) for w in set(base_words)):
+            return "order_change"
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag != "equal" and (tag != "replace" or i2 - i1 != j2 - j1):
+                return "edit_shape_rejected"
+            if tag == "replace" and any(base_words[i1 + k][:1] != new_words[j1 + k][:1] or
+                    difflib.SequenceMatcher(None, base_words[i1 + k], new_words[j1 + k]).ratio()
+                    < SEMANTIC_MIN_TOKEN_RATIO for k in range(i2 - i1)):
+                return "token_distance_reset"
+        if _multiset_dice(new_words, base_words) < SEMANTIC_GUARD_MIN_SUPPORT:
+            return "low_support_reset"
+        return None
+
     def _build_dialogue_resolve_payload(
         self,
         call: CallRecord,
@@ -973,13 +1289,20 @@ class ResolveService:
     def _run_dialogue_llm(
         self,
         input_payload: Dict[str, Any],
+        *,
+        selective: bool = False,
     ) -> Dict[str, Any]:
         provider = self._dialogue_resolve_provider()
         if provider == "rule":
             raise RuntimeError("dialogue-level LLM is disabled")
         user_prompt = self._dialogue_turn_output_prompt(input_payload)
-        prompt = f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{user_prompt}"
-        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        # Selective appends its rules, keeps its own depth and carries the threshold and normalizer versions in the cache key (ТЗ §7.2).
+        versions = ((self._semantic_merge_last or {}).get("versions") or {}) if selective else {}
+        system_prompt = f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{RESOLVE_EDIT_SYSTEM_PROMPT}" if selective else DIALOGUE_RESOLVE_SYSTEM_PROMPT
+        prompt_version = f"{SEMANTIC_PROMPT_VERSION}/{versions.get('thresholds')}/{versions.get('normalizer')}" if selective else RESOLVE_DIALOGUE_PROMPT_VERSION
+        prompt = f"{system_prompt}\n\n{user_prompt}"
+        reasoning_effort = ((self._settings.codex_resolve_reasoning_effort if selective
+                             else self._settings.codex_reasoning_effort) or "").strip().lower()
         cached = self._llm_cache.get(
             namespace="resolve_dialogue",
             provider=provider,
@@ -991,9 +1314,11 @@ class ResolveService:
                 if provider == "openai"
                 else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
             ),
-            prompt_version=RESOLVE_DIALOGUE_PROMPT_VERSION,
+            prompt_version=prompt_version,
             prompt=prompt,
         )
+        if selective:
+            self._semantic_merge_last.update({"cache_hit": True} if cached is not None else {"model_calls": 1})
         if cached is not None:
             return cached
         if provider == "openai":
@@ -1002,7 +1327,7 @@ class ResolveService:
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 messages=[
-                    {"role": "system", "content": DIALOGUE_RESOLVE_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
             )
@@ -1059,7 +1384,7 @@ class ResolveService:
                 model=self._settings.ollama_model,
                 think=self._settings.ollama_think,
                 temperature=self._settings.ollama_temperature,
-                system_prompt=DIALOGUE_RESOLVE_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 num_predict=max(1600, len(input_payload.get("turns") or []) * 120),
             )
@@ -1076,7 +1401,7 @@ class ResolveService:
                 if provider == "openai"
                 else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
             ),
-            prompt_version=RESOLVE_DIALOGUE_PROMPT_VERSION,
+            prompt_version=prompt_version,
             prompt=prompt,
             response=payload,
         )
@@ -1123,9 +1448,14 @@ class ResolveService:
         if not isinstance(role_variants, dict):
             role_variants = {}
 
+        # editable_roles comes only from the selective merge, so today's dialogue path has no
+        # guard at all; an editable input without guard state is an unproven claim.
+        guard = self._semantic_merge_last if isinstance(input_payload.get("editable_roles"), list) else None
+        if guard is None and isinstance(input_payload.get("editable_roles"), list):
+            raise RuntimeError("selective semantic merge state is missing")
         normalized: List[Dict[str, Any]] = []
         warnings: List[str] = []
-        speaker_corrections = 0
+        speaker_corrections_rejected = 0
         drops_requested = 0
         for input_turn in input_turns:
             turn_id = int(input_turn["turn_id"])
@@ -1137,14 +1467,16 @@ class ResolveService:
                 for flag in input_turn.get("flags", [])
                 if str(flag).strip()
             }
-            if requested_role not in {"manager", "client", "unknown"}:
+            if requested_role not in {
+                "manager", "client", "unknown", "channel_left", "channel_right",
+            }:
                 requested_role = role
             if requested_role != role:
-                if role == "unknown":
-                    role = requested_role
-                    speaker_corrections += 1
-                else:
-                    warnings.append(f"speaker_change_ignored:{turn_id}")
+                # The model may never move a turn to another physical side or
+                # role: only Mango's own channel markup decides who spoke.  The
+                # rejected candidate is not stored anywhere.
+                speaker_corrections_rejected += 1
+                warnings.append(f"speaker_change_rejected:{turn_id}")
 
             baseline_text = str(input_turn.get("baseline_text") or "").strip()
             role_block = role_variants.get(role) if isinstance(role_variants.get(role), dict) else {}
@@ -1162,10 +1494,26 @@ class ResolveService:
                 warnings.append(f"oversize_text_reset:{turn_id}")
                 final_text = baseline_text
 
+            if guard is not None and final_text != baseline_text:
+                # Casing, punctuation and ё are no recognition fix: exact baseline, before any
+                # counter sees a proposal.  Every other edit is the guard's decision, not the
+                # model's, and a refused turn keeps its neighbours' accepted ones.
+                if self._semantic_tokens(final_text) == self._semantic_tokens(baseline_text):
+                    final_text = baseline_text
+                else:
+                    guard["turns_changed_proposed"] += 1
+                    code = self._semantic_guard_reset_code(input_payload, role, baseline_text, final_text)
+                    guard["turns_changed_accepted"] += 0 if code else 1
+                    if code:
+                        guard["turns_reset"][code] = guard["turns_reset"].get(code, 0) + 1
+                        final_text = baseline_text
+
             drop = bool(out_turn.get("drop"))
             if drop:
                 drops_requested += 1
-                drop_allowed = "artifact_candidate" in turn_flags or "echo_candidate" in turn_flags
+                # Under the guard the number of turns is fixed: not even an artifact or an echo
+                # may disappear together with a text edit (ТЗ §12a).
+                drop_allowed = guard is None and bool(turn_flags & {"artifact_candidate", "echo_candidate"})
                 if not drop_allowed:
                     warnings.append(f"drop_ignored:{turn_id}")
                     drop = False
@@ -1196,40 +1544,31 @@ class ResolveService:
                 }
             )
 
-        swaps_applied = 0
-        ordered = normalized[:]
-        idx = 0
-        while idx < len(ordered) - 1:
-            current = ordered[idx]
-            if not bool(current.get("swap_with_next")):
-                idx += 1
-                continue
-            if bool(ordered[idx + 1].get("swap_with_next")):
-                warnings.append(f"swap_chain_ignored:{current['turn_id']}")
-                current["swap_with_next"] = False
-                idx += 1
-                continue
-            if not (
-                bool(current.get("approximate"))
-                and bool(ordered[idx + 1].get("approximate"))
-            ):
-                warnings.append(f"swap_exact_timing_ignored:{current['turn_id']}")
-                current["swap_with_next"] = False
-                idx += 1
-                continue
-            ordered[idx], ordered[idx + 1] = ordered[idx + 1], ordered[idx]
-            swaps_applied += 1
-            idx += 2
+        # Chronology belongs to the recording, not to the model.  A requested
+        # swap is counted and warned about, and the order never moves: reading
+        # the reply of the other side as an answer is the same class of error as
+        # naming the wrong speaker, and here it would be invisible afterwards.
+        swap_requests_rejected = 0
+        for turn in normalized:
+            if bool(turn.get("swap_with_next")):
+                swap_requests_rejected += 1
+                warnings.append(f"swap_rejected:{turn['turn_id']}")
+                turn["swap_with_next"] = False
 
-        kept_turns = [turn for turn in ordered if not bool(turn.get("drop")) and str(turn.get("final_text") or "").strip()]
+        kept_turns = [
+            turn
+            for turn in normalized
+            if not bool(turn.get("drop")) and str(turn.get("final_text") or "").strip()
+        ]
         if not kept_turns:
             raise RuntimeError("dialogue resolve dropped all turns")
 
         if len(kept_turns) < max(1, len(input_turns) // 3):
             raise RuntimeError("dialogue resolve dropped too many turns")
 
-        global_notes = str(llm_payload.get("global_notes") or "").strip()
-        raw_warnings = llm_payload.get("warnings")
+        # Free model text is no evidence: under the guard only these warnings survive.
+        global_notes = "" if guard else str(llm_payload.get("global_notes") or "").strip()
+        raw_warnings = None if guard else llm_payload.get("warnings")
         if isinstance(raw_warnings, list):
             for item in raw_warnings:
                 text = str(item).strip()
@@ -1240,9 +1579,14 @@ class ResolveService:
             "turns": kept_turns,
             "warnings": warnings,
             "global_notes": global_notes,
-            "swaps_applied": swaps_applied,
+            # Applied swaps and applied speaker corrections are both structurally
+            # impossible now; the counters of rejected attempts are what revoke
+            # role trust downstream.
+            "swaps_applied": 0,
+            "swap_requests_rejected": swap_requests_rejected,
             "drops_requested": drops_requested,
-            "speaker_corrections": speaker_corrections,
+            "speaker_corrections": 0,
+            "speaker_corrections_rejected": speaker_corrections_rejected,
         }
 
     def _dialogue_turns_to_candidate(
@@ -1254,29 +1598,31 @@ class ResolveService:
         provider: str,
         llm_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        manager_name = (
-            (call.manager_name or "").strip()
-            or self._transcribe_helper._extract_manager_name_from_filename(call.source_filename)
-        )
-        manager_label = f"Менеджер ({manager_name})"
+        side_by_role = stored_side_by_role(variants_payload)
+        role_by_side = {side: role for role, side in side_by_role.items()}
         manager_parts: List[str] = []
         client_parts: List[str] = []
         dialogue_lines: List[str] = []
         for turn in normalized_result.get("turns", []):
-            role = str(turn.get("speaker") or "unknown")
+            speaker = str(turn.get("speaker") or "unknown")
             text = str(turn.get("final_text") or "").strip()
             if not text:
                 continue
             ts_sec = float(turn.get("ts_sec") or 0.0)
             approximate = bool(turn.get("approximate"))
+            side = (
+                speaker.removeprefix("channel_")
+                if speaker in {"channel_left", "channel_right"}
+                else side_by_role.get(speaker)
+            )
+            role = speaker if speaker in {"manager", "client"} else role_by_side.get(side)
             if role == "manager":
-                speaker_label = manager_label
                 manager_parts.append(text)
             elif role == "client":
-                speaker_label = "Клиент"
                 client_parts.append(text)
-            else:
-                speaker_label = "Спикер (не определен)"
+            speaker_label = str(turn.get("speaker_label") or "").strip() or {
+                "left": "Дорожка левая", "right": "Дорожка правая",
+            }.get(side, "Спикер (не определен)")
             dialogue_lines.append(
                 f"{self._transcribe_helper._format_timecode(ts_sec, approximate=approximate)} {speaker_label}: {text}"
             )
@@ -1289,7 +1635,7 @@ class ResolveService:
             transcript_text = "\n".join(dialogue_lines).strip()
 
         payload = self._copy_payload(variants_payload)
-        if int(normalized_result.get("speaker_corrections") or 0):
+        if int(normalized_result.get("speaker_corrections_rejected") or 0):
             role_mapping = payload.get("role_mapping")
             if isinstance(role_mapping, dict):
                 role_mapping.update({
@@ -1316,6 +1662,12 @@ class ResolveService:
             "swaps_applied": int(normalized_result.get("swaps_applied") or 0),
             "drops_requested": int(normalized_result.get("drops_requested") or 0),
             "speaker_corrections": int(normalized_result.get("speaker_corrections") or 0),
+            "speaker_corrections_rejected": int(
+                normalized_result.get("speaker_corrections_rejected") or 0
+            ),
+            "swap_requests_rejected": int(
+                normalized_result.get("swap_requests_rejected") or 0
+            ),
             "warnings": normalized_result.get("warnings", []),
             "global_notes": str(normalized_result.get("global_notes") or "").strip(),
         }
@@ -1365,11 +1717,34 @@ class ResolveService:
             variants_payload,
             baseline_dialogue_lines,
         )
+        speaker_labels = {int(t["turn_id"]): str(t.get("speaker_label") or "") for t in (input_payload or {}).get("turns", [])}
+        selective = self._semantic_merge_selective()
+        # The gate and the glossary run under the caller's fail-soft (ТЗ §7.4, §12b).
+        if selective and input_payload:
+            try:
+                trusted_dialogue = build_dialogue_input(resolve_input_snapshot(call))
+            except DialogueContractError:
+                trusted_dialogue = None
+            provider_roles_trusted = bool(trusted_dialogue and trusted_dialogue.trusted and not from_sidecar)
+            if provider_roles_trusted:
+                role_map = {f"channel_{turn['physical_side']}": turn["speaker_kind"] for turn in trusted_dialogue.turns}
+                for turn in input_payload.get("turns") or []:
+                    speaker = str(turn.get("speaker") or "")
+                    turn["speaker"] = speaker if speaker in {"manager", "client"} else role_map.get(speaker, "")
+            input_payload = self._semantic_selective_input(input_payload, provider_roles_trusted=provider_roles_trusted)
         if not input_payload:
             return None
-        raw_result = self._run_dialogue_llm(input_payload)
+        raw_result = self._run_dialogue_llm(input_payload, selective=selective)
         llm_meta = raw_result.get("_llm_meta") if isinstance(raw_result.get("_llm_meta"), dict) else None
         normalized_result = self._normalize_dialogue_result(input_payload, raw_result)
+        for turn in normalized_result["turns"]:
+            turn["speaker_label"] = speaker_labels.get(int(turn["turn_id"]), "")
+        state = self._semantic_merge_last if selective else None
+        if state is not None:
+            state["fallback_reason"] = ("reject_rate_exceeded" if sum(state["turns_reset"].values()) * 2 > state["turns_changed_proposed"]
+                                        else None if state["turns_changed_accepted"] else "no_accepted_edits")
+            if state["fallback_reason"]:
+                return None
         if from_sidecar:
             role_mapping = variants_payload.get("role_mapping")
             if isinstance(role_mapping, dict):
@@ -1378,22 +1753,31 @@ class ResolveService:
                     "manager_quality_allowed": False,
                     "status": "mutable_sidecar_timing",
                 })
-        return self._dialogue_turns_to_candidate(
+        candidate = self._dialogue_turns_to_candidate(
             call,
             variants_payload,
             normalized_result,
             provider=f"{provider}_dialogue",
             llm_meta=llm_meta,
         )
+        if from_sidecar:
+            candidate["meta"]["dialogue_lines_source"] = "mutable_sidecar"
+            candidate["meta"]["source_artifact_sha256"] = (
+                self._dialogue_lines_sha256(baseline_dialogue_lines)
+            )
+        return candidate
 
     def _resolve_with_llm(
         self,
         call: CallRecord,
         variants_payload: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        self._semantic_merge_last = None
+        selective = self._semantic_merge_selective()
         payload = self._copy_payload(variants_payload)
         mode = str(payload.get("mode") or "")
-        if mode not in {"stereo", "mono_or_fallback"}:
+        # Selective compares two ASR variants of one side: mono has no second one (ТЗ §3).
+        if mode not in ({"stereo"} if selective else {"stereo", "mono_or_fallback"}):
             return None
 
         llm_provider = (self._settings.resolve_llm_provider or "").strip().lower()
@@ -1402,8 +1786,17 @@ class ResolveService:
         contextual_provider = f"{llm_provider}_contextual"
 
         if mode == "stereo":
-            dialogue_candidate = self._resolve_dialogue_with_llm(call, payload)
-            if dialogue_candidate is not None:
+            try:
+                dialogue_candidate = self._resolve_dialogue_with_llm(call, payload)
+            except Exception as exc:
+                # One escalated call, one outcome: gate, glossary, model, guard and candidate
+                # build all end in baseline, never in per-role calls or a failed stage (§7.4).
+                if not selective:
+                    raise
+                if self._semantic_merge_last is not None:
+                    self._semantic_merge_last["fallback_reason"] = safe_error_text("resolve_semantic_merge", exc)
+                return None
+            if dialogue_candidate is not None or selective:
                 return dialogue_candidate
 
             manager = payload.get("manager")
@@ -1543,6 +1936,22 @@ class ResolveService:
             service = TranscribeService(rescue_settings)
             self._rescue_service_cache[cache_key] = service
         result = service._transcribe_call(call)
+        # Rescue rebuilds ASR variants, but it must not erase or replace the
+        # independently captured Mango evidence.  The dialogue guard will still
+        # compare that evidence with the rescued turns and fail closed on drift.
+        original = self._safe_json(call.transcript_variants_json or "")
+        rescued = self._safe_json(str(result.get("transcript_variants_json") or ""))
+        if PROVIDER_EVIDENCE_FIELD in original:
+            rescued[PROVIDER_EVIDENCE_FIELD] = original[PROVIDER_EVIDENCE_FIELD]
+        else:
+            rescued.pop(PROVIDER_EVIDENCE_FIELD, None)
+        if "provider_capture_manifest_sha256" in original:
+            rescued["provider_capture_manifest_sha256"] = original[
+                "provider_capture_manifest_sha256"
+            ]
+        else:
+            rescued.pop("provider_capture_manifest_sha256", None)
+        result["transcript_variants_json"] = json.dumps(rescued, ensure_ascii=False)
         result["name"] = "rescue"
         result["meta"] = {
             "provider": provider,
@@ -1556,6 +1965,17 @@ class ResolveService:
         has_stored_lines = isinstance(stored, list) and any(str(line).strip() for line in stored)
         dialogue_lines = self._load_dialogue_lines_from_export(call)
         declared_source = str(payload.get("dialogue_lines_source") or "")
+        dialogue_lines_source = (
+            declared_source
+            if declared_source in {"stored", "mutable_sidecar"}
+            else "stored" if has_stored_lines else "mutable_sidecar" if dialogue_lines else "none"
+        )
+        meta = {
+            "provider": "baseline",
+            "dialogue_lines_source": dialogue_lines_source,
+        }
+        if dialogue_lines_source == "mutable_sidecar":
+            meta["source_artifact_sha256"] = self._dialogue_lines_sha256(dialogue_lines)
         return {
             "name": "baseline",
             "transcript_manager": call.transcript_manager,
@@ -1563,14 +1983,7 @@ class ResolveService:
             "transcript_text": call.transcript_text or "",
             "dialogue_lines": dialogue_lines,
             "transcript_variants_json": call.transcript_variants_json or "{}",
-            "meta": {
-                "provider": "baseline",
-                "dialogue_lines_source": (
-                    declared_source
-                    if declared_source in {"stored", "mutable_sidecar"}
-                    else "stored" if has_stored_lines else "mutable_sidecar" if dialogue_lines else "none"
-                ),
-            },
+            "meta": meta,
         }
 
     @staticmethod
@@ -1620,6 +2033,12 @@ class ResolveService:
                 "reasons": rescue_candidate.get("quality", {}).get("reasons", []),
                 "meta": rescue_candidate.get("meta", {}),
             }
+        if self._semantic_merge_last is not None:
+            # Counts, enum codes and versions only: no quotes, names or sums (ТЗ §8).  applied
+            # means the merged text is really written — the llm candidate won _choose_best()
+            # and the call was accepted; manual review is applied=false.
+            self._semantic_merge_last["applied"] = bool(chosen) and chosen.get("name") == "llm" and decision == "accept_llm"
+            payload["semantic_merge"] = dict(self._semantic_merge_last)
         if chosen:
             payload["chosen"] = {
                 "name": chosen.get("name"),
@@ -1628,6 +2047,91 @@ class ResolveService:
                 "meta": chosen.get("meta", {}),
             }
         return payload
+
+    def _transition_resolve_claim(
+        self,
+        session: Session,
+        *,
+        call_id: int,
+        worker_id: str,
+        snapshot: Mapping[str, Any],
+        values: Mapping[str, Any],
+    ) -> bool:
+        """Move the row only if the claim and the whole input never moved.
+
+        Rescue ASR and the dialogue LLM can take minutes.  Reading the row and
+        then writing it back is two statements: in between, the lease can expire
+        and be re-claimed, or the transcript can be replaced by a secondary ASR
+        backfill — and our own session may not even see that foreign commit.  So
+        every outcome (done, manual, skipped, failed, waiting) is one
+        conditional UPDATE, and the database compares both the lease and the
+        full input snapshot.  ``rowcount != 1`` means the claim is stale and
+        nothing of ours was written; the caller must not export a file either.
+        """
+        session.expunge_all()
+        conditions = [
+            CallRecord.id == int(call_id),
+            CallRecord.resolve_status == "in_progress",
+            CallRecord.pipeline_stage == "resolve",
+            CallRecord.pipeline_worker_id == worker_id,
+        ]
+        conditions.extend(
+            getattr(CallRecord, name) == snapshot.get(name)
+            for name in RESOLVE_INPUT_COLUMNS
+        )
+        result = session.execute(
+            sa_update(CallRecord)
+            .where(*conditions)
+            .values(**{**dict(values), "updated_at": self._utc_now()})
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0) == 1
+
+    def _transition_resolve_export_claim(
+        self,
+        session: Session,
+        *,
+        call_id: int,
+        worker_id: str,
+        source_call_id: Any,
+        source_recording_id: Any,
+        source_file: Any,
+        resolve_json: Any,
+        transcript_text: Any,
+        transcript_variants_json: Any,
+        release: bool,
+    ) -> bool:
+        """Refresh or release only the exact call/result owned by this worker."""
+        session.expunge_all()
+        now = self._utc_now()
+        values = (
+            {
+                "pipeline_stage": None,
+                "pipeline_worker_id": None,
+                "pipeline_claimed_at": None,
+                "updated_at": now,
+            }
+            if release
+            else {"pipeline_claimed_at": now, "updated_at": now}
+        )
+        result = session.execute(
+            sa_update(CallRecord)
+            .where(
+                CallRecord.id == int(call_id),
+                CallRecord.resolve_status == "done",
+                CallRecord.pipeline_stage == "resolve",
+                CallRecord.pipeline_worker_id == worker_id,
+                CallRecord.source_call_id == source_call_id,
+                CallRecord.source_recording_id == source_recording_id,
+                CallRecord.source_file == source_file,
+                CallRecord.resolve_json == resolve_json,
+                CallRecord.transcript_text == transcript_text,
+                CallRecord.transcript_variants_json == transcript_variants_json,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0) == 1
 
     def run(self, session: Session, limit: int) -> Dict[str, int]:
         return self.run_with_progress(session, limit=limit, progress_callback=None)
@@ -1641,23 +2145,17 @@ class ResolveService:
         worker_id = self._pipeline_worker_id("rs")
         claimed_ids = self._claim_batch(session, limit=limit, worker_id=worker_id)
         max_attempts = max(1, self._settings.resolve_max_attempts)
-        calls = (
-            session.scalars(
-                select(CallRecord)
-                .where(CallRecord.id.in_(claimed_ids))
-                .order_by(CallRecord.id.asc())
-            ).all()
-            if claimed_ids
-            else []
-        )
 
         success = 0
         failed = 0
         manual = 0
         skipped = 0
         llm_used = 0
+        semantic: Dict[str, int] = {}
         rescue_used = 0
         handled = 0
+        stale = 0
+        export_failed = 0
 
         def _emit_progress(payload: Dict[str, Any]) -> None:
             if progress_callback is None:
@@ -1667,82 +2165,136 @@ class ResolveService:
             except Exception:
                 return
 
+        def _report(idx: int, *, outcome: str, call_id: int, error: str) -> None:
+            _emit_progress(
+                {
+                    "stage": "resolve",
+                    "current": idx,
+                    "total": len(claimed_ids),
+                    "success": success,
+                    "failed": failed,
+                    "manual": manual,
+                    "skipped_short": skipped,
+                    "llm_used": llm_used,
+                    "rescue_used": rescue_used,
+                    "stale": stale,
+                    "export_failed": export_failed,
+                    "status": outcome,
+                    "call_id": call_id,
+                    "error": error,
+                }
+            )
+
         _emit_progress(
             {
                 "stage": "resolve",
                 "current": 0,
-                "total": len(calls),
+                "total": len(claimed_ids),
                 "success": 0,
                 "failed": 0,
                 "manual": 0,
                 "skipped_short": 0,
                 "llm_used": 0,
                 "rescue_used": 0,
+                "stale": 0,
+                "export_failed": 0,
             }
         )
 
-        for idx, call in enumerate(calls, start=1):
+        for idx, call_id in enumerate(claimed_ids, start=1):
+            call = session.get(CallRecord, call_id)
+            if call is None:
+                continue
             if call.resolve_status != "in_progress" or call.pipeline_stage != "resolve":
                 continue
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
+            # The exact stored input, read before any provider runs: the values
+            # every conditional transition below compares against.
+            snapshot = resolve_input_snapshot(call)
+
             if self._waiting_for_secondary_asr(call):
                 wait_retry_sec = max(10, min(int(self._settings.worker_poll_sec or 10), 60))
-                call.resolve_status = "pending"
-                call.pipeline_stage = None
-                call.pipeline_worker_id = None
-                call.pipeline_claimed_at = None
-                call.next_retry_at = self._utc_now() + timedelta(seconds=wait_retry_sec)
-                session.add(call)
-                session.commit()
+                if self._transition_resolve_claim(
+                    session,
+                    call_id=call_id,
+                    worker_id=worker_id,
+                    snapshot=snapshot,
+                    values={
+                        "resolve_status": "pending",
+                        "pipeline_stage": None,
+                        "pipeline_worker_id": None,
+                        "pipeline_claimed_at": None,
+                        "next_retry_at": self._utc_now()
+                        + timedelta(seconds=wait_retry_sec),
+                    },
+                ):
+                    session.commit()
+                else:
+                    session.rollback()
+                    stale += 1
                 continue
-            call.resolve_attempts = int(call.resolve_attempts or 0) + 1
-            attempt = call.resolve_attempts
+
+            attempt = int(call.resolve_attempts or 0) + 1
             handled += 1
             outcome = "success"
             error_text = ""
+            # Nothing is written to the ORM row: the whole result is collected
+            # here and applied by one conditional UPDATE below.
+            values: Dict[str, Any] = {"resolve_attempts": attempt}
+            # Per call, so no previous call's telemetry can leak into this one (ТЗ §12b).
+            self._semantic_merge_last = None
+            export_payload: Optional[Dict[str, Any]] = None
+            counted = {"success": 0, "manual": 0}
             try:
                 duration = float(call.duration_sec or 0.0)
                 if duration > 0.0 and duration < float(self._settings.resolve_min_duration_sec):
-                    call.resolve_status = "skipped"
-                    call.resolve_quality_score = 100.0
-                    call.resolve_json = json.dumps(
+                    values.update(
                         {
-                            "version": "v1",
-                            "decision": "skip_short_call",
-                            "duration_sec": round(duration, 3),
-                            "min_duration_sec": int(self._settings.resolve_min_duration_sec),
-                            "ts_utc": self._utc_now().isoformat(),
-                        },
-                        ensure_ascii=False,
-                    )
-                    call.analysis_status = "pending"
-                    call.sync_status = "pending"
-                    call.next_retry_at = None
-                    call.last_error = None
-                    call.pipeline_stage = None
-                    call.pipeline_worker_id = None
-                    call.pipeline_claimed_at = None
-                    skipped += 1
-                    success += 1
-                    session.add(call)
-                    outcome = "skipped_short"
-                    _emit_progress(
-                        {
-                            "stage": "resolve",
-                            "current": idx,
-                            "total": len(calls),
-                            "success": success,
-                            "failed": failed,
-                            "manual": manual,
-                            "skipped_short": skipped,
-                            "llm_used": llm_used,
-                            "rescue_used": rescue_used,
-                            "status": outcome,
-                            "call_id": call.id,
-                            "source_filename": call.source_filename,
-                            "error": error_text,
+                            "resolve_status": "skipped",
+                            "resolve_quality_score": 100.0,
+                            "resolve_json": json.dumps(
+                                {
+                                    "version": "v1",
+                                    "decision": "skip_short_call",
+                                    "duration_sec": round(duration, 3),
+                                    "min_duration_sec": int(
+                                        self._settings.resolve_min_duration_sec
+                                    ),
+                                    "ts_utc": self._utc_now().isoformat(),
+                                },
+                                ensure_ascii=False,
+                            ),
+                            "analysis_status": "pending",
+                            "sync_status": "pending",
+                            "next_retry_at": None,
+                            "last_error": None,
+                            "pipeline_stage": None,
+                            "pipeline_worker_id": None,
+                            "pipeline_claimed_at": None,
                         }
                     )
+                    outcome = "skipped_short"
+                    if not self._transition_resolve_claim(
+                        session,
+                        call_id=call_id,
+                        worker_id=worker_id,
+                        snapshot=snapshot,
+                        values=values,
+                    ):
+                        session.rollback()
+                        stale += 1
+                        continue
                     session.commit()
+                    skipped += 1
+                    success += 1
+                    _report(
+                        idx,
+                        outcome=outcome,
+                        call_id=call_id,
+                        error=error_text,
+                    )
                     continue
 
                 baseline = self._candidate_from_call(call)
@@ -1768,7 +2320,10 @@ class ResolveService:
                 )
                 llm_trigger_reason: Optional[str] = None
 
-                if baseline_score < llm_trigger:
+                if self._semantic_merge_selective():
+                    # The only entry is the A/B divergence checked downstream (ТЗ §2).
+                    llm_trigger_reason = "semantic_merge"
+                elif baseline_score < llm_trigger:
                     llm_trigger_reason = "low_score"
                 elif self._settings.resolve_llm_for_risky and baseline_risky:
                     llm_trigger_reason = "risky_ordering_or_timing"
@@ -1827,90 +2382,207 @@ class ResolveService:
                 best = self._choose_best(candidates)
                 best_score = int(best.get("quality", {}).get("score", 0))
                 best_name = str(best.get("name") or "baseline")
+                if not self._candidate_source_is_current(call, best):
+                    # The sidecar moved, but the database lease may still be
+                    # ours.  Release that exact unchanged claim immediately;
+                    # otherwise the call stays invisible until lease expiry.
+                    if self._transition_resolve_claim(
+                        session,
+                        call_id=call_id,
+                        worker_id=worker_id,
+                        snapshot=snapshot,
+                        values={
+                            "resolve_status": "pending",
+                            "pipeline_stage": None,
+                            "pipeline_worker_id": None,
+                            "pipeline_claimed_at": None,
+                            "next_retry_at": None,
+                        },
+                    ):
+                        session.commit()
+                    else:
+                        session.rollback()
+                    stale += 1
+                    continue
+                block = self._semantic_merge_last
+                for key, value in () if block is None else (
+                        ("eligible", block["eligible"]), ("escalated", block["escalated"]), ("model_calls", block["model_calls"]),
+                        ("cache_hit", block["cache_hit"]), ("turns_accepted", block["turns_changed_accepted"]),
+                        ("turns_reset", sum(block["turns_reset"].values())), ("fallback", block["fallback_reason"] is not None)):
+                    semantic[f"semantic_{key}"] = semantic.get(f"semantic_{key}", 0) + int(value)
                 if best_score >= accept_threshold:
                     if best_name != "baseline":
-                        call.transcript_manager = best.get("transcript_manager")
-                        call.transcript_client = best.get("transcript_client")
-                        call.transcript_text = str(best.get("transcript_text") or "")
+                        values["transcript_manager"] = best.get("transcript_manager")
+                        values["transcript_client"] = best.get("transcript_client")
+                        values["transcript_text"] = str(best.get("transcript_text") or "")
                     if isinstance(best.get("transcript_variants_json"), str):
-                        call.transcript_variants_json = str(best.get("transcript_variants_json") or "{}")
-
-                    should_export = best_name != "baseline"
-                    if should_export:
-                        self._transcribe_helper._export_transcript_file(
-                            call,
-                            {
-                                "transcript_manager": call.transcript_manager,
-                                "transcript_client": call.transcript_client,
-                                "transcript_text": call.transcript_text or "",
-                                "dialogue_lines": best.get("dialogue_lines"),
-                                "transcript_variants_json": call.transcript_variants_json or "{}",
-                            },
+                        values["transcript_variants_json"] = str(
+                            best.get("transcript_variants_json") or "{}"
                         )
+                    if best_name != "baseline":
+                        # The exported file is a projection of the committed row.
+                        # It is written only after the conditional UPDATE proves
+                        # the row is still ours — a stale worker must not leave a
+                        # transcript file describing a result nobody stored.
+                        export_payload = {
+                            "transcript_manager": values.get(
+                                "transcript_manager", snapshot["transcript_manager"]
+                            ),
+                            "transcript_client": values.get(
+                                "transcript_client", snapshot["transcript_client"]
+                            ),
+                            "transcript_text": values.get(
+                                "transcript_text", snapshot["transcript_text"]
+                            )
+                            or "",
+                            "dialogue_lines": best.get("dialogue_lines"),
+                            "transcript_variants_json": values.get(
+                                "transcript_variants_json",
+                                snapshot["transcript_variants_json"],
+                            )
+                            or "{}",
+                        }
                     decision = f"accept_{best_name}"
-                    call.resolve_status = "done"
-                    call.analysis_status = "pending"
-                    call.sync_status = "pending"
-                    success += 1
+                    values.update(
+                        {
+                            "resolve_status": "done",
+                            "analysis_status": "pending",
+                            "sync_status": "pending",
+                        }
+                    )
+                    counted["success"] = 1
                     outcome = "done"
                 else:
                     decision = "manual_review_required"
-                    call.resolve_status = "manual"
-                    manual += 1
+                    values["resolve_status"] = "manual"
+                    counted["manual"] = 1
                     outcome = "manual"
 
-                call.resolve_quality_score = float(best_score)
-                call.resolve_json = json.dumps(
-                    self._build_resolve_payload(
-                        duration_sec=duration,
-                        decision=decision,
-                        baseline=baseline,
-                        llm_candidate=llm_candidate,
-                        rescue_candidate=rescue_candidate,
-                        chosen=best,
-                    ),
-                    ensure_ascii=False,
+                values.update(
+                    {
+                        "resolve_quality_score": float(best_score),
+                        "resolve_json": json.dumps(
+                            self._build_resolve_payload(
+                                duration_sec=duration,
+                                decision=decision,
+                                baseline=baseline,
+                                llm_candidate=llm_candidate,
+                                rescue_candidate=rescue_candidate,
+                                chosen=best,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        "next_retry_at": None,
+                        "dead_letter_stage": None,
+                        "last_error": None,
+                    }
                 )
-                call.next_retry_at = None
-                call.dead_letter_stage = None
-                call.last_error = None
-                call.pipeline_stage = None
-                call.pipeline_worker_id = None
-                call.pipeline_claimed_at = None
-            except Exception as exc:  # noqa: BLE001
-                call.last_error = f"resolve: {exc}"
-                if attempt >= max_attempts:
-                    call.resolve_status = "dead"
-                    call.dead_letter_stage = "resolve"
-                    call.next_retry_at = None
+                if export_payload is None:
+                    values.update(
+                        {
+                            "pipeline_stage": None,
+                            "pipeline_worker_id": None,
+                            "pipeline_claimed_at": None,
+                        }
+                    )
                 else:
-                    call.resolve_status = "failed"
-                    call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
-                call.pipeline_stage = None
-                call.pipeline_worker_id = None
-                call.pipeline_claimed_at = None
+                    # Resolve may have spent most of the lease in ASR/LLM.  The
+                    # committed done row needs a fresh lease for its file export.
+                    values["pipeline_claimed_at"] = self._utc_now()
+                if not self._transition_resolve_claim(
+                    session,
+                    call_id=call_id,
+                    worker_id=worker_id,
+                    snapshot=snapshot,
+                    values=values,
+                ):
+                    # Somebody else owns this row now: leave it exactly as it is
+                    # and export nothing.
+                    session.rollback()
+                    stale += 1
+                    continue
+                session.commit()
+                success += counted["success"]
+                manual += counted["manual"]
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                dead = attempt >= max_attempts
+                if not self._transition_resolve_claim(
+                    session,
+                    call_id=call_id,
+                    worker_id=worker_id,
+                    snapshot=snapshot,
+                    values={
+                        "resolve_attempts": attempt,
+                        "resolve_status": "dead" if dead else "failed",
+                        "dead_letter_stage": "resolve" if dead else None,
+                        "next_retry_at": (
+                            None if dead else self._utc_now() + self._retry_delay(attempt)
+                        ),
+                        "last_error": safe_error_text("resolve", exc),
+                        "pipeline_stage": None,
+                        "pipeline_worker_id": None,
+                        "pipeline_claimed_at": None,
+                    },
+                ):
+                    session.rollback()
+                    stale += 1
+                    continue
+                session.commit()
                 failed += 1
                 outcome = "failed"
-                error_text = str(exc)
-            session.add(call)
-            _emit_progress(
-                {
-                    "stage": "resolve",
-                    "current": idx,
-                    "total": len(calls),
-                    "success": success,
-                    "failed": failed,
-                    "manual": manual,
-                    "skipped_short": skipped,
-                    "llm_used": llm_used,
-                    "rescue_used": rescue_used,
-                    "status": outcome,
-                    "call_id": call.id,
-                    "source_filename": call.source_filename,
-                    "error": error_text,
+                error_text = safe_error_text("resolve", exc)
+                export_payload = None
+            if export_payload is not None:
+                export_claim = {
+                    "source_call_id": snapshot["source_call_id"],
+                    "source_recording_id": snapshot["source_recording_id"],
+                    "source_file": snapshot["source_file"],
+                    "resolve_json": values["resolve_json"],
+                    "transcript_text": values.get(
+                        "transcript_text", snapshot["transcript_text"]
+                    ),
+                    "transcript_variants_json": values.get(
+                        "transcript_variants_json",
+                        snapshot["transcript_variants_json"],
+                    ),
                 }
+                # This UPDATE both validates the immutable export path and holds
+                # the row write-lock until the atomic local file write finishes.
+                if not self._transition_resolve_export_claim(
+                    session,
+                    call_id=call_id,
+                    worker_id=worker_id,
+                    **export_claim,
+                    release=False,
+                ):
+                    session.rollback()
+                    stale += 1
+                else:
+                    committed = session.get(CallRecord, call_id, populate_existing=True)
+                    try:
+                        self._transcribe_helper._export_transcript_file(
+                            committed, export_payload
+                        )
+                    except Exception:  # noqa: BLE001
+                        export_failed += 1
+                    finally:
+                        released = self._transition_resolve_export_claim(
+                            session,
+                            call_id=call_id,
+                            worker_id=worker_id,
+                            **export_claim,
+                            release=True,
+                        )
+                        session.commit() if released else session.rollback()
+                        if not released:
+                            stale += 1
+            _report(
+                idx,
+                outcome=outcome,
+                call_id=call_id,
+                error=error_text,
             )
-            session.commit()
         return {
             "processed": handled,
             "success": success,
@@ -1918,7 +2590,11 @@ class ResolveService:
             "manual": manual,
             "skipped_short": skipped,
             "llm_used": llm_used,
+            **semantic,
             "rescue_used": rescue_used,
+            "stale": stale,
+            "export_failed": export_failed,
+            "worker_id": worker_id,
         }
 
     def export_manual_review_queue(

@@ -1,12 +1,23 @@
 #!/bin/zsh
 set -euo pipefail
+umask 077
 
 ROOT="$(cd "$(dirname "${0}")/.." && pwd)"
 CONFIG="${1:?config path is required}"
 ENV_FILE="${2:?env file path is required}"
 COMMAND="${3:?process command is required}"
 
-if [[ "${COMMAND}" != "process-a" && "${COMMAND}" != "process-a-worker" && "${COMMAND}" != "process-b" && "${COMMAND}" != "process-b-pull" ]]; then
+if [[ "${COMMAND}" != "process-a" && "${COMMAND}" != "process-a-worker" \
+    && "${COMMAND}" != "process-b" && "${COMMAND}" != "process-b-worker" \
+    && "${COMMAND}" != "process-b-pull" \
+    && "${COMMAND}" != "capture" && "${COMMAND}" != "capture-worker" \
+    && "${COMMAND}" != "pipeline" && "${COMMAND}" != "pipeline-worker" \
+    && "${COMMAND}" != "controlled-one" && "${COMMAND}" != "controlled-one-worker" \
+    && "${COMMAND}" != "watchdog" && "${COMMAND}" != "watchdog-worker" \
+    && "${COMMAND}" != "publication-current" \
+    && "${COMMAND}" != "publication-close" \
+    && "${COMMAND}" != "publication-alert" \
+    && "${COMMAND}" != "publication-status" ]]; then
   print -u2 '{"status":"failed","stop_reason":"unknown_process_command"}'
   exit 2
 fi
@@ -14,37 +25,55 @@ if [[ ! -f "${CONFIG}" || ! -f "${ENV_FILE}" || -L "${CONFIG}" || -L "${ENV_FILE
   print -u2 '{"status":"failed","stop_reason":"config_or_env_missing"}'
   exit 2
 fi
-CONFIG_META="$(/usr/bin/stat -f '%u:%Lp' "${CONFIG}")"
-CONFIG_UID="${CONFIG_META%%:*}"
-CONFIG_MODE="${CONFIG_META##*:}"
-if [[ "${CONFIG_UID}" != "$(/usr/bin/id -u)" ]] || (( (8#${CONFIG_MODE} & 8#022) != 0 )); then
-  print -u2 '{"status":"failed","stop_reason":"config_file_permissions_are_unsafe"}'
-  exit 2
-fi
-if [[ "$(/usr/bin/stat -f '%u:%Lp' "${ENV_FILE}")" != "$(/usr/bin/id -u):600" ]]; then
-  print -u2 '{"status":"failed","stop_reason":"env_file_must_be_owner_only_0600"}'
-  exit 2
-fi
-
-PYTHON_EXECUTABLE="$(/usr/bin/plutil -extract python_executable raw -o - "${CONFIG}" 2>/dev/null)" || {
-  print -u2 '{"status":"failed","stop_reason":"config_missing_python_executable"}'
-  exit 2
-}
-if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
-  print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
-  exit 2
-fi
 ENV_READER_PYTHON="/usr/bin/python3"
 [[ -x "${ENV_READER_PYTHON}" ]] || {
   print -u2 '{"status":"failed","stop_reason":"env_reader_python_missing"}'; exit 2;
 }
-PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}" 2>/dev/null)" || {
-  print -u2 '{"status":"failed","stop_reason":"config_missing_pipeline_root"}'
+RUNTIME_CONFIG_FIELDS="$(MANGO_CALLS_EXPECTED_CONFIG_SHA256= \
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${ROOT}/src" \
+  "${ENV_READER_PYTHON}" -m mango_mvp.productization.mango_calls_config \
+  "${CONFIG}" 2>/dev/null)" || {
+  print -u2 '{"status":"failed","stop_reason":"config_file_must_be_owner_only_0600_or_invalid"}'
   exit 2
 }
-ENV_EXPORTS="$("${ENV_READER_PYTHON}" "${ROOT}/scripts/mango_calls_env.py" --export-lines "${ENV_FILE}" 2>/dev/null)" || {
-  print -u2 '{"status":"failed","stop_reason":"worker_env_invalid"}'; exit 2;
-}
+typeset -a RUNTIME_CONFIG_LINES
+RUNTIME_CONFIG_LINES=("${(@f)RUNTIME_CONFIG_FIELDS}")
+if (( ${#RUNTIME_CONFIG_LINES[@]} != 5 )); then
+  print -u2 '{"status":"failed","stop_reason":"config_file_must_be_owner_only_0600_or_invalid"}'
+  exit 2
+fi
+PYTHON_EXECUTABLE="${RUNTIME_CONFIG_LINES[1]}"
+PIPELINE_ROOT="${RUNTIME_CONFIG_LINES[2]}"
+STRICT_RUNTIME="${RUNTIME_CONFIG_LINES[3]}"
+CONFIG_SHA256="${RUNTIME_CONFIG_LINES[5]}"
+if [[ ! "${CONFIG_SHA256}" =~ '^[0-9a-f]{64}$' ]]; then
+  print -u2 '{"status":"failed","stop_reason":"config_snapshot_sha_invalid"}'
+  exit 2
+fi
+if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
+  print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
+  exit 2
+fi
+if [[ "${STRICT_RUNTIME}" == "true" ]] \
+    && [[ "${COMMAND}" == "process-a" || "${COMMAND}" == "process-b" \
+        || "${COMMAND}" == "capture" || "${COMMAND}" == "pipeline" \
+        || "${COMMAND}" == "controlled-one" || "${COMMAND}" == "watchdog" ]]; then
+  print -u2 '{"status":"failed","stop_reason":"strict_runtime_requires_guarded_worker_command"}'
+  exit 2
+fi
+set +e
+ENV_EXPORTS="$("${ENV_READER_PYTHON}" "${ROOT}/scripts/mango_calls_env.py" \
+  --export-lines "${ENV_FILE}" 2>/dev/null)"
+ENV_PARSE_RC=$?
+set -e
+if (( ENV_PARSE_RC == 3 )); then
+  print -u2 '{"status":"failed","stop_reason":"env_file_must_be_owner_only_0600"}'
+  exit 2
+fi
+if (( ENV_PARSE_RC != 0 )); then
+  print -u2 '{"status":"failed","stop_reason":"worker_env_invalid"}'
+  exit 2
+fi
 for inherited_name in ${(k)parameters}; do
   if [[ "${inherited_name}" == MANGO_* || "${inherited_name}" == GOOGLE_APPLICATION_CREDENTIALS ]]; then
     unset "${inherited_name}"
@@ -53,7 +82,13 @@ done
 while IFS= read -r item; do
   [[ -n "${item}" ]] && export "${item}"
 done <<< "${ENV_EXPORTS}"
-if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-pull" ]]; then
+export MANGO_CALLS_EXPECTED_CONFIG_SHA256="${CONFIG_SHA256}"
+if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-worker" \
+    || "${COMMAND}" == "process-b-pull" \
+    || "${COMMAND}" == "capture-worker" || "${COMMAND}" == "pipeline-worker" \
+    || "${COMMAND}" == "controlled-one-worker" \
+    || "${COMMAND}" == "watchdog-worker" \
+    || "${COMMAND}" == publication-* ]]; then
   if [[ -z "${MANGO_CALLS_PIPELINE_ROOT:-}" || "${MANGO_CALLS_PIPELINE_ROOT}" != "${PIPELINE_ROOT}" ]]; then
     print -u2 '{"status":"failed","stop_reason":"pipeline_root_config_env_mismatch"}'
     exit 2
@@ -82,68 +117,55 @@ fi
 
 PIPELINE_COMMAND="${COMMAND}"
 [[ "${COMMAND}" == "process-a-worker" ]] && PIPELINE_COMMAND="process-a"
+[[ "${COMMAND}" == "process-b-worker" ]] && PIPELINE_COMMAND="process-b"
 [[ "${COMMAND}" == "process-b-pull" ]] && PIPELINE_COMMAND="process-b"
+[[ "${COMMAND}" == "capture-worker" ]] && PIPELINE_COMMAND="capture"
+[[ "${COMMAND}" == "pipeline-worker" ]] && PIPELINE_COMMAND="pipeline"
+[[ "${COMMAND}" == "controlled-one-worker" ]] && PIPELINE_COMMAND="controlled-one"
+[[ "${COMMAND}" == "watchdog-worker" ]] && PIPELINE_COMMAND="watchdog"
 
 verify_split_revision() {
-  local expected="${MANGO_CALLS_EXPECTED_CODE_SHA:-}" actual dirty
+  local expected="${MANGO_CALLS_EXPECTED_CODE_SHA:-}" actual dirty top unsafe_index
+  typeset -a safe_git
+  safe_git=(/usr/bin/env -i HOME="${HOME}" PATH="/usr/bin:/bin" \
+    /usr/bin/git -c core.fsmonitor=false -c core.untrackedCache=false -C "${ROOT}")
   if [[ ! "${expected}" =~ '^[0-9a-f]{40}$' ]]; then
     print -u2 '{"status":"failed","stop_reason":"split_code_sha_missing_or_invalid"}'
     return 4
   fi
-  actual="$(/usr/bin/git -C "${ROOT}" rev-parse HEAD 2>/dev/null)" || return 4
-  dirty="$(/usr/bin/git -C "${ROOT}" status --porcelain --untracked-files=all)" || return 4
-  if [[ "${actual}" != "${expected}" || -n "${dirty}" ]]; then
+  top="$("${safe_git[@]}" rev-parse --show-toplevel 2>/dev/null)" || return 4
+  [[ "${top:A}" == "${ROOT:A}" ]] || return 4
+  actual="$("${safe_git[@]}" rev-parse HEAD 2>/dev/null)" || return 4
+  unsafe_index="$("${safe_git[@]}" ls-files -v | /usr/bin/awk \
+    'substr($0,1,2) != "H " { print; exit }')" || return 4
+  dirty="$("${safe_git[@]}" status --porcelain=v1 --untracked-files=all)" || return 4
+  "${safe_git[@]}" diff-files --quiet --ignore-submodules=none -- || return 4
+  "${safe_git[@]}" diff-index --cached --quiet --ignore-submodules=none HEAD -- || return 4
+  if [[ "${actual}" != "${expected}" || -n "${dirty}" || -n "${unsafe_index}" ]]; then
     print -u2 '{"status":"failed","stop_reason":"split_code_revision_mismatch_or_dirty"}'
     return 4
   fi
 }
 
-if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-pull" ]]; then
+if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-worker" \
+    || "${COMMAND}" == "process-b-pull" \
+    || "${COMMAND}" == "capture-worker" || "${COMMAND}" == "pipeline-worker" \
+    || "${COMMAND}" == "controlled-one-worker" \
+    || "${COMMAND}" == "watchdog-worker" \
+    || "${COMMAND}" == publication-* ]]; then
   verify_split_revision
 fi
 
-publish_daily_report() {
-  if [[ -n "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID:-}" || -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
-    if [[ -z "${MANGO_CALLS_DAILY_EXPORT_OUT:-}" || -z "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID:-}" || -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
-      print -u2 '{"status":"failed","stop_reason":"google_publish_config_incomplete"}'
-      return 4
-    fi
-  fi
-  if [[ -z "${MANGO_CALLS_DAILY_EXPORT_OUT:-}" ]]; then
-    [[ "${COMMAND}" != "process-a-worker" ]] && return 0
-    print -u2 '{"status":"failed","stop_reason":"m1_yandex_publish_target_missing"}'
-    return 4
-  fi
-  if [[ "${COMMAND}" == "process-a-worker" ]] \
-      && [[ ! -d "${MANGO_CALLS_DAILY_EXPORT_OUT}" || ! -w "${MANGO_CALLS_DAILY_EXPORT_OUT}" \
-      || -L "${MANGO_CALLS_DAILY_EXPORT_OUT}" \
-      || ! -f "${MANGO_CALLS_DAILY_EXPORT_OUT}/.mango_calls_yandex_target" \
-      || "$(<"${MANGO_CALLS_DAILY_EXPORT_OUT}/.mango_calls_yandex_target")" != "mango-calls-yandex-v1" ]]; then
-    print -u2 '{"status":"failed","stop_reason":"yandex_publish_target_not_verified"}'
-    return 4
-  fi
-  local pipeline_root ready_db working_db report_day
-  local -a export_args
-  pipeline_root="${PIPELINE_ROOT}"
-  ready_db="${pipeline_root}/drop/mango_calls_ready.sqlite"
-  working_db="${pipeline_root}/working/mango_calls_pipeline.sqlite"
-  [[ "${1:-}" == "sealed" ]] && working_db="${ready_db}"
-  report_day="$(TZ=Europe/Moscow /bin/date -v-1d +%F)"
-  export_args=(--ready-db "${ready_db}" --working-db "${working_db}" \
-    --out "${MANGO_CALLS_DAILY_EXPORT_OUT}" --day "${report_day}")
-  [[ -n "${MANGO_CALLS_TALLANTO_EXPORT:-}" ]] && export_args+=(--tallanto-export "${MANGO_CALLS_TALLANTO_EXPORT}")
-  [[ -n "${MANGO_CALLS_TALLANTO_ENV:-}" ]] && export_args+=(--tallanto-env "${MANGO_CALLS_TALLANTO_ENV}")
-  [[ -n "${MANGO_CALLS_MANGO_ENV:-}" ]] && export_args+=(--mango-env "${MANGO_CALLS_MANGO_ENV}")
-  [[ -n "${MANGO_CALLS_TALLANTO_SNAPSHOT_AS_OF:-}" ]] && export_args+=(--tallanto-snapshot-as-of "${MANGO_CALLS_TALLANTO_SNAPSHOT_AS_OF}")
-  [[ "${1:-}" == "sealed" ]] && export_args+=(--sealed-only)
-  "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/export_daily_mango_calls_resolve.py" "${export_args[@]}"
-  if [[ -n "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID:-}" ]]; then
-    "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/publish_daily_mango_calls_google.py" \
-      --report-root "${MANGO_CALLS_DAILY_EXPORT_OUT}" --folder-id "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID}" \
-      --credentials "${GOOGLE_APPLICATION_CREDENTIALS}" --day "${report_day}" \
-      --execute --confirmation UPLOAD_MANGO_DAILY_REPORT
-  fi
-}
+if [[ "${COMMAND}" == publication-* ]]; then
+  COORDINATOR_COMMAND="${COMMAND#publication-}"
+  [[ "${COORDINATOR_COMMAND}" == "current" ]] && COORDINATOR_COMMAND="current-plan"
+  [[ "${COORDINATOR_COMMAND}" == "close" ]] && COORDINATOR_COMMAND="daily-close"
+  [[ "${COORDINATOR_COMMAND}" == "alert" ]] && COORDINATOR_COMMAND="daily-alert"
+  [[ "${COORDINATOR_COMMAND}" == "status" ]] && COORDINATOR_COMMAND="daily-status"
+  exec "${PYTHON_EXECUTABLE}" \
+    "${ROOT}/scripts/run_mango_calls_publication_coordinator.py" \
+    --config "${CONFIG}" "${COORDINATOR_COMMAND}"
+fi
 
 if [[ "${COMMAND}" == "process-b-pull" ]]; then
   if [[ -z "${MANGO_CALLS_REMOTE_HOST:-}" || -z "${MANGO_CALLS_REMOTE_DROP_ROOT:-}" || -z "${MANGO_CALLS_REMOTE_INCOMING_ROOT:-}" ]]; then
@@ -163,13 +185,37 @@ if [[ "${COMMAND}" == "process-b-pull" ]]; then
 fi
 
 set +e
-OUTPUT="$("${PYTHON_EXECUTABLE}" "${ROOT}/scripts/run_mango_calls_pipeline.py" \
-  --config "${CONFIG}" "${PIPELINE_COMMAND}")"
+if [[ ("${COMMAND}" == "pipeline-worker" || "${COMMAND}" == "controlled-one-worker") \
+    && -x /usr/bin/caffeinate ]]; then
+  OUTPUT="$(/usr/bin/caffeinate -dimsu -- "${PYTHON_EXECUTABLE}" \
+    "${ROOT}/scripts/run_mango_calls_pipeline.py" --config "${CONFIG}" "${PIPELINE_COMMAND}")"
+else
+  OUTPUT="$("${PYTHON_EXECUTABLE}" "${ROOT}/scripts/run_mango_calls_pipeline.py" \
+    --config "${CONFIG}" "${PIPELINE_COMMAND}")"
+fi
 RC=$?
 set -e
 print -r -- "${OUTPUT}"
 if [[ "${PIPELINE_COMMAND}" != "process-a" ]] && (( RC != 0 )); then
   exit "${RC}"
+fi
+if [[ "${COMMAND}" == "pipeline-worker" ]]; then
+  set +e
+  CURRENT_OUTPUT="$("${PYTHON_EXECUTABLE}" \
+    "${ROOT}/scripts/run_mango_calls_publication_coordinator.py" \
+    --config "${CONFIG}" current-plan)"
+  CURRENT_RC=$?
+  print -r -- "${CURRENT_OUTPUT}"
+  DAILY_OUTPUT="$("${PYTHON_EXECUTABLE}" \
+    "${ROOT}/scripts/run_mango_calls_publication_coordinator.py" \
+    --config "${CONFIG}" daily-close)"
+  DAILY_RC=$?
+  print -r -- "${DAILY_OUTPUT}"
+  set -e
+  if (( CURRENT_RC != 0 )); then
+    exit "${CURRENT_RC}"
+  fi
+  exit "${DAILY_RC}"
 fi
 
 if [[ "${PIPELINE_COMMAND}" == "process-a" ]]; then
@@ -200,29 +246,8 @@ print(str(last.get("status") or "") + "|" + ("true" if last.get("downstream_read
   fi
   PROCESS_A_STATUS="${PROCESS_A_STATE%%|*}"
   DOWNSTREAM_READY="${PROCESS_A_STATE##*|}"
-  if [[ "${DOWNSTREAM_READY}" == "true" ]]; then
-    if [[ "${COMMAND}" == "process-a-worker" ]]; then
-      [[ "${PROCESS_A_STATUS}" == "ok" ]] && publish_daily_report sealed
-    else
-      /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.mango.calls-process-b" || exit $?
-    fi
+  if [[ "${DOWNSTREAM_READY}" == "true" && "${COMMAND}" != "process-a-worker" ]]; then
+    /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.mango.calls-process-b" || exit $?
   fi
-fi
-if [[ "${COMMAND}" == "process-b" && -n "${MANGO_CALLS_DAILY_EXPORT_OUT:-}" ]]; then
-  PROCESS_B_STATE="$(print -r -- "${OUTPUT}" | "${PYTHON_EXECUTABLE}" -c '
-import json, sys
-text = sys.stdin.read(); decoder = json.JSONDecoder(); last = None
-for index, char in enumerate(text):
-    if char != "{": continue
-    try: value, end = decoder.raw_decode(text[index:])
-    except json.JSONDecodeError: continue
-    if isinstance(value, dict) and not text[index + end:].strip(): last = value
-if last is None: raise SystemExit(2)
-print(str(last.get("status") or "") + "|" + str(last.get("stop_reason") or ""))
-')" || exit 3
-  if [[ "${PROCESS_B_STATE}" != "ok|" && "${PROCESS_B_STATE}" != "idle|drop_unchanged" ]]; then
-    exit 1
-  fi
-  publish_daily_report
 fi
 exit "${RC}"

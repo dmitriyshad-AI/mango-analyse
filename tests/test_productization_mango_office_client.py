@@ -40,6 +40,20 @@ class FakeSession:
         raise AssertionError(f"Unexpected URL: {url}")
 
 
+class SequencedStatsSession(FakeSession):
+    def __init__(self, result_responses: list[FakeResponse]) -> None:
+        super().__init__()
+        self.result_responses = list(result_responses)
+
+    def post(self, url: str, data: Mapping[str, str], timeout: int) -> FakeResponse:
+        self.calls.append({"url": url, "data": dict(data), "timeout": timeout})
+        if url.endswith("/vpbx/stats/request"):
+            return FakeResponse(200, {"key": "REQ-1"})
+        if url.endswith("/vpbx/stats/result"):
+            return self.result_responses.pop(0)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+
 def test_build_signed_form_uses_mango_sha256_formula() -> None:
     client = MangoOfficeClient(
         credentials=MangoOfficeCredentials(api_key="key", api_salt="salt"),
@@ -93,6 +107,49 @@ def test_poll_call_history_performs_request_then_result() -> None:
     ]
     second_payload = json.loads(session.calls[1]["data"]["json"])
     assert second_payload == {"request_id": "REQ-1"}
+
+
+def test_poll_call_history_waits_for_official_204_pending_status() -> None:
+    sleeps: list[float] = []
+    session = SequencedStatsSession(
+        [
+            FakeResponse(204, None, text=""),
+            FakeResponse(200, "", text=""),
+        ]
+    )
+    client = MangoOfficeClient(
+        credentials=MangoOfficeCredentials(api_key="key", api_salt="salt"),
+        session=session,
+        stats_result_poll_attempts=2,
+        stats_result_poll_interval_sec=5,
+        sleeper=sleeps.append,
+    )
+
+    assert client.poll_call_history(
+        since=datetime(2026, 5, 7, 6, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 5, 7, 7, 0, tzinfo=timezone.utc),
+    ) == ()
+    assert sleeps == [5]
+    assert len(session.calls) == 3
+
+
+def test_poll_call_history_never_marks_persistent_204_as_empty_success() -> None:
+    session = SequencedStatsSession(
+        [FakeResponse(204, None, text=""), FakeResponse(204, None, text="")]
+    )
+    client = MangoOfficeClient(
+        credentials=MangoOfficeCredentials(api_key="key", api_salt="salt"),
+        session=session,
+        stats_result_poll_attempts=2,
+        stats_result_poll_interval_sec=0,
+        sleeper=lambda _seconds: None,
+    )
+
+    with pytest.raises(MangoOfficeApiError, match="polling deadline"):
+        client.poll_call_history(
+            since=datetime(2026, 5, 7, 6, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 5, 7, 7, 0, tzinfo=timezone.utc),
+        )
 
 
 def test_extract_stats_rows_accepts_common_result_shapes() -> None:

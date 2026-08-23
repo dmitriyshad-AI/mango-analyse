@@ -1,8 +1,15 @@
 # Перенос обработки звонков на M1
 
-Актуализировано: 2026-08-07. Этот документ исполняется только после кодовой
-Фазы 0 из `tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md`.
-Старый SHA внешнего пакета от 2026-08-01 не использовать.
+> **STOP: это архивная split-топология, а не инструкция запуска fast-service.**
+> Каноническая Phase A описана в
+> `docs/MANGO_CALLS_TWO_PROCESSES_RUNBOOK.md` и
+> `tasks/_running/2026-08-11_TZ_m1_calls_service_fast_value.md`. Из этого
+> файла после отдельного допуска Phase C используются только
+> блоки безопасного selective transfer/relocation. Команды старой
+> схемы с Process B на основном Mac и launchd исполнять запрещено.
+
+Актуализировано: 2026-08-11. Старый SHA внешнего пакета от 2026-08-01
+не использовать.
 
 ## Порядок без перескоков
 
@@ -20,7 +27,7 @@
    службу и является live-cutover.
 8. Пройти семь полных последовательных московских суток.
 
-## Целевая схема
+## Архивная целевая схема — не исполнять
 
 - M1 выполняет только Process A: Mango API, загрузка, Whisper, GigaAM, Resolve,
   Analyze, проверенная ready-база и суточный отчёт.
@@ -141,7 +148,20 @@ mkdir -p "$SNAP" && chmod 700 "$SNAP"
 printf '%s\n' "$SNAP" > "$HOME/.mango_local/mango_calls_cutover/MAIN_SOURCE_SNAPSHOT_PATH"
 chmod 600 "$HOME/.mango_local/mango_calls_cutover/MAIN_SOURCE_SNAPSHOT_PATH"
 : > "$SNAP/active_labels.txt"
-for label in com.mango.calls-process-a com.mango.calls-process-b com.mango.calls-two-processes; do
+CALLS_LABELS=(
+  com.mango.calls-two-processes
+  com.mango.calls-process-a
+  com.mango.calls-process-b
+  com.mango.calls-capture
+  com.mango.calls-pipeline
+  com.mango.calls-watchdog
+  com.mango.calls-publication-close-0600
+  com.mango.calls-publication-close-0700
+  com.mango.calls-publication-close-0800
+  com.mango.calls-publication-alert-0830
+  com.mango.calls-publication-status-0850
+)
+for label in "${CALLS_LABELS[@]}"; do
   if launchctl print "gui/$(id -u)/$label" > "$SNAP/$label.before.txt" 2>&1; then
     printf '%s\n' "$label" >> "$SNAP/active_labels.txt"
   fi
@@ -159,8 +179,8 @@ shasum -a 256 \
   > "$SNAP/drop.sha256"
 ```
 
-После снимка выгрузить оба возможных задания Process A и дождаться освобождения
-настоящей файловой блокировки. Перенос до этого запрещён:
+После снимка выгрузить все Calls-задания, убрать их plist в каталог отката и
+дождаться освобождения настоящих файловых блокировок. Перенос до этого запрещён:
 
 ```bash
 set -euo pipefail
@@ -170,18 +190,43 @@ SOURCE_PIPELINE="$(/usr/bin/plutil -extract pipeline_root raw -o - \
   "$SNAP/config.json")"
 [[ "$SOURCE_PIPELINE" == /* && "$SOURCE_PIPELINE" != / ]]
 test -d "$SOURCE_PIPELINE/capture" && test -d "$SOURCE_PIPELINE/working" && test -d "$SOURCE_PIPELINE/drop"
-launchctl bootout "gui/$(id -u)/com.mango.calls-process-a" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/com.mango.calls-process-b" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/com.mango.calls-two-processes" 2>/dev/null || true
-! launchctl print "gui/$(id -u)/com.mango.calls-process-a" >/dev/null 2>&1
-! launchctl print "gui/$(id -u)/com.mango.calls-process-b" >/dev/null 2>&1
-! launchctl print "gui/$(id -u)/com.mango.calls-two-processes" >/dev/null 2>&1
+CALLS_LABELS=(
+  com.mango.calls-two-processes
+  com.mango.calls-process-a
+  com.mango.calls-process-b
+  com.mango.calls-capture
+  com.mango.calls-pipeline
+  com.mango.calls-watchdog
+  com.mango.calls-publication-close-0600
+  com.mango.calls-publication-close-0700
+  com.mango.calls-publication-close-0800
+  com.mango.calls-publication-alert-0830
+  com.mango.calls-publication-status-0850
+)
+for label in "${CALLS_LABELS[@]}"; do
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+done
+for label in "${CALLS_LABELS[@]}"; do
+  ! launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1
+done
+for plist in "$HOME"/Library/LaunchAgents/com.mango.calls-*.plist; do
+  [[ -e "$plist" ]] || continue
+  mv "$plist" "$SNAP/"
+done
+test -z "$(find "$HOME/Library/LaunchAgents" -maxdepth 1 \
+  -name 'com.mango.calls-*.plist' -print -quit)"
+if crontab -l 2>/dev/null | grep -E 'mango.*calls|calls.*mango' > "$SNAP/active_calls_cron.txt"; then
+  chmod 600 "$SNAP/active_calls_cron.txt"
+  printf 'STOP: Calls cron entry remains; do not continue\n' >&2
+  exit 3
+fi
+chmod 600 "$SNAP/active_calls_cron.txt"
 python3 - "$SOURCE_PIPELINE" <<'PY'
 import fcntl
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
-for name in ('process_a.lock', 'process_b.lock'):
+for name in ('process_a.lock', 'capture.lock', 'pipeline.lock', 'process_b.lock'):
     path = root / 'locks' / name
     if not path.exists():
         continue
@@ -235,9 +280,15 @@ capture, ASR, Resolve и Analyze; после него все три задани
 `scripts/relocate_mango_calls_pipeline.py` доступны только после завершения
 кодовой Фазы 0 и появления проверенного скрипта. До этого остановиться.
 
-Затем передать данные. Встроенный macOS rsync 2.6.9 не поддерживает
-`--info=progress2`, поэтому используется совместимый `--progress`; пробел в
-удалённом пути экранирован для удалённой оболочки:
+Затем построить выборочный контракт передачи. Он включает все БД, manifest,
+cursor, recovery ledger, SQLite sidecar, неготовое/multi/unreferenced аудио и
+все прочие файлы. Исключается только аудио уникального звонка, строго готового
+одновременно в working и sealed ready DB. Это особенно важно после падения
+между скачиванием и append: неизвестный orphan переносится по умолчанию.
+
+Встроенный macOS `openrsync` проверяется живым dry-run команды `--from0`, а не
+по тексту `--help`. `files-from` имеет NUL-разделители; превращать его в строки
+через shell запрещено.
 
 ```bash
 set -euo pipefail
@@ -252,10 +303,19 @@ SOURCE_PIPELINE="$(/usr/bin/plutil -extract pipeline_root raw -o - \
 test -d "$SOURCE_PIPELINE/capture" && test -d "$SOURCE_PIPELINE/working" && test -d "$SOURCE_PIPELINE/drop"
 GENERATION="$(date -u +%Y%m%dT%H%M%SZ)"
 printf '%s\n' "$GENERATION" > "$SNAP/GENERATION_ID"
-SOURCE_INVENTORY="$SNAP/source_inventory.json"
-test -f "$SOURCE_INVENTORY"
+SOURCE_INVENTORY="$SNAP/selective_source_inventory.json"
+FILES_FROM="$SNAP/selective_files_from.nul"
 python3 scripts/relocate_mango_calls_pipeline.py \
-  --verify-inventory "$SOURCE_INVENTORY" --inventory-root "$SOURCE_PIPELINE"
+  --selective-inventory-root "$SOURCE_PIPELINE" \
+  --inventory-out "$SOURCE_INVENTORY" \
+  --files-from-out "$FILES_FROM"
+test -s "$SOURCE_INVENTORY" && test -s "$FILES_FROM"
+test "$(stat -f '%Lp' "$SOURCE_INVENTORY")" = 600
+test "$(stat -f '%Lp' "$FILES_FROM")" = 600
+python3 scripts/relocate_mango_calls_pipeline.py \
+  --verify-selective-source "$SOURCE_INVENTORY" \
+  --selective-inventory-root "$SOURCE_PIPELINE" \
+  --files-from-out "$FILES_FROM"
 SOURCE_PREFLIGHT_TARGET="$HOME/.mango_local/mango_calls_source_preflight_only"
 test ! -e "$SOURCE_PREFLIGHT_TARGET"
 python3 scripts/relocate_mango_calls_pipeline.py \
@@ -265,14 +325,20 @@ python3 scripts/relocate_mango_calls_pipeline.py \
 test ! -e "$SOURCE_PREFLIGHT_TARGET"
 ssh "$M1_HOST" 'set -euo pipefail; OWNER_LOCAL="$HOME/.mango_local"; test ! -L "$OWNER_LOCAL"; mkdir -p "$OWNER_LOCAL"; test -d "$OWNER_LOCAL"; test "$(stat -f %u "$OWNER_LOCAL")" = "$(id -u)"; chmod 700 "$OWNER_LOCAL"; test "$(stat -f %u:%Lp "$OWNER_LOCAL")" = "$(id -u):700"'
 ssh "$M1_HOST" "set -euo pipefail; umask 077; TARGET=~/.mango_local/mango_calls_transfers/$GENERATION; test ! -e \"\$TARGET\"; mkdir -p \"\$TARGET\"; chmod 700 \"\$TARGET\""
-/usr/bin/rsync -aH --progress \
+/usr/bin/rsync -aH --relative --from0 --files-from="$FILES_FROM" \
   "$SOURCE_PIPELINE/" \
   "$M1_HOST:~/.mango_local/mango_calls_transfers/$GENERATION/"
 scp "$SOURCE_INVENTORY" \
   "$M1_HOST:~/.mango_local/mango_calls_transfers/$GENERATION.source_inventory.json"
-ssh "$M1_HOST" "chmod 600 ~/.mango_local/mango_calls_transfers/$GENERATION.source_inventory.json"
+scp "$FILES_FROM" \
+  "$M1_HOST:~/.mango_local/mango_calls_transfers/$GENERATION.files_from.nul"
+ssh "$M1_HOST" "chmod 600 ~/.mango_local/mango_calls_transfers/$GENERATION.source_inventory.json ~/.mango_local/mango_calls_transfers/$GENERATION.files_from.nul"
+python3 scripts/relocate_mango_calls_pipeline.py \
+  --verify-selective-source "$SOURCE_INVENTORY" \
+  --selective-inventory-root "$SOURCE_PIPELINE" \
+  --files-from-out "$FILES_FROM"
 RSYNC_DIFF="$SNAP/rsync_second_pass.txt"
-/usr/bin/rsync -aHn --delete --itemize-changes \
+/usr/bin/rsync -aHn --relative --from0 --files-from="$FILES_FROM" --itemize-changes \
   "$SOURCE_PIPELINE/" \
   "$M1_HOST:~/.mango_local/mango_calls_transfers/$GENERATION/" \
   > "$RSYNC_DIFF"
@@ -280,8 +346,10 @@ chmod 600 "$RSYNC_DIFF"
 test ! -s "$RSYNC_DIFF"
 ```
 
-Последняя команда обязана вернуть пустую строку: это доказательство, что после
-остановки источника повторная передача не видит ни пропусков, ни лишних файлов.
+Последняя команда обязана вернуть пустую строку: это доказательство, что повтор
+того же выборочного контракта не видит изменений. Проверка source выполняется и
+до, и после rsync. `--delete` здесь намеренно запрещён: target является точным
+подмножеством, а ошибка в списке не должна удалять уже переданные данные.
 Встроенный `openrsync` округляет `mtime` до секунд, поэтому межмашинная сверка
 использует путь, размер, SHA-256 и mode; полные owner-only inventory всё равно
 сохраняют исходные `mtime_ns`, а локальный resume проверяет их строго.
@@ -304,8 +372,10 @@ PIPELINE_TRANSFER="$HOME/.mango_local/mango_calls_transfers/$GENERATION"
 PIPELINE="$HOME/.mango_local/mango_calls_two_processes"
 test -d "$PIPELINE_TRANSFER"
 INVENTORY="$PIPELINE_TRANSFER.source_inventory.json"
+FILES_FROM="$PIPELINE_TRANSFER.files_from.nul"
 test -f "$INVENTORY" && test ! -L "$INVENTORY"
-chmod 600 "$INVENTORY"
+test -f "$FILES_FROM" && test ! -L "$FILES_FROM"
+chmod 600 "$INVENTORY" "$FILES_FROM"
 OLD_PIPELINE="$(python3 - "$INVENTORY" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding='utf-8')).get('source_root')
@@ -341,17 +411,36 @@ fi
 mv "$PIPELINE_TRANSFER" "$PIPELINE"
 M1_BOOTSTRAP_SINCE='<ПОДТВЕРЖДЁННАЯ UTC-ДАТА НАЧАЛА ПЕРВОГО ОКНА>'
 [[ "$M1_BOOTSTRAP_SINCE" != *'<'* ]]
+EXPECTED_CODE_SHA="$(git rev-parse HEAD)"
+[[ "$EXPECTED_CODE_SHA" =~ ^[0-9a-f]{40}$ ]]
+OWNER_EMAIL='<EMAIL ВЛАДЕЛЬЦА ЗАКРЫТОЙ GOOGLE-ТАБЛИЦЫ>'
+ROP_EMAIL='<EMAIL РОПА>'
+[[ "$OWNER_EMAIL" != *'<'* && "$ROP_EMAIL" != *'<'* ]]
 python3 - docs/m1_calls_handoff_20260801/config.m1.example.json \
-  "$PIPELINE/config.json.tmp" "$HOME" "$M1_BOOTSTRAP_SINCE" <<'PY'
+  "$PIPELINE/config.json.tmp" "$HOME" "$M1_BOOTSTRAP_SINCE" \
+  "$EXPECTED_CODE_SHA" "$OWNER_EMAIL" "$ROP_EMAIL" <<'PY'
 import json, sys
-source, target, home, since = sys.argv[1:]
+source, target, home, since, sha, owner_email, rop_email = sys.argv[1:]
 data = json.load(open(source, encoding='utf-8'))
-for key, value in data.items():
+replacements = {
+    '<HOME>': home,
+    '<CUTOVER_BOOTSTRAP_SINCE_ISO8601>': since,
+    '<EXPECTED_CODE_SHA>': sha,
+    '<OWNER_EMAIL>': owner_email,
+    '<ROP_EMAIL>': rop_email,
+}
+def render(value):
     if isinstance(value, str):
-        data[key] = value.replace('<HOME>', home).replace(
-            '<CUTOVER_BOOTSTRAP_SINCE_ISO8601>', since
-        )
-assert not any(isinstance(value, str) and '<' in value for value in data.values())
+        for old, new in replacements.items():
+            value = value.replace(old, new)
+        return value
+    if isinstance(value, list):
+        return [render(item) for item in value]
+    if isinstance(value, dict):
+        return {key: render(item) for key, item in value.items()}
+    return value
+data = render(data)
+assert '<' not in json.dumps(data, ensure_ascii=False)
 with open(target, 'x', encoding='utf-8') as stream:
     json.dump(data, stream, ensure_ascii=False, indent=2)
     stream.write('\n')
@@ -381,8 +470,10 @@ staging закрепляются открытыми дескрипторами; 
 проверяются и сохраняются.
 После него `stat -f '%Su:%Lp %N'` должен показать текущего пользователя и `700` для
 всех runtime-каталогов, `600` для всех обычных файлов. Оба результата SQLite должны
-быть `ok`. База истории клиентов на M1 не копируется:
-Process B остаётся на основном Mac.
+быть `ok`. Это требование относилось к архивной split-схеме. Fast-service
+вызывает demand-only Process B внутри тяжёлого pipeline на M1 и пишет
+только в отдельную локальную Customer Timeline staging. Production Timeline и
+основной Mac не изменяются.
 
 ### Отдельный SSH-ключ только на чтение
 
@@ -485,20 +576,66 @@ ssh "$M1_HOST" 'chmod 600 ~/.mango_local/tallanto/Contacts_current.csv'
 а на момент cutover снимок должен быть не старше 24 часов. Обновление после
 запуска и проверка возраста реализуются в кодовой Фазе 0.
 
-В отдельном файле `~/.mango_secrets/mango_calls_m1_worker.env` находятся Mango,
-Tallanto, Google и пути публикации. Пример имён без значений:
+В отдельном файле `~/.mango_secrets/mango_calls_m1_worker.env` находятся только
+Mango, read-only Tallanto и локальные пути worker. Google/Яндекс write-параметры
+в Phase A туда не добавляются:
 
 ```text
 MANGO_OFFICE_API_KEY=
 MANGO_OFFICE_API_SALT=
 MANGO_CALLS_EXPECTED_CODE_SHA=<один подтверждённый SHA для обоих компьютеров>
-MANGO_CALLS_DAILY_EXPORT_OUT=<HOME>/Yandex.Disk.localized/Mango Calls Resolve
-MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID=
-GOOGLE_APPLICATION_CREDENTIALS=
+MANGO_CALLS_PIPELINE_ROOT=<HOME>/.mango_local/mango_calls_two_processes
+MANGO_CALLS_TALLANTO_EXPORT=<HOME>/.mango_local/tallanto/Contacts_current.csv
 ```
 
-До проверки M1 создать маркер только внутри уже установленной и проверенной
-папки Яндекс Диска:
+В будущем config также обязан явно содержать разные идентификаторы машин и путь
+к доказательству остановки старого Mac:
+
+```json
+{
+  "host_id_path": "<HOME>/.mango_local/mango_calls_two_processes/state/host_id",
+  "expected_active_host_id": "<M1_HOST_ID>",
+  "expected_previous_host_id": "<PREVIOUS_MAC_HOST_ID>",
+  "cutover_manifest_path": "<HOME>/.mango_local/mango_calls_two_processes/state/cutover_manifest.json",
+  "previous_host_snapshot_path": "<HOME>/.mango_local/mango_calls_two_processes/state/previous_host_shutdown_snapshot.json"
+}
+```
+
+Для проверки одного звонка нельзя уменьшать только `stage_limit`: обычный
+worker продолжает циклы до пустой очереди. Использовать отдельный owner-only
+`config.controlled-one.json` с `processing_scope=controlled_1`, `stage_limit=1`,
+точным путем allowlist и его SHA-256. В таком режиме разрешена только команда
+`controlled-one`; capture, ingest, Process A/B, cycle, sync и publication
+завершаются отказом до широких изменений. Allowlist создаётся только для уже
+существующего единственного `source_call_id` в перенесённой рабочей БД.
+Перед allowlist проверяются фактический owner-only `host_id` и локальный
+regular/nofollow аудиофайл внутри рабочего audio-каталога. Машинный preflight
+службы не снимает production STOP: для этого позже потребуется отдельное
+owner-reviewed доказательство реального controlled-one и его нулевого повтора.
+Создание allowlist выполняет отдельное read-only доказательство lineage для
+controlled-one: сверяет свежий shutdown-proof исходного Mac, SHA перенесённого
+cursor и неизменный cutover manifest, не вызывая Mango или модели. Общий
+service-маркер `cutover_cursor_lineage.json` не создаётся; capture/Process A
+остаются STOP до отдельного разрешения cutover. Проверка и запись allowlist
+удерживают локальные pipeline и capture lock; занятый lock или несовпадение
+оставляет allowlist несозданным.
+Allowlist фиксирует ID строки, SHA и размер аудио. Прямые тяжёлые CLI в этом
+режиме запрещены: отдельный worker принимает только свежий короткоживущий
+owner-only stage-ticket оркестратора, сверяет родительский PID и удерживаемый
+pipeline lock и допускает только точные провайдеры
+`mlx → gigaam → codex_cli`. Это защита от случайного/устаревшего запуска, а не
+криптографическая изоляция от произвольного процесса того же UID `dmitriy`.
+Остаток приватной аудиокопии после аварии блокирует новый controlled-one; его
+очистка выполняется только после проверки отсутствия worker и решения владельца.
+Если стадии успели завершиться, а уборка каталога не удалась, полный отчёт
+`before/stages/after` всё равно сохраняется со `status=failed` и
+`pilot_transition_proven=false`; остаток продолжает блокировать следующий запуск.
+Свежий пилот считается доказанным только при runtime-квитанциях вызовов MLX и
+GigaAM и успешной очистки MLX-кэша; `processed=1` без них недостаточно.
+
+Следующий блок относится только к будущей фазе внешней публикации и без
+отдельного разрешения Дмитрия не выполняется. Тогда маркер создаётся только
+внутри уже установленной и проверенной папки Яндекс Диска:
 
 ```bash
 set -euo pipefail
@@ -519,13 +656,27 @@ set -euo pipefail
 /usr/bin/python3 scripts/install_mango_calls_two_processes_service.py \
   --config ~/.mango_local/mango_calls_two_processes/config.json \
   --env-file ~/.mango_secrets/mango_calls_m1_worker.env \
-  --process-a-only --process-a-interval-seconds 1800 \
+  --fast-service \
   --out-dir ~/.mango_local/mango_calls_two_processes/launchd-preview
 ```
 
-В plist должен быть только `com.mango.calls-process-a` с командой
-`process-a-worker`. На этом этапе `--install` запрещён. Следующий блок лишь
-готовит снимок и отключает конфликтующие старые задания перед ручным циклом:
+Комплект содержит capture `00/15/30/45`, pipeline `07/37`, watchdog
+`12/27/42/57`, demand-only Process B и локальные задачи 06:00/07:00/08:00,
+08:30, 08:50. Ни один plist не содержит Google/Yandex `--execute`. На этом
+этапе `--install` запрещён. Следующий блок относится к будущему отдельно
+разрешённому cutover; в Phase A его не выполнять:
+
+Каталоги `M1_SNAP`/`SOURCE_SNAP` ниже нужны для отката, но сами по себе не
+являются cutover authority. Перед любым будущим `--install` нужен отдельный
+`previous_host_shutdown_snapshot.json` схемы
+`mango_calls_previous_host_shutdown_snapshot_v1` и manifest схемы
+`mango_calls_cutover_v2`. Snapshot читается как owner-only `0600` без symlink,
+его SHA проверяется по фактическим байтам. Он обязан быть связан с точными
+`previous_host_id` и `source_cursor_sha256`, подтвердить полный scan всех 11
+Calls labels, plist, процессов, cron и блокировок и содержать пустые списки
+активных labels/PID/команд/plist/cron/locks. Пустой или вручную выдуманный JSON
+не является доказательством. Пока такого свежего снимка и внешнего read-only
+watchdog нет, install/cutover — STOP.
 
 ```bash
 set -euo pipefail
@@ -554,7 +705,10 @@ mv ~/Library/LaunchAgents/com.mango.calls-two-processes.plist "$M1_SNAP/" 2>/dev
 Локальный Process B, старое задание или оставшийся конфликтующий plist блокируют
 установку.
 
-## Настройка основного Mac: только получение и Process B
+## Архив: основной Mac и Process B — не исполнять
+
+Весь этот раздел сохранён только как история прежнего плана. В fast-service
+основной Mac не получает ready DB и не запускает Process B.
 
 Сначала создать отдельную локальную копию runtime для Process B. Старый
 внутрирепозиторный источник и его config не изменяются: это основа безопасного

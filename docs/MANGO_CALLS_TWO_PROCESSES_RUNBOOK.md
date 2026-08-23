@@ -1,158 +1,197 @@
-# Mango calls: два процесса
+# Mango Calls на M1: быстрый последовательный контур
 
-## Контракт
+## Статус и границы
 
-- Process A: Mango API -> локальная загрузка -> локальная SQLite -> ASR -> Resolve -> Analyze -> консистентная backup-копия в drop.
-- Process B: готовая drop-копия -> `mango_processed_summary` -> только timeline-staging.
-- `sync`, AMO, CRM, Tallanto, prod timeline и `stable_runtime` не используются.
-- Resolve/Analyze вызывают Codex через изолированную оболочку без desktop-приложений, плагинов и MCP; используется только подписочная авторизация.
-- `--stage-limit` ограничивает один цикл. Полный дренаж обеспечивает worker-loop с `--poll-sec` и `--max-idle-cycles`.
-- Launchd запускает по расписанию только `process-a`. После явного `status=ok` его оболочка запускает отдельную demand-only службу `process-b`; при `failed`, `deferred` или `locked` B не стартует. `cycle` остаётся только для ручной совместимости.
-- Каждый процесс пишет собственный `state/process_*_status.json`; команда `status` считает свежесть по `data_through`, а не по времени запуска.
-- `brand_evidence` (`single`/`both`/`none`) определяется простым поиском маркеров `Фотон`, `УНПК`, `МФТИ` в уже готовом тексте и анализе; модель не вызывается.
+Код поддерживает лёгкий захват каждые 15 минут и один тяжёлый координатор
+каждые 30 минут. Тяжёлые стадии идут строго последовательно:
+
+1. Whisper `large-v3`;
+2. освобождение только свободного MLX-кэша;
+3. GigaAM `v2_rnnt` на CPU;
+4. Resolve;
+5. Analyze;
+6. sealed ready-поколение и demand-only Customer Timeline staging.
+
+Phase A разрешает только синтетические тесты и локальные owner-only артефакты.
+Она не разрешает реальный Mango capture, ASR реальных звонков, Resolve/Analyze,
+установку launchd, cutover, запись в Google/Яндекс/CRM/AMO и изменение
+production Customer Timeline или `stable_runtime`.
+
+## Состояние и идемпотентность
+
+Источники истины, по порядку:
+
+- append-only `capture/capture_manifest.jsonl`;
+- `working/mango_calls_pipeline.sqlite`;
+- sealed `drop/mango_calls_ready.sqlite` и его manifest;
+- локальные журналы публикации.
+
+Папка или перемещение аудио не являются статусом. Один `source_call_id` уже в
+working SQLite не ingest-ится второй раз. Пропустить отсутствующее историческое
+аудио разрешено только для уникальной строго готовой строки, одновременно
+доказанной working и sealed ready DB. Несколько записей одного события и запись,
+не появившаяся за 72 часа, остаются в карантине с явным способом разбора.
 
 ## Конфигурация
 
-Конфигурация хранится вне git, например `.codex_local/mango_calls_two_processes/config.json`:
+Канонический шаблон:
+`docs/m1_calls_handoff_20260801/config.m1.example.json`.
+При создании локального JSON каждый `<HOME>` заменяется фактическим `$HOME`, а
+пути исходного Mac и M1 остаются разными явными параметрами. Слепая замена строк
+в SQLite запрещена; используется только relocation-механизм.
 
-```json
-{
-  "pipeline_root": "/absolute/ignored/product_data/mango_calls_two_processes",
-  "timeline_db": "/absolute/ignored/staging/customer_timeline_staging.sqlite",
-  "timeline_allowed_root": "/absolute/ignored/staging",
-  "python_executable": "/usr/bin/python3",
-  "codex_binary": "/opt/homebrew/bin/codex",
-  "codex_home_root": "/Users/user/.mango_local/mango_calls_pipeline/codex_home",
-  "foton_daily_dir": "/absolute/Foton/_daily",
-  "bootstrap_since": "2026-07-09T03:00:35+03:00",
-  "poll_overlap_minutes": 30,
-  "api_window_hours": 12,
-  "min_free_gib": 40,
-  "stage_limit": 20,
-  "asr_mode": "mlx_dual",
-  "poll_seconds": 10,
-  "max_idle_cycles": 30,
-  "freshness_max_age_minutes": 90
-}
-```
+Config и env — обычные файлы владельца `0600`, не symlink и без extended ACL.
+Runtime находится под `$HOME/.mango_local`, секреты — под
+`$HOME/.mango_secrets`; Git, iCloud и Яндекс.Диск для SQLite, аудио,
+Codex-профиля и служебных журналов запрещены. Любой extended ACL на owner-only
+cutover/watchdog evidence даёт отказ; код не снимает ACL автоматически.
+Запущенный wrapper связывает дочерний процесс с SHA-256 проверенного поколения
+config, поэтому замена файла между проверкой и фактическим caller даёт отказ.
 
-Как в UI, запускается ровно по одному worker на стадию: Whisper, GigaAM-дозаполнение, Resolve и Analyze. Дублирующих ASR-процессов нет. Пакет `stage_limit=20` сохраняет скорость без повторной загрузки модели на каждый звонок.
+Ключевые значения пилота:
 
-Обычный режим идёт по UI-схеме: один worker `transcribe` для Whisper/MLX, затем после его завершения один `backfill-second-asr` для GigaAM, затем отдельные `resolve` и `analyze`. Одиночный ASR-режим отключён: при проблемах Metal/памяти запуск останавливается и разбирается, а не переключается молча на GigaAM-only.
+- повторный просмотр Mango — 72 часа;
+- перекрытие окон — 30 минут;
+- ожидание аудио — до 72 часов, сигнал после 60 минут;
+- каждая тяжёлая команда имеет собственный тайм-аут 4 часа;
+- пустой worker завершается после одного idle-цикла;
+- свободный диск — не менее 40 GiB;
+- точный `expected_code_sha`, локальный `host_id`, явный
+  `expected_previous_host_id`, cutover manifest v2 и путь к shutdown snapshot
+  обязательны.
 
-Если `chatgpt.com` не разрешается через DNS, Process A выполняет только локальные стадии ASR и возвращает `deferred/codex_network_unavailable`. Resolve/Analyze не запускаются и их лимит повторов не расходуется; drop публикуется только после следующего успешного полного дренажа.
+## Доказательство выключения старого Mac
 
-Секреты Mango хранятся в отдельном env-файле `0600`, не в конфигурации.
+Этот раздел относится только к будущему отдельно разрешённому cutover. Phase A
+не создаёт реальное доказательство и не устанавливает службу.
 
-## Ручной запуск
+`previous_host_shutdown_snapshot.json` — обычный файл владельца `0600`, не
+symlink. Его SHA-256 должен дословно совпасть с
+`cutover_manifest.json.previous_host_snapshot_sha256`. Snapshot связан с теми
+же `previous_host_id`, `source_cursor_sha256`, `previous_host_disabled_at` и
+`previous_host_checked_at` и содержит:
 
-```bash
-set -a
-source ~/.mango_secrets/mango_office.env
-set +a
-/usr/bin/python3 scripts/run_mango_calls_pipeline.py --config <config.json> process-a
-/usr/bin/python3 scripts/run_mango_calls_pipeline.py --config <config.json> process-b
-```
+- полный scan всех 11 Calls launchd labels и пустой `active_calls_labels`;
+- полный scan plist и пустой `active_calls_plists`;
+- полный process scan версии `mango_calls_runtime_matchers_v1`, пустые PID и
+  команды;
+- полный cron scan и пустой `active_calls_cron_entries`;
+- scan блокировок `process_a`, `capture`, `pipeline`, `process_b` и пустой
+  `held_lock_names`.
 
-## Расписание
+Пустой JSON, чужой host, другой cursor, неполный scan, оставшийся plist/cron/PID
+или изменённый SHA дают отказ. При первом закреплении cursor snapshot должен
+быть свежим; далее lineage остаётся стабильным, но SHA, host, cursor и пустые
+активные списки проверяются при каждом старте. Любая установка, содержащая
+Process A, capture или pipeline, проходит эту проверку до обращения к launchd.
+Render-only и отдельный Process B её не требуют.
 
-Сначала безопасно отрендерить два plist без установки:
+Внешний watchdog — отдельный read-only наблюдатель вне обоих Mac. Локальный код
+только валидирует его owner-only observation, привязанный к M1 host, старому
+host, code SHA, cutover SHA и shutdown snapshot SHA. Наличие валидатора не
+означает, что наблюдатель уже развёрнут: до этого runtime/cutover остаются STOP.
 
-```bash
-/usr/bin/python3 scripts/install_mango_calls_two_processes_service.py \
-  --config <config.json> \
-  --env-file ~/.mango_secrets/mango_office.env \
-  --process-a-interval-seconds 1800 \
-  --out-dir <папка-проверки>
-```
+## Команды без установки
 
-В результате A имеет `StartInterval`, а B не имеет собственного календаря или интервала. После проверки добавить `--install`. Установка сначала загружает demand-only B, затем scheduled A и только после этого выгружает старый общий label; при частичном сбое новые задачи откатываются.
-
-Проверка водяных меток:
-
-```bash
-<configured-python> scripts/run_mango_calls_pipeline.py --config <config.json> status
-```
-
-`fresh` означает, что дата последнего фактически обработанного звонка моложе заданного порога. Свежий запуск при старых данных остаётся `stale`.
-
-Перед публикацией агрегатного отчёта в `Foton/_daily` встроенный гейт удаляет пути/идентификаторы и блокирует телефон, email или секрет.
-
-## Суточный отчёт для РОПа
-
-Read-only экспорт готовит внутренний XLSX и полные TXT-расшифровки за последние
-полностью завершённые календарные сутки по Москве:
+До отдельного допуска допустимы только чтение, dry-run и синтетика:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 \
-  scripts/export_daily_mango_calls_resolve.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_mango_calls_stage10_verdict.py \
+  tests/test_mango_calls_two_processes.py \
+  tests/test_relocate_mango_calls_pipeline.py
+
+python3 scripts/install_mango_calls_two_processes_service.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --env-file "$HOME/.mango_secrets/mango_calls_m1_worker.env" \
+  --fast-service \
+  --out-dir "$HOME/.mango_local/mango_calls_plist_review"
 ```
 
-По умолчанию результат создаётся в `~/Yandex.Disk.localized/Mango Calls Resolve`.
-Для автоматического запуска после успешного Process B укажите в env абсолютный
-путь `MANGO_CALLS_DAILY_EXPORT_OUT`; без него поведение Process B не меняется.
-Пути pipeline, выгрузки и read-only env можно переопределить переменными
-`MANGO_CALLS_PIPELINE_ROOT`, `MANGO_CALLS_TALLANTO_EXPORT`,
-`MANGO_CALLS_TALLANTO_ENV` и `MANGO_CALLS_MANGO_ENV`:
+Вторая команда только отрисовывает plist. Флаг `--install` без отдельного
+разрешения запрещён. Строгий M1 config требует явный `--fast-service`,
+`--process-a-only` или `--process-b-only`: старые команды wrapper без суффикса
+`-worker` для такого config отклоняются и не являются fallback-топологией.
 
-- расшифровки лежат в неизменяемой подпапке с датой и короткой контрольной суммой;
-- соответствующий XLSX и контрольный JSON лежат в корне, JSON указывает текущую версию;
-- краткое содержание и полная расшифровка расположены рядом, длинный текст без
-  обрезки разбивается на несколько соседних столбцов и сохраняется целиком в TXT;
-- ФИО клиента ищется по нормализованному телефону сначала в локальной выгрузке
-  Tallanto, затем среди изменённых после выгрузки карточек через read-only API;
-- ФИО менеджеров обновляются из текущего read-only справочника Mango API;
-- в основной лист и статистику менеджеров попадают только звонки без замечаний,
-  с подтверждённым порядком и доказанным соответствием дорожек ролям;
-- неизменный повтор использует уже проверенную версию, а изменившийся день
-  публикуется новым атомарным поколением; прошлое поколение остаётся для отката;
-- телефоны не включаются в имена TXT-файлов.
+После разрешения на конкретный этап CLI имеет отдельные команды:
 
-Экспорт проверяет готовый снимок и его manifest, читает обе SQLite только
-read-only, обращается к Mango и Tallanto только за справочными данными и не
-запускает ASR, Resolve или Analyze. Строки, которые
-есть только в рабочей базе и ещё не завершили обработку, попадают только на
-лист проблем. В XLSX содержатся персональные данные, поэтому каталог имеет
-режим доступа владельца, а отчёт предназначен только для внутренней проверки.
-Удаление старых выгрузок не выполняется.
-
-### Google-таблица
-
-Если одновременно заданы `MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID` и
-`GOOGLE_APPLICATION_CREDENTIALS`, служба после локального v4-XLSX загружает его
-в указанную папку Drive и преобразует в нативную Google-таблицу. В локальном
-режиме публикация идёт после Process B; в раздельном режиме на M1 — только после
-того, как Process A создал проверенную неизменяемую ready-базу. Рабочая база с
-незавершёнными строками для отчёта на M1 не читается. Одна пара
-«день + `content_sha256`» создаётся только один раз; изменённый день получает
-новое неизменяемое поколение. В названии есть время публикации по Москве:
-при нескольких поколениях текущим считается самое позднее. После загрузки
-служба скачивает таблицу обратно как XLSX и сверяет листы, значения, типы ячеек,
-формулы и ссылки. Составная загрузка ограничена 5 МБ:
-больший отчёт остаётся локально и завершает Google-шаг ошибкой без потери файла.
-
-Файл service account должен находиться только в `~/.mango_secrets/` с режимом
-`0600`. Репозиторий и Яндекс Диск для него запрещены. Папку Drive нужно заранее
-дать service account право редактировать; публичная или доменная папка
-блокируется до загрузки. До успешной обратной сверки файл имеет имя
-`ПРОВЕРКА — НЕ ИСПОЛЬЗОВАТЬ`; при ошибке он остаётся с этим карантинным именем
-и не выдаётся за готовый. Повторный запуск проверяет такой файл и либо завершает
-публикацию, либо снова останавливается без создания дубля. Автоматического
-удаления файлов Google нет. Относительные ссылки на TXT
-заменяются честным текстовым путём на Яндекс Диске, потому что сами TXT в Google
-не копируются; полный диалог остаётся в соседних столбцах без обрезки. Без обоих
-параметров Google Drive не вызывается. Ручной dry-run без сети:
-
-```bash
-python3 scripts/publish_daily_mango_calls_google.py \
-  --report-root "$MANGO_CALLS_DAILY_EXPORT_OUT" --day YYYY-MM-DD
+```text
+run_mango_calls_pipeline.py --config CONFIG capture
+run_mango_calls_pipeline.py --config CONFIG pipeline
+run_mango_calls_pipeline.py --config CONFIG watchdog
 ```
 
-Механизм использует официальное преобразование Excel в Google Sheets при
-создании файла через Google Drive API; существующая native-таблица не
-перезаписывается медиа-загрузкой.
+`capture` не пишет working SQLite и не запускает модели. `pipeline` фиксирует
+префикс capture manifest и не видит записи, добавленные после старта. Второй
+тяжёлый процесс немедленно получает занятый `flock`, а timeout завершает всю
+группу процессов, включая дочерние процессы стадии.
 
-Последовательный диалог публикуется только при наличии сохранённых временных
-меток и ролей. Если старый ASR-артефакт содержит лишь два полных ролевых блока,
-экспорт не придумывает очередность: добавляет предупреждение, сохраняет весь
-текст без сокращений и относит строку к проблемам данных.
+## Расписание fast-service
+
+Отрисованный комплект содержит:
+
+- capture: `:00`, `:15`, `:30`, `:45`;
+- pipeline: `:07`, `:37`;
+- локальный watchdog: `:12`, `:27`, `:42`, `:57`;
+- попытки закрытия: 06:00, 07:00, 08:00 МСК;
+- обезличенный сигнал: 08:30 МСК;
+- обязательный локальный статус: 08:50 МСК;
+- Process B: demand-only, без собственного расписания.
+
+Plist Process B нужен только для явного ручного повтора/восстановления;
+по расписанию его никто не запускает. Обычный caller — `pipeline`, который вызывает
+Process B напрямую после запечатанного ready-поколения.
+
+После каждого успешного pipeline создаётся только локальный short-lived
+safe-plan текущего дня и повторно проверяются незакрытые сутки последних 72
+часов. Google и Яндекс.Диск из plist не вызываются.
+
+## Локальная публикационная подготовка
+
+`scripts/run_mango_calls_publication_coordinator.py` создаёт только файлы под
+`$HOME/.mango_local/mango_calls_publication`:
+
+- `current-plan` — manager-проекция без полного диалога и путей БД;
+- `daily-close` — локальный финальный пакет только при `closure_ok=true`;
+- `daily-alert` — агрегат без телефона, ФИО, текста и путей;
+- `daily-status` — всегда `final`, `incomplete` или `failed`, даже при ошибке
+  ready manifest/export.
+
+Safe-plan действует не более 60 минут и связан с exact ready SHA и Stage 10.
+Будущий ручной Google execute дополнительно требует подтверждение и SHA-256
+ровно этого safe-plan. Эти параметры не входят в Phase A env и автоматически
+не вызываются.
+
+Неполный суточный пакет имеет префикс
+`НЕПОЛНЫЙ, НЕ ИСПОЛЬЗОВАТЬ КАК ИТОГ`. Он строится из консистентного SQLite
+backup, а не копированием живых WAL-файлов. Позднее зелёное закрытие создаёт
+отдельный final/supplement и не переписывает прежнее поколение.
+
+## Stage 10 и контроль
+
+Для каждого московского дня проверяется:
+
+```text
+mango_unique = ready_unique + quarantine_unique + pending_unique
+             + unexplained_missing
+```
+
+`consistency_ok` допускает свежий pending, но требует полное перечисление,
+нулевые дубли/пересечения/необъяснённые пропуски и объяснённый карантин.
+`closure_ok` дополнительно требует полный день, `pending=0`, dual ASR (или
+полное утверждённое исключение), Resolve и Analyze. Пустой день требует два
+независимых полных нулевых перечисления.
+
+## Переходы между этапами
+
+- Phase A → B: зелёные синтетические тесты, audit pack и независимый аудит.
+- B → controlled-10: отдельное разрешение на зависимости, probe и синтетические
+  model-пробы; никакого launchd.
+- controlled-10 → реальный день: отдельное разрешение на 1, затем 10 звонков и
+  внешнюю обработку текста.
+- постоянная служба: только после трёх дней РОПа и отдельного разрешения на
+  launchd/cutover.
+
+Локальный manifest не является межмашинным замком. До cutover требуется свежее
+доказательство остановки старого Process A и внешний read-only наблюдатель.
+Без него статус cutover остаётся STOP.

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import fcntl
+import hashlib
 import os
 import plistlib
+import shutil
 import shlex
 import subprocess
 import sys
@@ -34,6 +36,37 @@ def _load_installer():
     return module
 
 
+def test_plist_writer_rejects_fixed_temp_symlink_attack(tmp_path: Path) -> None:
+    installer = _load_installer()
+    target = tmp_path / "service.plist"
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"must remain unchanged")
+    legacy_temp = target.with_suffix(".plist.tmp")
+    legacy_temp.symlink_to(victim)
+
+    installer._write_plist(target, {"Label": "synthetic.safe"})
+
+    assert victim.read_bytes() == b"must remain unchanged"
+    assert legacy_temp.is_symlink()
+    assert target.is_file() and not target.is_symlink()
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def _allow_test_install_path(
+    monkeypatch: pytest.MonkeyPatch, installer: object, out_dir: Path
+) -> None:
+    monkeypatch.setattr(
+        installer,
+        "_standard_plist",
+        lambda label: out_dir.resolve() / f"{label}.plist",
+    )
+    monkeypatch.setattr(
+        installer,
+        "_validate_process_a_install_authority",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     config_path = tmp_path / "config.json"
     env_path = tmp_path / "mango.env"
@@ -48,16 +81,32 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
                 "python_executable": sys.executable,
                 "codex_binary": sys.executable,
                 "codex_home_root": str(tmp_path / "codex_home"),
+                "require_cutover_authority": False,
+                "strict_ready_provenance": False,
             }
         ),
         encoding="utf-8",
     )
+    config_path.chmod(0o600)
     env_path.write_text(
         f"MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\nMANGO_CALLS_PIPELINE_ROOT={pipeline_root}\n",
         encoding="utf-8",
     )
     env_path.chmod(0o600)
     return config_path, env_path
+
+
+def _copy_runtime_reader_modules(target_root: Path) -> None:
+    for relative in (
+        "src/mango_mvp/__init__.py",
+        "src/mango_mvp/productization/__init__.py",
+        "src/mango_mvp/productization/owner_only_io.py",
+        "src/mango_mvp/productization/mango_calls_config.py",
+    ):
+        source = ROOT / relative
+        target = target_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
@@ -72,7 +121,8 @@ def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
     (scripts / "mango_calls_env.py").write_text(
         (ROOT / "scripts" / "mango_calls_env.py").read_text(encoding="utf-8"), encoding="utf-8"
     )
-    subprocess.run(["git", "add", "scripts"], cwd=repo, check=True)
+    _copy_runtime_reader_modules(repo)
+    subprocess.run(["git", "add", "scripts", "src"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                     "commit", "-qm", "test"], cwd=repo, check=True)
     return repo, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
@@ -94,6 +144,7 @@ def _copy_runner(tmp_path: Path, launchctl: Path) -> Path:
     (scripts / "mango_calls_env.py").write_text(
         (ROOT / "scripts" / "mango_calls_env.py").read_text(encoding="utf-8"), encoding="utf-8"
     )
+    _copy_runtime_reader_modules(scripts.parent)
     return runner
 
 
@@ -142,6 +193,146 @@ def test_launchd_installer_renders_scheduled_a_and_demand_only_b(tmp_path: Path)
     assert "cycle" not in process_b["ProgramArguments"]
     assert process_a["StandardOutPath"] != process_b["StandardOutPath"]
     assert process_a["StandardErrorPath"] != process_b["StandardErrorPath"]
+    assert process_a["Umask"] == process_b["Umask"] == 63
+
+
+def test_strict_config_requires_explicit_installer_topology(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(RuntimeError, match="requires --fast-service"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+            ]
+        )
+
+
+def test_missing_strict_flags_require_explicit_installer_topology(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.pop("require_cutover_authority")
+    config.pop("strict_ready_provenance")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(RuntimeError, match="requires --fast-service"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+            ]
+        )
+
+
+def test_fast_service_renders_exact_publication_schedule_without_execute(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    out_dir = tmp_path / "launchd"
+    subprocess.run(
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_path),
+            "--out-dir",
+            str(out_dir),
+            "--fast-service",
+        ],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    plists = {
+        path.stem: plistlib.loads(path.read_bytes())
+        for path in out_dir.glob("*.plist")
+    }
+    expected = {
+        "com.mango.calls-publication-close-0600": (6, 0, "publication-close"),
+        "com.mango.calls-publication-close-0700": (7, 0, "publication-close"),
+        "com.mango.calls-publication-close-0800": (8, 0, "publication-close"),
+        "com.mango.calls-publication-alert-0830": (8, 30, "publication-alert"),
+        "com.mango.calls-publication-status-0850": (8, 50, "publication-status"),
+    }
+    for label, (hour, minute, command) in expected.items():
+        assert plists[label]["StartCalendarInterval"] == [
+            {"Hour": hour, "Minute": minute}
+        ]
+        assert plists[label]["ProgramArguments"][-1] == command
+        assert "--execute" not in json.dumps(plists[label])
+    assert all(payload["Umask"] == 63 for payload in plists.values())
+    assert plists["com.mango.calls-capture"]["StartInterval"] == 60
+    assert "StartCalendarInterval" not in plists["com.mango.calls-capture"]
+    assert plists["com.mango.calls-pipeline"]["StartInterval"] == 60
+    assert "StartCalendarInterval" not in plists["com.mango.calls-pipeline"]
+    assert plists["com.mango.calls-pipeline"]["ProcessType"] == "Interactive"
+    assert plists["com.mango.calls-capture"]["ProcessType"] == "Background"
+    assert plists["com.mango.calls-watchdog"]["ProcessType"] == "Background"
+    assert {
+        plists[label]["ProgramArguments"][-1]
+        for label in (
+            "com.mango.calls-capture",
+            "com.mango.calls-pipeline",
+            "com.mango.calls-process-b",
+            "com.mango.calls-watchdog",
+        )
+    } == {
+        "capture-worker",
+        "pipeline-worker",
+        "process-b-worker",
+        "watchdog-worker",
+    }
+    runner = RUNNER.read_text(encoding="utf-8")
+    assert "current-plan" in runner
+    assert "publish_daily_mango_calls_google.py" not in runner
+    assert "UPLOAD_MANGO_DAILY_REPORT" not in runner
+
+
+def test_render_only_without_output_refuses_before_runtime_mutation(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    pipeline = Path(json.loads(config_path.read_text(encoding="utf-8"))["pipeline_root"])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_path),
+            "--fast-service",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "explicit --out" in result.stderr
+    assert not pipeline.exists()
 
 
 def test_launchd_installer_process_a_only_never_renders_b(tmp_path: Path) -> None:
@@ -228,7 +419,8 @@ def test_process_b_launchd_path_does_not_use_cycle_or_asr_runner(tmp_path: Path)
     assert "asr" not in runner_text
     assert "--stages" not in runner_text
     assert "mango_mvp.cli" not in runner_text
-    assert "/usr/bin/plutil -extract python_executable" in runner_text
+    assert "mango_mvp.productization.mango_calls_config" in runner_text
+    assert "/usr/bin/plutil" not in runner_text
     assert '"${python_executable}" "${root}/scripts/run_mango_calls_pipeline.py"' in runner_text
     assert "launchctl kickstart" in runner_text
 
@@ -262,7 +454,7 @@ def test_runner_rejects_readable_secret_env_before_source(tmp_path: Path) -> Non
     assert result.returncode == 2
 
 
-def test_successful_process_b_runs_daily_export_when_out_is_configured(tmp_path: Path) -> None:
+def test_successful_process_b_never_runs_daily_export_inline(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     out = _verified_yandex_target(tmp_path, "yandex")
@@ -293,8 +485,7 @@ fi
 
     calls = captured.read_text(encoding="utf-8").split("--call--\n")
     assert sum("run_mango_calls_pipeline.py" in call for call in calls) == 1
-    export_call = next(call for call in calls if "export_daily_mango_calls_resolve.py" in call)
-    assert str(out) in export_call and "process-a" not in export_call
+    assert all("export_daily_mango_calls_resolve.py" not in call for call in calls)
 
 
 def test_runner_does_not_inherit_missing_worker_env_values(tmp_path: Path) -> None:
@@ -322,7 +513,7 @@ def test_runner_does_not_inherit_missing_worker_env_values(tmp_path: Path) -> No
     assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
-def test_process_b_runs_google_publisher_only_with_complete_config(tmp_path: Path) -> None:
+def test_process_b_never_runs_google_publisher_even_with_legacy_config(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     out = _verified_yandex_target(tmp_path)
@@ -353,12 +544,11 @@ fi
                    env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
 
     calls = captured.read_text(encoding="utf-8").split("--call--\n")
-    export_index = next(i for i, call in enumerate(calls) if "export_daily_mango_calls_resolve.py" in call)
-    google_index = next(i for i, call in enumerate(calls) if "publish_daily_mango_calls_google.py" in call)
-    assert export_index < google_index and "--execute" in calls[google_index]
+    assert all("export_daily_mango_calls_resolve.py" not in call for call in calls)
+    assert all("publish_daily_mango_calls_google.py" not in call for call in calls)
 
 
-def test_process_b_rejects_partial_google_config(tmp_path: Path) -> None:
+def test_process_b_ignores_legacy_partial_google_config(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     env_path.write_text(
         env_path.read_text(encoding="utf-8")
@@ -382,7 +572,7 @@ fi
 
     result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
 
-    assert result.returncode == 4
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize("status,reason", [("locked", "timeline_writer_locked"), ("deferred", "network"), ("idle", "drop_missing")])
@@ -408,11 +598,11 @@ fi
     result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
                             env={**__import__("os").environ, "CAPTURED": str(captured)}, check=False)
 
-    assert result.returncode != 0
+    assert result.returncode == 0
     assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
-def test_process_b_idle_unchanged_retries_daily_export(tmp_path: Path) -> None:
+def test_process_b_idle_unchanged_does_not_publish_inline(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     out = _verified_yandex_target(tmp_path)
@@ -435,10 +625,10 @@ fi
     subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
                    env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
 
-    assert "export_daily_mango_calls_resolve.py" in captured.read_text(encoding="utf-8")
+    assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
-def test_process_b_unparseable_result_fails_closed(tmp_path: Path) -> None:
+def test_process_b_wrapper_returns_pipeline_rc_without_parsing_publication(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n", encoding="utf-8")
     fake_python = tmp_path / "configured-python"
@@ -457,7 +647,7 @@ fi
 
     result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
 
-    assert result.returncode == 3
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize("status", ["failed", "deferred", "locked"])
@@ -592,9 +782,9 @@ fi
     ]
 
 
-@pytest.mark.parametrize("process_status,expected_export", [("ok", True), ("partial", False)])
-def test_process_a_worker_publishes_only_complete_sealed_report(
-    tmp_path: Path, process_status: str, expected_export: bool
+@pytest.mark.parametrize("process_status", ["ok", "partial"])
+def test_process_a_worker_never_publishes_inline(
+    tmp_path: Path, process_status: str
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
@@ -641,13 +831,11 @@ fi
     exports = [call for call in calls if "export_daily_mango_calls_resolve.py" in call]
     ready = str(tmp_path / ".mango_local" / "pipeline" / "drop" / "mango_calls_ready.sqlite")
     assert result.returncode == (0 if process_status == "ok" else 1)
-    assert bool(exports) is expected_export
-    if exports:
-        assert exports[0].count(ready) == 2 and "--day" in exports[0] and "--sealed-only" in exports[0]
+    assert not exports
     assert not launchctl_capture.exists()
 
 
-def test_process_a_worker_refuses_unverified_yandex_target(tmp_path: Path) -> None:
+def test_process_a_worker_does_not_touch_unverified_yandex_target(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     out = tmp_path / "ordinary-local-folder"
     out.mkdir()
@@ -683,11 +871,11 @@ fi
         check=False,
     )
 
-    assert result.returncode == 4
-    assert "yandex_publish_target_not_verified" in result.stderr
+    assert result.returncode == 0
+    assert "yandex_publish_target_not_verified" not in result.stderr
 
 
-def test_process_a_worker_requires_yandex_publish_target(tmp_path: Path) -> None:
+def test_process_a_worker_does_not_require_yandex_publish_target(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     clean_repo, head = _clean_git_repo(tmp_path)
     env_path.write_text(
@@ -719,8 +907,8 @@ fi
         check=False,
     )
 
-    assert result.returncode == 4
-    assert "m1_yandex_publish_target_missing" in result.stderr
+    assert result.returncode == 0
+    assert "m1_yandex_publish_target_missing" not in result.stderr
 
 
 def test_legacy_process_b_keeps_existing_unmarked_export_path(tmp_path: Path) -> None:
@@ -765,7 +953,8 @@ def test_process_wrapper_rejects_pipeline_root_inside_repository(tmp_path: Path)
     config_path.write_text(json.dumps(config), encoding="utf-8")
     env_file.write_text(
         env_file.read_text(encoding="utf-8").replace(
-            str(tmp_path / ".mango_local" / "pipeline"), config["pipeline_root"]
+            str(tmp_path / ".mango_local" / "pipeline"),
+            shlex.quote(config["pipeline_root"]),
         ),
         encoding="utf-8",
     )
@@ -851,15 +1040,9 @@ def test_process_wrapper_rejects_pipeline_root_env_mismatch(tmp_path: Path) -> N
     assert "pipeline_root_config_env_mismatch" in result.stderr
 
 
-@pytest.mark.parametrize(
-    ("missing_key", "stop_reason"),
-    (
-        ("python_executable", "config_missing_python_executable"),
-        ("pipeline_root", "config_missing_pipeline_root"),
-    ),
-)
+@pytest.mark.parametrize("missing_key", ("python_executable", "pipeline_root"))
 def test_process_wrapper_reports_missing_required_config_key(
-    tmp_path: Path, missing_key: str, stop_reason: str
+    tmp_path: Path, missing_key: str
 ) -> None:
     config_path, env_file = _write_config(tmp_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -872,7 +1055,10 @@ def test_process_wrapper_reports_missing_required_config_key(
     )
 
     assert result.returncode == 2
-    assert json.loads(result.stderr)["stop_reason"] == stop_reason
+    assert (
+        json.loads(result.stderr)["stop_reason"]
+        == "config_file_must_be_owner_only_0600_or_invalid"
+    )
 
 
 def test_legacy_local_process_a_keeps_working_before_runtime_relocation(tmp_path: Path) -> None:
@@ -901,6 +1087,225 @@ fi
 
     assert result.returncode == 0
     assert "pipeline_root_outside_owner_local_root_or_symlink" not in result.stderr
+
+
+def test_config_swap_between_wrapper_and_pipeline_is_rejected(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+{shlex.quote(sys.executable)} - "$CONFIG_TO_SWAP" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload.update(require_cutover_authority=True, strict_ready_provenance=True)
+path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+exec {shlex.quote(sys.executable)} "$@"
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["pipeline_root"] = str(ROOT / "product_data" / "legacy-runtime")
+    config["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a"],
+        cwd=ROOT,
+        env={**_worker_env(tmp_path), "CONFIG_TO_SWAP": str(config_path)},
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "failed"
+    assert payload["stop_reason"] == "cli_exception:RuntimeError"
+    assert "launchctl" not in result.stderr
+
+
+def test_unchanged_config_matches_wrapper_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from mango_mvp.customer_timeline.calls_two_processes import (
+        CallsTwoProcessesConfig,
+    )
+    from mango_mvp.productization.mango_calls_config import (
+        EXPECTED_CONFIG_SHA_ENV,
+    )
+
+    config_path, _ = _write_config(tmp_path)
+    expected = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    monkeypatch.setenv(EXPECTED_CONFIG_SHA_ENV, expected)
+
+    config = CallsTwoProcessesConfig.from_json(config_path)
+
+    assert config.pipeline_root == tmp_path / ".mango_local" / "pipeline"
+
+
+@pytest.mark.parametrize("command", ["process-a", "process-b", "capture", "pipeline", "watchdog"])
+def test_strict_runtime_rejects_unguarded_aliases(
+    tmp_path: Path, command: str
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), command],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert (
+        json.loads(result.stderr)["stop_reason"]
+        == "strict_runtime_requires_guarded_worker_command"
+    )
+
+
+def test_missing_strict_flags_default_to_strict_runtime(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.pop("require_cutover_authority")
+    config.pop("strict_ready_provenance")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert (
+        json.loads(result.stderr)["stop_reason"]
+        == "strict_runtime_requires_guarded_worker_command"
+    )
+
+
+@pytest.mark.parametrize("invalid", ("true", 1, None))
+def test_strict_flags_must_be_json_booleans(
+    tmp_path: Path, invalid: object
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["require_cutover_authority"] = invalid
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(ValueError, match="JSON boolean"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_file),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+                "--fast-service",
+            ]
+        )
+
+
+def test_strict_flags_must_be_enabled_together(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=False)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(ValueError, match="enabled together"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_file),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+                "--fast-service",
+            ]
+        )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended ACL syntax")
+@pytest.mark.parametrize("target", ("config", "env"))
+def test_runtime_wrapper_rejects_owner_only_file_with_extended_acl(
+    tmp_path: Path, target: str
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    path = config_path if target == "config" else env_file
+    subprocess.run(
+        ["/usr/bin/xattr", "-w", "com.mango.synthetic", "1", str(path)],
+        check=True,
+    )
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(path)],
+        check=True,
+    )
+    try:
+        result = subprocess.run(
+            [str(RUNNER), str(config_path), str(env_file), "process-a"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(path)], check=True)
+        subprocess.run(
+            ["/usr/bin/xattr", "-d", "com.mango.synthetic", str(path)],
+            check=False,
+        )
+
+    assert result.returncode == 2
+    expected = (
+        "config_file_must_be_owner_only_0600_or_invalid"
+        if target == "config"
+        else "env_file_must_be_owner_only_0600"
+    )
+    assert json.loads(result.stderr)["stop_reason"] == expected
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended ACL syntax")
+def test_installer_rejects_owner_only_config_with_extended_acl(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    subprocess.run(
+        ["/usr/bin/xattr", "-w", "com.mango.synthetic", "1", str(config_path)],
+        check=True,
+    )
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(config_path)],
+        check=True,
+    )
+    installer = _load_installer()
+    try:
+        with pytest.raises(RuntimeError, match="config file permissions are unsafe"):
+            installer.main(
+                [
+                    "--config",
+                    str(config_path),
+                    "--env-file",
+                    str(env_file),
+                    "--out-dir",
+                    str(tmp_path / "launchd"),
+                    "--fast-service",
+                ]
+            )
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(config_path)], check=True)
+        subprocess.run(
+            ["/usr/bin/xattr", "-d", "com.mango.synthetic", str(config_path)],
+            check=False,
+        )
 
 
 def test_legacy_cycle_entrypoint_is_fail_closed() -> None:
@@ -998,6 +1403,78 @@ def test_split_modes_require_exact_clean_code_revision(tmp_path: Path) -> None:
     assert result.returncode == 4
 
 
+def test_split_runner_ignores_inherited_git_repository_redirection(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    subprocess.run(["/usr/bin/git", "init", "-q"], cwd=foreign, check=True)
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            str(clean_repo / "scripts" / RUNNER.name),
+            str(config_path),
+            str(env_path),
+            "process-a-worker",
+        ],
+        cwd=ROOT,
+        env=_worker_env(
+            tmp_path,
+            GIT_DIR=str(foreign / ".git"),
+            GIT_WORK_TREE=str(foreign),
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 4
+    assert "split_code_revision_mismatch_or_dirty" not in result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_split_runner_rejects_hidden_index_flags(
+    tmp_path: Path, flag: str
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    relative_runner = f"scripts/{RUNNER.name}"
+    subprocess.run(
+        ["/usr/bin/git", "update-index", flag, relative_runner],
+        cwd=clean_repo,
+        check=True,
+    )
+    runner = clean_repo / relative_runner
+    runner.write_text(
+        runner.read_text(encoding="utf-8") + "\n# hidden dirty fixture\n",
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(runner), str(config_path), str(env_path), "process-a-worker"],
+        cwd=ROOT,
+        env=_worker_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    assert "split_code_revision_mismatch_or_dirty" in result.stderr
+
+
 def test_process_a_partial_ready_starts_b_and_preserves_rc_one(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     capture = tmp_path / "launchctl_args.txt"
@@ -1072,6 +1549,7 @@ def test_install_boots_out_old_loaded_label_without_deleting_plist(
     config_path, env_path = _write_config(tmp_path)
     out_dir = tmp_path / "launchd"
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -1101,11 +1579,199 @@ def test_install_boots_out_old_loaded_label_without_deleting_plist(
     assert ["launchctl", "bootstrap", domain, str(out_dir / "com.mango.calls-process-b.plist")] in calls
 
 
+@pytest.mark.parametrize("mode", [(), ("--process-a-only",), ("--fast-service",)])
+def test_every_process_a_install_requires_cutover_authority_before_launchctl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: tuple[str, ...],
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    out_dir = tmp_path / "launchd"
+    installer = _load_installer()
+    monkeypatch.setattr(
+        installer,
+        "_standard_plist",
+        lambda label: out_dir.resolve() / f"{label}.plist",
+    )
+    launchctl_called = False
+
+    def reject_authority(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic_authority_rejected")
+
+    def forbidden_launchctl(*_args: object, **_kwargs: object) -> object:
+        nonlocal launchctl_called
+        launchctl_called = True
+        return subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(
+        installer, "_validate_process_a_install_authority", reject_authority
+    )
+    monkeypatch.setattr(installer.subprocess, "run", forbidden_launchctl)
+
+    with pytest.raises(RuntimeError, match="synthetic_authority_rejected"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(out_dir),
+                *mode,
+                "--install",
+            ]
+        )
+
+    assert launchctl_called is False
+
+
+def test_fresh_local_service_validator_requires_empty_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_path, _env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(
+        bootstrap_since="2026-08-03T00:00:00+03:00",
+        processing_scope="service",
+        runtime_authority_mode="service_cutover",
+        expected_code_sha="a" * 40,
+    )
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    config_path.chmod(0o600)
+    root = Path(config["pipeline_root"])
+    root.mkdir(parents=True, mode=0o700)
+    root.chmod(0o700)
+    installer = _load_installer()
+    digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+    installer._validate_fresh_local_service(
+        config_path, config, expected_config_sha256=digest
+    )
+
+    (root / "existing-state").write_text("occupied", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="runtime is not empty"):
+        installer._validate_fresh_local_service(
+            config_path, config, expected_config_sha256=digest
+        )
+
+
+def test_fresh_local_service_install_uses_fresh_validator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    out_dir = tmp_path / "launchd"
+    installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
+    called: list[str] = []
+    monkeypatch.setattr(
+        installer,
+        "_validate_fresh_local_service",
+        lambda *_args, **_kwargs: called.append("fresh"),
+    )
+    monkeypatch.setattr(
+        installer,
+        "_validate_process_a_install_authority",
+        lambda *_args, **_kwargs: pytest.fail("cutover validator must not run"),
+    )
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1 if command[:2] == ["launchctl", "print"] else 0,
+            stdout="",
+            stderr="",
+        ),
+    )
+
+    assert (
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(out_dir),
+                "--fast-service",
+                "--fresh-local-service",
+                "--install",
+            ]
+        )
+        == 0
+    )
+    assert called == ["fresh"]
+
+
+@pytest.mark.parametrize("mode", [(), ("--process-a-only",)])
+@pytest.mark.parametrize(
+    "conflict_kind", ["loaded_capture", "pipeline_plist", "pipeline_lock"]
+)
+def test_monolithic_process_a_install_rejects_existing_fast_topology(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: tuple[str, ...],
+    conflict_kind: str,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    out_dir = tmp_path / "launchd"
+    installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
+    out_dir.mkdir()
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        loaded = (
+            conflict_kind == "loaded_capture"
+            and command[:2] == ["launchctl", "print"]
+            and command[2].endswith(f"/{installer.LABEL_CAPTURE}")
+        )
+        return subprocess.CompletedProcess(command, 0 if loaded else 1)
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    lock_handle = None
+    if conflict_kind == "pipeline_plist":
+        (out_dir / f"{installer.LABEL_PIPELINE}.plist").write_text(
+            "synthetic", encoding="utf-8"
+        )
+    elif conflict_kind == "pipeline_lock":
+        lock_path = Path(config["pipeline_root"]) / "locks" / "pipeline.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        lock_handle = lock_path.open("r+", encoding="utf-8")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    try:
+        with pytest.raises(RuntimeError, match="existing fast-service topology"):
+            installer.main(
+                [
+                    "--config",
+                    str(config_path),
+                    "--env-file",
+                    str(env_path),
+                    "--out-dir",
+                    str(out_dir),
+                    *mode,
+                    "--install",
+                ]
+            )
+    finally:
+        if lock_handle is not None:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+
+    assert not (out_dir / f"{installer.LABEL_A}.plist").exists()
+
+
 def test_process_a_only_install_refuses_if_process_b_is_loaded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, tmp_path / "launchd")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -1126,6 +1792,7 @@ def test_single_role_install_refuses_loaded_legacy_service(
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, tmp_path / "launchd")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -1159,6 +1826,7 @@ def test_single_role_install_refuses_opposite_live_process_lock(
     lock_handle = lock_path.open("r+", encoding="utf-8")
     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, tmp_path / "launchd")
     monkeypatch.setattr(installer.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1))
 
     try:
@@ -1204,6 +1872,7 @@ def test_partial_install_rolls_back_process_a(monkeypatch: pytest.MonkeyPatch, t
     config_path, env_path = _write_config(tmp_path)
     out_dir = tmp_path / "launchd"
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     domain = f"gui/{installer.os.getuid()}"
     old_target = f"{domain}/com.mango.calls-two-processes"
     loaded: set[str] = {old_target}
@@ -1246,6 +1915,7 @@ def test_failed_upgrade_restores_loaded_incumbent_pair(
     out_dir = tmp_path / "launchd"
     out_dir.mkdir()
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     domain = f"gui/{installer.os.getuid()}"
     paths = {
         label: out_dir / f"{label}.plist"
@@ -1301,6 +1971,7 @@ def test_failed_bootout_restores_loaded_incumbent_pair(
     out_dir = tmp_path / "launchd"
     out_dir.mkdir()
     installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
     domain = f"gui/{installer.os.getuid()}"
     paths = {
         label: out_dir / f"{label}.plist"

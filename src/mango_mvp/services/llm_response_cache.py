@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
+def input_sha256(prompt: str) -> str:
+    """Digest of the exact prompt bytes the answer was produced from."""
+    return hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest()
+
+
 class LLMResponseCache:
     def __init__(self, *, enabled: bool, root_dir: str | Path):
         self._enabled = bool(enabled)
@@ -57,6 +62,25 @@ class LLMResponseCache:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, json.JSONDecodeError):
             return None
+        # The file name is a digest of the key, so a hit proves only that some
+        # file with that name exists.  A hand-edited entry, a truncated digest
+        # or a file moved between cache directories would otherwise hand back an
+        # answer produced by another model, another prompt version or another
+        # call — and the caller would bill it as "cache hit, nothing changed".
+        # So the stored identity is compared with the requested one, and any
+        # mismatch is an ordinary miss: the model is asked again.
+        if any(
+            payload.get(field) != expected
+            for field, expected in (
+                ("namespace", namespace),
+                ("provider", provider),
+                ("model", model),
+                ("reasoning", reasoning),
+                ("prompt_version", prompt_version),
+                ("input_sha256", input_sha256(prompt)),
+            )
+        ):
+            return None
         response = payload.get("response")
         if isinstance(response, dict):
             return response
@@ -89,10 +113,12 @@ class LLMResponseCache:
             tmp_path.write_text(
                 json.dumps(
                     {
+                        "namespace": namespace,
                         "provider": provider,
                         "model": model,
                         "reasoning": reasoning,
                         "prompt_version": prompt_version,
+                        "input_sha256": input_sha256(prompt),
                         "response": response,
                     },
                     ensure_ascii=False,

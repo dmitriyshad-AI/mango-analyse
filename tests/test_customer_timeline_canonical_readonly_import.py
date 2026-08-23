@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import mango_mvp.customer_timeline.canonical_readonly_import as canonical_import_module
 from mango_mvp.customer_timeline import (
     CanonicalReadonlyTimelineConfig,
     CustomerTimelineSQLiteStore,
@@ -23,6 +24,17 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 5, 21, 9, 0, tzinfo=timezone.utc)
+REAL_STORED_ANALYSIS_GUARD = canonical_import_module.guard_stored_analysis
+
+
+@pytest.fixture(autouse=True)
+def _legacy_timeline_fixture_scope(monkeypatch: pytest.MonkeyPatch):
+    """Legacy aggregate fixtures predate the signed stored-analysis contract."""
+    monkeypatch.setattr(
+        canonical_import_module,
+        "guard_stored_analysis",
+        lambda _record, analysis: dict(analysis) if isinstance(analysis, dict) else {},
+    )
 
 
 def test_infer_brand_cyrillic_v2_foton_root_and_cross_brand_fail_closed() -> None:
@@ -366,6 +378,59 @@ def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Pa
         ).fetchone()[0] == 0
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "timeline_events") >= 7
+
+
+def test_canonical_reader_real_guard_rejects_unbound_legacy_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        canonical_import_module,
+        "guard_stored_analysis",
+        REAL_STORED_ANALYSIS_GUARD,
+    )
+
+    by_ref = canonical_import_module.read_canonical_call_analysis_by_ref(
+        config.canonical_calls_db
+    )
+
+    analysis = by_ref["call-1.mp3"]["analysis"]
+    assert analysis["structured_fields"] == {}
+    assert "role_attribution_untrusted" in analysis["review_reasons"]
+
+
+def test_canonical_reader_uses_exact_path_and_omits_ambiguous_basename(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "canonical.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE canonical_calls (
+                source_filename TEXT, source_file TEXT, canonical_call_id INTEGER,
+                amocrm_contact_id TEXT, amocrm_lead_id TEXT, analysis_json TEXT
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO canonical_calls VALUES (?, ?, ?, '', '', ?)",
+            [
+                ("first.mp3", "/one/shared.mp3", 101, json.dumps({"summary": "first"})),
+                ("second.mp3", "/two/shared.mp3", 102, json.dumps({"summary": "second"})),
+                ("legacy.mp3", "/three/exact.mp3", 103, json.dumps({"summary": "legacy"})),
+            ],
+        )
+
+    by_ref = canonical_import_module.read_canonical_call_analysis_by_ref(db_path)
+
+    assert "shared.mp3" not in by_ref
+    assert by_ref["/one/shared.mp3"]["canonical_call_id"] == 101
+    assert by_ref["/two/shared.mp3"]["canonical_call_id"] == 102
+    enriched = canonical_import_module.enrich_call_row_with_canonical_analysis(
+        {"Имя исходного файла": "legacy.mp3", "Путь к записи": "/one/shared.mp3"},
+        by_ref,
+    )
+    assert enriched["__canonical_call_id"] == 101
 
 
 def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp_path: Path) -> None:

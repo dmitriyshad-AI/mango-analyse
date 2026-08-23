@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 import time
 from typing import Any, Callable, Dict, Optional
 
 from mango_mvp.config import Settings
 from mango_mvp.db import build_session_factory
 from mango_mvp.services.analyze import AnalyzeService
+from mango_mvp.services.controlled_call_scope import (
+    controlled_worker_parent_lifeline,
+    enforce_controlled_worker_stages,
+)
 from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.sync_amocrm import AmoCRMSyncService
 from mango_mvp.services.transcribe import TranscribeService
@@ -63,8 +68,35 @@ def run_worker(
     max_idle_cycles: int | None = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
+    with controlled_worker_parent_lifeline(settings):
+        return _run_worker_with_lifeline(
+            settings,
+            stage_limit=stage_limit,
+            once=once,
+            stages=stages,
+            poll_sec=poll_sec,
+            max_idle_cycles=max_idle_cycles,
+            progress_callback=progress_callback,
+        )
+
+
+def _run_worker_with_lifeline(
+    settings: Settings,
+    *,
+    stage_limit: int,
+    once: bool,
+    stages: Optional[list[str]] = None,
+    poll_sec: int | None = None,
+    max_idle_cycles: int | None = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
     session_factory = build_session_factory(settings)
     selected_stages = normalize_pipeline_stages(stages)
+    enforce_controlled_worker_stages(
+        settings,
+        selected_stages,
+        stage_limit=stage_limit,
+    )
     poll_interval = max(1, poll_sec if poll_sec is not None else settings.worker_poll_sec)
     max_idle = (
         max_idle_cycles
@@ -76,11 +108,32 @@ def run_worker(
         dual_transcribe_enabled=False,
         secondary_transcribe_provider=None,
     )
+    primary_transcribe_service = (
+        TranscribeService(primary_only_settings) if "transcribe" in selected_stages else None
+    )
+    secondary_transcribe_service = (
+        TranscribeService(settings) if "backfill-second-asr" in selected_stages else None
+    )
+    if (
+        secondary_transcribe_service is not None
+        and int(os.getenv("GIGAAM_BATCH_SIZE", "1")) > 1
+    ):
+        secondary_transcribe_service._get_gigaam_model()
 
     cycles = 0
     idle_cycles = 0
     totals = {
         stage: {"processed": 0, "success": 0, "failed": 0} for stage in selected_stages
+    }
+    runtime_receipts: Dict[str, Dict[str, Any]] = {
+        stage: {
+            "provider_invocations": {},
+            "mlx_cache_release_attempts": 0,
+            "mlx_cache_release_successes": 0,
+            "gigaam_batch_attempts": 0,
+            "gigaam_batch_fallbacks": 0,
+        }
+        for stage in selected_stages
     }
     while True:
         cycles += 1
@@ -89,14 +142,16 @@ def run_worker(
             "stages": list(selected_stages),
         }
         if "transcribe" in selected_stages:
+            assert primary_transcribe_service is not None
             with session_factory() as session:
-                cycle_payload["transcribe"] = TranscribeService(primary_only_settings).run(
+                cycle_payload["transcribe"] = primary_transcribe_service.run(
                     session,
                     limit=stage_limit,
                 )
         if "backfill-second-asr" in selected_stages:
+            assert secondary_transcribe_service is not None
             with session_factory() as session:
-                cycle_payload["backfill-second-asr"] = TranscribeService(settings).backfill_secondary_asr(
+                cycle_payload["backfill-second-asr"] = secondary_transcribe_service.backfill_secondary_asr(
                     session,
                     limit=stage_limit,
                 )
@@ -117,6 +172,21 @@ def run_worker(
             totals[stage]["processed"] += int(stage_result.get("processed", 0))
             totals[stage]["success"] += int(stage_result.get("success", 0))
             totals[stage]["failed"] += int(stage_result.get("failed", 0))
+            receipt = stage_result.get("runtime_receipt")
+            if isinstance(receipt, dict):
+                providers = receipt.get("provider_invocations")
+                if isinstance(providers, dict):
+                    aggregate = runtime_receipts[stage]["provider_invocations"]
+                    for provider, count in providers.items():
+                        key = str(provider)
+                        aggregate[key] = int(aggregate.get(key, 0)) + int(count or 0)
+                for key in (
+                    "mlx_cache_release_attempts",
+                    "mlx_cache_release_successes",
+                    "gigaam_batch_attempts",
+                    "gigaam_batch_fallbacks",
+                ):
+                    runtime_receipts[stage][key] += int(receipt.get(key) or 0)
 
         cycle_work = sum(
             int((cycle_payload.get(stage) or {}).get("processed", 0))
@@ -129,6 +199,7 @@ def run_worker(
                 "cycles": cycles,
                 "idle_cycles": idle_cycles,
                 "totals": totals,
+                "runtime_receipts": runtime_receipts,
                 "last_cycle": cycle_payload,
                 "stop_reason": "once",
             }
@@ -142,6 +213,7 @@ def run_worker(
                     "cycles": cycles,
                     "idle_cycles": idle_cycles,
                     "totals": totals,
+                    "runtime_receipts": runtime_receipts,
                     "last_cycle": cycle_payload,
                     "stop_reason": "max_idle_cycles_reached",
                 }

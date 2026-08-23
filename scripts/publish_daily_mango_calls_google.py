@@ -23,7 +23,7 @@ from openpyxl import load_workbook
 GOOGLE_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-SCHEMA = "daily_mango_calls_resolve_export_v4"
+SCHEMA = "daily_mango_calls_resolve_export_v5"
 CONFIRMATION = "UPLOAD_MANGO_DAILY_REPORT"
 MULTIPART_LIMIT = 5 * 1024 * 1024
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -92,7 +92,7 @@ def load_plan(root: Path, day: date) -> dict[str, Any]:
     return {
         "day": day.isoformat(), "content_sha256": content_hash, "xlsx_sha256": manifest["xlsx_sha256"],
         "xlsx": xlsx, "upload_bytes": uploaded, "workbook_digest": workbook_digest(uploaded),
-        "name": f"Отчёт РОП по звонкам {day.isoformat()} — опубликован {stamp} — v4-{content_hash[:12]}",
+        "name": f"Отчёт РОП по звонкам {day.isoformat()} — опубликован {stamp} — v5-{content_hash[:12]}",
         "temporary_name": f"ПРОВЕРКА — НЕ ИСПОЛЬЗОВАТЬ — {day.isoformat()} — {content_hash[:12]}",
     }
 
@@ -342,13 +342,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     plan = load_plan(args.report_root, args.day)
     if not args.execute:
-        result = {"status": "dry_run", "day": plan["day"], "name": plan["name"], "content_sha256": plan["content_sha256"]}
+        result = {
+            "status": "dry_run",
+            "day": plan["day"],
+            "name": plan["name"],
+            "content_sha256": plan["content_sha256"],
+            "external_write_allowed": False,
+            "reason": "full_daily_transcript_google_publication_disabled",
+        }
     else:
-        with publication_lock(args.report_root, str(plan["day"]), str(plan["content_sha256"]), args.folder_id) as journal:
-            if args.confirmation != CONFIRMATION or not args.credentials:
-                raise RuntimeError("explicit Google upload confirmation and credentials are required")
-            credentials = validate_credentials(args.credentials, Path(__file__).resolve().parents[1])
-            result = publish(authorized_session(credentials), args.folder_id, plan, journal=journal)
+        raise RuntimeError(
+            "full daily transcript Google publication is disabled; use the safe current-day projection"
+        )
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

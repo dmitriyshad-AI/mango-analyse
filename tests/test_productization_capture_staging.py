@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -17,8 +19,10 @@ from mango_mvp.productization.capture_staging import (
     acknowledge_capture_recovery,
     atomic_write_private_json,
     audit_capture_manifest,
+    build_capture_audio_filename,
     capture_recovery_incident_sha256,
     capture_recovery_path,
+    recording_part_paths,
     stage_capture_events,
 )
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
@@ -42,7 +46,7 @@ def fake_validator(path: Path) -> AudioValidation:
     size = path.stat().st_size
     return AudioValidation(
         size_bytes=size,
-        checksum_sha256=f"sha-{size}",
+        checksum_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         duration_sec=12.5,
         codec_name="mp3",
         channels=2,
@@ -98,6 +102,215 @@ def manifest_entry(call_id: str) -> ManifestEntry:
         duration_sec=12.34,
         dry_run=False,
     )
+
+
+def test_expired_recording_with_known_id_recovers_append_only(tmp_path: Path) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    store = CaptureManifestStore(manifest)
+    late_event = event("LATE-1", "recording-late")
+    expired = ManifestEntry(
+        schema_version="capture_manifest_v1",
+        created_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+        tenant_id="foton",
+        provider="mango",
+        event_key=late_event.event_key,
+        provider_call_id=late_event.provider_call_id,
+        recording_id="recording-late",
+        recording_ids=("recording-late",),
+        started_at=late_event.started_at.isoformat(),
+        ended_at=late_event.ended_at.isoformat() if late_event.ended_at else None,
+        direction="inbound",
+        client_phone=late_event.client_phone,
+        manager_ref=late_event.manager_ref,
+        status="recording_retry_expired",
+        error="recording_missing_after_retry_ttl",
+        remediation_code="manual_review_or_retry_if_recording_appears",
+    )
+    store.append(expired)
+
+    summary = stage_capture_events(
+        [late_event],
+        store,
+        tmp_path / "recordings",
+        FakeDownloader(),
+        validator=fake_validator,
+    )
+
+    entries = store.read_entries()
+    assert len(entries) == 2
+    assert entries[0].status == "recording_retry_expired"
+    assert entries[1].status == "downloaded"
+    assert entries[1].recovery_state == "recovered_late_recording"
+    assert summary.downloaded == 1
+
+
+def test_expired_unknown_recording_stays_quarantined_without_transient_pending(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    store = CaptureManifestStore(manifest)
+    missing_event = event("LATE-NO-ID", None)
+    store.append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+            tenant_id="foton",
+            provider="mango",
+            event_key=missing_event.event_key,
+            provider_call_id=missing_event.provider_call_id,
+            recording_id=None,
+            started_at=missing_event.started_at.isoformat(),
+            ended_at=(
+                missing_event.ended_at.isoformat()
+                if missing_event.ended_at
+                else None
+            ),
+            direction="inbound",
+            client_phone=missing_event.client_phone,
+            manager_ref=missing_event.manager_ref,
+            status="recording_retry_expired",
+            error="recording_missing_after_retry_ttl",
+            remediation_code="manual_review_or_retry_if_recording_appears",
+        )
+    )
+
+    summary = stage_capture_events(
+        [missing_event],
+        store,
+        tmp_path / "recordings",
+        FakeDownloader(),
+        validator=fake_validator,
+    )
+
+    entries = store.read_entries()
+    assert len(entries) == 1
+    assert entries[0].status == "recording_retry_expired"
+    assert summary.already_manifested == 1
+    assert summary.skipped_no_recording == 0
+
+
+def test_modified_downloaded_audio_is_never_adopted_as_new_truth(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    store = CaptureManifestStore(manifest)
+    original_event = event("IMMUTABLE-1", "recording-immutable")
+    recordings = tmp_path / "recordings"
+    first_downloader = FakeDownloader()
+    first = stage_capture_events(
+        [original_event],
+        store,
+        recordings,
+        first_downloader,
+        validator=fake_validator,
+        require_integrity_metadata=True,
+    )
+    original = store.latest_by_event_key()[original_event.event_key]
+    original_checksum = original.checksum_sha256
+    assert original.local_audio_path
+    Path(original.local_audio_path).write_bytes(b"silently-modified-audio")
+    retry_downloader = FakeDownloader()
+
+    second = stage_capture_events(
+        [original_event],
+        store,
+        recordings,
+        retry_downloader,
+        dry_run=True,
+        validator=fake_validator,
+        require_integrity_metadata=True,
+    )
+    history_after_second = store.read_entries()
+    third = stage_capture_events(
+        [original_event],
+        store,
+        recordings,
+        retry_downloader,
+        validator=fake_validator,
+        require_integrity_metadata=True,
+    )
+    latest = store.latest_by_event_key()[original_event.event_key]
+
+    assert first.downloaded == 1
+    assert second.integrity_quarantined == 1 and second.dry_run_download == 0
+    assert third.already_manifested == 1
+    assert len(history_after_second) == len(store.read_entries()) == 2
+    assert latest.status == "audio_integrity_quarantined"
+    assert latest.error == "capture_target_integrity_mismatch"
+    assert latest.recovery_state == "immutable_audio_violation"
+    assert latest.checksum_sha256 == original_checksum
+    assert retry_downloader.calls == []
+
+
+def test_failed_late_recording_retry_stays_in_expired_quarantine(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    store = CaptureManifestStore(manifest)
+    late_event = event("LATE-FAIL", "recording-late-fail")
+    store.append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+            tenant_id="foton",
+            provider="mango",
+            event_key=late_event.event_key,
+            provider_call_id=late_event.provider_call_id,
+            recording_id="recording-late-fail",
+            recording_ids=("recording-late-fail",),
+            started_at=late_event.started_at.isoformat(),
+            ended_at=late_event.ended_at.isoformat() if late_event.ended_at else None,
+            direction="inbound",
+            client_phone=late_event.client_phone,
+            manager_ref=late_event.manager_ref,
+            status="recording_retry_expired",
+            error="recording_missing_after_retry_ttl",
+            remediation_code="manual_review_or_retry_if_recording_appears",
+        )
+    )
+
+    summary = stage_capture_events(
+        [late_event],
+        store,
+        tmp_path / "recordings",
+        FakeDownloader(fail_first=True),
+        validator=fake_validator,
+    )
+
+    latest = store.latest_by_event_key()[late_event.event_key]
+    assert latest.status == "recording_retry_expired"
+    assert latest.recovery_state == "late_recording_retry_failed"
+    assert len(store.read_entries()) == 2
+    assert summary.failed == 1
+
+
+def test_recordings_directory_is_owner_only_even_with_open_umask(
+    tmp_path: Path,
+) -> None:
+    previous = os.umask(0)
+    try:
+        stage_capture_events(
+            [], CaptureManifestStore(tmp_path / "capture.jsonl"), tmp_path / "recordings"
+        )
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE((tmp_path / "recordings").stat().st_mode) == 0o700
+
+
+def test_capture_manifest_directory_is_owner_only_even_with_open_umask(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "new-capture"
+    previous = os.umask(0)
+    try:
+        store = CaptureManifestStore(parent / "capture_manifest.jsonl")
+        store.ensure_exists()
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
 
 
 def test_manifest_recovers_only_unterminated_final_record_before_append(tmp_path: Path) -> None:
@@ -926,9 +1139,70 @@ def test_stage_capture_events_downloads_and_writes_validated_manifest(tmp_path: 
     assert len(rows) == 1
     assert rows[0]["status"] == "downloaded"
     assert rows[0]["recording_id"] == "rec-1"
-    assert rows[0]["checksum_sha256"].startswith("sha-")
+    assert rows[0]["checksum_sha256"] == hashlib.sha256(
+        Path(rows[0]["local_audio_path"]).read_bytes()
+    ).hexdigest()
     assert rows[0]["duration_sec"] == 12.5
     assert Path(rows[0]["local_audio_path"]).exists()
+
+
+def test_stage_capture_events_rejects_existing_audio_symlink_without_download(
+    tmp_path: Path,
+) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    item = event("CALL-SYMLINK", "rec-symlink")
+    target = recordings / build_capture_audio_filename(item, "rec-symlink")
+    victim = tmp_path / "victim.mp3"
+    victim.write_bytes(b"synthetic victim")
+    target.symlink_to(victim)
+    downloader = FakeDownloader()
+
+    summary = stage_capture_events(
+        [item],
+        CaptureManifestStore(tmp_path / "capture_manifest.jsonl"),
+        recordings,
+        downloader,
+        validator=fake_validator,
+    )
+
+    assert summary.failed == 1
+    assert summary.reused_existing_file == 0
+    assert downloader.calls == []
+    assert target.is_symlink()
+    assert victim.read_bytes() == b"synthetic victim"
+
+
+def test_stage_capture_events_rejects_multi_part_symlink_without_download(
+    tmp_path: Path,
+) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    item = event(
+        "CALL-MULTI-SYMLINK",
+        "rec-1",
+        recording_refs=("rec-1", "rec-2"),
+    )
+    base = recordings / build_capture_audio_filename(item, "rec-1")
+    first_part, _second_part = recording_part_paths(base, ("rec-1", "rec-2"))
+    victim = tmp_path / "victim-part.mp3"
+    victim.write_bytes(b"synthetic victim")
+    first_part.symlink_to(victim)
+    downloader = FakeDownloader()
+
+    summary = stage_capture_events(
+        [item],
+        CaptureManifestStore(tmp_path / "capture_manifest.jsonl"),
+        recordings,
+        downloader,
+        validator=fake_validator,
+    )
+
+    assert summary.failed == 1
+    assert summary.needs_review_multiple_recordings == 0
+    assert downloader.calls == []
+    assert first_part.is_symlink()
+    assert victim.read_bytes() == b"synthetic victim"
 
 
 def test_stage_capture_events_is_idempotent_on_second_run(tmp_path: Path) -> None:
@@ -948,7 +1222,7 @@ def test_stage_capture_events_is_idempotent_on_second_run(tmp_path: Path) -> Non
     assert len(read_manifest(manifest)) == 1
 
 
-def test_stage_capture_events_quarantines_late_part_and_keeps_monotonic_set(tmp_path: Path) -> None:
+def test_stage_capture_events_detects_late_part_damage_and_keeps_monotonic_set(tmp_path: Path) -> None:
     manifest = tmp_path / "capture_manifest.jsonl"
     recordings = tmp_path / "recordings"
     store = CaptureManifestStore(manifest)
@@ -1008,8 +1282,68 @@ def test_stage_capture_events_quarantines_late_part_and_keeps_monotonic_set(tmp_
         repair_downloader,
         validator=fake_validator,
     )
-    assert repaired.needs_review_multiple_recordings == 1
-    assert [call[0] for call in repair_downloader.calls] == ["rec-2"]
+    assert repaired.integrity_quarantined == 1
+    assert repair_downloader.calls == []
+    latest = store.latest_by_event_key()[event("CALL-MULTI").event_key]
+    assert latest.status == "audio_integrity_quarantined"
+    assert latest.error == "capture_target_integrity_mismatch"
+    assert latest.recovery_state == "immutable_audio_violation"
+
+
+def test_legacy_asset_without_hash_can_add_late_part_in_compatibility_mode(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    store = CaptureManifestStore(manifest)
+    original = event("CALL-LEGACY-MULTI", "legacy-rec-1")
+    target = recordings / build_capture_audio_filename(original, "legacy-rec-1")
+    target.write_bytes(b"legacy-valid-audio")
+    store.append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at="2026-05-07T12:01:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key=original.event_key,
+            provider_call_id=original.provider_call_id,
+            recording_id="legacy-rec-1",
+            recording_ids=("legacy-rec-1",),
+            started_at=original.started_at.isoformat(),
+            ended_at=original.ended_at.isoformat() if original.ended_at else None,
+            direction=original.direction.value,
+            client_phone=original.client_phone,
+            manager_ref=original.manager_ref,
+            status="downloaded",
+            local_audio_path=str(target),
+        )
+    )
+    downloader = FakeDownloader()
+
+    summary = stage_capture_events(
+        [
+            event(
+                "CALL-LEGACY-MULTI",
+                "legacy-rec-1",
+                recording_refs=("legacy-rec-1", "legacy-rec-2"),
+            )
+        ],
+        store,
+        recordings,
+        downloader,
+        validator=fake_validator,
+        require_integrity_metadata=False,
+    )
+
+    assert summary.needs_review_multiple_recordings == 1
+    assert summary.integrity_quarantined == 0
+    assert [recording_id for recording_id, _path in downloader.calls] == [
+        "legacy-rec-2"
+    ]
+    assert store.latest_by_event_key()[original.event_key].status == (
+        "multiple_recordings_needs_review"
+    )
 
 
 def test_old_scalar_manifest_reads_as_single_recording_tuple(tmp_path: Path) -> None:
@@ -1102,7 +1436,7 @@ def test_corrupt_nonempty_part_is_removed_and_downloaded_on_retry(tmp_path: Path
     assert "+79990000000" not in read_manifest(store.path)[-2]["error"]
 
 
-def test_stage_capture_events_redownloads_missing_downloaded_asset(tmp_path: Path) -> None:
+def test_stage_capture_events_never_redownloads_missing_sealed_asset(tmp_path: Path) -> None:
     manifest = tmp_path / "capture_manifest.jsonl"
     recordings = tmp_path / "recordings"
     store = CaptureManifestStore(manifest)
@@ -1114,9 +1448,67 @@ def test_stage_capture_events_redownloads_missing_downloaded_asset(tmp_path: Pat
     retry = stage_capture_events(events, store, recordings, retry_downloader, validator=fake_validator)
 
     assert first.downloaded == 1
-    assert retry.downloaded == 1
-    assert len(retry_downloader.calls) == 1
-    assert [row["status"] for row in read_manifest(manifest)] == ["downloaded", "downloaded"]
+    assert retry.integrity_quarantined == 1
+    assert retry_downloader.calls == []
+    rows = read_manifest(manifest)
+    assert [row["status"] for row in rows] == [
+        "downloaded",
+        "audio_integrity_quarantined",
+    ]
+    assert rows[-1]["error"] == "capture_target_integrity_mismatch"
+    assert rows[-1]["recovery_state"] == "immutable_audio_violation"
+
+
+def test_stage_capture_events_never_adopts_changed_sealed_multi_part(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    recordings = tmp_path / "recordings"
+    store = CaptureManifestStore(manifest)
+    item = event(
+        "CALL-MULTI-IMMUTABLE",
+        "rec-1",
+        recording_refs=("rec-1", "rec-2"),
+    )
+    first = stage_capture_events(
+        [item],
+        store,
+        recordings,
+        FakeDownloader(),
+        validator=fake_validator,
+        require_integrity_metadata=True,
+    )
+    sealed = store.latest_by_event_key()[item.event_key]
+    changed = Path(sealed.recording_paths[1])
+    changed.write_bytes(b"changed-sealed-part")
+    retry_downloader = FakeDownloader()
+
+    second = stage_capture_events(
+        [item],
+        store,
+        recordings,
+        retry_downloader,
+        validator=fake_validator,
+        require_integrity_metadata=True,
+    )
+    third = stage_capture_events(
+        [item],
+        store,
+        recordings,
+        retry_downloader,
+        validator=fake_validator,
+        require_integrity_metadata=True,
+    )
+    latest = store.latest_by_event_key()[item.event_key]
+
+    assert first.needs_review_multiple_recordings == 1
+    assert second.integrity_quarantined == 1
+    assert third.already_manifested == 1
+    assert latest.status == "audio_integrity_quarantined"
+    assert latest.error == "capture_target_integrity_mismatch"
+    assert latest.recovery_state == "immutable_audio_violation"
+    assert retry_downloader.calls == []
+    assert changed.read_bytes() == b"changed-sealed-part"
 
 
 def test_stage_capture_events_retries_failed_download_without_duplicate_asset(tmp_path: Path) -> None:
@@ -1144,7 +1536,7 @@ def test_stage_capture_events_retries_failed_download_without_duplicate_asset(tm
     assert len(list(recordings.iterdir())) == 1
 
 
-def test_stage_capture_events_replaces_nonempty_file_after_validation_failure(tmp_path: Path) -> None:
+def test_stage_capture_events_reuses_file_when_retry_validation_now_passes(tmp_path: Path) -> None:
     manifest = tmp_path / "capture_manifest.jsonl"
     recordings = tmp_path / "recordings"
     store = CaptureManifestStore(manifest)
@@ -1160,9 +1552,9 @@ def test_stage_capture_events_replaces_nonempty_file_after_validation_failure(tm
     second = stage_capture_events(events, store, recordings, retry_downloader, validator=fake_validator)
 
     assert first.failed == 1
-    assert second.downloaded == 1
-    assert len(retry_downloader.calls) == 1
-    assert corrupt_path.read_bytes() == b"fake-audio:rec-1"
+    assert second.reused_existing_file == 1
+    assert retry_downloader.calls == []
+    assert corrupt_path.read_bytes() == b"still-nonempty-but-corrupt"
 
 
 def test_stage_capture_events_links_duplicate_recording_to_canonical_asset(tmp_path: Path) -> None:

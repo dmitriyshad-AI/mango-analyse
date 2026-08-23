@@ -22,6 +22,7 @@ CAPTURE_MANIFEST_SCHEMA_VERSION = "capture_manifest_v1"
 CAPTURE_RECOVERY_SCHEMA_VERSION = "capture_manifest_recovery_v1"
 DEFAULT_CAPTURE_FILENAME_TZ = ZoneInfo("Europe/Moscow")
 TERMINAL_EVENT_STATUSES = {
+    "audio_integrity_quarantined",
     "downloaded",
     "duplicate_recording",
     "recording_retry_expired",
@@ -496,6 +497,7 @@ class ManifestEntry:
     status: str
     recording_ids: tuple[str, ...] = ()
     recording_paths: tuple[str, ...] = ()
+    recording_assets: tuple[Mapping[str, Any], ...] = ()
     local_audio_path: Optional[str] = None
     canonical_event_key: Optional[str] = None
     canonical_recording_id: Optional[str] = None
@@ -507,7 +509,10 @@ class ManifestEntry:
     channels: Optional[int] = None
     sample_rate: Optional[int] = None
     error: Optional[str] = None
+    remediation_code: Optional[str] = None
     dry_run: bool = False
+    host_id: Optional[str] = None
+    recovery_state: Optional[str] = None
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -526,6 +531,7 @@ class CaptureStageSummary:
     needs_review_multiple_recordings: int
     manifest_path: str
     recordings_dir: str
+    integrity_quarantined: int = 0
     incomplete_trailing_manifest_records: int = 0
     recovered_trailing_manifest_records: int = 0
     recovery_incident_sha256: Optional[str] = None
@@ -537,7 +543,15 @@ class CaptureStageSummary:
 class CaptureManifestStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent_info = os.lstat(self.path.parent)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or self.path.parent.is_symlink()
+            or parent_info.st_uid != os.getuid()
+        ):
+            raise RuntimeError("capture manifest directory is unsafe")
+        self.path.parent.chmod(0o700)
         self.recovery_path = capture_recovery_path(path)
         self._manifest_seen = os.path.lexists(path)
         recovery = load_capture_recovery(self.recovery_path)
@@ -797,15 +811,25 @@ class CaptureManifestStore:
             latest[entry.event_key] = entry
         return latest
 
-    def latest_assets_by_recording_id(self) -> Mapping[frozenset[str], ManifestEntry]:
-        latest = {}
+    def latest_assets_by_recording_id(
+        self,
+        recordings_dir: Optional[Path] = None,
+        *,
+        require_integrity_metadata: bool = False,
+    ) -> Mapping[str, ManifestEntry]:
+        latest: dict[str, ManifestEntry] = {}
         for entry in self.read_entries():
             recording_ids = entry_recording_ids(entry)
             if entry.status not in ASSET_STATUSES or not recording_ids:
                 continue
-            if not manifest_assets_exist(entry):
+            if not manifest_assets_exist(
+                entry,
+                recordings_dir,
+                require_integrity_metadata=require_integrity_metadata,
+            ):
                 continue
-            latest[frozenset(recording_ids)] = entry
+            for recording_id in recording_ids:
+                latest[recording_id] = entry
         return latest
 
     def recover_incomplete_tail(self) -> int:
@@ -962,6 +986,19 @@ class CaptureManifestStore:
                 raise RuntimeError("capture manifest changed while appending")
 
 
+def _existing_capture_target(path: Path) -> Optional[os.stat_result]:
+    if not os.path.lexists(path):
+        return None
+    info = os.lstat(path)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_nlink != 1
+    ):
+        raise RuntimeError("capture target is not a private regular file")
+    return info
+
+
 def stage_capture_events(
     events: Iterable[TelephonyCallEvent],
     manifest_store: CaptureManifestStore,
@@ -970,11 +1007,26 @@ def stage_capture_events(
     dry_run: bool = False,
     sleep_sec: float = 0.0,
     validator: Optional[Callable[[Path], AudioValidation]] = None,
+    host_id: Optional[str] = None,
+    require_integrity_metadata: bool = False,
 ) -> CaptureStageSummary:
-    recordings_dir.mkdir(parents=True, exist_ok=True)
+    recordings_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    recordings_info = os.lstat(recordings_dir)
+    if (
+        not stat.S_ISDIR(recordings_info.st_mode)
+        or recordings_dir.is_symlink()
+        or recordings_info.st_uid != os.getuid()
+    ):
+        raise RuntimeError("capture recordings directory is unsafe")
+    recordings_dir.chmod(0o700)
     validate = validator or validate_audio_file
     latest_by_event = dict(manifest_store.latest_by_event_key())
-    assets_by_recording = dict(manifest_store.latest_assets_by_recording_id())
+    assets_by_recording = dict(
+        manifest_store.latest_assets_by_recording_id(
+            recordings_dir,
+            require_integrity_metadata=require_integrity_metadata,
+        )
+    )
 
     counts = Counter()
     total = 0
@@ -985,27 +1037,60 @@ def stage_capture_events(
         if recording_ids != event_recording_ids(event):
             event = replace(event, recording_ref=recording_ids[0] if recording_ids else None, recording_refs=recording_ids)
         recording_id = recording_ids[0] if recording_ids else None
-        if existing is not None and existing.status in TERMINAL_EVENT_STATUSES and manifest_assets_exist(existing) and entry_recording_ids(existing) == recording_ids:
+        if (
+            existing is not None
+            and existing.status in TERMINAL_EVENT_STATUSES
+            and existing.status != "recording_retry_expired"
+            and manifest_assets_exist(
+                existing,
+                recordings_dir,
+                require_integrity_metadata=require_integrity_metadata,
+            )
+            and entry_recording_ids(existing) == recording_ids
+        ):
             counts["already_manifested"] += 1
             continue
         if existing is not None and existing.status == "skipped_no_recording" and not recording_id:
             counts["already_manifested"] += 1
             continue
+        if (
+            existing is not None
+            and existing.status == "recording_retry_expired"
+            and not recording_id
+        ):
+            # The caller owns the once-per-day retry cadence marker.  Avoid a
+            # transient expired -> pending -> expired state and a duplicate
+            # append when Mango still has no recording id.
+            counts["already_manifested"] += 1
+            continue
         if not recording_id:
-            entry = manifest_entry_from_event(event, status="skipped_no_recording")
+            entry = manifest_entry_from_event(
+                event, status="skipped_no_recording", host_id=host_id
+            )
             manifest_store.append(entry)
             latest_by_event[event.event_key] = entry
             counts["skipped_no_recording"] += 1
             continue
 
-        canonical = assets_by_recording.get(frozenset(recording_ids))
+        canonical_assets = [assets_by_recording.get(item) for item in recording_ids]
+        canonical = (
+            canonical_assets[0]
+            if canonical_assets
+            and all(item is not None for item in canonical_assets)
+            and len({item.event_key for item in canonical_assets if item is not None}) == 1
+            else None
+        )
         if canonical is not None:
             entry = manifest_entry_from_event(
                 event,
                 status="duplicate_recording",
                 canonical_event_key=canonical.event_key,
                 canonical_recording_id=canonical.recording_id,
-                canonical_audio_path=canonical.local_audio_path,
+                canonical_audio_path=(
+                    canonical.local_audio_path
+                    or (canonical.recording_paths[0] if canonical.recording_paths else None)
+                ),
+                host_id=host_id,
             )
             manifest_store.append(entry)
             latest_by_event[event.event_key] = entry
@@ -1013,12 +1098,56 @@ def stage_capture_events(
             continue
 
         target_path = recordings_dir / build_capture_audio_filename(event, recording_id)
+        # A sealed asset is append-only evidence.  Missing or changed bytes
+        # must never be silently downloaded again and adopted under the same
+        # event, for either a single recording or a multi-part recording.  The
+        # gate precedes dry-run so a probe cannot mask the sealed evidence.
+        if (
+            existing is not None
+            and existing.recovery_state == "immutable_audio_violation"
+        ):
+            if existing.status != "audio_integrity_quarantined":
+                entry = replace(
+                    existing,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    status="audio_integrity_quarantined",
+                    error="capture_target_integrity_mismatch",
+                    remediation_code="manual_restore_or_quarantine_corrupted_audio",
+                )
+                manifest_store.append(entry)
+                latest_by_event[event.event_key] = entry
+            counts["integrity_quarantined"] += 1
+            continue
+
+        if (
+            existing is not None
+            and existing.status in ASSET_STATUSES
+            and not manifest_assets_exist(
+                existing,
+                recordings_dir,
+                require_integrity_metadata=require_integrity_metadata,
+            )
+        ):
+            entry = replace(
+                existing,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                status="audio_integrity_quarantined",
+                error="capture_target_integrity_mismatch",
+                remediation_code="manual_restore_or_quarantine_corrupted_audio",
+                recovery_state="immutable_audio_violation",
+            )
+            manifest_store.append(entry)
+            latest_by_event[event.event_key] = entry
+            counts["integrity_quarantined"] += 1
+            continue
+
         if dry_run:
             entry = manifest_entry_from_event(
                 event,
                 status="dry_run_download",
                 local_audio_path=str(target_path),
                 dry_run=True,
+                host_id=host_id,
             )
             manifest_store.append(entry)
             latest_by_event[event.event_key] = entry
@@ -1030,24 +1159,49 @@ def stage_capture_events(
             try:
                 if downloader is None:
                     raise RuntimeError("downloader is required when recording parts are missing")
+                part_assets: list[Mapping[str, Any]] = []
                 for part_id, part_path in zip(recording_ids, part_paths):
-                    if not part_path.is_file() or part_path.stat().st_size <= 0:
+                    part_info = _existing_capture_target(part_path)
+                    if part_info is not None and part_info.st_size <= 0:
+                        part_path.unlink()
+                        fsync_directory(part_path.parent)
+                        part_info = None
+                    if part_info is None:
                         downloader.download(recording_id=part_id, target_path=part_path)
                         if sleep_sec > 0:
                             time.sleep(sleep_sec)
+                        part_info = _existing_capture_target(part_path)
+                    if part_info is None or part_info.st_size <= 0:
+                        raise RuntimeError("capture recording part is empty")
                     try:
-                        validate(part_path)
+                        part_audio = validate(part_path)
                     except Exception:
                         part_path.unlink(missing_ok=True)
                         raise
+                    part_assets.append(
+                        {
+                            "recording_id": part_id,
+                            "path": str(part_path),
+                            "size_bytes": part_audio.size_bytes,
+                            "checksum_sha256": part_audio.checksum_sha256,
+                            "duration_sec": part_audio.duration_sec,
+                            "codec_name": part_audio.codec_name,
+                            "channels": part_audio.channels,
+                            "sample_rate": part_audio.sample_rate,
+                        }
+                    )
                 entry = manifest_entry_from_event(
                     event,
                     status="multiple_recordings_needs_review",
                     recording_paths=tuple(str(path) for path in part_paths),
+                    recording_assets=tuple(part_assets),
+                    remediation_code="manual_recording_selection",
+                    host_id=host_id,
                 )
                 manifest_store.append(entry)
                 latest_by_event[event.event_key] = entry
-                assets_by_recording[frozenset(recording_ids)] = entry
+                for part_id in recording_ids:
+                    assets_by_recording[part_id] = entry
                 counts["needs_review_multiple_recordings"] += 1
             except Exception as exc:
                 entry = manifest_entry_from_event(
@@ -1055,39 +1209,77 @@ def stage_capture_events(
                     status="failed",
                     recording_paths=tuple(str(path) for path in part_paths if path.is_file()),
                     error=f"{type(exc).__name__}:capture_failed",
+                    host_id=host_id,
                 )
                 manifest_store.append(entry)
                 latest_by_event[event.event_key] = entry
                 counts["failed"] += 1
             continue
 
+        # A crash can leave a fully fsynced target before the durable manifest
+        # append.  It may be adopted only when no prior sealed asset claims the
+        # same target.  A changed sealed asset is evidence, not a new truth.
         try:
-            force_download = existing is not None and existing.status == "failed"
-            reused_existing = not force_download and target_path.exists() and target_path.stat().st_size > 0
+            target_info = _existing_capture_target(target_path)
+            if target_info is not None and target_info.st_size <= 0:
+                target_path.unlink()
+                fsync_directory(target_path.parent)
+                target_info = None
+            reused_existing = target_info is not None
+            audio: Optional[AudioValidation] = None
+            if reused_existing and existing is not None and existing.status == "failed":
+                try:
+                    audio = validate(target_path)
+                except Exception:
+                    _existing_capture_target(target_path)
+                    target_path.unlink()
+                    fsync_directory(target_path.parent)
+                    reused_existing = False
             if not reused_existing:
                 if downloader is None:
                     raise RuntimeError("downloader is required when target file does not exist")
                 downloader.download(recording_id=recording_id, target_path=target_path)
                 if sleep_sec > 0:
                     time.sleep(sleep_sec)
+                downloaded_info = _existing_capture_target(target_path)
+                if downloaded_info is None or downloaded_info.st_size <= 0:
+                    raise RuntimeError("downloaded capture target is empty")
 
-            audio = validate(target_path)
+            audio = audio or validate(target_path)
             entry = manifest_entry_from_event(
                 event,
                 status="downloaded",
                 local_audio_path=str(target_path),
                 audio=audio,
+                host_id=host_id,
+                recovery_state=(
+                    "recovered_late_recording"
+                    if existing is not None
+                    and existing.status == "recording_retry_expired"
+                    else None
+                ),
             )
             manifest_store.append(entry)
             latest_by_event[event.event_key] = entry
-            assets_by_recording[frozenset(recording_ids)] = entry
+            assets_by_recording[recording_id] = entry
             counts["reused_existing_file" if reused_existing else "downloaded"] += 1
         except Exception as exc:
+            late_retry = (
+                existing is not None
+                and existing.status == "recording_retry_expired"
+            )
             entry = manifest_entry_from_event(
                 event,
-                status="failed",
+                status=("recording_retry_expired" if late_retry else "failed"),
                 local_audio_path=str(target_path),
                 error=f"{type(exc).__name__}:capture_failed",
+                remediation_code=(
+                    "manual_review_or_retry_if_recording_appears"
+                    if late_retry
+                    else None
+                ),
+                host_id=host_id,
+                recovery_state=("late_recording_retry_failed" if late_retry else None),
             )
             manifest_store.append(entry)
             latest_by_event[event.event_key] = entry
@@ -1105,23 +1297,88 @@ def stage_capture_events(
         needs_review_multiple_recordings=counts["needs_review_multiple_recordings"],
         manifest_path=str(manifest_store.path),
         recordings_dir=str(recordings_dir),
+        integrity_quarantined=counts["integrity_quarantined"],
         incomplete_trailing_manifest_records=manifest_store.incomplete_trailing_records,
         recovered_trailing_manifest_records=manifest_store.recovered_trailing_records,
         recovery_incident_sha256=manifest_store.recovery_incident_sha256,
     )
 
 
-def manifest_audio_exists(entry: ManifestEntry) -> bool:
+def manifest_audio_exists(
+    entry: ManifestEntry,
+    recordings_dir: Optional[Path] = None,
+    *,
+    require_integrity_metadata: bool = False,
+) -> bool:
     path = Path(entry.local_audio_path) if entry.local_audio_path else None
     try:
-        return bool(path and path.is_file() and path.stat().st_size > 0)
+        if not path or path.is_symlink() or not path.is_file():
+            return False
+        if recordings_dir is not None:
+            path.resolve().relative_to(recordings_dir.resolve())
+        info = path.stat()
+        if info.st_size <= 0:
+            return False
+        if require_integrity_metadata and (
+            not entry.size_bytes
+            or not re.fullmatch(r"[0-9a-f]{64}", str(entry.checksum_sha256 or ""))
+        ):
+            return False
+        if entry.size_bytes is not None and info.st_size != entry.size_bytes:
+            return False
+        if entry.checksum_sha256 and file_sha256(path) != entry.checksum_sha256:
+            return False
+        return True
+    except ValueError:
+        return False
     except OSError:
         return False
 
 
-def manifest_assets_exist(entry: ManifestEntry) -> bool:
-    return manifest_audio_exists(entry) if entry.status == "downloaded" else (
-        entry.status != "multiple_recordings_needs_review" or len(entry.recording_paths) == len(entry_recording_ids(entry)) and all(Path(path).is_file() and Path(path).stat().st_size > 0 for path in entry.recording_paths))
+def manifest_assets_exist(
+    entry: ManifestEntry,
+    recordings_dir: Optional[Path] = None,
+    *,
+    require_integrity_metadata: bool = False,
+) -> bool:
+    if entry.status == "downloaded":
+        return manifest_audio_exists(
+            entry,
+            recordings_dir,
+            require_integrity_metadata=require_integrity_metadata,
+        )
+    if entry.status != "multiple_recordings_needs_review":
+        return True
+    if len(entry.recording_paths) != len(entry_recording_ids(entry)):
+        return False
+    if require_integrity_metadata and len(entry.recording_assets) != len(
+        entry.recording_paths
+    ):
+        return False
+    try:
+        for index, raw_path in enumerate(entry.recording_paths):
+            path = Path(raw_path)
+            if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
+                return False
+            if recordings_dir is not None:
+                path.resolve().relative_to(recordings_dir.resolve())
+            if require_integrity_metadata:
+                asset = entry.recording_assets[index]
+                if (
+                    str(asset.get("recording_id") or "")
+                    != entry_recording_ids(entry)[index]
+                    or str(asset.get("path") or "") != raw_path
+                    or not isinstance(asset.get("size_bytes"), int)
+                    or int(asset["size_bytes"]) != path.stat().st_size
+                    or not re.fullmatch(
+                        r"[0-9a-f]{64}", str(asset.get("checksum_sha256") or "")
+                    )
+                    or file_sha256(path) != asset.get("checksum_sha256")
+                ):
+                    return False
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def event_recording_ids(event: TelephonyCallEvent) -> tuple[str, ...]:
@@ -1130,11 +1387,18 @@ def event_recording_ids(event: TelephonyCallEvent) -> tuple[str, ...]:
 
 
 def entry_recording_ids(entry: Optional[ManifestEntry]) -> tuple[str, ...]:
-    return () if entry is None else entry.recording_ids or ((entry.recording_id,) if entry.recording_id else ())
+    if entry is None:
+        return ()
+    raw = entry.recording_ids or ((entry.recording_id,) if entry.recording_id else ())
+    return tuple(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))
 
 
 def merge_recording_ids(*groups: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for group in groups for item in group if item))
+
+
+def provider_evidence_sidecar(audio_path: Path) -> Path:
+    return audio_path.with_name(f"{audio_path.name}.provider_transcript.json")
 
 
 def recording_part_paths(target_path: Path, recording_ids: Sequence[str]) -> tuple[Path, ...]:
@@ -1154,8 +1418,12 @@ def manifest_entry_from_event(
     canonical_audio_path: Optional[str] = None,
     audio: Optional[AudioValidation] = None,
     recording_paths: Sequence[str] = (),
+    recording_assets: Sequence[Mapping[str, Any]] = (),
     error: Optional[str] = None,
+    remediation_code: Optional[str] = None,
     dry_run: bool = False,
+    host_id: Optional[str] = None,
+    recovery_state: Optional[str] = None,
 ) -> ManifestEntry:
     return ManifestEntry(
         schema_version=CAPTURE_MANIFEST_SCHEMA_VERSION,
@@ -1167,6 +1435,7 @@ def manifest_entry_from_event(
         recording_id=(event_recording_ids(event) or (None,))[0],
         recording_ids=event_recording_ids(event),
         recording_paths=tuple(recording_paths),
+        recording_assets=tuple(dict(value) for value in recording_assets),
         started_at=event.started_at.isoformat(),
         ended_at=event.ended_at.isoformat() if event.ended_at else None,
         direction=event.direction.value,
@@ -1184,7 +1453,10 @@ def manifest_entry_from_event(
         channels=audio.channels if audio else None,
         sample_rate=audio.sample_rate if audio else None,
         error=error,
+        remediation_code=remediation_code,
         dry_run=dry_run,
+        host_id=host_id,
+        recovery_state=recovery_state,
     )
 
 
@@ -1202,6 +1474,12 @@ def entry_from_json(data: Mapping[str, Any]) -> ManifestEntry:
     recording_ids = raw_recording_ids if isinstance(raw_recording_ids, (list, tuple)) and raw_recording_ids else [data.get("recording_id")]
     raw_recording_paths = data.get("recording_paths")
     recording_paths = raw_recording_paths if isinstance(raw_recording_paths, (list, tuple)) else ()
+    raw_recording_assets = data.get("recording_assets")
+    recording_assets = (
+        tuple(dict(item) for item in raw_recording_assets if isinstance(item, Mapping))
+        if isinstance(raw_recording_assets, (list, tuple))
+        else ()
+    )
     return ManifestEntry(
         schema_version=str(data.get("schema_version") or CAPTURE_MANIFEST_SCHEMA_VERSION),
         created_at=str(data.get("created_at") or ""),
@@ -1212,6 +1490,7 @@ def entry_from_json(data: Mapping[str, Any]) -> ManifestEntry:
         recording_id=optional_str(data.get("recording_id")),
         recording_ids=tuple(str(item).strip() for item in recording_ids if str(item or "").strip()),
         recording_paths=tuple(str(item).strip() for item in recording_paths if str(item or "").strip()),
+        recording_assets=recording_assets,
         started_at=str(data.get("started_at") or ""),
         ended_at=optional_str(data.get("ended_at")),
         direction=str(data.get("direction") or Direction.UNKNOWN.value),
@@ -1229,7 +1508,10 @@ def entry_from_json(data: Mapping[str, Any]) -> ManifestEntry:
         channels=optional_int(data.get("channels")),
         sample_rate=optional_int(data.get("sample_rate")),
         error=optional_str(data.get("error")),
+        remediation_code=optional_str(data.get("remediation_code")),
         dry_run=bool(data.get("dry_run", False)),
+        host_id=optional_str(data.get("host_id")),
+        recovery_state=optional_str(data.get("recovery_state")),
     )
 
 

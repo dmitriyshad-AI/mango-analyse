@@ -10,6 +10,12 @@ from typing import Any, Dict, Iterable, Optional
 from xml.sax.saxutils import escape
 
 from mango_mvp.models import CallRecord
+from mango_mvp.services.dialogue_contract import (
+    UNTRUSTED_FOLLOW_UP_REASON,
+    call_record_view,
+    guard_stored_analysis,
+    manager_claim_evidence_ru,
+)
 from mango_mvp.utils.filename_repair import (
     repair_filename_display,
     repair_manager_name,
@@ -31,6 +37,7 @@ CALLS_HEADERS = [
     "source_filename",
     "source_file",
     "history_summary",
+    "claim_evidence_ru",
     "parent_fio",
     "child_fio",
     "email",
@@ -223,7 +230,15 @@ def _mode_value(analysis: Dict[str, Any]) -> tuple[str, str, str]:
 
 
 def call_to_row(call: CallRecord, analysis: Dict[str, Any]) -> Dict[str, Any]:
-    blocks = _as_dict(analysis.get("structured_fields")) or _as_dict(analysis.get("crm_blocks"))
+    # Every caller, including legacy one-off exporters, gets the same stored
+    # analysis guard.  Keeping this only in ``build_call_rows`` left direct
+    # callers able to revive stale role-dependent conclusions.
+    analysis = guard_stored_analysis(call_record_view(call), analysis)
+    blocks = (
+        _as_dict(analysis.get("display_fields"))
+        or _as_dict(analysis.get("crm_blocks"))
+        or _as_dict(analysis.get("structured_fields"))
+    )
     people = _as_dict(blocks.get("people"))
     contacts = _as_dict(blocks.get("contacts"))
     student = _as_dict(blocks.get("student"))
@@ -256,16 +271,36 @@ def call_to_row(call: CallRecord, analysis: Dict[str, Any]) -> Dict[str, Any]:
     call_type = _clean_text(quality_flags.get("call_type"))
     needs_review = bool(analysis.get("needs_review") if analysis.get("needs_review") is not None else quality_flags.get("needs_review"))
     review_reasons = _join_unique(
-        _as_list(analysis.get("review_reasons")) + _as_list(quality_flags.get("review_reasons"))
+        # The fail-closed projection already carries one Russian sentence per
+        # reason; only a payload without it falls back to the stored codes.
+        _as_list(analysis.get("review_reasons_ru"))
+        or _as_list(analysis.get("review_reasons")) + _as_list(quality_flags.get("review_reasons"))
     )
-    recommended_followup_date, recommended_followup_reason = _recommend_followup(
-        started_at=call.started_at,
-        next_step_due_raw=next_step_due_raw,
-        next_step_action=next_step_action,
-        lead_priority=lead_priority,
-        sale_probability_pct=sale_probability_pct,
-        tags=tags,
-    )
+    if bool(quality_flags.get("role_attribution_untrusted")) or bool(
+        quality_flags.get("analysis_contract_invalid")
+    ):
+        # A follow-up date is a management instruction about a specific side of
+        # the call.  With the sides unproven there is nothing to schedule, and a
+        # default-rule date would look exactly like a confirmed agreement.
+        recommended_followup_date, recommended_followup_reason = (
+            "",
+            _clean_text(analysis.get("follow_up_reason"))
+            or UNTRUSTED_FOLLOW_UP_REASON,
+        )
+    elif next_step_action:
+        recommended_followup_date, recommended_followup_reason = _recommend_followup(
+            started_at=call.started_at,
+            next_step_due_raw=next_step_due_raw,
+            next_step_action=next_step_action,
+            lead_priority=lead_priority,
+            sale_probability_pct=sale_probability_pct,
+            tags=tags,
+        )
+    else:
+        recommended_followup_date, recommended_followup_reason = (
+            "",
+            "Следующий контакт не согласован: автоматическая дата не создаётся.",
+        )
     quality_mode, secondary_provider, secondary_backfill_status = _mode_value(analysis)
 
     return {
@@ -277,6 +312,7 @@ def call_to_row(call: CallRecord, analysis: Dict[str, Any]) -> Dict[str, Any]:
         "source_filename": repair_filename_display(_clean_text(call.source_filename)),
         "source_file": _clean_text(call.source_file),
         "history_summary": history_summary,
+        "claim_evidence_ru": manager_claim_evidence_ru(analysis),
         "parent_fio": _clean_text(people.get("parent_fio")),
         "child_fio": _clean_text(people.get("child_fio")),
         "email": _clean_text(contacts.get("email")),
@@ -501,7 +537,12 @@ def _write_workbook_xlsxwriter(
     if xlsxwriter is None:  # pragma: no cover - protected by caller
         raise RuntimeError("XlsxWriter is not installed")
 
-    with xlsxwriter.Workbook(workbook_path) as workbook:
+    # ``strings_to_formulas=False`` at the workbook level, and every text cell
+    # written with ``write_string``.  A manager name, a summary or a model
+    # answer that happens to start with ``=``, ``+``, ``-`` or ``@`` is data,
+    # not something Excel should execute — and the default XlsxWriter behaviour
+    # is to compile it into a formula.
+    with xlsxwriter.Workbook(workbook_path, {"strings_to_formulas": False}) as workbook:
         header_fmt = workbook.add_format(
             {
                 "bold": True,
@@ -522,7 +563,7 @@ def _write_workbook_xlsxwriter(
             worksheet.set_row(0, 24)
 
             for col_idx, header in enumerate(headers):
-                worksheet.write(0, col_idx, header, header_fmt)
+                worksheet.write_string(0, col_idx, header, header_fmt)
 
             for row_idx, row in enumerate(rows, start=1):
                 for col_idx, header in enumerate(headers):
@@ -537,9 +578,11 @@ def _write_workbook_xlsxwriter(
                         if math.isfinite(value):
                             worksheet.write_number(row_idx, col_idx, value, float_fmt)
                         else:
-                            worksheet.write(row_idx, col_idx, str(value), text_fmt)
+                            worksheet.write_string(row_idx, col_idx, str(value), text_fmt)
                     else:
-                        worksheet.write(row_idx, col_idx, _clean_text(value), text_fmt)
+                        worksheet.write_string(
+                            row_idx, col_idx, _clean_text(value), text_fmt
+                        )
 
             for col_idx, width in enumerate(_xlsxwriter_widths(headers, rows)):
                 worksheet.set_column(col_idx, col_idx, width)

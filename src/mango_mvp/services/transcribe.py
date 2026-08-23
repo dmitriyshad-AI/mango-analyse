@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 from collections import Counter
@@ -10,8 +11,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
+from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from openai import OpenAI
 from sqlalchemy import func, or_, select, text
@@ -20,6 +23,25 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+from mango_mvp.productization.mango_calls_service_contract import (
+    has_dual_asr_or_exception,
+)
+from mango_mvp.productization.owner_only_io import read_stable_regular_bytes
+from mango_mvp.quality.non_conversation import detect_non_conversation_signals
+from mango_mvp.services.controlled_call_scope import (
+    call_artifact_directory,
+    controlled_audio_input_path,
+    require_unique_controlled_call,
+    write_call_artifact_bytes,
+)
+from mango_mvp.services.dialogue_contract import (
+    DialogueContractError,
+    label_role as dialogue_label_role,
+    label_side as dialogue_label_side,
+    parse_line as parse_dialogue_line,
+    safe_error_text,
+)
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
@@ -67,6 +89,36 @@ ROLE_ASSIGN_LOW_INFO_TOKENS = {
     "ясно",
 }
 CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
+
+
+def release_mlx_free_cache() -> bool:
+    """Release only MLX's unused cache; never impose a hard cache limit."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return False
+    for owner in (mx, getattr(mx, "metal", None)):
+        clear = getattr(owner, "clear_cache", None) if owner is not None else None
+        if callable(clear):
+            clear()
+            return True
+    return False
+
+
+def run_with_mlx_cache_release(
+    action: Callable[[], Any],
+    *,
+    mlx_executed: bool,
+    cache_release_callback: Callable[[bool], None] | None = None,
+) -> Any:
+    """Run one source-file Whisper unit and clear free cache exactly once."""
+    try:
+        return action()
+    finally:
+        if mlx_executed:
+            released = release_mlx_free_cache()
+            if cache_release_callback is not None:
+                cache_release_callback(released)
 CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
 sandbox_mode = "read-only"
 service_tier = "flex"
@@ -158,7 +210,17 @@ CONFERENCE_RE = re.compile(
     re.I,
 )
 SECONDARY_BACKFILL_MAX_ATTEMPTS = 2
+SELECTIVE_GIGAAM_POLICY = "selective_non_conversation_v1"
+SELECTIVE_GIGAAM_MIN_WPM = 100.0
+SELECTIVE_GIGAAM_AUDIT_PERCENT = 10
+SELECTIVE_GIGAAM_POLICY_HASH = hashlib.sha256(
+    b"selective_non_conversation_v1:skip_only_force_non_conversation:shadow_wpm_100:sample_10"
+).hexdigest()
 TRANSCRIBE_MERGE_PROMPT_VERSION = "v2"
+
+
+class SecondaryAsrLeaseLost(RuntimeError):
+    pass
 
 
 class TranscribeService:
@@ -167,10 +229,39 @@ class TranscribeService:
         self._client: Optional[OpenAI] = None
         self._ollama_client_instance: Optional[OllamaClient] = None
         self._gigaam_model: Any = None
+        self._gigaam_runtime_configured = False
+        self._gigaam_batch_disabled = False
+        self._gigaam_chunk_heartbeat: Optional[Callable[[], None]] = None
+        self._provider_invocations: Counter[str] = Counter()
+        self._mlx_cache_release_attempts = 0
+        self._mlx_cache_release_successes = 0
+        self._gigaam_batch_attempts = 0
+        self._gigaam_batch_fallbacks = 0
         self._llm_cache = LLMResponseCache(
             enabled=settings.llm_cache_enabled,
             root_dir=settings.llm_cache_dir,
         )
+
+    def _record_mlx_cache_release(self, released: bool) -> None:
+        self._mlx_cache_release_attempts += 1
+        if released:
+            self._mlx_cache_release_successes += 1
+
+    def _reset_asr_runtime_receipt(self) -> None:
+        self._provider_invocations.clear()
+        self._mlx_cache_release_attempts = 0
+        self._mlx_cache_release_successes = 0
+        self._gigaam_batch_attempts = 0
+        self._gigaam_batch_fallbacks = 0
+
+    def _asr_runtime_receipt(self) -> Dict[str, Any]:
+        return {
+            "provider_invocations": dict(sorted(self._provider_invocations.items())),
+            "mlx_cache_release_attempts": self._mlx_cache_release_attempts,
+            "mlx_cache_release_successes": self._mlx_cache_release_successes,
+            "gigaam_batch_attempts": self._gigaam_batch_attempts,
+            "gigaam_batch_fallbacks": self._gigaam_batch_fallbacks,
+        }
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -183,7 +274,7 @@ class TranscribeService:
 
     @staticmethod
     def _pipeline_worker_id(prefix: str) -> str:
-        return f"{prefix}-{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+        return f"{prefix}-{os.getpid()}-{uuid.uuid4().hex}"
 
     def _claim_transcribe_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
         if limit <= 0:
@@ -191,9 +282,21 @@ class TranscribeService:
         now = self._utc_now()
         max_attempts = max(1, self._settings.transcribe_max_attempts)
         release_stale_pipeline_claims(session, self._settings, now)
+        scope = require_unique_controlled_call(session, self._settings)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {
+            "worker_id": worker_id,
+            "now": now,
+            "max_attempts": max_attempts,
+            "limit": int(limit),
+        }
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
-                """
+                f"""
                 UPDATE call_records
                    SET transcription_status = 'in_progress',
                        pipeline_stage = 'transcribe',
@@ -208,32 +311,29 @@ class TranscribeService:
                        AND transcribe_attempts < :max_attempts
                        AND (next_retry_at IS NULL OR next_retry_at <= :now)
                        AND pipeline_stage IS NULL
+                       {scope_sql}
                      ORDER BY id ASC
                      LIMIT :limit
                  )
                 """
             ),
-            {
-                "worker_id": worker_id,
-                "now": now,
-                "max_attempts": max_attempts,
-                "limit": int(limit),
-            },
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE transcription_status = 'in_progress'
                        AND pipeline_stage = 'transcribe'
                        AND pipeline_worker_id = :worker_id
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
@@ -251,35 +351,56 @@ class TranscribeService:
             return []
         now = self._utc_now()
         release_stale_pipeline_claims(session, self._settings, now)
-        done_calls = session.scalars(
+        scope = require_unique_controlled_call(session, self._settings)
+        done_query = (
             select(CallRecord)
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.pipeline_stage.is_(None))
             .order_by(CallRecord.id.asc())
-        ).all()
+        )
+        if scope:
+            done_query = done_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        done_calls = session.scalars(done_query).all()
 
         fresh_ids: list[int] = []
         retry_ids: list[int] = []
         for call in done_calls:
+            payload = self._safe_json_dict(call.transcript_variants_json)
+            updated_payload = self._apply_selective_gigaam_policy(call, payload)
+            if updated_payload != payload:
+                call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
+                session.add(call)
             state = self.secondary_backfill_state_from_payload(
-                self._safe_json_dict(call.transcript_variants_json),
+                updated_payload,
                 secondary_provider=secondary_provider,
             )
             if state == "fresh":
-                fresh_ids.append(call.id)
-                if len(fresh_ids) >= limit:
-                    break
+                if len(fresh_ids) < limit:
+                    fresh_ids.append(call.id)
             elif state == "retry" and len(retry_ids) < limit:
                 retry_ids.append(call.id)
+                if len(retry_ids) >= limit:
+                    break
 
-        candidate_ids = list(fresh_ids)
+        # A constant stream of fresh calls must not starve a partial GigaAM
+        # result forever. Finish the bounded retry first, then take new work.
+        candidate_ids = list(retry_ids[:limit])
         if len(candidate_ids) < limit:
-            candidate_ids.extend(retry_ids[: limit - len(candidate_ids)])
+            candidate_ids.extend(fresh_ids[: limit - len(candidate_ids)])
         if not candidate_ids:
+            session.commit()
             return []
 
         ids_sql = ",".join(str(int(item)) for item in candidate_ids)
+        scope_sql = (
+            " AND source_call_id = :controlled_source_call_id" if scope else ""
+        )
+        params: dict[str, Any] = {"worker_id": worker_id, "now": now}
+        if scope:
+            params["controlled_source_call_id"] = scope.source_call_id
         session.execute(
             text(
                 f"""
@@ -290,27 +411,172 @@ class TranscribeService:
                        updated_at = :now
                  WHERE id IN ({ids_sql})
                    AND pipeline_stage IS NULL
+                   {scope_sql}
                 """
             ),
-            {"worker_id": worker_id, "now": now},
+            params,
         )
         ids = [
             int(row[0])
             for row in session.execute(
                 text(
-                    """
+                    f"""
                     SELECT id
                       FROM call_records
                      WHERE pipeline_stage = 'backfill-second-asr'
                        AND pipeline_worker_id = :worker_id
+                       AND id IN ({ids_sql})
+                       {scope_sql}
                      ORDER BY id ASC
                     """
                 ),
-                {"worker_id": worker_id},
+                params,
             ).all()
         ]
         session.commit()
         return ids
+
+    @classmethod
+    def _apply_selective_gigaam_policy(
+        cls,
+        call: CallRecord,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if os.getenv("GIGAAM_POLICY", "all").strip().lower() != SELECTIVE_GIGAAM_POLICY:
+            return payload
+        existing = payload.get("secondary_asr_policy")
+        if isinstance(existing, dict) and existing.get("schema") == SELECTIVE_GIGAAM_POLICY:
+            return payload
+
+        mode = str(payload.get("mode") or "").strip()
+        blocks = ("manager", "client") if mode == "stereo" else ("full",)
+        primary_text = " ".join(
+            str((payload.get(key) or {}).get("variant_a") or "").strip()
+            for key in blocks
+            if isinstance(payload.get(key), dict)
+        ).strip()
+        duration_sec = float(call.duration_sec or 0.0)
+        words = len(WORD_RE.findall(primary_text))
+        wpm = words * 60.0 / duration_sec if duration_sec > 0 else 0.0
+        stable_key = str(call.source_call_id or call.source_filename or call.id or "")
+        bucket = int.from_bytes(hashlib.sha256(stable_key.encode()).digest()[:2], "big") % 100
+        audit_sample = bucket < SELECTIVE_GIGAAM_AUDIT_PERCENT
+        fail_open = not primary_text or duration_sec <= 0 or mode not in {"stereo", "mono_or_fallback"}
+        reasons: list[str] = []
+        should_skip = False
+        if fail_open:
+            reasons.append("invalid_primary_evidence")
+        else:
+            try:
+                signals = detect_non_conversation_signals(
+                    transcript_text=(
+                        f"Менеджер: {str((payload.get('manager') or {}).get('variant_a') or '').strip()}\n"
+                        f"Клиент: {str((payload.get('client') or {}).get('variant_a') or '').strip()}"
+                        if mode == "stereo"
+                        else primary_text
+                    ),
+                    duration_sec=duration_sec,
+                )
+                should_skip = bool(signals.should_force_non_conversation) and not audit_sample
+                reasons.extend(str(item) for item in signals.reason_codes)
+                reasons.append(
+                    "high_confidence_non_conversation"
+                    if signals.should_force_non_conversation
+                    else "gigaam_required_for_contentful_or_ambiguous_call"
+                )
+            except Exception:
+                reasons.append("policy_evaluator_error")
+        if wpm < SELECTIVE_GIGAAM_MIN_WPM:
+            reasons.append("shadow_low_primary_wpm")
+        if audit_sample:
+            reasons.append("shadow_quality_sample")
+            if not fail_open:
+                reasons.append("quality_sample_requires_gigaam")
+
+        evaluated_at = cls._utc_now().isoformat()
+        updated = dict(payload)
+        updated["secondary_asr_policy"] = {
+            "schema": SELECTIVE_GIGAAM_POLICY,
+            "mode": "active_high_confidence_non_conversation_only",
+            "policy_hash": SELECTIVE_GIGAAM_POLICY_HASH,
+            "decision": "skipped" if should_skip else "required",
+            "reason_codes": list(dict.fromkeys(reasons)),
+            "primary_words": words,
+            "duration_sec": round(duration_sec, 3),
+            "primary_wpm": round(wpm, 3),
+            "shadow_low_primary_wpm": wpm < SELECTIVE_GIGAAM_MIN_WPM,
+            "shadow_quality_sample": audit_sample,
+            "evaluated_at": evaluated_at,
+        }
+        if should_skip:
+            updated["dual_asr_exception"] = {
+                "approved": True,
+                "reason": f"{SELECTIVE_GIGAAM_POLICY}:high_confidence_non_conversation",
+                "approved_by": f"owner_policy:{SELECTIVE_GIGAAM_POLICY}",
+                "approved_at": evaluated_at,
+            }
+        else:
+            existing_exception = updated.get("dual_asr_exception")
+            if isinstance(existing_exception, dict):
+                approved_by = str(existing_exception.get("approved_by") or "")
+                reason = str(existing_exception.get("reason") or "")
+                is_old_selective_exception = (
+                    approved_by.startswith("owner_policy:selective_")
+                    or reason.startswith("selective_rescue_v1:")
+                    or reason.startswith("selective_non_conversation_v1:")
+                )
+                if is_old_selective_exception:
+                    updated.pop("dual_asr_exception", None)
+        return updated
+
+    @staticmethod
+    def _begin_secondary_commit_guard(
+        session: Session,
+        *,
+        call_id: int,
+        worker_id: str,
+    ) -> None:
+        """Hold the DB write lock while the owned result is finalized."""
+
+        bind = session.get_bind()
+        if bind.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+        owned = session.scalar(
+            select(CallRecord.id)
+            .where(CallRecord.id == int(call_id))
+            .where(CallRecord.pipeline_stage == "backfill-second-asr")
+            .where(CallRecord.pipeline_worker_id == worker_id)
+            .with_for_update()
+        )
+        if owned is None:
+            session.rollback()
+            raise SecondaryAsrLeaseLost("secondary_asr_lease_lost")
+
+    @staticmethod
+    def _renew_secondary_claim(
+        session: Session,
+        *,
+        call_id: int,
+        worker_id: str,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        result = session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET pipeline_claimed_at = :now,
+                       updated_at = :now
+                 WHERE id = :call_id
+                   AND pipeline_stage = 'backfill-second-asr'
+                   AND pipeline_worker_id = :worker_id
+                """
+            ),
+            {"now": now, "call_id": int(call_id), "worker_id": worker_id},
+        )
+        if result.rowcount != 1:
+            session.rollback()
+            raise SecondaryAsrLeaseLost("secondary_asr_lease_lost")
+        session.commit()
 
     @staticmethod
     def _safe_json_dict(raw: Any) -> Dict[str, Any]:
@@ -360,6 +626,10 @@ class TranscribeService:
     ) -> str:
         if not payload:
             return "not_needed"
+        if has_dual_asr_or_exception(
+            {"transcript_variants_json": json.dumps(payload, ensure_ascii=False)}
+        ):
+            return "not_needed"
 
         meta = cls._secondary_backfill_meta(payload)
         if (
@@ -367,6 +637,12 @@ class TranscribeService:
             and bool(meta.get("exhausted"))
         ):
             return "exhausted"
+        policy = payload.get("secondary_asr_policy")
+        policy_requires_secondary = bool(
+            isinstance(policy, dict)
+            and policy.get("schema") == SELECTIVE_GIGAAM_POLICY
+            and policy.get("decision") == "required"
+        )
 
         mode = str(payload.get("mode") or "").strip()
         cached_secondary = str(payload.get("secondary_provider") or "").strip()
@@ -376,7 +652,10 @@ class TranscribeService:
             block = payload.get(slot)
             if not isinstance(block, dict):
                 return False
-            return bool(str(block.get("variant_a") or "").strip())
+            primary_text = block.get("variant_a")
+            return bool(
+                isinstance(primary_text, str) and primary_text.strip()
+            )
 
         def _slot_missing(slot: str) -> bool:
             if not _slot_has_primary(slot):
@@ -384,19 +663,32 @@ class TranscribeService:
             block = payload.get(slot)
             if not isinstance(block, dict):
                 return False
-            secondary_text = str(block.get("variant_b") or "").strip()
             if not secondary_matches:
                 return True
-            return not bool(secondary_text)
+            secondary_text = block.get("variant_b")
+            if secondary_text is None:
+                return True
+            if not isinstance(secondary_text, str):
+                return False
+            return not bool(secondary_text.strip())
 
         needs_backfill = False
         if mode == "stereo":
-            if _slot_has_primary("manager") and _slot_has_primary("client"):
+            manager_has_primary = _slot_has_primary("manager")
+            client_has_primary = _slot_has_primary("client")
+            if manager_has_primary and client_has_primary:
                 needs_backfill = _slot_missing("manager") or _slot_missing("client")
+            elif manager_has_primary != client_has_primary and not secondary_matches:
+                # One silent/failed Whisper channel is exactly a second-ASR
+                # rescue candidate; do not let the pre-worker topology gate
+                # strand it as not_needed.
+                needs_backfill = True
         elif mode == "mono_or_fallback":
             if _slot_has_primary("full"):
                 needs_backfill = _slot_missing("full")
         if not needs_backfill:
+            if policy_requires_secondary:
+                return "retry" if secondary_matches else "fresh"
             return "not_needed"
         if secondary_matches:
             return "retry"
@@ -420,6 +712,45 @@ class TranscribeService:
             "exhausted": bool(exhausted),
             "last_error": error.strip(),
             "last_attempt_utc": self._utc_now().isoformat(),
+        }
+        return updated
+
+    def _apply_exhausted_secondary_exception(
+        self,
+        payload: Dict[str, Any],
+        *,
+        secondary_provider: str,
+        fallback_text: str = "",
+    ) -> Dict[str, Any]:
+        """Allow the primary transcript to continue, explicitly marked for review."""
+
+        mode = str(payload.get("mode") or "").strip()
+        required_slots = (
+            ("manager", "client") if mode == "stereo"
+            else ("full",) if mode == "mono_or_fallback"
+            else ()
+        )
+        def has_usable_text(slot: str) -> bool:
+            block = payload.get(slot)
+            return bool(
+                isinstance(block, Mapping)
+                and any(
+                    str(block.get(key) or "").strip()
+                    for key in ("variant_a", "variant_b")
+                )
+            )
+
+        if not required_slots or not (
+            any(has_usable_text(slot) for slot in required_slots)
+            or fallback_text.strip()
+        ):
+            return payload
+        updated = dict(payload)
+        updated["dual_asr_exception"] = {
+            "approved": True,
+            "reason": f"{secondary_provider}_exhausted_available_asr_requires_review",
+            "approved_by": "service_policy:secondary_asr_retry_v1",
+            "approved_at": self._utc_now().isoformat(),
         }
         return updated
 
@@ -573,6 +904,24 @@ class TranscribeService:
     def _get_gigaam_model(self) -> Any:
         if self._gigaam_model is not None:
             return self._gigaam_model
+        batch_size = self._gigaam_batch_size()
+        if batch_size > 1 and package_version("gigaam") != "0.2.0":
+            raise RuntimeError("GIGAAM_BATCH_SIZE > 1 requires pinned gigaam 0.2.0")
+        download_root = os.getenv("GIGAAM_DOWNLOAD_ROOT", "").strip()
+        if batch_size > 1:
+            model_path = Path(download_root) / f"{self._settings.gigaam_model}.ckpt"
+            if not download_root or not model_path.is_file():
+                raise RuntimeError("pinned local GigaAM model is required for batch mode")
+        if batch_size > 1 and not self._gigaam_runtime_configured:
+            import torch
+
+            threads = int(os.getenv("GIGAAM_TORCH_NUM_THREADS", "8"))
+            interop = int(os.getenv("GIGAAM_TORCH_INTEROP_THREADS", "1"))
+            if not 1 <= threads <= 16 or not 1 <= interop <= 4:
+                raise RuntimeError("invalid GigaAM torch thread configuration")
+            torch.set_num_interop_threads(interop)
+            torch.set_num_threads(threads)
+            self._gigaam_runtime_configured = True
         try:
             from gigaam import load_model
         except ImportError as exc:
@@ -585,8 +934,70 @@ class TranscribeService:
             self._settings.gigaam_model,
             device=self._settings.gigaam_device,
             fp16_encoder=False,
+            download_root=download_root or None,
         )
         return self._gigaam_model
+
+    @staticmethod
+    def _gigaam_batch_size() -> int:
+        try:
+            batch_size = int(os.getenv("GIGAAM_BATCH_SIZE", "1"))
+        except ValueError as exc:
+            raise RuntimeError("GIGAAM_BATCH_SIZE must be an integer") from exc
+        if not 1 <= batch_size <= 8:
+            raise RuntimeError("GIGAAM_BATCH_SIZE must be between 1 and 8")
+        return batch_size
+
+    def _transcribe_gigaam_chunks(
+        self,
+        model: Any,
+        chunks: list[Path],
+    ) -> list[str]:
+        batch_size = self._gigaam_batch_size()
+        texts: list[str] = []
+        for offset in range(0, len(chunks), batch_size):
+            group = chunks[offset : offset + batch_size]
+            if self._gigaam_chunk_heartbeat is not None:
+                self._gigaam_chunk_heartbeat()
+            if batch_size == 1 or self._gigaam_batch_disabled:
+                group_texts = [str(model.transcribe(str(chunk))) for chunk in group]
+            else:
+                self._gigaam_batch_attempts += 1
+                try:
+                    group_texts = self._decode_gigaam_batch(model, group)
+                except SecondaryAsrLeaseLost:
+                    raise
+                except Exception:
+                    self._gigaam_batch_disabled = True
+                    self._gigaam_batch_fallbacks += 1
+                    group_texts = []
+                if not group_texts:
+                    group_texts = [str(model.transcribe(str(chunk))) for chunk in group]
+            if self._gigaam_chunk_heartbeat is not None:
+                self._gigaam_chunk_heartbeat()
+            texts.extend(group_texts)
+        return texts
+
+    @staticmethod
+    def _decode_gigaam_batch(model: Any, group: list[Path]) -> list[str]:
+        import torch
+        from gigaam import load_audio
+        from torch.nn.utils.rnn import pad_sequence
+
+        waves = [load_audio(str(chunk)) for chunk in group]
+        lengths = torch.tensor(
+            [wave.numel() for wave in waves], dtype=torch.long, device=model._device
+        )
+        padded = pad_sequence(waves, batch_first=True).to(
+            device=model._device, dtype=model._dtype
+        )
+        with torch.inference_mode():
+            encoded, encoded_len = model.forward(padded, lengths)
+            decoded = model._decode(encoded, encoded_len, lengths, False)
+        result = [str(item[0]) for item in decoded]
+        if len(result) != len(group):
+            raise RuntimeError("GigaAM batch result count mismatch")
+        return result
 
     @staticmethod
     def _parse_codex_tokens_used(stderr: str) -> int | None:
@@ -844,46 +1255,22 @@ class TranscribeService:
             for idx, (speaker, text) in enumerate(turns)
         ]
 
-    @staticmethod
-    def _timecode_to_seconds(token: str) -> float:
-        raw = (token or "").strip()
-        if raw.startswith("~"):
-            raw = raw[1:]
-        parts = raw.split(":")
-        try:
-            if len(parts) == 2:
-                minutes = int(parts[0])
-                seconds = float(parts[1])
-                return float(minutes * 60) + seconds
-            if len(parts) == 3:
-                hours = int(parts[0])
-                minutes = int(parts[1])
-                seconds = float(parts[2])
-                return float(hours * 3600 + minutes * 60) + seconds
-        except (TypeError, ValueError):
-            return 0.0
-        return 0.0
-
     def _parse_dialogue_line(self, line: str) -> Optional[Dict[str, Any]]:
-        match = re.match(r"^\[(?P<time>[^\]]+)\]\s+(?P<speaker>[^:]+):\s*(?P<text>.*)$", line.strip())
-        if not match:
+        try:
+            parsed = parse_dialogue_line(line)
+        except DialogueContractError:
             return None
-        speaker = match.group("speaker").strip()
-        text = match.group("text").strip()
-        if speaker.startswith("Менеджер"):
-            role = "manager"
-        elif speaker == "Клиент":
-            role = "client"
-        else:
-            role = "other"
+        speaker = str(parsed["label"])
+        label_kind = dialogue_label_role(speaker) or dialogue_label_side(speaker)
+        role = label_kind if label_kind in {"manager", "client"} else "other"
         return {
-            "timecode": match.group("time"),
-            "start": self._timecode_to_seconds(match.group("time")),
-            "approximate": match.group("time").startswith("~"),
+            "timecode": str(parsed["timecode"])[1:-1],
+            "start": float(parsed["start_sec"]),
+            "approximate": bool(parsed["approximate"]),
             "speaker": speaker,
             "role": role,
-            "text": text,
-            "line": line.strip(),
+            "text": str(parsed["text"]),
+            "line": str(parsed["raw_line"]),
         }
 
     def _role_text_fit_score(self, role: str, text: str) -> float:
@@ -2178,7 +2565,7 @@ class TranscribeService:
                 try:
                     llm_result = self._assign_roles_with_openai(turns, manager_name)
                 except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"mono_role_assign: openai_failed: {exc}")
+                    warnings.append(safe_error_text("mono_role_assign_openai", exc))
             else:
                 warnings.append(
                     "mono_role_assign: OPENAI_API_KEY missing for openai_selective"
@@ -2187,12 +2574,12 @@ class TranscribeService:
             try:
                 llm_result = self._assign_roles_with_ollama(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"mono_role_assign: ollama_failed: {exc}")
+                warnings.append(safe_error_text("mono_role_assign_ollama", exc))
         elif mode == "codex_selective":
             try:
                 llm_result = self._assign_roles_with_codex(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"mono_role_assign: codex_failed: {exc}")
+                warnings.append(safe_error_text("mono_role_assign_codex", exc))
 
         if llm_result and mode == "codex_selective":
             llm_result = self._apply_low_info_role_filter(
@@ -2568,7 +2955,7 @@ class TranscribeService:
                     "selection": choice,
                     "confidence": 0.6,
                     "provider": "rule_fallback",
-                    "notes": f"ollama_merge_failed: {exc}",
+                    "notes": "ollama_merge_failed | " + safe_error_text("ollama_merge", exc),
                     "suspicious_drops": suspicious_drops,
                     "similarity": similarity,
                 }
@@ -2594,7 +2981,7 @@ class TranscribeService:
                     "selection": choice,
                     "confidence": 0.6,
                     "provider": "rule_fallback",
-                    "notes": f"codex_cli_merge_failed: {exc}",
+                    "notes": "codex_cli_merge_failed | " + safe_error_text("codex_cli_merge", exc),
                     "suspicious_drops": suspicious_drops,
                     "similarity": similarity,
                 }
@@ -2621,7 +3008,7 @@ class TranscribeService:
                 "selection": choice,
                 "confidence": 0.6,
                 "provider": "rule_fallback",
-                "notes": f"openai_merge_failed: {exc}",
+                "notes": "openai_merge_failed | " + safe_error_text("openai_merge", exc),
                 "suspicious_drops": suspicious_drops,
                 "similarity": similarity,
             }
@@ -2629,8 +3016,10 @@ class TranscribeService:
     def _try_transcribe_file_with_meta(self, path: Path, provider: str) -> Dict[str, Any]:
         try:
             result = self._transcribe_file_with_meta(path, provider=provider)
+        except SecondaryAsrLeaseLost:
+            raise
         except Exception as exc:  # noqa: BLE001
-            return {"text": "", "segments": None, "error": str(exc)}
+            return {"text": "", "segments": None, "error": safe_error_text("gigaam", exc)}
         text = str(result.get("text", "")).strip()
         segments = result.get("segments")
         return {
@@ -2674,8 +3063,9 @@ class TranscribeService:
                 if not chunks:
                     raise RuntimeError("gigaam chunking produced no chunks")
 
-                for idx, chunk in enumerate(chunks):
-                    chunk_text = str(model.transcribe(str(chunk))).strip()
+                chunk_texts = self._transcribe_gigaam_chunks(model, chunks)
+                for idx, chunk_text in enumerate(chunk_texts):
+                    chunk_text = chunk_text.strip()
                     if not chunk_text:
                         continue
                     normalized_text = " ".join(chunk_text.split())
@@ -2710,7 +3100,10 @@ class TranscribeService:
                 result = subprocess.run(cmd, capture_output=True, text=True, check=False)
                 if result.returncode != 0:
                     raise RuntimeError(f"gigaam transcode failed: {result.stderr.strip()}")
-                chunk_text = str(model.transcribe(str(converted))).strip()
+                chunk_text = self._transcribe_gigaam_chunks(
+                    model,
+                    [converted],
+                )[0].strip()
                 if chunk_text:
                     normalized_text = " ".join(chunk_text.split())
                     parts.append(normalized_text)
@@ -2765,17 +3158,30 @@ class TranscribeService:
                 f"{full_text}\n"
             )
 
-        target_dir = Path(export_dir) / source_path.parent.name
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = call_artifact_directory(
+            self._settings,
+            export_dir=Path(export_dir),
+            source_file=source_path,
+            source_call_id=call.source_call_id,
+        )
         target_path = target_dir / f"{source_path.stem}_text.txt"
-        target_path.write_text(body, encoding="utf-8")
+        write_call_artifact_bytes(
+            self._settings,
+            target_path,
+            body.encode("utf-8"),
+        )
 
         variants_json = result.get("transcript_variants_json")
         if isinstance(variants_json, str) and variants_json.strip():
             variants_path = target_dir / f"{source_path.stem}_variants.json"
-            variants_path.write_text(variants_json, encoding="utf-8")
+            write_call_artifact_bytes(
+                self._settings,
+                variants_path,
+                variants_json.encode("utf-8"),
+            )
 
     def _transcribe_file_with_meta(self, path: Path, provider: str) -> Dict[str, Any]:
+        self._provider_invocations[provider] += 1
         if provider == "mock":
             return {"text": f"[mock transcript for {path.name}]", "segments": None}
         if provider == "gigaam":
@@ -2798,6 +3204,10 @@ class TranscribeService:
             try:
                 result = mlx_whisper.transcribe(str(path), **kwargs)
             except TypeError:
+                if os.getenv("MANGO_STRICT_ASR_RUNTIME", "0").strip() == "1":
+                    raise RuntimeError(
+                        "strict MLX runtime rejected an incompatible transcribe signature"
+                    )
                 # Keep compatibility with older mlx-whisper argument signatures.
                 kwargs.pop("language", None)
                 kwargs.pop("word_timestamps", None)
@@ -2824,8 +3234,22 @@ class TranscribeService:
             raise RuntimeError("OpenAI transcription returned empty text")
         return {"text": text, "segments": None}
 
+    @staticmethod
+    def _provider_role_evidence(call: CallRecord) -> Optional[Dict[str, Any]]:
+        try:
+            return TranscribeService._safe_json_dict(read_stable_regular_bytes(provider_evidence_sidecar(
+                Path(str(call.source_file or ""))), label="provider_role_evidence", owner_only_mode=0o600).decode("utf-8"))
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            return None
+
     def _transcribe_call(self, call: CallRecord) -> Dict[str, Any]:
-        path = Path(call.source_file)
+        provider_evidence = self._provider_role_evidence(call)
+        path = controlled_audio_input_path(
+            self._settings,
+            record_id=int(call.id or 0),
+            source_call_id=call.source_call_id,
+            source_file=Path(call.source_file),
+        )
         primary_provider = self._settings.transcribe_provider
         secondary_provider = self._settings.secondary_transcribe_provider
         warnings: list[str] = []
@@ -2844,23 +3268,46 @@ class TranscribeService:
             if split:
                 left, right, temp_dir = split
                 try:
-                    manager_primary = self._cached_variant_candidate(
+                    manager_primary_cached = self._cached_variant_candidate(
                         call,
                         slot="manager",
                         provider=primary_provider,
                         primary_provider=primary_provider,
                         physical_channel="left",
-                    ) or self._try_transcribe_file_with_meta(
-                        left, provider=primary_provider
                     )
-                    client_primary = self._cached_variant_candidate(
+                    client_primary_cached = self._cached_variant_candidate(
                         call,
                         slot="client",
                         provider=primary_provider,
                         primary_provider=primary_provider,
                         physical_channel="right",
-                    ) or self._try_transcribe_file_with_meta(
-                        right, provider=primary_provider
+                    )
+                    primary_mlx_executed = bool(
+                        primary_provider == "mlx"
+                        and (
+                            not manager_primary_cached
+                            or not client_primary_cached
+                        )
+                    )
+                    def primary_stereo_pair() -> tuple[Dict[str, Any], Dict[str, Any]]:
+                        manager_primary = (
+                            manager_primary_cached
+                            or self._try_transcribe_file_with_meta(
+                                left, provider=primary_provider
+                            )
+                        )
+                        client_primary = (
+                            client_primary_cached
+                            or self._try_transcribe_file_with_meta(
+                                right, provider=primary_provider
+                            )
+                        )
+                        return manager_primary, client_primary
+
+                    manager_primary, client_primary = run_with_mlx_cache_release(
+                        primary_stereo_pair,
+                        mlx_executed=primary_mlx_executed,
+                        cache_release_callback=self._record_mlx_cache_release,
                     )
                     manager_secondary: Optional[Dict[str, Any]] = None
                     client_secondary: Optional[Dict[str, Any]] = None
@@ -3068,15 +3515,21 @@ class TranscribeService:
                         if rebuilt_manager and rebuilt_client:
                             manager_text = rebuilt_manager
                             client_text = rebuilt_client
-                        if role_mapping["manager_quality_allowed"]:
-                            combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
-                            output_manager, output_client = manager_text, client_text
-                        else:
-                            dialogue_lines = self._neutralize_role_lines(
-                                dialogue_lines, manager_channel
-                            )
-                            combined = f"CHANNEL_LEFT:\n{manager_text}\n\nCHANNEL_RIGHT:\n{client_text}"
-                            output_manager = output_client = None
+                        # ТЗ-01/ТЗ-02 R1: the stored dialogue always names the
+                        # *physical* track, never a role.  The old heuristic
+                        # (manager/client whenever ``manager_quality_allowed``)
+                        # made trusted unreachable in practice: the role guard
+                        # requires proven provider evidence, and a line that
+                        # already claims "Менеджер" carries no physical side to
+                        # bind that evidence to.  The role texts below stay as
+                        # raw per-side text inside the variants only.  The legacy
+                        # role columns stay empty because older consumers can read
+                        # them without applying the dialogue trust contract.
+                        dialogue_lines = self._neutralize_role_lines(
+                            dialogue_lines, manager_channel
+                        )
+                        combined = f"CHANNEL_LEFT:\n{manager_text}\n\nCHANNEL_RIGHT:\n{client_text}"
+                        output_manager = output_client = None
                         variants_payload = {
                             "mode": "stereo",
                             "dialogue_lines": dialogue_lines,
@@ -3136,6 +3589,8 @@ class TranscribeService:
                             },
                             "warnings": warnings,
                         }
+                        if provider_evidence is not None:
+                            variants_payload["provider_role_evidence"] = provider_evidence
                         return {
                             "transcript_manager": output_manager,
                             "transcript_client": output_client,
@@ -3146,12 +3601,18 @@ class TranscribeService:
                             ),
                         }
 
-        full_primary = self._cached_variant_candidate(
+        full_primary_cached = self._cached_variant_candidate(
             call,
             slot="full",
             provider=primary_provider,
             primary_provider=primary_provider,
-        ) or self._try_transcribe_file_with_meta(path, provider=primary_provider)
+        )
+        full_primary = run_with_mlx_cache_release(
+            lambda: full_primary_cached
+            or self._try_transcribe_file_with_meta(path, provider=primary_provider),
+            mlx_executed=bool(primary_provider == "mlx" and not full_primary_cached),
+            cache_release_callback=self._record_mlx_cache_release,
+        )
         full_primary_text = str(full_primary["text"]).strip()
         full_secondary_text = ""
         full_secondary: Optional[Dict[str, Any]] = None
@@ -3196,27 +3657,14 @@ class TranscribeService:
         dialogue_lines = self._build_mono_dialogue_lines_from_turns(
             mono_turns, "Спикер (не определен)"
         )
-        manager_name = self._extract_manager_name_from_filename(call.source_filename)
         role_assignment = None
-        if stereo_fallback_mapping is None:
-            role_assignment = self._assign_roles_for_mono(
-                mono_turns,
-                manager_name=manager_name,
-                warnings=warnings,
-            )
-        else:
+        if stereo_fallback_mapping is not None:
             warnings.append("role_mapping: blocked_after_stereo_fallback")
+        elif (self._settings.mono_role_assignment_mode or "off").strip().lower() != "off":
+            warnings.append("mono_role_assign: disabled_without_provider_evidence")
         transcript_manager: Optional[str] = None
         transcript_client: Optional[str] = None
         transcript_text = full_text
-        if role_assignment:
-            transcript_manager = str(role_assignment.get("manager_text") or "").strip()
-            transcript_client = str(role_assignment.get("client_text") or "").strip()
-            if transcript_manager and transcript_client:
-                dialogue_lines = role_assignment.get("dialogue_lines") or dialogue_lines
-                transcript_text = (
-                    f"MANAGER:\n{transcript_manager}\n\nCLIENT:\n{transcript_client}"
-                )
         artifact_filter = self._drop_artifact_only_lines(dialogue_lines)
         dropped_artifacts = int(artifact_filter.get("dropped", 0) or 0)
         if dropped_artifacts > 0:
@@ -3225,15 +3673,9 @@ class TranscribeService:
                 "dialogue_artifact_filter: dropped_lines="
                 f"{dropped_artifacts}"
             )
-            rebuilt_manager, rebuilt_client = self._rebuild_role_texts_from_dialogue_lines(
-                dialogue_lines
-            )
-            if rebuilt_manager and rebuilt_client:
-                transcript_manager = rebuilt_manager
-                transcript_client = rebuilt_client
-                transcript_text = (
-                    f"MANAGER:\n{transcript_manager}\n\nCLIENT:\n{transcript_client}"
-                )
+            # The mono dialogue carries a neutral speaker now, so rebuilding the
+            # per-role texts from it could only ever return nothing.  The branch
+            # that did so is gone rather than left as a no-op nobody can read.
         mono_role_mapping = stereo_fallback_mapping or {
             "status": "unverified_mono_or_legacy",
             "confirmed": False,
@@ -3273,6 +3715,8 @@ class TranscribeService:
             },
             "warnings": warnings,
         }
+        if provider_evidence is not None:
+            variants_payload["provider_role_evidence"] = provider_evidence
         return {
             "transcript_manager": transcript_manager,
             "transcript_client": transcript_client,
@@ -3282,7 +3726,12 @@ class TranscribeService:
         }
 
     def _backfill_secondary_only(self, call: CallRecord, *, secondary_provider: str) -> Dict[str, Any]:
-        path = Path(call.source_file)
+        path = controlled_audio_input_path(
+            self._settings,
+            record_id=int(call.id or 0),
+            source_call_id=call.source_call_id,
+            source_file=Path(call.source_file),
+        )
         payload = self._safe_json_dict(call.transcript_variants_json)
         if not payload:
             raise RuntimeError("secondary backfill requires transcript_variants_json payload")
@@ -3343,13 +3792,6 @@ class TranscribeService:
                 )
             updated_payload["manager"] = manager_block
             updated_payload["client"] = client_block
-            role_mapping = dict(updated_payload.get("role_mapping") or {})
-            role_mapping.update(
-                status="unverified_after_secondary_backfill",
-                confirmed=False,
-                manager_quality_allowed=False,
-            )
-            updated_payload["role_mapping"] = role_mapping
         elif mode == "mono_or_fallback":
             full = payload.get("full")
             if not isinstance(full, dict):
@@ -3371,8 +3813,46 @@ class TranscribeService:
         else:
             raise RuntimeError(f"secondary backfill does not support payload mode={mode or 'empty'}")
 
+        updated_payload["secondary_provider"] = secondary_provider
+        updated_payload["warnings"] = self._merge_warning_lists(
+            payload.get("warnings"), warnings
+        )
+        complete = all(
+            str((updated_payload.get(slot) or {}).get("variant_b") or "").strip()
+            for slot in (("manager", "client") if mode == "stereo" else ("full",))
+        )
+        if complete:
+            configured_secondary = (
+                self._settings.secondary_transcribe_provider or ""
+            ).strip().lower()
+            primary = (self._settings.transcribe_provider or "").strip().lower()
+            if not self._settings.dual_transcribe_enabled or configured_secondary != secondary_provider or primary == secondary_provider:
+                raise RuntimeError("secondary backfill finalization requires matching dual-ASR settings")
+            original_variants = call.transcript_variants_json
+            call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
+            try:
+                finalized = self._transcribe_call(call)
+            finally:
+                call.transcript_variants_json = original_variants
+            finalized_payload = self._safe_json_dict(finalized.get("transcript_variants_json"))
+            if "secondary_asr_policy" in updated_payload:
+                finalized_payload["secondary_asr_policy"] = updated_payload["secondary_asr_policy"]
+                finalized["transcript_variants_json"] = json.dumps(
+                    finalized_payload,
+                    ensure_ascii=False,
+                )
+            finalized["secondary_finalized"] = True
+            return finalized
+
         if mode == "stereo":
             manager_channel = str(manager.get("physical_channel") or "left")
+            role_mapping = dict(updated_payload.get("role_mapping") or {})
+            role_mapping.update(
+                status="unverified_after_secondary_backfill",
+                confirmed=False,
+                manager_quality_allowed=False,
+            )
+            updated_payload["role_mapping"] = role_mapping
             updated_payload["dialogue_lines"] = self._neutralize_role_lines(
                 list(updated_payload.get("dialogue_lines") or []), manager_channel
             )
@@ -3389,11 +3869,6 @@ class TranscribeService:
                 call.transcript_client,
                 call.transcript_text,
             )
-        updated_payload["secondary_provider"] = secondary_provider
-        updated_payload["warnings"] = self._merge_warning_lists(
-            payload.get("warnings"),
-            warnings,
-        )
         return {
             "transcript_manager": output_manager,
             "transcript_client": output_client,
@@ -3420,7 +3895,8 @@ class TranscribeService:
         session: Session,
         limit: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
+        self._reset_asr_runtime_receipt()
         primary_provider = (self._settings.transcribe_provider or "").strip().lower()
         secondary_provider = (self._settings.secondary_transcribe_provider or "").strip().lower()
         if not secondary_provider:
@@ -3430,6 +3906,7 @@ class TranscribeService:
                 "failed": 0,
                 "scanned_done": 0,
                 "skipped_config": 1,
+                "runtime_receipt": self._asr_runtime_receipt(),
             }
         if secondary_provider == primary_provider:
             return {
@@ -3438,12 +3915,17 @@ class TranscribeService:
                 "failed": 0,
                 "scanned_done": 0,
                 "skipped_config": 1,
+                "runtime_receipt": self._asr_runtime_receipt(),
             }
 
         claim_worker_id = self._pipeline_worker_id("bf")
+        policy = os.getenv("GIGAAM_POLICY", "all").strip().lower()
+        effective_limit = min(limit, 1) if policy == SELECTIVE_GIGAAM_POLICY else limit
         candidate_ids = self._claim_secondary_backfill_batch(
             session,
-            limit=limit,
+            # The permanent selective worker owns one long RNNT call at a time;
+            # default/controlled CLI semantics keep the caller's requested limit.
+            limit=effective_limit,
             worker_id=claim_worker_id,
             secondary_provider=secondary_provider,
         )
@@ -3453,13 +3935,18 @@ class TranscribeService:
             .order_by(CallRecord.id.asc())
         ).all() if candidate_ids else []
 
-        scanned_done = 0
-        scanned_done = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.dead_letter_stage.is_(None))
-                .where(CallRecord.transcription_status == "done")
+        scope = require_unique_controlled_call(session, self._settings)
+        scanned_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status == "done")
+        )
+        if scope:
+            scanned_query = scanned_query.where(
+                CallRecord.source_call_id == scope.source_call_id
             )
+        scanned_done = int(
+            session.scalar(scanned_query)
             or 0
         )
 
@@ -3476,6 +3963,15 @@ class TranscribeService:
             call.transcript_text = result["transcript_text"]
             call.transcript_variants_json = result.get("transcript_variants_json")
             call.transcription_status = "done"
+            if result.get("secondary_finalized"):
+                call.resolve_status = "pending"
+                call.resolve_attempts = 0
+                call.resolve_json = None
+                call.resolve_quality_score = None
+                call.analysis_status = "pending"
+                call.analyze_attempts = 0
+                call.analysis_json = None
+                call.sync_status = "pending"
             # Secondary backfill should not silently wipe downstream progress.
             if call.resolve_status in {"failed", ""} or call.resolve_status is None:
                 call.resolve_status = "pending"
@@ -3507,6 +4003,9 @@ class TranscribeService:
         )
 
         for idx, call in enumerate(candidates, start=1):
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
             current_payload = self._safe_json_dict(call.transcript_variants_json)
             attempts = self._secondary_backfill_attempts(
                 current_payload,
@@ -3515,9 +4014,24 @@ class TranscribeService:
             outcome = "success"
             error_text = ""
             try:
+                self._renew_secondary_claim(
+                    session,
+                    call_id=int(call.id),
+                    worker_id=claim_worker_id,
+                )
+                self._gigaam_chunk_heartbeat = lambda: self._renew_secondary_claim(
+                    session,
+                    call_id=int(call.id),
+                    worker_id=claim_worker_id,
+                )
                 result = self._backfill_secondary_only(
                     call,
                     secondary_provider=secondary_provider,
+                )
+                self._begin_secondary_commit_guard(
+                    session,
+                    call_id=int(call.id),
+                    worker_id=claim_worker_id,
                 )
                 result_payload = self._safe_json_dict(result.get("transcript_variants_json"))
                 backfill_state = self.secondary_backfill_state_from_payload(
@@ -3530,10 +4044,16 @@ class TranscribeService:
                         result_payload or current_payload,
                         secondary_provider=secondary_provider,
                         attempts=attempts,
-                        status="partial",
+                        status="exhausted" if is_exhausted else "partial",
                         exhausted=is_exhausted,
                         error="secondary_variant_still_missing",
                     )
+                    if is_exhausted:
+                        result_payload = self._apply_exhausted_secondary_exception(
+                            result_payload,
+                            secondary_provider=secondary_provider,
+                            fallback_text=str(result.get("transcript_text") or call.transcript_text or ""),
+                        )
                     result["transcript_variants_json"] = json.dumps(result_payload, ensure_ascii=False)
                     _assign_transcribe_result(call, result)
                     call.last_error = (
@@ -3557,29 +4077,58 @@ class TranscribeService:
                 call.pipeline_stage = None
                 call.pipeline_worker_id = None
                 call.pipeline_claimed_at = None
+            except SecondaryAsrLeaseLost as exc:
+                session.rollback()
+                session.expire_all()
+                failed += 1
+                outcome = "lease_lost"
+                error_text = safe_error_text("secondary_asr_lease", exc)
+                _emit_progress(
+                    {
+                        "stage": "backfill_second_asr",
+                        "current": idx,
+                        "total": total,
+                        "success": success,
+                        "failed": failed,
+                        "partial": partial,
+                        "exhausted": exhausted,
+                        "status": outcome,
+                        "call_id": call.id,
+                        "error": error_text,
+                    }
+                )
+                continue
             except Exception as exc:  # noqa: BLE001
                 is_exhausted = attempts >= SECONDARY_BACKFILL_MAX_ATTEMPTS
                 failed += 1
                 outcome = "failed"
-                error_text = str(exc)
+                error_text = safe_error_text("secondary_asr", exc)
                 updated_payload = self._apply_secondary_backfill_meta(
                     current_payload,
                     secondary_provider=secondary_provider,
                     attempts=attempts,
-                    status="failed",
+                    status="exhausted" if is_exhausted else "failed",
                     exhausted=is_exhausted,
                     error=error_text,
                 )
+                if is_exhausted:
+                    updated_payload = self._apply_exhausted_secondary_exception(
+                        updated_payload,
+                        secondary_provider=secondary_provider,
+                        fallback_text=str(call.transcript_text or ""),
+                    )
                 call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
                 # Keep existing successful transcript intact when selective backfill fails.
                 call.transcription_status = "done"
-                call.last_error = f"backfill-second-asr: {exc}"
+                call.last_error = safe_error_text("backfill_second_asr", exc)
                 call.pipeline_stage = None
                 call.pipeline_worker_id = None
                 call.pipeline_claimed_at = None
                 if is_exhausted:
                     exhausted += 1
                     outcome = "exhausted"
+            finally:
+                self._gigaam_chunk_heartbeat = None
             session.add(call)
             _emit_progress(
                 {
@@ -3592,7 +4141,6 @@ class TranscribeService:
                     "exhausted": exhausted,
                     "status": outcome,
                     "call_id": call.id,
-                    "source_filename": call.source_filename,
                     "error": error_text,
                 }
             )
@@ -3604,6 +4152,7 @@ class TranscribeService:
             "partial": partial,
             "exhausted": exhausted,
             "scanned_done": scanned_done,
+            "runtime_receipt": self._asr_runtime_receipt(),
         }
 
     def count_secondary_backfill_pending(self, session: Session) -> Dict[str, Any]:
@@ -3620,13 +4169,19 @@ class TranscribeService:
                 "exhausted": 0,
             }
 
-        done_calls = session.scalars(
+        scope = require_unique_controlled_call(session, self._settings)
+        done_query = (
             select(CallRecord)
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.transcript_variants_json.is_not(None))
             .order_by(CallRecord.id.asc())
-        ).all()
+        )
+        if scope:
+            done_query = done_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        done_calls = session.scalars(done_query).all()
 
         pending = 0
         in_progress = 0
@@ -3659,23 +4214,33 @@ class TranscribeService:
     def count_primary_queue_state(self, session: Session) -> Dict[str, int]:
         now = self._utc_now()
         max_attempts = max(1, self._settings.transcribe_max_attempts)
-        ready_pending = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.dead_letter_stage.is_(None))
-                .where(CallRecord.transcription_status.in_(["pending", "failed"]))
-                .where(CallRecord.transcribe_attempts < max_attempts)
-                .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
-                .where(CallRecord.pipeline_stage.is_(None))
+        scope = require_unique_controlled_call(session, self._settings)
+        ready_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status.in_(["pending", "failed"]))
+            .where(CallRecord.transcribe_attempts < max_attempts)
+            .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
+            .where(CallRecord.pipeline_stage.is_(None))
+        )
+        progress_query = (
+            select(func.count(CallRecord.id))
+            .where(CallRecord.transcription_status == "in_progress")
+            .where(CallRecord.pipeline_stage == "transcribe")
+        )
+        if scope:
+            ready_query = ready_query.where(
+                CallRecord.source_call_id == scope.source_call_id
             )
+            progress_query = progress_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        ready_pending = int(
+            session.scalar(ready_query)
             or 0
         )
         in_progress = int(
-            session.scalar(
-                select(func.count(CallRecord.id))
-                .where(CallRecord.transcription_status == "in_progress")
-                .where(CallRecord.pipeline_stage == "transcribe")
-            )
+            session.scalar(progress_query)
             or 0
         )
         return {
@@ -3688,7 +4253,8 @@ class TranscribeService:
         session: Session,
         limit: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
+        self._reset_asr_runtime_receipt()
         worker_id = self._pipeline_worker_id("tr")
         claimed_ids = self._claim_transcribe_batch(session, limit=limit, worker_id=worker_id)
         max_attempts = max(1, self._settings.transcribe_max_attempts)
@@ -3728,6 +4294,9 @@ class TranscribeService:
         for idx, call in enumerate(calls, start=1):
             if call.transcription_status != "in_progress" or call.pipeline_stage != "transcribe":
                 continue
+            scope = require_unique_controlled_call(session, self._settings)
+            if scope and call.source_call_id != scope.source_call_id:
+                raise RuntimeError("controlled_call_claim_identity_mismatch")
             call.transcribe_attempts = int(call.transcribe_attempts or 0) + 1
             attempt = call.transcribe_attempts
             outcome = "success"
@@ -3754,7 +4323,7 @@ class TranscribeService:
                 call.pipeline_claimed_at = None
                 success += 1
             except Exception as exc:  # noqa: BLE001
-                call.last_error = f"transcribe: {exc}"
+                call.last_error = safe_error_text("transcribe", exc)
                 if attempt >= max_attempts:
                     call.transcription_status = "dead"
                     call.dead_letter_stage = "transcribe"
@@ -3770,7 +4339,7 @@ class TranscribeService:
                 call.pipeline_claimed_at = None
                 failed += 1
                 outcome = "failed"
-                error_text = str(exc)
+                error_text = safe_error_text("transcribe", exc)
             session.add(call)
             _emit_progress(
                 {
@@ -3781,9 +4350,13 @@ class TranscribeService:
                     "failed": failed,
                     "status": outcome,
                     "call_id": call.id,
-                    "source_filename": call.source_filename,
                     "error": error_text,
                 }
             )
             session.commit()
-        return {"processed": len(calls), "success": success, "failed": failed}
+        return {
+            "processed": len(calls),
+            "success": success,
+            "failed": failed,
+            "runtime_receipt": self._asr_runtime_receipt(),
+        }

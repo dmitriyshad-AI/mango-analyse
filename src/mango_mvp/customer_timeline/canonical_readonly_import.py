@@ -31,6 +31,7 @@ from mango_mvp.productization.mail_archive import (
     CANONICAL_MAIL_HISTORY_HANDOFF_DB,
     CANONICAL_MAIL_MANGO_BRIDGE_DB,
 )
+from mango_mvp.services.dialogue_contract import call_record_view, guard_stored_analysis
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -867,12 +868,25 @@ def read_canonical_call_analysis_by_ref(path: Optional[Path]) -> dict[str, Mappi
         return {}
     if not path.exists():
         return {}
-    result: dict[str, Mapping[str, Any]] = {}
+    exact_candidates: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    basename_candidates: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     with sqlite3.connect(path) as con:
         con.row_factory = sqlite3.Row
+        columns = {
+            str(item[1]) for item in con.execute("PRAGMA table_info(canonical_calls)")
+        }
+
+        def selected(name: str) -> str:
+            return name if name in columns else f"NULL AS {name}"
+
         rows = con.execute(
-            """
-            SELECT source_filename, source_file, canonical_call_id, amocrm_contact_id, amocrm_lead_id, analysis_json
+            f"""
+            SELECT source_filename, source_file, canonical_call_id,
+                   amocrm_contact_id, amocrm_lead_id, analysis_json,
+                   {selected('source_call_id')},
+                   {selected('source_recording_id')},
+                   {selected('transcript_variants_json')},
+                   {selected('transcript_text')}
             FROM canonical_calls
             WHERE analysis_json IS NOT NULL AND analysis_json != ''
             """
@@ -884,17 +898,39 @@ def read_canonical_call_analysis_by_ref(path: Optional[Path]) -> dict[str, Mappi
             continue
         if not isinstance(analysis, Mapping):
             continue
+        guarded = guard_stored_analysis(call_record_view(dict(row)), analysis)
         payload = {
-            "analysis": dict(analysis),
+            "analysis": guarded,
             "canonical_call_id": row["canonical_call_id"],
             "amocrm_contact_id": row["amocrm_contact_id"],
             "amocrm_lead_id": row["amocrm_lead_id"],
         }
+        exact_refs: set[str] = set()
+        basename_refs: set[str] = set()
         for ref in (row["source_filename"], row["source_file"]):
             text = safe_text(ref)
             if text:
-                result[text] = payload
-                result[Path(text).name] = payload
+                basename = Path(text).name
+                basename_refs.add(basename)
+                if text != basename:
+                    exact_refs.add(text)
+        for ref in exact_refs:
+            exact_candidates[ref].append(payload)
+        for ref in basename_refs:
+            basename_candidates[ref].append(payload)
+
+    result = {
+        ref: candidates[0]
+        for ref, candidates in exact_candidates.items()
+        if len(candidates) == 1
+    }
+    result.update(
+        {
+            ref: candidates[0]
+            for ref, candidates in basename_candidates.items()
+            if len(candidates) == 1 and ref not in result
+        }
+    )
     return result
 
 
@@ -904,10 +940,11 @@ def enrich_call_row_with_canonical_analysis(
 ) -> Mapping[str, Any]:
     if not canonical_by_ref:
         return dict(row)
+    path_ref = safe_text(row.get("Путь к записи"))
     refs = (
+        path_ref,
         safe_text(row.get("Имя исходного файла")),
-        safe_text(row.get("Путь к записи")),
-        Path(safe_text(row.get("Путь к записи"))).name if safe_text(row.get("Путь к записи")) else "",
+        Path(path_ref).name if path_ref else "",
     )
     match: Mapping[str, Any] | None = None
     for ref in refs:

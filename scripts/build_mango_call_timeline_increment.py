@@ -16,6 +16,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from mango_mvp.customer_timeline.contracts import IdentityMatchClass
 from mango_mvp.customer_timeline.ids import stable_digest
+from mango_mvp.productization.mango_calls_service_contract import (
+    ready_row_is_complete,
+)
+from mango_mvp.services.dialogue_contract import guard_stored_analysis
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -30,6 +34,19 @@ UNSAFE_LINK_CLASSES = {
     IdentityMatchClass.AMBIGUOUS.value,
     IdentityMatchClass.DUPLICATE.value,
     IdentityMatchClass.UNMATCHED.value,
+}
+STRICT_SERVICE_READY_COLUMNS = {
+    "transcription_status",
+    "transcript_variants_json",
+    "resolve_status",
+    "analysis_status",
+    "analysis_json",
+    "dead_letter_stage",
+    "pipeline_stage",
+    "pipeline_worker_id",
+    "pipeline_claimed_at",
+    "analysis_worker_id",
+    "analysis_claimed_at",
 }
 
 
@@ -54,6 +71,9 @@ class SourceRow:
     manager_name: str | None
     direction: str | None
     duration_sec: float | None
+    source_recording_id: str | None
+    transcript_text: str | None
+    transcript_variants_json: str | None
     analysis_json: str
     brand_evidence: str = "none"
     brand_evidence_brands: tuple[str, ...] = ()
@@ -73,6 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--since")
     parser.add_argument("--until")
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--strict-service-ready",
+        action="store_true",
+        help=(
+            "Require the M1 service readiness contract for the single "
+            "--package-db input."
+        ),
+    )
     return parser
 
 
@@ -90,8 +118,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     package_dbs = [Path(item) for item in args.package_db]
     for root in args.package_root:
         package_dbs.extend(discover_package_call_dbs(Path(root)))
+    if args.strict_service_ready and (
+        len(package_dbs) != 1 or args.package_root or args.canonical_db
+    ):
+        raise ValueError(
+            "--strict-service-ready requires exactly one explicit --package-db"
+        )
     for db in package_dbs:
-        rows.extend(read_ready_call_rows(db, table="call_records", source_kind="call_records"))
+        rows.extend(
+            read_ready_call_rows(
+                db,
+                table="call_records",
+                source_kind="call_records",
+                strict_service_ready=args.strict_service_ready,
+            )
+        )
         duplicate_base_ids.update(
             read_duplicate_source_ids(db, table="call_records", source_kind="call_records", since=since, until=until)
         )
@@ -114,6 +155,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             analysis = parse_json_object(row.analysis_json)
             if not analysis:
                 continue
+            analysis = guard_stored_analysis(
+                {
+                    "source_call_id": row.source_call_id or row.row_id,
+                    "source_recording_id": row.source_recording_id or "",
+                    "source_filename": row.source_filename or "",
+                    "source_file": row.source_file or "",
+                    "started_at": row.started_at,
+                    "phone": row.phone or "",
+                    "manager_name": row.manager_name or "",
+                    "direction": row.direction or "",
+                    "duration_sec": row.duration_sec,
+                    "transcript_text": row.transcript_text or "",
+                    "transcript_variants_json": row.transcript_variants_json or "",
+                },
+                analysis,
+            )
             call_type = analysis_call_type(analysis)
             call_type_counts[call_type or "unknown"] += 1
             brand_evidence_counts[row.brand_evidence] += 1
@@ -205,7 +262,13 @@ def discover_package_call_dbs(root: Path) -> list[Path]:
     return result
 
 
-def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[SourceRow]:
+def read_ready_call_rows(
+    path: Path,
+    *,
+    table: str,
+    source_kind: str,
+    strict_service_ready: bool = False,
+) -> list[SourceRow]:
     if not path.exists():
         raise FileNotFoundError(path)
     with sqlite3.connect(ro_uri(path), uri=True) as con:
@@ -218,9 +281,18 @@ def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[So
         if missing:
             raise ValueError(f"required call columns missing in {path}: {sorted(missing)}")
         query = f"SELECT * FROM {table} WHERE analysis_status = 'done' AND analysis_json IS NOT NULL AND analysis_json != ''"
+        if strict_service_ready and (
+            source_kind != "call_records"
+            or not STRICT_SERVICE_READY_COLUMNS.issubset(cols)
+        ):
+            raise ValueError(
+                f"strict service readiness columns missing in {path}"
+            )
         result: list[SourceRow] = []
         for raw in con.execute(query):
             row = dict(raw)
+            if strict_service_ready and not ready_row_is_complete(row):
+                continue
             row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
             analysis = parse_json_object(str(row.get("analysis_json") or ""))
             if not analysis:
@@ -243,6 +315,11 @@ def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[So
                     manager_name=first_text(row, "manager_name", "Менеджер"),
                     direction=first_text(row, "direction", "Направление звонка"),
                     duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
+                    source_recording_id=first_text(row, "source_recording_id", "recording_id"),
+                    transcript_text=first_text(
+                        row, "transcript_text", "transcript", "resolved_transcript_text"
+                    ),
+                    transcript_variants_json=first_text(row, "transcript_variants_json"),
                     analysis_json=str(row.get("analysis_json") or ""),
                     **brand_evidence_fields(row),
                     amocrm_contact_id=first_text(row, "amocrm_contact_id"),
@@ -289,6 +366,11 @@ def read_duplicate_source_ids(
                     manager_name=first_text(row, "manager_name", "Менеджер"),
                     direction=first_text(row, "direction", "Направление звонка"),
                     duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
+                    source_recording_id=first_text(row, "source_recording_id", "recording_id"),
+                    transcript_text=first_text(
+                        row, "transcript_text", "transcript", "resolved_transcript_text"
+                    ),
+                    transcript_variants_json=first_text(row, "transcript_variants_json"),
                     analysis_json=str(row.get("analysis_json") or ""),
                     **brand_evidence_fields(row),
                     amocrm_contact_id=first_text(row, "amocrm_contact_id"),

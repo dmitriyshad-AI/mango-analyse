@@ -71,6 +71,7 @@ class OllamaClient:
         temperature: float,
         num_predict: Optional[int] = None,
         timeout_sec: int = 600,
+        usage_out: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         options: Dict[str, Any] = {"temperature": float(temperature)}
         if num_predict is not None:
@@ -86,6 +87,15 @@ class OllamaClient:
         if think_value:
             payload["think"] = think_value
         data = self._post("/api/generate", payload, timeout_sec=timeout_sec)
+        if usage_out is not None:
+            usage_out.clear()
+            for key in ("prompt_eval_count", "eval_count"):
+                value = data.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    usage_out[key] = value
+            total = data.get("total_tokens")
+            if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+                usage_out["total_tokens"] = total
         response_text = str(data.get("response") or "").strip()
         if not response_text:
             done_reason = str(data.get("done_reason") or "").strip()

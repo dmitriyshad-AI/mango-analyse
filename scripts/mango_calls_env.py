@@ -6,17 +6,37 @@ from __future__ import annotations
 import argparse
 import re
 import shlex
+import sys
 from pathlib import Path
 from typing import Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.productization.owner_only_io import (  # noqa: E402
+    read_stable_regular_bytes,
+)
 
 
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FORBIDDEN_VALUE_CHARS = "$`;|&<>()"
 
 
-def parse_env(path: Path) -> dict[str, str]:
+def parse_env(path: Path, *, owner_only: bool = False) -> dict[str, str]:
+    raw = (
+        read_stable_regular_bytes(
+            path,
+            label="mango_calls_worker_env",
+            owner_only_mode=0o600,
+        )
+        if owner_only
+        else path.read_bytes()
+    )
     values: dict[str, str] = {}
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, raw_line in enumerate(raw.decode("utf-8").splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -44,7 +64,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--get")
     parser.add_argument("--export-lines", action="store_true")
     args = parser.parse_args(argv)
-    values = parse_env(args.path)
+    try:
+        values = parse_env(args.path, owner_only=True)
+    except RuntimeError:
+        return 3
     if args.get is not None:
         value = values.get(args.get, "")
         if not value:

@@ -18,6 +18,7 @@ from mango_mvp.customer_profile.contracts import (
 )
 from mango_mvp.customer_profile.store import CustomerProfileSQLiteStore, sha256_file
 from mango_mvp.utils.phone import normalize_phone
+from mango_mvp.services.dialogue_contract import call_record_view, guard_stored_analysis
 
 
 @dataclass(frozen=True)
@@ -225,7 +226,9 @@ class CustomerProfileBuilder:
                 if len(set(profile_ids_for_phone)) > 1:
                     ambiguous += 1
                     continue
-                analysis = parse_json(row["analysis_json"])
+                analysis = guard_stored_analysis(
+                    call_record_view(dict(row)), parse_json(row["analysis_json"])
+                )
                 event_at = parse_dt(row["started_at"]) or datetime.now(timezone.utc)
                 source_id = str(row["canonical_call_id"] if "canonical_call_id" in row.keys() else row["id"])
                 source_ref = f"mango:{source_id}"

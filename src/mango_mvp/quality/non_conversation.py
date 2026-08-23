@@ -22,7 +22,8 @@ SYSTEM_NO_DIALOGUE_RE = re.compile(
     r"голосов(?:ая|ой)\s+(?:почта|почтовый\s+ящик)|"
     r"звонок\s+(?:был\s+)?(?:перенаправлен|переведен)(?:\s+на\s+голосов)?|"
     r"остав(?:ить|ьте)\s+сообщени|после\s+звуков(?:ого)?\s+сигнал|"
-    r"абонент(?:\s+сейчас)?\s+(?:не\s+может|не\s+отвечает|не\s+ответил|недоступен|временно\s+недоступен)|"
+    r"абонент(?:\s+сейчас)?(?:\s+никак)?\s+(?:не\s+с?может|не\s+отвечает|не\s+ответил|недоступен|временно\s+недоступен)|"
+    r"абонент\s+не\s+бер[её]т\s+трубку|тот,?\s+кому\s+вы\s+звоните,?\s+не\s+отвечает|"
     r"вызываемый\s+абонент|абонент\s+занят|номер\s+(?:недоступен|не\s+отвечает)|"
     r"не\s+отвечает\s+на\s+ваш\s+звонок|не\s+может\s+принять\s+ваш\s+звонок|"
     r"вне\s+зоны\s+действия|находится\s+вне\s+зоны|телефон\s+(?:выключен|занят|разряжен)|"
@@ -31,9 +32,11 @@ SYSTEM_NO_DIALOGUE_RE = re.compile(
     r"недозвон|контакт\s+не\s+состоя|клиент\s+не\s+ответил|"
     r"не\s+удалось\s+(?:связаться|дозвониться|поговорить)|"
     r"живого\s+диалога\s+не\s+было|разговора\s+с\s+клиент[а-я]*\s+не\s+было|"
+    r"автоответчик|"
     r"(?:я\s+)?(?:виртуальн\w+\s+)?секретар[ьяь]\b|на\s+связи\s+я\s+секретар[ьяь]\b|"
     r"вы\s+говорите\s+с\s+секретар[её]м|говорите\s+с\s+секретар[её]м|"
-    r"голосов(?:ой|ая)\s+(?:ассистент|помощник)|ассистент\s+(?:миа|мия|ния)|временно\s+попросили\s+отвечать|"
+    r"(?:голосов|виртуальн|цифров)\w+\s+(?:ассистент\w*|помощник|помощница)|"
+    r"ассистент\s+(?:миа|мия|ния)|временно\s+попросили\s+отвечать|"
     r"(?:сбербанк[^.]{0,60}(?:голосов|помощник)|(?:голосов|помощник)[^.]{0,60}сбербанк)|"
     r"целевые\s+финансы|7\s*sky|сервис\s+резерв|актив\s+бизнес\s+консалт|коллекторск\w+\s+организац|"
     r"групп[ауы]\s+компан(?:ии|ий)\s+мтс|ооо\s+пко|действующ\w+\s+в\s+интересах|"
@@ -66,11 +69,37 @@ THIRD_PARTY_IVR_RE = re.compile(
 VIRTUAL_SECRETARY_RE = re.compile(
     r"(?:я|это|на\s+связи\s+я|вы\s+говорите\s+с)\s+секретар[ьеё]м?|"
     r"секретар[ьяь]\s+(?:ева|мия|миа|ния)|(?:ева|мия|миа|ния)[,\s]+секретар[ьяь]|"
-    r"голосов(?:ой|ая)\s+(?:ассистент|помощник|помощница)|"
+    r"(?:голосов|виртуальн|цифров)\w+\s+(?:ассистент\w*|помощник|помощница|секретар\w+)|"
     r"ассистент\s+(?:миа|мия|ния)|"
     r"временно\s+попросили\s+отвечать|попросили\s+отвечать\s+на\s+звонки|"
     r"передам\s+(?:ему|ей|абоненту|ваше|ваши)|я\s+вс[её]\s+запишу|"
     r"искусственн\w+\s+интеллект|улучшить\s+свои\s+алгоритм",
+    re.I,
+)
+
+VIRTUAL_SECRETARY_SELF_ID_RE = re.compile(
+    r"(?:я|это|на\s+связи\s+я|вы\s+говорите\s+с)\s+секретар[ьеё]м?|"
+    r"секретар[ьяь]\s+(?:ева|мия|миа|ния)|(?:ева|мия|миа|ния)[,\s]+секретар[ьяь]|"
+    r"(?:голосов|виртуальн|цифров)\w+\s+(?:ассистент|помощник|помощница)|"
+    r"ассистент\s+(?:миа|мия|ния)|временно\s+попросили\s+отвечать|"
+    r"попросили\s+отвечать\s+на\s+звонки",
+    re.I,
+)
+
+VIRTUAL_SECRETARY_SCRIPT_RE = re.compile(
+    r"положите\s+трубку|что[- ]?нибудь\s+передать|что\s+передать|"
+    r"добавьте\s+что[- ]?нибудь|оставьте\s+сообщени",
+    re.I,
+)
+
+VIRTUAL_SECRETARY_HIGH_PRECISION_RE = re.compile(
+    r"(?:я|это)\s+(?:миа|мия|ния)\b.{0,80}абонент|"
+    r"абонент.{0,80}(?:я|это)\s+(?:миа|мия|ния)\b|"
+    r"электронн\w+\s+помощник|"
+    r"у\s+абонента\s+нет\s+возможности\s+взять\s+трубку|"
+    r"абоненту\s+пока\s+неудобно\s+разговаривать|"
+    r"меня\s+попросили\s+принять\s+ваше\s+сообщени|"
+    r"я\s+передам\s+это\s+абоненту",
     re.I,
 )
 
@@ -87,7 +116,7 @@ HARD_NO_LIVE_RE = re.compile(
     r"голосов(?:ая|ой)\s+(?:почта|почтовый\s+ящик)|"
     r"звонок\s+(?:был\s+)?(?:перенаправлен|переведен)(?:\s+на\s+голосов)?|"
     r"остав(?:ить|ьте)\s+сообщени|после\s+звуков(?:ого)?\s+сигнал|"
-    r"абонент(?:\s+сейчас)?\s+(?:не\s+может|не\s+отвечает|не\s+ответил|недоступен|временно\s+недоступен)|"
+    r"абонент(?:\s+сейчас)?(?:\s+никак)?\s+(?:не\s+с?может|не\s+отвечает|не\s+ответил|недоступен|временно\s+недоступен)|"
     r"вызываемый\s+абонент|абонент\s+занят|номер\s+(?:недоступен|не\s+отвечает)|"
     r"не\s+отвечает\s+на\s+ваш\s+звонок|не\s+может\s+принять\s+ваш\s+звонок|"
     r"вне\s+зоны\s+действия|находится\s+вне\s+зоны|телефон\s+(?:выключен|занят|разряжен)|"
@@ -112,7 +141,7 @@ VOICE_MAIL_RE = re.compile(
 OUTBOUND_VOICEMAIL_RE = re.compile(
     r"голосов(?:ая|ой)\s+(?:почта|почтовый\s+ящик)|"
     r"остав(?:ить|ьте)\s+сообщени|после\s+звуков(?:ого)?\s+сигнал|"
-    r"абонент(?:\s+сейчас)?\s+(?:не\s+может|не\s+отвечает|не\s+ответил|недоступен|временно\s+недоступен)|"
+    r"абонент(?:\s+сейчас)?(?:\s+никак)?\s+(?:не\s+с?может|не\s+отвечает|не\s+ответил|недоступен|временно\s+недоступен)|"
     r"вызываемый\s+абонент|абонент\s+занят|номер\s+недоступен|вне\s+зоны\s+действия|телефон\s+выключен|"
     r"попробуйте\s+перезвонить\s+позднее|отправ(?:ить|ьте)\s+бесплатн\w+\s+смс|нажмите\s+1",
     re.I,
@@ -202,6 +231,7 @@ CLIENT_HUMAN_RESPONSE_RE = re.compile(
     r"не\s+слышу|я\s+вас\s+слышу|минут[ауые]?|удобно|неудобно)\b",
     re.I,
 )
+CLIENT_SHORT_ACTION_RESPONSE_RE = re.compile(r"\b(?:ага|угу|хорошо|перезвон(?:ите|ить|ю|им|и)|позвон(?:ите|ить|ю|им|и)|я\s+(?:сейчас\s+)?занят[аы]?|я\s+не\s+могу)\b", re.I)
 
 
 def _has_live_education_context(combined: str, client_text: str) -> bool:
@@ -237,6 +267,7 @@ class NonConversationSignals:
     asr_artifact_marker: bool
     system_no_dialogue_phrase: bool
     risky_keyword_marker: bool
+    client_human_response: bool
     live_dialogue_evidence_score: int
     protected_live_dialogue: bool
     manager_chars: int
@@ -291,7 +322,14 @@ def detect_non_conversation_signals(
     transcript_chars = len(transcript)
 
     third_party_ivr_raw = bool(THIRD_PARTY_IVR_RE.search(combined))
-    virtual_secretary = bool(VIRTUAL_SECRETARY_RE.search(client_text))
+    virtual_secretary = bool(
+        VIRTUAL_SECRETARY_RE.search(client_text)
+        or VIRTUAL_SECRETARY_HIGH_PRECISION_RE.search(transcript)
+        or (
+            VIRTUAL_SECRETARY_SELF_ID_RE.search(transcript)
+            and VIRTUAL_SECRETARY_SCRIPT_RE.search(transcript)
+        )
+    )
     hard_no_live = bool(HARD_NO_LIVE_RE.search(combined))
     live_payment_context = (
         third_party_ivr_raw
@@ -337,8 +375,21 @@ def detect_non_conversation_signals(
     client_has_business_terms = bool(BUSINESS_TERM_RE.search(client_text)) and not third_party_ivr
     manager_has_business_terms = bool(BUSINESS_TERM_RE.search(manager_text))
     transcript_edtech_hits = _keyword_hit_count(transcript, EDTECH_KEYWORD_RE)
+    short_action_text = client_text
+    if not short_action_text and all(re.search(rf"CHANNEL_{side}:\s*\S", transcript, re.I) for side in ("LEFT", "RIGHT")):
+        short_action_text = transcript
+    short_action_response = bool(
+        short_action_text
+        and len(re.findall(r"\w+", short_action_text, re.U)) <= 12
+        and CLIENT_SHORT_ACTION_RESPONSE_RE.search(short_action_text)
+        and not ASR_ARTIFACT_RE.search(short_action_text)
+        and not repeated_loop
+        and not NO_LIVE_RE.search(short_action_text)
+        and not virtual_secretary
+        and not third_party_ivr
+    )
     client_human_response = (
-        bool(CLIENT_HUMAN_RESPONSE_RE.search(client_text))
+        bool(CLIENT_HUMAN_RESPONSE_RE.search(client_text) or (client_text and short_action_response))
         and not client_has_system_text
         and not third_party_ivr
         and not virtual_secretary
@@ -358,6 +409,8 @@ def detect_non_conversation_signals(
 
     score = 0
     reasons: list[str] = []
+    if short_action_response:
+        reasons.append("explicit_short_action_response")
 
     if client_chars >= 80 and not client_has_system_text:
         score += 3
@@ -553,7 +606,7 @@ def detect_non_conversation_signals(
     )
 
     high_confidence = False
-    if not protected and not manual_safeguard:
+    if not protected and not manual_safeguard and not client_human_response and not short_action_response:
         # Automatic rewrite is allowed only for the safest class caught in the
         # audit: explicit no-live/system voicemail plus recognizable ASR junk,
         # explicit system no-live with no client business/live evidence, or
@@ -652,6 +705,18 @@ def detect_non_conversation_signals(
         recommended_call_type = None
         recommended_contentful = None
         recommended_contact_subtype = "borderline_no_live"
+    elif (
+        (short_action_response or client_human_response)
+        and len(re.findall(r"\w+", transcript, re.U)) < 12
+        and not client_has_business_terms
+        and not manager_has_business_terms
+    ):
+        label = LABEL_MANUAL_REVIEW_BORDERLINE_LIVE_CONTEXT
+        should_force = False
+        manual = True
+        recommended_call_type = None
+        recommended_contentful = None
+        recommended_contact_subtype = "live_contact_without_business_content"
     else:
         label = LABEL_CONTENTFUL_LOW_RISK
         should_force = False
@@ -668,6 +733,7 @@ def detect_non_conversation_signals(
         asr_artifact_marker=asr_artifact,
         system_no_dialogue_phrase=system_no_dialogue,
         risky_keyword_marker=risky_keyword,
+        client_human_response=client_human_response,
         live_dialogue_evidence_score=score,
         protected_live_dialogue=protected,
         manager_chars=manager_chars,

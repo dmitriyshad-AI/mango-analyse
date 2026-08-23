@@ -19,6 +19,7 @@ CALL_RECORD_COLUMNS = [
     "source_file",
     "source_filename",
     "source_call_id",
+    "source_recording_id",
     "audio_codec",
     "sample_rate",
     "channels",
@@ -352,6 +353,7 @@ def _create_canonical_schema(con: sqlite3.Connection) -> None:
             selected_source_db text,
             selected_call_record_id integer,
             source_call_id text,
+            source_recording_id text,
             phone text,
             manager_name text,
             duration_sec real,
@@ -542,9 +544,17 @@ def _insert_canonical_calls(
     canonical_ids: dict[str, int] = {}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     rows = []
+    recording_ids: set[str] = set()
     for name in sorted(sources):
         source = sources[name]
         selected = selected_by_name.get(name) or {}
+        source_recording_id = _clean(selected.get("source_recording_id"))
+        if source_recording_id:
+            if source_recording_id in recording_ids:
+                raise ValueError(
+                    "duplicate non-empty source_recording_id blocks canonical master release"
+                )
+            recording_ids.add(source_recording_id)
         excluded = name in exclusions
         status = _canonical_status(selected or None, excluded=excluded)
         rows.append(
@@ -562,6 +572,7 @@ def _insert_canonical_calls(
                 _clean(selected.get("provenance_db")),
                 _safe_int(selected.get("id")),
                 _clean(selected.get("source_call_id") or source.get("source_call_id_from_filename")),
+                source_recording_id,
                 _clean(selected.get("phone") or source.get("phone_from_filename")),
                 _clean(selected.get("manager_name") or source.get("manager_from_filename")),
                 _safe_float(selected.get("duration_sec")),
@@ -597,7 +608,7 @@ def _insert_canonical_calls(
         insert into canonical_calls (
             build_id, source_filename, source_file, month, started_at, audio_size_bytes,
             audio_mtime, is_actionable, excluded_reason, canonical_status, selected_source_db,
-            selected_call_record_id, source_call_id, phone, manager_name, duration_sec,
+            selected_call_record_id, source_call_id, source_recording_id, phone, manager_name, duration_sec,
             direction, transcription_status, resolve_status, analysis_status, sync_status,
             dead_letter_stage, transcript_text, transcript_manager, transcript_client,
             transcript_variants_json, resolve_json, resolve_quality_score, analysis_json,
@@ -607,7 +618,7 @@ def _insert_canonical_calls(
             created_at
         ) values (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         """,
         rows,
@@ -787,6 +798,8 @@ def _create_canonical_indexes(con: sqlite3.Connection) -> None:
     con.executescript(
         """
         create index idx_canonical_calls_source_filename on canonical_calls(source_filename);
+        create unique index idx_canonical_calls_source_recording_id
+            on canonical_calls(source_recording_id) where source_recording_id != '';
         create index idx_canonical_calls_status on canonical_calls(canonical_status);
         create index idx_canonical_calls_phone on canonical_calls(phone);
         create index idx_canonical_calls_month on canonical_calls(month);

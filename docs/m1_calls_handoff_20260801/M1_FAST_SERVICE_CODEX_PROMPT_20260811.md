@@ -18,7 +18,7 @@
    - `docs/RUNBOOK.md`;
    - `docs/DECISIONS_LOG.md`;
    - `docs/MANGO_CALLS_M1_STATUS_AND_ARCHITECTURE_20260811.md`;
-   - `tasks/_inbox_codex/2026-08-11_TZ_m1_calls_service_fast_value.md`.
+   - `tasks/_running/2026-08-11_TZ_m1_calls_service_fast_value.md`.
 5. Возьми ТЗ только через `python3 scripts/task_move.py --take ...`, запусти
    `tz_lint`, `inventory_before_build` и `preflight`.
 
@@ -77,7 +77,7 @@ Claude CLI как независимого аудитора обезличенн
 2. отдельно выполни попытку сломать все 31 обязательный сценарий ТЗ;
 3. создай один audit pack;
 4. зафиксируй пять вердиктов: formal, semantic, business, data, runtime;
-5. сделай один чистый коммит только текущего блока;
+5. сделай атомарные чистые коммиты только текущего блока;
 6. пришли Дмитрию SHA, изменённые файлы, тесты, известные ограничения и точные
    команды следующего ручного шага;
 7. не запускай следующий ручной шаг без отдельного подтверждения Дмитрия.

@@ -70,6 +70,10 @@ from mango_mvp.quality.crm_writeback_quality_detector import detect_crm_writebac
             "Обсуждение программы, интереса к продукту и следующих шагов не состоялось.",
             "no_content_or_no_edtech_intent",
         ),
+        (
+            "Итог: оценка на основе содержания звонка.",
+            "no_content_or_no_edtech_intent",
+        ),
     ],
 )
 def test_detector_blocks_known_crm_noise_classes(text: str, expected_risk: str) -> None:

@@ -14,14 +14,243 @@ from typing import Any
 from unittest.mock import patch
 from urllib import error as url_error, parse as url_parse
 
-from mango_mvp.amocrm_runtime.deal_dossier import build_deal_dossier
+from mango_mvp.amocrm_runtime.deal_dossier import (
+    MISSING_CALL_ARTIFACT_SUMMARY,
+    _fetch_call_artifact,
+    _safe_transcript_excerpt,
+    build_deal_dossier,
+)
 from mango_mvp.amocrm_runtime.deal_llm import DealLLMAnalyzer
 from mango_mvp.amocrm_runtime.phone_context import PhoneContext
 from mango_mvp.amocrm_runtime import deals as deals_module
 from mango_mvp.amocrm_runtime import amo_integration
+from mango_mvp.services.dialogue_contract import UNTRUSTED_SUMMARY
+from tests import mango_provider_fixture as fx
+
+
+# The dossier feeds an AMO draft a human then sends, so it reads the stored
+# analysis through the same fail-closed role guard as every other consumer.
+DOSSIER_TURNS = (
+    ("client", "right", "Мы не отказываемся, вернемся после экзаменов."),
+    ("operator", "left", "Хорошо, я поставлю follow-up."),
+)
 
 
 class AmoCrmDealAnalysisTest(unittest.TestCase):
+    def test_call_artifact_lookup_never_guesses_between_duplicate_filenames(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_exact_artifact_") as td:
+            db_path = Path(td) / "calls.db"
+            with sqlite3.connect(db_path) as con:
+                con.execute(
+                    """
+                    CREATE TABLE call_records (
+                        id INTEGER PRIMARY KEY, source_call_id TEXT,
+                        source_filename TEXT, started_at TEXT, manager_name TEXT,
+                        duration_sec REAL, transcript_text TEXT,
+                        transcript_variants_json TEXT, analysis_json TEXT,
+                        resolve_status TEXT, analysis_status TEXT
+                    )
+                    """
+                )
+                con.executemany(
+                    "INSERT INTO call_records VALUES (?, ?, 'same.mp3', '', '', 1, ?, '{}', '{}', 'done', 'done')",
+                    [(10, "call-10", "first"), (11, "call-11", "second")],
+                )
+
+            self.assertEqual(_fetch_call_artifact(str(db_path), "same.mp3"), {})
+            self.assertEqual(
+                _fetch_call_artifact(str(db_path), "same.mp3", 11)["source_call_id"],
+                "call-11",
+            )
+            self.assertEqual(_fetch_call_artifact(str(db_path), "same.mp3", 12), {})
+
+    def test_untrusted_dossier_skips_deal_llm_and_blocks_writeback(self) -> None:
+        context = PhoneContext(
+            phone="+79990001122",
+            source_dir="",
+            contact_row={},
+            call_rows=[],
+            call_ids=[],
+            first_call_at=None,
+            last_call_at=None,
+            manager_history=[],
+            interest_summary="математика",
+            objections_summary="цена",
+            current_sales_temperature="warm",
+            recommended_next_step="Отправить договор",
+            follow_up_due_at="2026-08-20",
+            history_summary="Клиент согласился купить.",
+            chronology="Сегодня — согласился купить.",
+            tallanto_id="",
+            tallanto_match_status="no_match",
+        )
+        heuristic = {
+            "matched_lead_id": 10,
+            "matched_contact_id": 1,
+            "match_confidence": 0.95,
+            "close_verdict": "reopen_recommended",
+            "recommended_next_step": "Отправить договор",
+            "history_summary": "Клиент согласился купить.",
+        }
+        candidate = deals_module.LeadCandidate(1, 10, 95, 0.95, "test", {"id": 10})
+
+        with (
+            patch.object(deals_module, "fetch_lead", return_value={"id": 10}),
+            patch.object(deals_module, "fetch_lead_notes", return_value=[]),
+            patch.object(deals_module, "fetch_lead_tasks", return_value=[]),
+            patch.object(
+                deals_module, "_analysis_from_selected_lead", return_value=heuristic
+            ),
+            patch.object(
+                deals_module,
+                "build_deal_dossier",
+                return_value={
+                    "contact_rollup": {"role_attribution_untrusted": True},
+                    "call_history": [],
+                },
+            ),
+            patch.object(deals_module, "_analysis_mode", return_value="llm_primary"),
+            patch.object(deals_module, "DealLLMAnalyzer") as analyzer,
+        ):
+            final, guarded_heuristic, llm, _comparison, _dossier = (
+                deals_module._build_dossier_and_analysis(
+                    SimpleNamespace(),
+                    phone_context=context,
+                    candidate=candidate,
+                    contact={"id": 1},
+                    pipelines=[],
+                    users=[],
+                )
+            )
+
+        analyzer.assert_not_called()
+        self.assertIsNone(llm)
+        self.assertEqual(guarded_heuristic["close_verdict"], "manual_review")
+        self.assertEqual(guarded_heuristic["history_summary"], "")
+        self.assertFalse(final["writeback_allowed"])
+        self.assertIn("role_attribution_untrusted", final["writeback_blockers"])
+        self.assertEqual(deals_module._prepare_writeback_payload(final), {})
+
+    def test_one_untrusted_call_clears_the_mixed_contact_rollup(self) -> None:
+        context = PhoneContext(
+            phone="+79990001122",
+            source_dir="",
+            contact_row={"Краткое резюме последнего свежего звонка": "Оплата получена."},
+            call_rows=[
+                {"ID звонка": "trusted", "Дата и время звонка": "2026-08-16 10:00:00"},
+                {"ID звонка": "untrusted", "Дата и время звонка": "2026-08-16 11:00:00"},
+            ],
+            call_ids=["trusted", "untrusted"],
+            first_call_at=None,
+            last_call_at=None,
+            manager_history=[],
+            interest_summary="математика",
+            objections_summary="цена",
+            current_sales_temperature="warm",
+            recommended_next_step="Отправить договор",
+            follow_up_due_at="2026-08-20",
+            history_summary="Клиент согласился купить.",
+            chronology="История",
+            tallanto_id="",
+            tallanto_match_status="no_match",
+        )
+        with (
+            patch(
+                "mango_mvp.amocrm_runtime.deal_dossier._fetch_call_artifact",
+                side_effect=[{"analysis_json": "{}"}, {"analysis_json": "{}"}],
+            ),
+            patch(
+                "mango_mvp.amocrm_runtime.deal_dossier._guarded_call_analysis",
+                side_effect=[({}, True), ({}, False)],
+            ),
+        ):
+            dossier = build_deal_dossier(
+                phone_context=context,
+                contact={"id": 1},
+                lead={"id": 10},
+                notes=[],
+                tasks=[],
+                pipeline_name="Сделки B2C",
+                status_name="В работе",
+                user_map={},
+            )
+
+        rollup = dossier["contact_rollup"]
+        self.assertTrue(rollup["role_attribution_untrusted"])
+        self.assertTrue(rollup["role_attribution_mixed"])
+        self.assertEqual(rollup["history_summary"], "")
+        self.assertEqual(rollup["recommended_next_step"], "")
+
+    def test_dossier_prefers_current_guarded_analysis_over_old_export_columns(self) -> None:
+        context = PhoneContext(
+            phone="+79990001122",
+            source_dir="",
+            contact_row={},
+            call_rows=[
+                {
+                    "ID звонка": "fresh-1",
+                    "Дата и время звонка": "2026-08-16 11:00:00",
+                    "Краткое резюме разговора": "Старая сводка",
+                    "Продукты интереса": "Старый продукт",
+                    "Возражения": "Старое возражение",
+                    "Следующий шаг": "Старый шаг",
+                    "Рекомендуемая дата следующего контакта": "2026-08-18",
+                    "Вероятность продажи, %": "20",
+                    "Имя исходного файла": "call.mp3",
+                    "Источник лучшего статуса": "/tmp/source.db",
+                }
+            ],
+            call_ids=["fresh-1"],
+            first_call_at=None,
+            last_call_at=None,
+            manager_history=[],
+            interest_summary="",
+            objections_summary="",
+            current_sales_temperature="warm",
+            recommended_next_step="",
+            follow_up_due_at="",
+            history_summary="",
+            chronology="",
+            tallanto_id="",
+            tallanto_match_status="no_match",
+        )
+        current_analysis = {
+            "history_summary": "Свежая сводка",
+            "follow_up_score": 88,
+            "display_fields": {
+                "interests": {"products": ["Новый продукт"], "subjects": ["Физика"]},
+                "objections": ["Нужно согласовать расписание"],
+                "next_step": {"action": "Отправить договор", "due": "2026-08-20"},
+            },
+        }
+        with patch(
+            "mango_mvp.amocrm_runtime.deal_dossier._fetch_call_artifact",
+            return_value={"analysis_json": "{}", "transcript_text": ""},
+        ), patch(
+            "mango_mvp.amocrm_runtime.deal_dossier._guarded_call_analysis",
+            return_value=(current_analysis, False),
+        ):
+            dossier = build_deal_dossier(
+                phone_context=context,
+                contact={"id": 1},
+                lead={"id": 10},
+                notes=[],
+                tasks=[],
+                pipeline_name="Сделки B2C",
+                status_name="В работе",
+                user_map={},
+            )
+
+        entry = dossier["call_history"][0]
+        self.assertEqual(entry["summary"], "Свежая сводка")
+        self.assertEqual(entry["products"], "Новый продукт")
+        self.assertEqual(entry["subjects"], "Физика")
+        self.assertEqual(entry["objections"], "Нужно согласовать расписание")
+        self.assertEqual(entry["next_step"], "Отправить договор")
+        self.assertEqual(entry["follow_up_due_at"], "2026-08-20")
+        self.assertEqual(entry["probability_percent"], "88")
+        self.assertNotIn("Старый", json.dumps(entry, ensure_ascii=False))
+
     def test_build_deal_dossier_includes_transcript_context_from_source_db(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_deal_dossier_") as td:
             db_path = Path(td) / "calls.db"
@@ -30,6 +259,7 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
                 """
                 CREATE TABLE call_records (
                     id INTEGER PRIMARY KEY,
+                    source_call_id TEXT,
                     source_filename TEXT,
                     started_at TEXT,
                     manager_name TEXT,
@@ -42,21 +272,28 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
                 )
                 """
             )
+            variants = fx.proven_variants(DOSSIER_TURNS)
+            variants["variant_b"] = {"transcript_text": "альтернативный вариант gigaam"}
+            variants[fx.PROVIDER_EVIDENCE_FIELD] = fx.evidence(
+                DOSSIER_TURNS, source_call_id="call-101"
+            )
             con.execute(
                 """
                 INSERT INTO call_records (
-                    source_filename, started_at, manager_name, duration_sec,
-                    transcript_text, transcript_variants_json, analysis_json,
-                    resolve_status, analysis_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, source_call_id, source_filename, started_at, manager_name,
+                    duration_sec, transcript_text, transcript_variants_json,
+                    analysis_json, resolve_status, analysis_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    101,
+                    "call-101",
                     "2026-04-10__10-00-00__Иванов Иван__79990001122.mp3",
                     "2026-04-10 10:00:00",
                     "Иванов Иван",
                     180.0,
                     "[00:01.0] Клиент: Мы не отказываемся, вернемся после экзаменов.\n[00:04.0] Менеджер: Хорошо, я поставлю follow-up.",
-                    '{"variant_b": {"transcript_text": "альтернативный вариант gigaam"}}',
+                    json.dumps(variants, ensure_ascii=False),
                     '{"history_summary": "Клиент просит вернуться после экзаменов."}',
                     "done",
                     "done",
@@ -139,6 +376,206 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
             self.assertIn("variant_b", dossier["transcript_context"][0]["variant_overview"]["available_variants"])
             self.assertEqual(dossier["notes"][0]["text"], "Клиент попросил вернуться после экзаменов")
             self.assertEqual(dossier["tasks"][0]["responsible_user_name"], "Иванов Иван")
+            entry = dossier["call_history"][0]
+            self.assertEqual(entry["next_step"], "")
+            self.assertTrue(entry["role_attribution_untrusted"])
+            self.assertEqual(entry["objections"], "")
+
+    def test_the_dossier_drops_role_dependent_claims_of_an_unproven_call(self) -> None:
+        """An AMO draft states what a *side* did; unproven sides state nothing."""
+        with tempfile.TemporaryDirectory(prefix="mango_deal_untrusted_") as td:
+            db_path = Path(td) / "calls.db"
+            con = sqlite3.connect(db_path)
+            con.execute(
+                """
+                CREATE TABLE call_records (
+                    id INTEGER PRIMARY KEY,
+                    source_call_id TEXT,
+                    source_filename TEXT,
+                    started_at TEXT,
+                    manager_name TEXT,
+                    duration_sec REAL,
+                    transcript_text TEXT,
+                    transcript_variants_json TEXT,
+                    analysis_json TEXT,
+                    resolve_status TEXT,
+                    analysis_status TEXT
+                )
+                """
+            )
+            # No provider evidence: the real production majority.
+            variants = fx.proven_variants(DOSSIER_TURNS)
+            variants.pop(fx.PROVIDER_EVIDENCE_FIELD)
+            con.execute(
+                """
+                INSERT INTO call_records (
+                    id, source_call_id, source_filename, started_at, manager_name,
+                    duration_sec, transcript_text, transcript_variants_json,
+                    analysis_json, resolve_status, analysis_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    202,
+                    "call-202",
+                    "call.mp3",
+                    "2026-04-10 10:00:00",
+                    "Иванов Иван",
+                    180.0,
+                    "[00:01.0] Клиент: Вернемся после экзаменов.",
+                    json.dumps(variants, ensure_ascii=False),
+                    json.dumps(
+                        {"history_summary": "Клиент согласился оплатить курс."},
+                        ensure_ascii=False,
+                    ),
+                    "done",
+                    "done",
+                ),
+            )
+            con.commit()
+            con.close()
+
+            phone_context = PhoneContext(
+                phone="+79990001122",
+                source_dir=td,
+                contact_row={
+                    "ФИО родителя": "Иванова Анна",
+                    "ФИО ребенка": "Иванов Пётр",
+                    "Email": "family@example.com",
+                    "Рекомендуемый продукт": "годовые курсы",
+                },
+                call_rows=[
+                    {
+                        "ID звонка": "202",
+                        "Дата и время звонка": "2026-04-10 10:00:00",
+                        "Менеджер": "Иванов Иван",
+                        "Направление звонка": "outbound",
+                        "Длительность, сек": "180",
+                        "Краткое резюме разговора": "Клиент согласился оплатить.",
+                        "Продукты интереса": "годовые курсы",
+                        "Возражения": "сроки",
+                        "Следующий шаг": "Перезвонить после экзаменов",
+                        "Рекомендуемая дата следующего контакта": "2026-04-20",
+                        "Вероятность продажи, %": "80",
+                        "Имя исходного файла": "call.mp3",
+                        "Источник лучшего статуса": str(db_path),
+                    }
+                ],
+                call_ids=["202"],
+                first_call_at="2026-04-10 10:00:00",
+                last_call_at="2026-04-10 10:00:00",
+                manager_history=["Иванов Иван"],
+                interest_summary="математика",
+                objections_summary="цена",
+                current_sales_temperature="warm",
+                recommended_next_step="Отправить договор",
+                follow_up_due_at="2026-04-20",
+                history_summary="Клиент согласился оплатить.",
+                chronology="10.04 — согласился оплатить.",
+                tallanto_id="",
+                tallanto_match_status="no_match",
+            )
+
+            dossier = build_deal_dossier(
+                phone_context=phone_context,
+                contact={"id": 1, "name": "Ивановы"},
+                lead={"id": 10, "name": "Сделка", "pipeline_id": 100, "status_id": 143},
+                notes=[],
+                tasks=[],
+                pipeline_name="Сделки B2C",
+                status_name="В работе",
+                user_map={},
+            )
+
+            entry = dossier["call_history"][0]
+            self.assertTrue(entry["role_attribution_untrusted"])
+            self.assertEqual(entry["summary"], UNTRUSTED_SUMMARY)
+            for field in (
+                "products", "subjects", "objections", "next_step",
+                "follow_up_due_at", "probability_percent",
+            ):
+                self.assertEqual(entry[field], "", field)
+            excerpt = dossier["transcript_context"][0]["transcript_excerpt"]
+            self.assertIn("Спикер A:", excerpt)
+            self.assertIn("Спикер B:", excerpt)
+            self.assertNotIn("Менеджер:", excerpt)
+            self.assertNotIn("Клиент:", excerpt)
+            serialized = json.dumps(dossier, ensure_ascii=False)
+            self.assertNotIn("Перезвонить после экзаменов", serialized)
+            self.assertNotIn("согласился оплатить", serialized)
+            rollup = dossier["contact_rollup"]
+            self.assertTrue(rollup["role_attribution_untrusted"])
+            for field in (
+                "history_summary", "chronology", "interest_summary",
+                "objections_summary", "current_sales_temperature",
+                "recommended_next_step", "follow_up_due_at", "parent_fio",
+                "child_fio", "email", "recommended_product",
+            ):
+                self.assertEqual(rollup[field], "", field)
+
+    def test_the_dossier_does_not_revive_role_labels_from_raw_fallback(self) -> None:
+        transcript = "[00:01.0] Клиент: Я согласился оплатить."
+        artifact = {
+            "source_call_id": "call-fallback",
+            "transcript_text": transcript,
+            "transcript_variants_json": "{}",
+        }
+
+        self.assertEqual("", _safe_transcript_excerpt(artifact, transcript, True, 2200))
+
+    def test_the_dossier_fails_closed_when_the_source_database_is_missing(self) -> None:
+        phone_context = PhoneContext(
+            phone="+79990001122",
+            source_dir="",
+            contact_row={},
+            call_rows=[
+                {
+                    "ID звонка": "missing-1",
+                    "Дата и время звонка": "2026-04-10 10:00:00",
+                    "Краткое резюме разговора": "Клиент уже оплатил.",
+                    "Продукты интереса": "годовые курсы",
+                    "Возражения": "цена",
+                    "Следующий шаг": "Отправить договор",
+                    "Рекомендуемая дата следующего контакта": "2026-04-20",
+                    "Вероятность продажи, %": "90",
+                    "Имя исходного файла": "missing.mp3",
+                    "Источник лучшего статуса": "/missing/calls.db",
+                }
+            ],
+            call_ids=["missing-1"],
+            first_call_at="2026-04-10 10:00:00",
+            last_call_at="2026-04-10 10:00:00",
+            manager_history=[],
+            interest_summary="",
+            objections_summary="",
+            current_sales_temperature="",
+            recommended_next_step="",
+            follow_up_due_at="",
+            history_summary="",
+            chronology="",
+            tallanto_id="",
+            tallanto_match_status="no_match",
+        )
+
+        dossier = build_deal_dossier(
+            phone_context=phone_context,
+            contact={"id": 1},
+            lead={"id": 10},
+            notes=[],
+            tasks=[],
+            pipeline_name="Сделки B2C",
+            status_name="В работе",
+            user_map={},
+        )
+
+        entry = dossier["call_history"][0]
+        self.assertTrue(entry["role_attribution_untrusted"])
+        self.assertEqual(entry["summary"], MISSING_CALL_ARTIFACT_SUMMARY)
+        self.assertTrue(entry["call_artifact_missing"])
+        for field in (
+            "products", "subjects", "objections", "next_step",
+            "follow_up_due_at", "probability_percent",
+        ):
+            self.assertEqual(entry[field], "", field)
 
     def test_deal_llm_normalize_response_falls_back_to_manual_review(self) -> None:
         analyzer = DealLLMAnalyzer()
@@ -275,6 +712,115 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
             )
 
         self.assertEqual(captured["active_brand"], "foton")
+
+    def test_heuristic_and_writeback_use_guarded_fresh_dossier_context(self) -> None:
+        stale_context = PhoneContext(
+            phone="+79990001122",
+            source_dir="old-export",
+            contact_row={
+                "Краткое резюме последнего свежего звонка": "Окончательный отказ, тема не актуальна",
+                "Возражения": "Курс не нужен",
+                "Следующий шаг": "Закрыть сделку",
+            },
+            call_rows=[
+                {
+                    "ID звонка": "call-1",
+                    "Дата и время звонка": "2026-07-01 10:00:00",
+                    "Менеджер": "Старый менеджер",
+                    "Тип звонка": "sales_call",
+                    "Краткое резюме разговора": "Клиент окончательно отказался",
+                    "Возражения": "Не актуально",
+                    "Следующий шаг": "Не звонить",
+                    "Имя исходного файла": "call.mp3",
+                    "Источник лучшего статуса": "/tmp/source.db",
+                }
+            ],
+            call_ids=["call-1"],
+            first_call_at="2026-07-01 10:00:00",
+            last_call_at="2026-07-01 10:00:00",
+            manager_history=["Старый менеджер"],
+            interest_summary="Интереса нет",
+            objections_summary="Курс не нужен",
+            current_sales_temperature="cold",
+            recommended_next_step="Закрыть сделку",
+            follow_up_due_at=None,
+            history_summary="Окончательный отказ",
+            chronology="2026-07-01: окончательный отказ",
+            tallanto_id="",
+            tallanto_match_status="",
+        )
+        fresh_summary = "Клиент просит вернуться после экзаменов, интерес сохраняется"
+        fresh_objection = "Срок зависит от результатов экзаменов"
+        fresh_next_step = "Перезвонить после экзаменов"
+        fresh_analysis = {
+            "history_summary": fresh_summary,
+            "follow_up_score": 85,
+            "display_fields": {
+                "interests": {"products": ["Летняя школа"], "subjects": ["Физика"]},
+                "objections": [fresh_objection],
+                "next_step": {"action": fresh_next_step, "due": "2026-08-20"},
+                "lead_priority": "warm",
+            },
+        }
+        candidate = deals_module.LeadCandidate(
+            contact_id=1,
+            lead_id=10,
+            score=95,
+            confidence=0.95,
+            reason="test",
+            lead={"id": 10},
+        )
+        lead = {
+            "id": 10,
+            "name": "Сделка",
+            "pipeline_id": 100,
+            "status_id": 143,
+        }
+
+        with patch.object(deals_module, "fetch_lead", return_value=lead), patch.object(
+            deals_module, "fetch_lead_notes", return_value=[]
+        ), patch.object(deals_module, "fetch_lead_tasks", return_value=[]), patch.object(
+            deals_module, "_analysis_mode", return_value="heuristic"
+        ), patch(
+            "mango_mvp.amocrm_runtime.deal_dossier._fetch_call_artifact",
+            return_value={"id": 1, "analysis_json": "{}", "transcript_text": ""},
+        ), patch(
+            "mango_mvp.amocrm_runtime.deal_dossier._guarded_call_analysis",
+            return_value=(fresh_analysis, False),
+        ), patch(
+            "mango_mvp.amocrm_runtime.deal_dossier.build_live_tallanto_context",
+            return_value={},
+        ):
+            final, heuristic, _, _, _ = deals_module._build_dossier_and_analysis(
+                object(),
+                phone_context=stale_context,
+                candidate=candidate,
+                contact={"id": 1, "name": "Ивановы"},
+                pipelines=[
+                    {
+                        "id": 100,
+                        "name": "Сделки B2C",
+                        "statuses": [{"id": 143, "name": "Закрыто"}],
+                    }
+                ],
+                users=[],
+            )
+
+        for analysis in (heuristic, final):
+            self.assertEqual(analysis["close_verdict"], "reopen_recommended")
+            self.assertEqual(analysis["latest_call_summary"], fresh_summary)
+            self.assertEqual(analysis["history_summary"], fresh_summary)
+            self.assertEqual(analysis["interest_summary"], "Летняя школа | Физика")
+            self.assertEqual(analysis["objections_summary"], fresh_objection)
+            self.assertEqual(analysis["recommended_next_step"], fresh_next_step)
+            self.assertEqual(analysis["follow_up_due_at"], "2026-08-20")
+            self.assertNotIn("окончательный отказ", json.dumps(analysis, ensure_ascii=False).casefold())
+        self.assertTrue(final["writeback_allowed"])
+        payload = deals_module._prepare_writeback_payload(final)
+        self.assertEqual(payload["AI-рекомендованный следующий шаг"], fresh_next_step)
+        self.assertIn(fresh_summary, payload["AI-сводка по сделке"])
+        self.assertIn(fresh_objection, payload["AI-сводка по сделке"])
+        self.assertNotIn("окончательный отказ", json.dumps(payload, ensure_ascii=False).casefold())
 
     def test_prepare_writeback_payload_does_not_include_ai_office_by_default(self) -> None:
         payload = deals_module._prepare_writeback_payload(
@@ -714,6 +1260,8 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
                     "deal_summary": "Новая AI-сводка",
                     "status_id": 124,
                     "latest_call_summary": "Контекст клиента",
+                    "call_source_snapshot": [],
+                    "call_source_count": 0,
                 },
             )
 
@@ -765,11 +1313,45 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
                     "deal_summary": "Новый контекст",
                     "status_id": 124,
                     "latest_call_summary": "Контекст клиента",
+                    "call_source_snapshot": [],
+                    "call_source_count": 0,
                 },
             )
 
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "safe_mode_prevented_overwrite")
+        send_mock.assert_not_called()
+
+    def test_write_analysis_to_lead_rechecks_call_sources_before_first_amo_write(self) -> None:
+        analysis = {
+            "matched_lead_id": 779,
+            "writeback_blockers": [],
+            "close_verdict": "follow_up_needed",
+            "recommended_next_step": "Перезвонить",
+            "deal_summary": "Свежая сводка",
+            "status_id": 124,
+            "call_source_count": 1,
+            "call_source_snapshot": [
+                {
+                    "source_db_path": "/tmp/calls.db",
+                    "source_filename": "call.mp3",
+                    "source_fingerprint": "a" * 64,
+                }
+            ],
+        }
+        with patch.object(
+            deals_module,
+            "fetch_lead",
+            return_value={"id": 779, "custom_fields_values": []},
+        ), patch.object(
+            deals_module, "call_source_snapshot_is_current", return_value=False
+        ), patch.object(deals_module, "send_lead_custom_field_update") as send_mock:
+            with self.assertRaisesRegex(ValueError, "source changed"):
+                deals_module.write_analysis_to_lead(
+                    None,  # type: ignore[arg-type]
+                    analysis=analysis,
+                )
+
         send_mock.assert_not_called()
 
     def test_send_contact_custom_field_update_uses_contact_allowlist_and_protected_fields(self) -> None:

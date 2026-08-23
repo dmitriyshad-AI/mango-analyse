@@ -6,6 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.maintenance.canonical_master import (
     CanonicalMasterConfig,
     build_canonical_master_preview,
@@ -26,6 +28,7 @@ def _db(path: Path, rows: list[dict[str, object]]) -> None:
                 source_file text,
                 source_filename text,
                 source_call_id text,
+                source_recording_id text,
                 duration_sec real,
                 phone text,
                 manager_name text,
@@ -51,18 +54,19 @@ def _db(path: Path, rows: list[dict[str, object]]) -> None:
             con.execute(
                 """
                 insert into call_records (
-                    id, source_file, source_filename, source_call_id, duration_sec, phone,
+                    id, source_file, source_filename, source_call_id, source_recording_id, duration_sec, phone,
                     manager_name, direction, started_at, transcription_status, resolve_status,
                     analysis_status, sync_status, transcript_text, transcript_manager,
                     transcript_client, transcript_variants_json, resolve_json,
                     resolve_quality_score, analysis_json, dead_letter_stage, updated_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     idx,
                     row.get("source_file", f"/tmp/{row['source_filename']}"),
                     row["source_filename"],
                     row.get("source_call_id"),
+                    row.get("source_recording_id"),
                     row.get("duration_sec", 10),
                     row.get("phone", "+79160000000"),
                     row.get("manager_name", "Менеджер"),
@@ -323,3 +327,46 @@ def test_canonical_master_write_creates_db_with_provenance_and_exclusions(tmp_pa
         assert excluded_row["transcription_status"] == ""
     finally:
         con.close()
+
+
+def test_canonical_master_rejects_duplicate_nonempty_source_recording_id(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "audio"
+    source_dir.mkdir()
+    first = "2025-01-01__10-00-00__Анна__79160000001.mp3"
+    second = "2025-01-01__11-00-00__Анна__79160000002.mp3"
+    _audio(source_dir, first)
+    _audio(source_dir, second)
+    db = tmp_path / "calls.db"
+    _db(
+        db,
+        [
+            {"source_filename": first, "source_recording_id": " recording-duplicate "},
+            {"source_filename": second, "source_recording_id": "recording-duplicate"},
+        ],
+    )
+    included = tmp_path / "included.tsv"
+    _write_included(included, [db])
+    out_root = tmp_path / "out"
+
+    with pytest.raises(
+        ValueError,
+        match="duplicate non-empty source_recording_id blocks canonical master release",
+    ):
+        build_canonical_master_preview(
+            CanonicalMasterConfig(
+                project_root=tmp_path,
+                source_dir=source_dir,
+                included_dbs_tsv=included,
+                out_root=out_root,
+                mode="write",
+                expected_source_audio=2,
+                expected_excluded_no_asr=0,
+                expected_actionable_source_audio=2,
+                expected_asr_done_actionable=2,
+                expected_full_ra_actionable=2,
+            )
+        )
+
+    assert not (out_root / "canonical_calls_master.db").exists()

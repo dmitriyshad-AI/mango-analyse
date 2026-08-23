@@ -39,6 +39,29 @@ def ssh_files(root: Path) -> dict[str, Path]:
     return {"identity_file": identity, "known_hosts": known_hosts}
 
 
+def runtime_config(root: Path, pipeline_root: Path) -> Path:
+    staging = root / "staging"
+    staging.mkdir(exist_ok=True)
+    path = root / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "pipeline_root": str(pipeline_root),
+                "timeline_db": str(staging / "customer_timeline_staging.sqlite"),
+                "timeline_allowed_root": str(staging),
+                "python_executable": sys.executable,
+                "codex_binary": sys.executable,
+                "codex_home_root": str(root / "codex_home"),
+                "require_cutover_authority": False,
+                "strict_ready_provenance": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
 def test_receiver_dry_run_does_not_write(tmp_path: Path) -> None:
     package, sha = make_package(tmp_path / "incoming", "one")
     target = tmp_path / "pipeline"
@@ -46,6 +69,22 @@ def test_receiver_dry_run_does_not_write(tmp_path: Path) -> None:
 
     assert result["status"] == "dry_run"
     assert not target.exists()
+
+
+def test_receiver_repo_gate_uses_fail_closed_exact_git_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = "a" * 40
+    monkeypatch.setattr(receiver, "current_git_sha", lambda _repo: expected)
+    monkeypatch.setattr(receiver, "git_worktree_is_clean", lambda _repo: False)
+
+    with pytest.raises(RuntimeError, match="does not match executable"):
+        receiver.verify_repo(tmp_path, expected)
+    with pytest.raises(RuntimeError, match="not exact and clean"):
+        receiver.verify_repo(receiver.ROOT, expected)
+
+    monkeypatch.setattr(receiver, "git_worktree_is_clean", lambda _repo: True)
+    receiver.verify_repo(receiver.ROOT, expected)
 
 
 def test_receiver_accepts_reuses_and_preserves_one_rollback(tmp_path: Path) -> None:
@@ -178,6 +217,7 @@ def test_pull_dry_run_has_no_network_and_execute_accepts_exact_drop(tmp_path: Pa
     assert result["status"] == "accepted" and result["sha256"] == sha and len(runner.commands) == 3
     assert all(command[0] == "/usr/bin/rsync" and "BatchMode=yes" in " ".join(command) for command in runner.commands)
     assert receiver.sha256_file(tmp_path / "pipeline" / "drop" / receiver.DB_NAME) == sha
+    assert not any((tmp_path / "incoming").iterdir())
 
     second = FakePullRunner(package)
     reused = puller.pull_drop(**kwargs, execute=True, confirmation=puller.CONFIRMATION, runner=second)
@@ -191,28 +231,236 @@ def test_rsync_command_uses_owner_only_identity_and_known_hosts(tmp_path: Path) 
     identity.chmod(0o600)
     known_hosts.chmod(0o600)
 
-    command = puller.rsync_command(
-        "worker", "/drop/manifest.json", tmp_path / "manifest.json",
-        identity_file=identity, known_hosts=known_hosts,
-    )
+    with puller.materialized_ssh_files(
+        identity, known_hosts, directory=tmp_path
+    ) as material:
+        material_root = material.identity_file.parent
+        command = puller.rsync_command(
+            "worker",
+            "/drop/manifest.json",
+            tmp_path / "manifest.json",
+            ssh_material=material,
+        )
+        assert material.identity_file != identity
+        assert material.identity_file.read_text(encoding="utf-8") == "private placeholder"
+        assert material.known_hosts.read_text(encoding="utf-8") == "host placeholder"
+        assert f"-i {material.identity_file}" in command[4]
+        assert "IdentitiesOnly=yes" in command[4]
+        assert f"UserKnownHostsFile={material.known_hosts}" in command[4]
+    assert not material_root.exists()
 
-    assert f"-i {identity}" in command[4]
-    assert "IdentitiesOnly=yes" in command[4]
-    assert f"UserKnownHostsFile={known_hosts}" in command[4]
     identity.chmod(0o644)
     with pytest.raises(RuntimeError, match="owner-only"):
-        puller.rsync_command(
-            "worker", "/drop/manifest.json", tmp_path / "manifest.json",
-            identity_file=identity, known_hosts=known_hosts,
-        )
+        with puller.materialized_ssh_files(
+            identity, known_hosts, directory=tmp_path
+        ):
+            pass
     identity.chmod(0o600)
     symlink = tmp_path / "identity-link"
     symlink.symlink_to(identity)
     with pytest.raises(RuntimeError, match="owner-only"):
-        puller.rsync_command(
-            "worker", "/drop/manifest.json", tmp_path / "manifest.json",
-            identity_file=symlink, known_hosts=known_hosts,
+        with puller.materialized_ssh_files(
+            symlink, known_hosts, directory=tmp_path
+        ):
+            pass
+
+
+def test_new_transfer_removes_stale_crash_secret_residue(tmp_path: Path) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir(mode=0o700)
+    pipeline = tmp_path / "pipeline"
+    stale = puller.prepare_transfer_directory(incoming, pipeline)
+    auth_root = stale / ".ssh-auth-crashed"
+    auth_root.mkdir(mode=0o700)
+    identity = auth_root / "identity"
+    identity.write_text("stale-secret", encoding="utf-8")
+    identity.chmod(0o600)
+
+    replacement = puller.prepare_transfer_directory(incoming, pipeline)
+
+    assert replacement == stale
+    assert list(replacement.iterdir()) == []
+    assert puller.transfer_marker_path(replacement).is_file()
+
+
+def test_stale_transfer_without_provenance_is_not_deleted(tmp_path: Path) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir(mode=0o700)
+    pipeline = tmp_path / "pipeline"
+    provenance = puller.transfer_provenance(incoming, pipeline)
+    unproven = incoming / provenance["transfer_name"]
+    unproven.mkdir(mode=0o700)
+    user_file = unproven / "user-file.txt"
+    user_file.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        puller.prepare_transfer_directory(incoming, pipeline)
+
+    assert user_file.read_text(encoding="utf-8") == "preserve"
+
+
+def test_orphan_provenance_marker_recovers_before_transfer_creation(
+    tmp_path: Path,
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir(mode=0o700)
+    pipeline = tmp_path / "pipeline"
+    expected = puller.transfer_provenance(incoming, pipeline)
+    transfer = incoming / expected["transfer_name"]
+    marker = puller.transfer_marker_path(transfer)
+    marker.write_text(
+        json.dumps(expected, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    marker.chmod(0o600)
+
+    prepared = puller.prepare_transfer_directory(incoming, pipeline)
+
+    assert prepared == transfer
+    assert prepared.is_dir()
+    assert puller.transfer_marker_path(prepared).is_file()
+
+
+def test_orphan_transfer_marker_atomic_temp_is_cleaned(tmp_path: Path) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir(mode=0o700)
+    pipeline = tmp_path / "pipeline"
+    expected = puller.transfer_provenance(incoming, pipeline)
+    transfer = incoming / expected["transfer_name"]
+    marker = puller.transfer_marker_path(transfer)
+    residue = incoming / f".{marker.name}.crash123.tmp"
+    residue.write_text("partial marker", encoding="utf-8")
+    residue.chmod(0o600)
+
+    prepared = puller.prepare_transfer_directory(incoming, pipeline)
+
+    assert prepared == transfer
+    assert not residue.exists()
+    assert marker.is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL control")
+def test_pull_rejects_extended_acl_on_incoming_before_network(
+    tmp_path: Path,
+) -> None:
+    package, _ = make_package(tmp_path / "remote", "one")
+    incoming = tmp_path / "incoming"
+    incoming.mkdir(mode=0o700)
+    incoming.chmod(0o700)
+    subprocess.run(
+        [
+            "/bin/chmod",
+            "+a",
+            "everyone allow list,search,add_file,add_subdirectory,delete_child",
+            str(incoming),
+        ],
+        check=True,
+    )
+    runner = FakePullRunner(package)
+
+    with pytest.raises(RuntimeError, match="extended_acl"):
+        puller.pull_drop(
+            remote_host="m1-worker",
+            remote_drop_root="/Users/test/.mango_local/drop",
+            incoming_root=incoming,
+            pipeline_root=tmp_path / "pipeline",
+            execute=True,
+            confirmation=puller.CONFIRMATION,
+            runner=runner,
+            **ssh_files(tmp_path),
         )
+
+    assert runner.commands == []
+
+
+def test_pull_rejects_cloud_incoming_before_network(tmp_path: Path) -> None:
+    package, _ = make_package(tmp_path / "remote", "one")
+    incoming = (
+        tmp_path
+        / "Library"
+        / "CloudStorage"
+        / "GoogleDrive-test"
+        / "incoming"
+    )
+    runner = FakePullRunner(package)
+
+    with pytest.raises(RuntimeError, match="unsafe"):
+        puller.pull_drop(
+            remote_host="m1-worker",
+            remote_drop_root="/Users/test/.mango_local/drop",
+            incoming_root=incoming,
+            pipeline_root=tmp_path / "pipeline",
+            execute=True,
+            confirmation=puller.CONFIRMATION,
+            runner=runner,
+            **ssh_files(tmp_path),
+        )
+
+    assert runner.commands == []
+
+
+def test_pull_rejects_cloud_ssh_source_before_network(tmp_path: Path) -> None:
+    package, _ = make_package(tmp_path / "remote", "one")
+    credentials = ssh_files(tmp_path)
+    cloud_identity = (
+        tmp_path
+        / "Library"
+        / "CloudStorage"
+        / "GoogleDrive-test"
+        / "identity"
+    )
+    cloud_identity.parent.mkdir(parents=True)
+    credentials["identity_file"].replace(cloud_identity)
+    credentials["identity_file"] = cloud_identity
+    runner = FakePullRunner(package)
+
+    with pytest.raises(RuntimeError, match="outside repository and cloud"):
+        puller.pull_drop(
+            remote_host="m1-worker",
+            remote_drop_root="/Users/test/.mango_local/drop",
+            incoming_root=tmp_path / "incoming",
+            pipeline_root=tmp_path / "pipeline",
+            execute=True,
+            confirmation=puller.CONFIRMATION,
+            runner=runner,
+            **credentials,
+        )
+
+    assert runner.commands == []
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL control")
+@pytest.mark.parametrize("credential_name", ["identity_file", "known_hosts"])
+def test_pull_rejects_extended_acl_on_ssh_files_before_network(
+    tmp_path: Path,
+    credential_name: str,
+) -> None:
+    package, _ = make_package(tmp_path / "remote", "one")
+    credentials = ssh_files(tmp_path)
+    subprocess.run(
+        [
+            "/bin/chmod",
+            "+a",
+            "everyone allow read",
+            str(credentials[credential_name]),
+        ],
+        check=True,
+    )
+    runner = FakePullRunner(package)
+
+    with pytest.raises(RuntimeError, match="owner-only"):
+        puller.pull_drop(
+            remote_host="m1-worker",
+            remote_drop_root="/Users/test/.mango_local/drop",
+            incoming_root=tmp_path / "incoming",
+            pipeline_root=tmp_path / "pipeline",
+            execute=True,
+            confirmation=puller.CONFIRMATION,
+            runner=runner,
+            **credentials,
+        )
+
+    assert runner.commands == []
 
 
 def test_execute_cli_requires_dedicated_ssh_files(tmp_path: Path) -> None:
@@ -287,6 +535,8 @@ def test_pull_rejects_symlinked_incoming_before_network(tmp_path: Path) -> None:
 def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) -> None:
     package, _ = make_package(tmp_path / "remote", "one")
     events: list[str] = []
+    pipeline = tmp_path / "pipeline"
+    config = runtime_config(tmp_path, pipeline)
 
     class OrderedTransfer(FakePullRunner):
         def __call__(self, command: list[str] | tuple[str, ...]) -> subprocess.CompletedProcess[str]:
@@ -299,8 +549,8 @@ def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) 
 
     result = puller.pull_then_process_b(
         remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
-        incoming_root=tmp_path / "incoming", pipeline_root=tmp_path / "pipeline",
-        config=tmp_path / "config.json", execute=True, confirmation=puller.CONFIRMATION,
+        incoming_root=tmp_path / "incoming", pipeline_root=pipeline,
+        config=config, execute=True, confirmation=puller.CONFIRMATION,
         transfer_runner=OrderedTransfer(package), process_runner=process_ok, **ssh_files(tmp_path),
     )
     assert result["process_b_status"] == "ok" and events == ["transfer", "transfer", "transfer", "process_b"]
@@ -309,12 +559,46 @@ def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) 
     with pytest.raises(RuntimeError, match="did not complete"):
         puller.pull_then_process_b(
             remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
-            incoming_root=tmp_path / "incoming", pipeline_root=tmp_path / "pipeline",
-            config=tmp_path / "config.json", execute=True, confirmation=puller.CONFIRMATION,
+            incoming_root=tmp_path / "incoming", pipeline_root=pipeline,
+            config=config, execute=True, confirmation=puller.CONFIRMATION,
             transfer_runner=FakePullRunner(other), **ssh_files(tmp_path),
             process_runner=lambda command: subprocess.CompletedProcess(
                 command, 0, stdout='{"status":"locked","stop_reason":"timeline_writer_locked"}\n', stderr=""),
         )
+
+
+def test_pull_rejects_changed_wrapper_config_before_network_or_local_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mango_mvp.productization.mango_calls_config import (
+        EXPECTED_CONFIG_SHA_ENV,
+    )
+
+    package, _ = make_package(tmp_path / "remote", "one")
+    pipeline = tmp_path / "pipeline"
+    config = runtime_config(tmp_path, pipeline)
+    expected = hashlib.sha256(config.read_bytes()).hexdigest()
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["poll_overlap_minutes"] = 31
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(EXPECTED_CONFIG_SHA_ENV, expected)
+    runner = FakePullRunner(package)
+
+    with pytest.raises(RuntimeError, match="snapshot_mismatch"):
+        puller.pull_then_process_b(
+            remote_host="m1-worker",
+            remote_drop_root="/Users/test/.mango_local/drop",
+            incoming_root=tmp_path / "incoming",
+            pipeline_root=pipeline,
+            config=config,
+            execute=True,
+            confirmation=puller.CONFIRMATION,
+            transfer_runner=runner,
+            **ssh_files(tmp_path),
+        )
+
+    assert runner.commands == []
+    assert not pipeline.exists()
 
 
 def test_readonly_rsync_gate_allows_only_two_sender_paths(tmp_path: Path) -> None:

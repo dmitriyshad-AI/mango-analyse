@@ -21,6 +21,8 @@ from mango_mvp.services.analyze import (
     build_analysis_migration_call_snapshot,
     migrate_analysis_payload,
 )
+from mango_mvp.services.controlled_call_scope import enforce_controlled_cli_command
+from mango_mvp.services.dialogue_contract import call_record_view, guard_stored_analysis
 from mango_mvp.services.export_excel import build_call_rows, build_contact_rows, write_workbook
 from mango_mvp.services.export_ai_office import push_call_insights
 from mango_mvp.services.ingest import ingest_from_directory
@@ -626,6 +628,7 @@ def cmd_export_crm_fields(args) -> int:
             continue
         if not isinstance(analysis, dict):
             continue
+        analysis = guard_stored_analysis(call_record_view(call), analysis)
 
         blocks = _as_dict(analysis.get("structured_fields"))
         if not blocks:
@@ -770,6 +773,7 @@ def cmd_export_sales_workbook(args) -> int:
 
 def cmd_reset_analysis(args) -> int:
     settings = get_settings()
+    enforce_controlled_cli_command(settings, "reset-analysis")
     session_factory = build_session_factory(settings)
     requested_statuses = _parse_status_list(args.statuses)
     if not requested_statuses:
@@ -778,9 +782,7 @@ def cmd_reset_analysis(args) -> int:
     with session_factory() as session:
         query = select(CallRecord).where(CallRecord.transcription_status == "done")
         if args.only_terminal_resolve:
-            query = query.where(
-                or_(CallRecord.resolve_status.in_(["done", "skipped"]), CallRecord.resolve_status.is_(None))
-            )
+            query = query.where(CallRecord.resolve_status.in_(["done", "skipped"]))
         if args.only_analysis_dead_letter:
             query = query.where(
                 or_(CallRecord.dead_letter_stage.is_(None), CallRecord.dead_letter_stage == "analyze")
@@ -845,7 +847,7 @@ def cmd_push_ai_office_insights(args) -> int:
         result["out"] = str(out_path.resolve())
 
     _json_print(result)
-    return 0
+    return 1 if int(result.get("failed") or 0) else 0
 
 
 def cmd_sync(args) -> int:
@@ -1004,6 +1006,7 @@ def cmd_worker(args) -> int:
 
 def cmd_requeue(args) -> int:
     settings = get_settings()
+    enforce_controlled_cli_command(settings, "requeue")
     session_factory = build_session_factory(settings)
     stage = args.stage
     with session_factory() as session:
@@ -1053,6 +1056,7 @@ def cmd_requeue(args) -> int:
 
 def cmd_reset_transcribe(args) -> int:
     settings = get_settings()
+    enforce_controlled_cli_command(settings, "reset-transcribe")
     session_factory = build_session_factory(settings)
     with session_factory() as session:
         query = select(CallRecord)
@@ -1401,15 +1405,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    previous_umask = os.umask(0o077) if _env_truthy("MANGO_STRICT_ASR_RUNTIME") else None
     try:
-        return args.func(args)
-    except KeyboardInterrupt:
-        return 130
-    except Exception as exc:  # noqa: BLE001
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        try:
+            enforce_controlled_cli_command(get_settings(), str(args.command))
+            return args.func(args)
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    finally:
+        if previous_umask is not None:
+            os.umask(previous_umask)
 
 
 if __name__ == "__main__":

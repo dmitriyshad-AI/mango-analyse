@@ -441,6 +441,229 @@ def test_ambiguous_service_callback_with_asr_junk_is_manual_not_auto_apply() -> 
     assert "safeguard_ambiguous_service_attempt" in result.reason_codes
 
 
+def test_short_live_answer_under_a_manager_no_contact_phrase_is_not_auto_closed() -> None:
+    """ТЗ 2026-08-22: brevity plus a manager-side no-contact phrase is not proof.
+
+    The client really answered and carries no IVR/voicemail/secretary marker, so
+    the row goes to review instead of being rewritten to non_conversation.
+    """
+    text = (
+        "MANAGER:\n"
+        "Здравствуйте, вчера не удалось дозвониться до вас.\n\n"
+        "CLIENT:\n"
+        "Да, здравствуйте, слушаю."
+    )
+
+    result = detect_non_conversation_signals(text, call_type="sales_call", duration_sec=18)
+
+    assert result.client_human_response is True
+    assert result.should_force_non_conversation is False
+    assert result.requires_manual_review is True
+    assert result.recommended_call_type is None
+
+
+@pytest.mark.parametrize("reply", ["Перезвоните завтра", "Я сейчас занята"])
+def test_plain_multiword_client_reply_is_not_auto_closed(reply: str) -> None:
+    text = f"MANAGER:\nЗдравствуйте.\n\nCLIENT:\n{reply}."
+
+    result = detect_non_conversation_signals(text, duration_sec=12)
+
+    assert result.client_human_response is True
+    assert result.should_force_non_conversation is False
+    assert result.requires_manual_review is True
+    assert result.recommended_contact_subtype == "live_contact_without_business_content"
+
+
+def test_unattributed_tracks_with_short_action_reply_are_not_auto_closed() -> None:
+    result = detect_non_conversation_signals(
+        "CHANNEL_LEFT:\nАлло, здравствуйте.\n\nCHANNEL_RIGHT:\nПерезвоните завтра."
+    )
+
+    assert result.should_force_non_conversation is False
+    assert "explicit_short_action_response" in result.reason_codes
+
+
+def test_manager_only_short_phrase_is_not_invented_as_a_client_reply() -> None:
+    result = detect_non_conversation_signals(
+        "CHANNEL_LEFT:\nХорошо.\n\nCHANNEL_RIGHT:\n"
+    )
+
+    assert result.client_human_response is False
+    assert "explicit_short_action_response" not in result.reason_codes
+
+
+def test_long_client_dialogue_does_not_get_the_short_reply_reason() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nРасскажите, пожалуйста.\n\nCLIENT:\n"
+        "Хорошо, ребёнок уже учится у вас, и сейчас я уточняю расписание, "
+        "доступ к материалам и время следующего занятия с преподавателем."
+    )
+
+    assert "explicit_short_action_response" not in result.reason_codes
+
+
+def test_a_voicemail_answering_for_the_client_is_still_closed_automatically() -> None:
+    """NEG: the relaxation must not reach a call the client never joined."""
+    text = (
+        "MANAGER:\n"
+        "Здравствуйте, вчера не удалось дозвониться до вас.\n\n"
+        "CLIENT:\n"
+        "Абонент сейчас не может ответить на ваш звонок. "
+        "Оставьте сообщение после звукового сигнала."
+    )
+
+    result = detect_non_conversation_signals(text, call_type="sales_call", duration_sec=18)
+
+    assert result.client_human_response is False
+    assert result.label == LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+    assert result.should_force_non_conversation is True
+
+
+def test_multiword_asr_artifact_is_not_treated_as_a_live_client_reply() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nАлло.\n\nCLIENT:\nПродолжение следует. Спасибо за просмотр.",
+        duration_sec=12,
+    )
+
+    assert result.client_human_response is False
+    assert result.should_force_non_conversation is True
+
+
+@pytest.mark.parametrize(
+    "system_reply",
+    [
+        "Алло, с вами говорит виртуальный ассистент.",
+        "Алло, абонент сейчас никак не сможет взять трубку.",
+        "Телефон звонит. Соединение установлено, пожалуйста подождите. "
+        "Здравствуйте, с вами говорит автоответчик.",
+    ],
+)
+def test_virtual_assistant_and_nikak_ne_smozhet_are_auto_closed(system_reply: str) -> None:
+    result = detect_non_conversation_signals(
+        f"MANAGER:\nАлло.\n\nCLIENT:\n{system_reply}",
+        duration_sec=8,
+    )
+
+    assert result.client_human_response is False
+    assert result.should_force_non_conversation is True
+
+
+def test_split_virtual_secretary_script_is_not_a_live_client_reply() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nЗдравствуйте, это секретарь Оля. Передам, что вы звонили. "
+        "Если хотите, добавьте что-то и положите трубку.\n\n"
+        "CLIENT:\nАлло. Чем могу помочь? Хорошо, все запомнила. Еще что-то?",
+        duration_sec=24,
+    )
+
+    assert result.should_force_non_conversation is True
+    assert result.requires_manual_review is False
+
+
+@pytest.mark.parametrize(
+    "system_reply",
+    [
+        "Это Мия. У абонента нет возможности взять трубку.",
+        "Я электронный помощник. Абоненту пока неудобно разговаривать.",
+        "Меня попросили принять ваше сообщение, я передам это абоненту.",
+    ],
+)
+def test_high_precision_secretary_scripts_are_auto_closed_across_tracks(
+    system_reply: str,
+) -> None:
+    result = detect_non_conversation_signals(
+        f"MANAGER:\n{system_reply}\n\nCLIENT:\nАлло, меня слышно?",
+        history_summary="Содержательного разговора не было.",
+        duration_sec=20,
+    )
+
+    assert result.should_force_non_conversation is True
+    assert result.requires_manual_review is False
+
+
+@pytest.mark.parametrize(
+    "human_reply",
+    [
+        "Мне сейчас не очень удобно говорить, перезвоните вечером.",
+        "Здравствуйте, меня слышно? Я вас слышу.",
+    ],
+)
+def test_live_first_person_reply_is_not_confused_with_a_secretary_script(
+    human_reply: str,
+) -> None:
+    result = detect_non_conversation_signals(
+        f"MANAGER:\nДобрый день.\n\nCLIENT:\n{human_reply}",
+        history_summary="Содержательного разговора не было.",
+        duration_sec=20,
+    )
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+
+
+def test_live_person_named_miya_is_not_a_virtual_secretary() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nЭто Мия, учебный центр Фотон. Расскажу про курс и оплату.\n\n"
+        "CLIENT:\nЗдравствуйте, хочу записать ребёнка на математику.",
+        call_type="sales_call",
+        duration_sec=80,
+    )
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+
+
+def test_live_person_named_miya_may_offer_to_take_a_message() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nЭто Мия, учебный центр Фотон. Оставьте сообщение куратору.\n\n"
+        "CLIENT:\nХочу записать ребёнка на курс и уточнить стоимость.",
+        call_type="sales_call",
+        duration_sec=70,
+    )
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+
+
+def test_generated_history_cannot_turn_a_live_call_into_a_virtual_secretary() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nРасскажу про курс и договор.\n\n"
+        "CLIENT:\nХочу записать ребёнка на математику и уточнить стоимость.",
+        history_summary="Я передам это абоненту.",
+        call_type="sales_call",
+        duration_sec=80,
+    )
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+
+
+@pytest.mark.parametrize(
+    "system_reply",
+    [
+        "Абонент не берет трубку. Попробуйте перезвонить.",
+        "Тот, кому вы звоните, не отвечает. Попросите его перезвонить.",
+    ],
+)
+def test_provider_no_answer_phrases_are_not_short_live_replies(system_reply: str) -> None:
+    result = detect_non_conversation_signals(
+        f"MANAGER:\nПродолжение следует.\n\nCLIENT:\n{system_reply}",
+        duration_sec=15,
+    )
+
+    assert result.client_human_response is False
+    assert result.should_force_non_conversation is True
+
+
+def test_manager_business_language_is_not_a_virtual_secretary() -> None:
+    result = detect_non_conversation_signals(
+        "MANAGER:\nПередам ваш вопрос руководителю курса по искусственному интеллекту.\n\n"
+        "CLIENT:\nХорошо, я перезвоню завтра."
+    )
+
+    assert result.should_force_non_conversation is False
+
+
 def test_adversarial_regression_dataset_keeps_expected_safety_boundaries() -> None:
     path = (
         Path(__file__).resolve().parents[1]

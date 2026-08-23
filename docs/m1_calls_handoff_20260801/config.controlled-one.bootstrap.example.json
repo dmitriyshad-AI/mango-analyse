@@ -1,0 +1,30 @@
+{
+  "pipeline_root": "<HOME>/.mango_local/controlled-mango-call-<RUN_ID>",
+  "timeline_db": "<HOME>/.mango_local/controlled-mango-call-<RUN_ID>/timeline/customer_timeline.sqlite",
+  "timeline_allowed_root": "<HOME>/.mango_local/controlled-mango-call-<RUN_ID>/timeline",
+  "python_executable": "<HOME>/.mango_local/mango_calls_runtime/venv/bin/python",
+  "codex_binary": "<CODEX_BINARY>",
+  "codex_home_root": "<HOME>/.mango_local/controlled-mango-call-<RUN_ID>/codex-home",
+  "tenant_id": "foton",
+  "min_free_gib": 60,
+  "stage_limit": 1,
+  "asr_mode": "mlx_dual",
+  "codex_resolve_model": "gpt-5.4",
+  "codex_analyze_model": "gpt-5.4-mini",
+  "codex_reasoning_effort": "medium",
+  "codex_service_tier": "flex",
+  "processing_scope": "controlled_1_prepare",
+  "runtime_authority_mode": "isolated_controlled",
+  "production_cursor_guard_path": "<HOME>/.mango_local/mango_calls_two_processes/state/mango_api_freshness.json",
+  "mlx_whisper_snapshot_path": "<MLX_WHISPER_LARGE_V3_SNAPSHOT>",
+  "expected_code_sha": "<40_HEX_CODE_SHA>",
+  "host_id_path": "<HOME>/.mango_local/controlled-mango-call-<RUN_ID>/state/host_id",
+  "expected_active_host_id": "<M1_HOST_ID>",
+  "require_cutover_authority": false,
+  "strict_ready_provenance": true,
+  "publication_root": "<HOME>/.mango_local/controlled-mango-call-<RUN_ID>/publication",
+  "current_google": {
+    "owner_email": "<OWNER_EMAIL>",
+    "allowed_emails": ["<ROP_EMAIL>"]
+  }
+}

@@ -1,0 +1,18 @@
+formal_pass: true
+semantic_pass: false
+business_pass: false
+data_pass: false
+runtime_pass: false
+production_ready: false
+
+Claude CLI: 2.1.223, авторизация подтверждена фактическими Opus/Fable/Sonnet
+запусками. Opus: архитектура PASS после добавления NEG lifeline. Sonnet:
+breaker PASS. Fable: controlled-one технически PASS, бизнес-польза ещё не
+доказана.
+
+Codex architect: PASS для отдельно разрешённого controlled-one.
+Codex breaker: PASS после исправления строгой единственной Timeline-строки и
+учёта любого изменения/удаления staging-БД.
+Codex optimizer: P0/P1 не найдено после lifeline/replay/Timeline исправлений.
+
+Внешние эффекты: отсутствуют. Реальные звонки новым runtime: 0.

@@ -1,6 +1,10 @@
+> DONE 2026-08-11 13:54 | ветка codex/m1-calls-service-fast-value-20260811 | codex
+
+> TAKE 2026-08-11 03:08 | ветка codex/m1-calls-service-fast-value-20260811 | codex
+
 Ветка: codex/m1-calls-service-fast-value-20260811
-Зоны: src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/capture_staging.py, src/mango_mvp/services/transcribe.py, scripts/build_mango_calls_stage10_verdict.py, scripts/probe_m1_calls_access.py, scripts/export_daily_mango_calls_resolve.py, scripts/publish_daily_mango_calls_google.py, scripts/publish_current_mango_calls_google.py, scripts/run_mango_calls_process.sh, scripts/run_mango_calls_pipeline.py, scripts/install_mango_calls_two_processes_service.py, scripts/bootstrap_m1_mango_calls.sh, docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md, docs/MANGO_CALLS_TWO_PROCESSES_RUNBOOK.md, docs/m1_calls_handoff_20260801/, deploy/, tests/test_mango_calls_*.py, tests/test_export_daily_mango_calls_resolve.py, tests/test_publish_daily_mango_calls_google.py, tests/test_publish_current_mango_calls_google.py, tests/test_productization_capture_staging.py, requirements-local-whisper.txt, requirements-local-dual-asr.txt, tasks/
-Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_calls_m1_bootstrap.py tests/test_mango_calls_schedule.py tests/test_mango_calls_remote_handoff.py tests/test_mango_calls_two_processes.py tests/test_export_daily_mango_calls_resolve.py tests/test_publish_daily_mango_calls_google.py tests/test_publish_current_mango_calls_google.py tests/test_productization_call_processing_readiness.py tests/test_productization_capture_staging.py tests/test_relocate_mango_calls_pipeline.py tests/test_mango_calls_stage10_verdict.py
+Зоны: src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_config.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/productization/owner_only_io.py, src/mango_mvp/services/transcribe.py, scripts/build_mango_call_timeline_increment.py, scripts/bootstrap_m1_mango_calls.sh, scripts/check_mango_calls_external_watchdog.py, scripts/export_daily_mango_calls_resolve.py, scripts/install_mango_calls_two_processes_service.py, scripts/mango_calls_env.py, scripts/probe_m1_calls_access.py, scripts/publish_current_mango_calls_google.py, scripts/publish_daily_mango_calls_google.py, scripts/pull_mango_calls_drop_remote.py, scripts/receive_mango_calls_drop.py, scripts/run_mango_calls_process.sh, scripts/run_mango_calls_publication_coordinator.py, docs/DECISIONS_LOG.md, docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md, docs/MANGO_CALLS_TWO_PROCESSES_RUNBOOK.md, docs/RUNBOOK.md, docs/m1_calls_handoff_20260801/, docs/worktrees_registry.md, deploy/, audits/_inbox/m1_calls_fast_service_phase_a_20260811/, tests/test_export_daily_mango_calls_resolve.py, tests/test_mango_call_timeline_increment.py, tests/test_mango_calls_external_watchdog.py, tests/test_mango_calls_m1_bootstrap.py, tests/test_mango_calls_publication_coordinator.py, tests/test_mango_calls_remote_handoff.py, tests/test_mango_calls_schedule.py, tests/test_mango_calls_stage10_verdict.py, tests/test_mango_calls_two_processes.py, tests/test_parallel_pipeline.py, tests/test_publish_current_mango_calls_google.py, tests/test_publish_daily_mango_calls_google.py, tests/test_relocate_mango_calls_pipeline.py, tasks/
+Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_call_timeline_increment.py tests/test_mango_calls_external_watchdog.py tests/test_mango_calls_m1_bootstrap.py tests/test_mango_calls_schedule.py tests/test_mango_calls_remote_handoff.py tests/test_mango_calls_two_processes.py tests/test_parallel_pipeline.py tests/test_export_daily_mango_calls_resolve.py tests/test_publish_daily_mango_calls_google.py tests/test_publish_current_mango_calls_google.py tests/test_mango_calls_publication_coordinator.py tests/test_productization_call_processing_readiness.py tests/test_productization_capture_staging.py tests/test_productization_mango_office_client.py tests/test_productization_mango_recordings.py tests/test_relocate_mango_calls_pipeline.py tests/test_mango_calls_stage10_verdict.py
 Семантический-аудит: да
 
 # M1: быстрая постоянная служба обработки звонков
@@ -250,9 +254,12 @@ Process B и предварительная публикация отклоня�
 
 - `schema_version`;
 - `active_host_id`;
+- `previous_host_id`;
 - `expected_code_sha`;
 - `source_cursor_sha256`;
+- `previous_host_snapshot_sha256`;
 - `previous_host_disabled_at`;
+- `previous_host_checked_at`;
 - `approved_at`;
 - `approved_by` без секретов.
 
@@ -265,8 +272,10 @@ Process A до Mango API проверяет этот файл, локальны�
 замком и сам не видит старый компьютер. Поэтому защита процедурная и
 проверяемая:
 
-- `cutover_manifest.json` хранит SHA снимка старых launchd labels, PID/команд,
-  время проверки и `previous_host_disabled_at`;
+- `cutover_manifest.json` v2 хранит SHA отдельного owner-only снимка `0600`;
+- снимок связан с точным `previous_host_id` и `source_cursor_sha256`, содержит
+  полный scan обязательных launchd labels, plist, процессов, cron и файловых
+  блокировок; все списки активного Calls runtime обязаны быть пустыми;
 - M1 не стартует без этого доказательства;
 - постоянный внешний watchdog read-only проверяет отсутствие старого Process A
   и наличие свежего heartbeat M1;
@@ -509,7 +518,8 @@ install и внешней записи. Создать audit pack и получ�
    и cursor; из аудио переносить только незавершённые звонки;
 3. передать напрямую SSH/rsync с полным manifest `path + size + sha256`;
 4. проверить SQLite `integrity_check` и все хеши на M1;
-5. записать `cutover_manifest.json`;
+5. записать owner-only shutdown snapshot и связанный с ним
+   `cutover_manifest.json` v2;
 6. оставить старые данные неизменными для отката.
 
 Так M1 продолжает с места остановки и не повторяет исторический ASR. Полный
@@ -676,3 +686,29 @@ SLA подтвердить замером на 10 реальных звонка�
   отдельно;
 - что не проверено на реальных данных;
 - точные команды следующего ручного шага, но не запускать их без разрешения.
+
+## Результат синтетической Phase A — 2026-08-11
+
+Кодовый SHA:
+`1cea3d8dd00c70f9e50d258b59babe4d9de4388d`.
+
+Статус: **GO для синтетической Phase A; STOP для runtime/cutover**.
+
+- обязательный профиль: `657 passed`, `34 warnings`;
+- preflight: `OK`;
+- Graphify exact SHA: `7140` узлов, `28600` связей, reproducible;
+- Codex architect/business/cleaner/optimizer: GO;
+- Claude Opus/Fable/Sonnet xhigh: GO, P0/P1 нет;
+- реальный Mango API, ASR, Resolve/Analyze, launchd, cutover и внешние записи не
+  запускались;
+- последний обработанный звонок и cursor старого Mac не доказаны;
+- fresh shutdown snapshot старого Mac и связанный `source_cursor_sha256`
+  отсутствуют, поэтому защита от двойной работы ещё не подтверждена фактом;
+- исторические аудио и реальные базы не переносились.
+
+Audit pack:
+`audits/_inbox/m1_calls_fast_service_phase_a_20260811/`.
+
+`formal_pass=true`, `semantic_pass=true`, `business_pass=false`,
+`data_pass=synthetic_only`, `runtime_pass=false`. Синтетика доказывает
+работоспособность кода, но не пользу результата реального звонка сотруднику.

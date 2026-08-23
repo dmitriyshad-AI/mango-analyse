@@ -48,6 +48,8 @@ from mango_mvp.customer_timeline.freshness import (
     source_freshness_rows,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.services.dialogue_contract import PROVIDER_EVIDENCE_FIELD
+from tests import mango_provider_fixture as fx
 
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
@@ -4195,13 +4197,48 @@ def _seed_owner50_member(
 def _canonical_calls_db(tmp_path: Path, transcripts: dict[str, str]) -> Path:
     db = tmp_path / "canonical_calls.sqlite"
     with sqlite3.connect(db) as con:
-        con.execute("CREATE TABLE canonical_calls (canonical_call_id TEXT PRIMARY KEY, transcript_client TEXT)")
-        con.executemany(
-            "INSERT INTO canonical_calls (canonical_call_id, transcript_client) VALUES (?, ?)",
-            sorted(transcripts.items()),
+        con.execute(
+            "CREATE TABLE canonical_calls (canonical_call_id TEXT PRIMARY KEY, "
+            "source_call_id TEXT, source_recording_id TEXT, transcript_text TEXT, "
+            "transcript_variants_json TEXT)"
         )
+        for canonical_id, client_text in sorted(transcripts.items()):
+            source_call_id = f"call-{canonical_id}"
+            recording_id = f"recording-{canonical_id}"
+            if client_text:
+                turns = (("operator", "left", "Добрый день"), ("client", "right", client_text))
+                variants = fx.proven_variants(turns)
+                variants[PROVIDER_EVIDENCE_FIELD] = fx.evidence_for_recording(
+                    turns, source_call_id=source_call_id, recording_id=recording_id
+                )
+            else:
+                variants = {
+                    "mode": "mono_or_fallback",
+                    "role_mapping": {"status": "unverified_mono_or_legacy", "confirmed": False},
+                    "dialogue_lines": ["[00:01.0] Дорожка левая: Добрый день"],
+                }
+            con.execute(
+                "INSERT INTO canonical_calls VALUES (?, ?, ?, ?, ?)",
+                (
+                    canonical_id, source_call_id, recording_id, "",
+                    json.dumps(variants, ensure_ascii=False),
+                ),
+            )
         con.commit()
     return db
+
+
+def test_legacy_canonical_role_text_is_not_trusted_without_provider_evidence(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "legacy_canonical.sqlite"
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE canonical_calls (canonical_call_id TEXT PRIMARY KEY, "
+            "transcript_client TEXT)"
+        )
+        con.execute("INSERT INTO canonical_calls VALUES ('1', 'Курс слишком дорогой')")
+    assert load_canonical_call_client_texts(db) == {}
 
 
 def _seed_full_dossier_tables(db: Path, *, signal_action: str = "Позвонить в понедельник по оплате") -> None:

@@ -61,6 +61,101 @@ class TenantTextArtifact:
     reason: str
 
 
+# ---------------------------------------------------------------------------
+# Provenance wrapper (ТЗ-04 §4): the same compiled patterns, now able to say
+# *which* rule fired, under which engine/ruleset version and for which tenant.
+# There is deliberately no second dictionary and no second regex set: a brand
+# list that exists twice is a brand list that drifts.
+# ---------------------------------------------------------------------------
+TENANT_TEXT_ENGINE_VERSION = "tenant_text_engine_v1"
+# One ruleset per tenant.  A tenant without an entry gets no substitution at
+# all: an unknown customer must never inherit another customer's brand names.
+TENANT_TEXT_RULESET_VERSIONS = {"mango": "tenant_ru_v1"}
+
+RULE_BRAND_KNOWN_ALIAS = "brand.unpk_mfti.known_alias"
+RULE_BRAND_TAIL_VARIANT = "brand.unpk_mfti.tail_variant"
+RULE_SUMMER_SCHOOL = "product.summer_school.night_to_offline"
+RULE_WHITESPACE = "text.whitespace.collapse"
+
+NORMALIZATION_STATUS_DETERMINISTIC = "normalized_deterministic"
+NORMALIZATION_STATUS_UNCHANGED = "unchanged"
+NORMALIZATION_STATUS_SKIPPED = "skipped_unknown_tenant"
+
+
+@dataclass(frozen=True)
+class TenantTextNormalization:
+    """One explainable replacement: raw in, normalized out, rule and version."""
+
+    tenant_id: str
+    raw_value: str
+    normalized_value: str
+    changed: bool
+    rule_ids: tuple[str, ...]
+    engine_version: str
+    ruleset_version: str
+    status: str
+
+
+def tenant_ruleset_version(tenant_id: Any) -> str:
+    """Empty string means: this tenant has no ruleset, so nothing may fire."""
+    return TENANT_TEXT_RULESET_VERSIONS.get(str(tenant_id or "").strip(), "")
+
+
+def normalize_manager_text_with_provenance(
+    value: Any, *, tenant_id: str
+) -> TenantTextNormalization:
+    """Same replacements as :func:`normalize_manager_text`, with provenance.
+
+    ``tenant_id`` is mandatory and never defaulted: the legacy string API keeps
+    its frozen behaviour for its existing callers, and the new Analyse/Google
+    path has to name the tenant it is normalizing for.  An unknown tenant is
+    fail-closed — the raw value is returned untouched with an empty ruleset
+    version, so nothing can be published as "normalized" without a ruleset.
+    """
+    raw = "" if value is None else str(value).strip()
+    ruleset_version = tenant_ruleset_version(tenant_id)
+    if not ruleset_version:
+        return TenantTextNormalization(
+            tenant_id=str(tenant_id or ""),
+            raw_value=raw,
+            normalized_value=raw,
+            changed=False,
+            rule_ids=(),
+            engine_version=TENANT_TEXT_ENGINE_VERSION,
+            ruleset_version="",
+            status=NORMALIZATION_STATUS_SKIPPED,
+        )
+    text = raw
+    applied: list[str] = []
+    text, hits = BRAND_ALIASES_RE.subn("УНПК МФТИ", text)
+    if hits:
+        applied.append(RULE_BRAND_KNOWN_ALIAS)
+    text, hits = UNPK_MFTI_TAIL_VARIANT_RE.subn("УНПК МФТИ", text)
+    if hits:
+        applied.append(RULE_BRAND_TAIL_VARIANT)
+    for pattern, replacement in SUMMER_NIGHT_SCHOOL_PATTERNS:
+        text, hits = pattern.subn(replacement, text)
+        if hits and RULE_SUMMER_SCHOOL not in applied:
+            applied.append(RULE_SUMMER_SCHOOL)
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    if collapsed != text:
+        applied.append(RULE_WHITESPACE)
+    return TenantTextNormalization(
+        tenant_id=str(tenant_id),
+        raw_value=raw,
+        normalized_value=collapsed,
+        changed=collapsed != raw,
+        rule_ids=tuple(applied),
+        engine_version=TENANT_TEXT_ENGINE_VERSION,
+        ruleset_version=ruleset_version,
+        status=(
+            NORMALIZATION_STATUS_DETERMINISTIC
+            if collapsed != raw
+            else NORMALIZATION_STATUS_UNCHANGED
+        ),
+    )
+
+
 def normalize_manager_text(value: Any) -> str:
     """Normalize tenant-specific ASR/LLM artifacts in manager-facing CRM text."""
     text = "" if value is None else str(value).strip()

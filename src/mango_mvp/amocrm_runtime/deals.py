@@ -4,7 +4,7 @@ import concurrent.futures
 import csv
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -26,7 +26,10 @@ from mango_mvp.amocrm_runtime.amo_integration import (
 )
 from mango_mvp.amocrm_runtime.config import get_settings
 from mango_mvp.amocrm_runtime.db import SessionLocal
-from mango_mvp.amocrm_runtime.deal_dossier import build_deal_dossier
+from mango_mvp.amocrm_runtime.deal_dossier import (
+    build_deal_dossier,
+    call_source_snapshot_is_current,
+)
 from mango_mvp.amocrm_runtime.deal_llm import DealLLMAnalyzer, DealLLMError
 from mango_mvp.amocrm_runtime.phone_context import PhoneContext, get_phone_context
 from mango_mvp.utils.phone import normalize_phone
@@ -829,6 +832,86 @@ def _finalize_analysis(
     return final, llm_analysis, comparison
 
 
+def _role_untrusted_deal_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
+    """Remove every commercial conclusion that depends on knowing the speakers."""
+    guarded = dict(analysis)
+    for field in (
+        "latest_call_summary",
+        "history_summary",
+        "chronology",
+        "interest_summary",
+        "objections_summary",
+        "current_sales_temperature",
+        "recommended_next_step",
+        "follow_up_due_at",
+        "deal_summary",
+    ):
+        guarded[field] = "" if field != "follow_up_due_at" else None
+    guarded.update(
+        {
+            "close_verdict": "manual_review",
+            "premature_close_risk": "manual_review",
+            "close_reason_summary": (
+                "Роли участников звонка не подтверждены данными Mango; "
+                "коммерческие выводы требуют ручной проверки."
+            ),
+            "needs_manual_review": True,
+            "role_attribution_untrusted": True,
+        }
+    )
+    return guarded
+
+
+def _phone_context_from_dossier(
+    phone_context: PhoneContext, dossier: dict[str, Any]
+) -> PhoneContext:
+    rollup = dossier.get("contact_rollup")
+    history = dossier.get("call_history")
+    if not isinstance(rollup, dict) or not isinstance(history, list):
+        return phone_context
+
+    call_rows = [
+        {
+            "ID звонка": _safe_text(item.get("call_id")),
+            "Дата и время звонка": _safe_text(item.get("started_at")),
+            "Менеджер": _safe_text(item.get("manager_name")),
+            "Тип звонка": _safe_text(item.get("call_type")),
+            "Краткое резюме разговора": _safe_text(item.get("summary")),
+            "Возражения": _safe_text(item.get("objections")),
+            "Следующий шаг": _safe_text(item.get("next_step")),
+        }
+        for item in history
+        if isinstance(item, dict)
+    ]
+    managers = list(
+        dict.fromkeys(row["Менеджер"] for row in call_rows if row["Менеджер"])
+    )
+    return replace(
+        phone_context,
+        contact_row={
+            "Краткое резюме последнего свежего звонка": _safe_text(
+                rollup.get("latest_fresh_summary")
+            ),
+            "Возражения": _safe_text(rollup.get("objections_summary")),
+            "Следующий шаг": _safe_text(rollup.get("recommended_next_step")),
+        },
+        call_rows=call_rows,
+        call_ids=[row["ID звонка"] for row in call_rows if row["ID звонка"]],
+        first_call_at=(call_rows[-1]["Дата и время звонка"] if call_rows else None),
+        last_call_at=(call_rows[0]["Дата и время звонка"] if call_rows else None),
+        manager_history=managers,
+        interest_summary=_safe_text(rollup.get("interest_summary")),
+        objections_summary=_safe_text(rollup.get("objections_summary")),
+        current_sales_temperature=_safe_text(
+            rollup.get("current_sales_temperature")
+        ),
+        recommended_next_step=_safe_text(rollup.get("recommended_next_step")),
+        follow_up_due_at=_safe_text(rollup.get("follow_up_due_at")) or None,
+        history_summary=_safe_text(rollup.get("history_summary")),
+        chronology=_safe_text(rollup.get("chronology")),
+    )
+
+
 def _build_dossier_and_analysis(
     session: Session,
     *,
@@ -842,17 +925,6 @@ def _build_dossier_and_analysis(
     lead = fetch_lead(session, lead_id=candidate.lead_id, with_fields="contacts")
     notes = fetch_lead_notes(session, lead_id=candidate.lead_id)
     tasks = fetch_lead_tasks(session, lead_id=candidate.lead_id)
-    heuristic_analysis = _analysis_from_selected_lead(
-        session,
-        phone_context=phone_context,
-        candidate=candidate,
-        contact=contact,
-        pipelines=pipelines,
-        users=users,
-        lead=lead,
-        notes=notes,
-        tasks=tasks,
-    )
     pipeline_map, status_map = _build_pipeline_meta(pipelines)
     pipeline_id = int(lead.get("pipeline_id") or 0)
     status_id = int(lead.get("status_id") or 0)
@@ -870,11 +942,31 @@ def _build_dossier_and_analysis(
         transcript_excerpt_chars=settings.crm_analysis_transcript_excerpt_chars,
         max_transcript_calls=settings.crm_analysis_max_transcript_calls,
     )
+    heuristic_analysis = _analysis_from_selected_lead(
+        session,
+        phone_context=_phone_context_from_dossier(phone_context, dossier),
+        candidate=candidate,
+        contact=contact,
+        pipelines=pipelines,
+        users=users,
+        lead=lead,
+        notes=notes,
+        tasks=tasks,
+    )
+    roles_untrusted = bool(
+        (dossier.get("contact_rollup") or {}).get("role_attribution_untrusted")
+    )
+    if roles_untrusted:
+        heuristic_analysis = _role_untrusted_deal_analysis(heuristic_analysis)
     llm_analysis: Optional[dict[str, Any]] = None
-    if _analysis_mode() in {"llm_shadow", "llm_primary"}:
+    if not roles_untrusted and _analysis_mode() in {"llm_shadow", "llm_primary"}:
         analyzer = DealLLMAnalyzer()
         try:
-            llm_analysis = analyzer.analyze(dossier=dossier, heuristic_analysis=heuristic_analysis)
+            llm_dossier = dict(dossier)
+            llm_dossier.pop("call_source_snapshot", None)
+            llm_analysis = analyzer.analyze(
+                dossier=llm_dossier, heuristic_analysis=heuristic_analysis
+            )
         except DealLLMError as exc:
             llm_analysis = {
                 "analysis_schema_version": "deal_llm_v1",
@@ -897,6 +989,18 @@ def _build_dossier_and_analysis(
         heuristic_analysis=heuristic_analysis,
         llm_analysis=llm_analysis,
     )
+    final_analysis["call_source_snapshot"] = list(
+        dossier.get("call_source_snapshot") or []
+    )
+    final_analysis["call_source_count"] = int(
+        dossier.get("call_source_count") or 0
+    )
+    if roles_untrusted:
+        blockers = list(final_analysis.get("writeback_blockers") or [])
+        if "role_attribution_untrusted" not in blockers:
+            blockers.append("role_attribution_untrusted")
+        final_analysis["writeback_allowed"] = False
+        final_analysis["writeback_blockers"] = blockers
     return final_analysis, heuristic_analysis, normalized_llm_analysis, comparison, dossier
 
 
@@ -1127,6 +1231,8 @@ def _logical_writeback_keys_for_analysis(analysis: dict[str, Any]) -> tuple[str,
 
 
 def _prepare_writeback_payload(analysis: dict[str, Any]) -> dict[str, Any]:
+    if analysis.get("role_attribution_untrusted"):
+        return {}
     field_map = _lead_field_map()
     payload: dict[str, Any] = {}
     logical_keys = _logical_writeback_keys_for_analysis(analysis)
@@ -1244,6 +1350,11 @@ def write_analysis_to_lead(session: Session, *, analysis: dict[str, Any]) -> dic
     ]
     if blockers:
         raise ValueError(f"write-back is blocked for this analysis: {', '.join(blockers)}")
+    source_snapshot = analysis.get("call_source_snapshot")
+    if not isinstance(source_snapshot, list) or len(source_snapshot) != int(
+        analysis.get("call_source_count") or 0
+    ):
+        raise ValueError("write-back source snapshot is missing or incomplete")
     payload = _prepare_writeback_payload(analysis)
     if not payload:
         return {
@@ -1276,6 +1387,11 @@ def write_analysis_to_lead(session: Session, *, analysis: dict[str, Any]) -> dic
                 "unchanged_fields": unchanged_fields,
             }
 
+    # Safe-mode reads and a deal LLM can take time.  Re-read every source call
+    # immediately before the first AMO write; a changed analysis produces zero
+    # external updates instead of a stale deal summary.
+    if not call_source_snapshot_is_current(source_snapshot):
+        raise ValueError("write-back source changed before AMO update")
     result = send_lead_custom_field_update(session, lead_id=lead_id, field_payload=payload)
     result["status"] = "written"
     if skipped_nonempty:

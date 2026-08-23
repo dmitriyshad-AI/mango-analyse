@@ -2,16 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import sqlite3
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import dual_strict_source, ready_capture_proof
 from openpyxl import Workbook, load_workbook
 
 from scripts import export_daily_mango_calls_resolve as exporter
 from scripts import evaluate_dialogue_quality as dialogue_quality
+from mango_mvp.productization.mango_calls_service_contract import (
+    STAGE10_SCHEMA,
+    approved_runtime_fingerprint,
+)
+from mango_mvp.productization.ready_publication import (
+    commit_ready_generation,
+    inspect_ready_publication,
+)
+from mango_mvp.models import CallRecord
+from mango_mvp.services import dialogue_contract as contract
+from tests import mango_provider_fixture as fx
+from tests.test_ai_office_export import valid_v3_analysis
 
 
 SCHEMA = """
@@ -20,6 +36,7 @@ CREATE TABLE call_records (
     source_file TEXT,
     source_filename TEXT,
     source_call_id TEXT,
+    source_recording_id TEXT,
     duration_sec REAL,
     phone TEXT,
     manager_name TEXT,
@@ -40,6 +57,30 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _interrupt_ready_publication(ready_db: Path) -> None:
+    staged = ready_db.parent / "synthetic-next.sqlite"
+    shutil.copy2(ready_db, staged)
+    staged.chmod(0o600)
+    with sqlite3.connect(staged) as con:
+        con.execute("CREATE TABLE synthetic_publication_marker(value INTEGER)")
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        ready_db=str(ready_db),
+        sha256=_sha(staged),
+        size_bytes=staged.stat().st_size,
+        ready_mtime_ns=staged.stat().st_mtime_ns,
+        published_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    def crash(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic ready publication crash")
+
+    with pytest.raises(RuntimeError, match="synthetic ready publication crash"):
+        commit_ready_generation(ready_db, staged, manifest, checkpoint=crash)
+
+
 def _analysis() -> dict:
     return {
         "history_summary": "Клиент обсудил летний лагерь и попросил договор.",
@@ -58,21 +99,67 @@ def _analysis() -> dict:
 
 
 def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", started: str = "2026-07-28 08:00:00", audio: Path) -> None:
-    dialogue = [
-        "[00:01.0] Менеджер (Коршунова Анастасия): Здравствуйте, Анна Иванова.",
-        "[00:02.0] Клиент: Добрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой.",
-        "[00:03.0] Клиент: Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор.",
-        "[00:04.0] Клиент: Отправьте договор и свяжитесь со мной завтра по телефону.",
-        "[00:05.0] Менеджер (Коршунова Анастасия): Хорошо, отправлю договор и позвоню завтра.",
-    ]
+    turns = (
+        ("operator", "left", "Здравствуйте. Расскажу про математику."),
+        ("client", "right", "Добрый день. Ищу ребёнку очный летний лагерь по математике."),
+        ("client", "right", "Цена важна. Есть скидка? Нужно обсудить договор."),
+        ("client", "right", "Отправьте договор и свяжитесь завтра по телефону."),
+        ("operator", "left", "Хорошо, отправлю договор и позвоню завтра."),
+    )
+    variants = fx.proven_variants(turns)
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = fx.evidence(
+        turns, source_call_id=call_id
+    )
+    variants.update(
+        primary_provider="mlx",
+        secondary_provider="gigaam",
+        call_topology="simple_two_party",
+        manager={
+            "physical_channel": "left",
+            "variant_a": "Здравствуйте. Расскажу про математику.",
+            "variant_b": "Здравствуйте. Расскажу про математику.",
+        },
+        client={
+            "physical_channel": "right",
+            "variant_a": "Нужен лагерь. Пришлите договор.",
+            "variant_b": "Нужен лагерь. Пришлите договор.",
+        },
+    )
+    fixture_call = CallRecord(
+        id=2 if pending else 1,
+        source_file=str(audio),
+        source_filename=audio.name,
+        source_call_id=call_id,
+        source_recording_id=fx.RECORDING_ID,
+        duration_sec=125.0,
+        phone="+79990001123" if pending else "+79990001122",
+        manager_name="19",
+        direction="outbound" if pending else "inbound",
+        started_at=datetime.fromisoformat(started).replace(tzinfo=timezone.utc),
+        transcript_variants_json=json.dumps(variants, ensure_ascii=False),
+        transcript_text=(
+            "MANAGER:\nЗдравствуйте. Расскажу про математику. Хорошо, отправлю договор.\n"
+            "CLIENT:\nНужен лагерь. Пришлите договор."
+        ),
+    )
+    analysis = valid_v3_analysis(fixture_call) if not pending else {}
+    if analysis:
+        analysis["quality_flags"].update(
+            call_type="sales_call",
+            transcript_quality_requires_manual_review=False,
+        )
+        analysis["analysis_meta"]["manager_output_sha256"] = (
+            contract.manager_output_sha256(analysis)
+        )
     with sqlite3.connect(db) as con:
         con.execute(
-            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 2 if pending else 1,
                 str(audio),
                 audio.name,
                 call_id,
+                fx.RECORDING_ID,
                 125.0,
                 "+79990001122" if not pending else "+79990001123",
                 "19",
@@ -81,20 +168,10 @@ def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", sta
                 "done",
                 "pending" if pending else "done",
                 "pending" if pending else "done",
-                "MANAGER:\nЗдравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.\nCLIENT:\nДобрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
-                json.dumps({
-                    "dialogue_lines": dialogue,
-                    "call_topology": "simple_two_party",
-                    "role_mapping": {
-                        "confirmed": True,
-                        "manager_quality_allowed": True,
-                        "topology": "simple_two_party",
-                    },
-                    "manager": {"physical_channel": "left"},
-                    "client": {"physical_channel": "right"},
-                }, ensure_ascii=False),
+                fixture_call.transcript_text,
+                json.dumps(variants, ensure_ascii=False),
                 "{}" if pending else json.dumps({"decision": "automatic"}, ensure_ascii=False),
-                "{}" if pending else json.dumps(_analysis(), ensure_ascii=False),
+                "{}" if pending else json.dumps(analysis, ensure_ascii=False),
             ),
         )
 
@@ -133,6 +210,114 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pat
     return ready_db, working_db, users, tallanto, tmp_path / "out"
 
 
+def _seal_ready(
+    ready_db: Path,
+    *,
+    ready_count: int,
+    mango_count: int | None = None,
+    quarantine_count: int = 0,
+) -> Path:
+    day = "2026-07-28"
+    mango_count = ready_count if mango_count is None else mango_count
+    source = {
+        "mode": "strict_service",
+        "since": "2026-07-27T21:00:00+00:00",
+        "rolling_since": "2026-07-27T21:00:00+00:00",
+        "until": "2026-07-28T21:00:00+00:00",
+        "cursor": "not_applicable_stats_request_result",
+        "pages": None,
+        "pagination": "not_applicable_stats_request_result",
+        "requests": 1,
+        "covered_intervals": [
+            {
+                "since": "2026-07-27T21:00:00+00:00",
+                "until": "2026-07-28T21:00:00+00:00",
+                "result_complete": True,
+                "rows": ready_count,
+                "scope": "rolling_authority",
+            }
+        ],
+        "catch_up": False,
+    }
+    synthetic_call_keys = [f"mango-{index + 1}" for index in range(mango_count)]
+    source = dual_strict_source(
+        source,
+        call_keys=synthetic_call_keys,
+        calls_by_day={day: synthetic_call_keys},
+    )
+    verdict = {
+        "schema_version": STAGE10_SCHEMA,
+        "day": day,
+        "generated_at": "2026-07-29T00:00:00+00:00",
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "mango_unique": mango_count,
+        "ready_unique": ready_count,
+        "quarantine_unique": quarantine_count,
+        "quarantine_items": [
+            {
+                "call_key": f"quarantine-{index + 1}",
+                "started_at": "2026-07-28T12:00:00+00:00",
+                "code": "recording_retry_expired",
+                "reason": "Аудиозапись не появилась в Mango в течение 72 часов.",
+                "action": (
+                    "Проверить запись в Mango и повторить загрузку вручную, "
+                    "если файл появился."
+                ),
+            }
+            for index in range(quarantine_count)
+        ],
+        "pending_unique": 0,
+        "unexplained_missing": 0,
+        "state_overlap_count": 0,
+        "pending_awaiting_recording": 0,
+        "pending_over_sla": 0,
+        "quarantine_without_reason": 0,
+        "ready_without_dual_asr_or_explicit_exception": 0,
+        "ready_without_resolve": 0,
+        "ready_without_analyze": 0,
+        "duplicate_call_keys": 0,
+        "oldest_pending_age_minutes": 0,
+        "state_not_in_mango_enumeration": 0,
+        "independent_zero_enumerations": 0,
+        "consistency_ok": True,
+        "closure_ok": True,
+    }
+    capture_proof, capture_proof_sha256 = ready_capture_proof(
+        source,
+        zero_by_day={day: 0},
+    )
+    manifest = {
+        "schema_version": "mango_calls_ready_v3",
+        "created_at_utc": "2026-07-29T00:00:01+00:00",
+        "published_at": "2026-07-29T00:00:02+00:00",
+        "status": "ready",
+        "consistency_ok": True,
+        "closure_ok": True,
+        "moscow_dates": [day],
+        "daily_verdicts": {day: verdict},
+        "producer_git_sha": "a" * 40,
+        "host_id": "m1-synthetic",
+        "run_id": "synthetic-run",
+        "mango_window": {"since": source["since"], "until": source["until"]},
+        "mango_enumeration_complete": True,
+        "mango_enumeration_source": source,
+        "capture_proof": capture_proof,
+        "capture_proof_sha256": capture_proof_sha256,
+        "capture_proof_run_id": source["dual_enumeration"]["proof_run_id"],
+        "manifest_snapshot": {"end_offset": 1, "sha256": "b" * 64},
+        "provenance_mode": "strict_service",
+        "quick_check": "ok",
+        "integrity_check": "ok",
+        "runtime_fingerprint": approved_runtime_fingerprint(),
+        "sha256": _sha(ready_db),
+        "size_bytes": ready_db.stat().st_size,
+    }
+    path = ready_db.with_suffix(".manifest.json")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
+
+
 class FakeTallantoClient:
     calls = 0
 
@@ -154,6 +339,95 @@ class FailingTallantoClient:
 
 def test_moscow_calendar_day_has_exact_utc_bounds() -> None:
     assert exporter.day_bounds_utc(date(2026, 7, 28)) == ("2026-07-27 21:00:00", "2026-07-28 21:00:00")
+
+
+def test_controlled_preview_allows_today_without_tallanto_or_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready, working, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready, ready_count=1)
+    tallanto.unlink()
+    real_datetime = exporter.datetime
+
+    class FixedDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = real_datetime(2026, 7, 28, 12, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(exporter, "datetime", FixedDateTime)
+
+    result = exporter.export_day(
+        ready,
+        working,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_api_enabled=False,
+        controlled_preview=True,
+    )
+    replay = exporter.export_day(
+        ready,
+        working,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_api_enabled=False,
+        controlled_preview=True,
+    )
+
+    assert result["package_status"] == "CONTROLLED_PREVIEW_NOT_FINAL"
+    assert result["rows"] == 1
+    assert result["tallanto_names_found"] == 0
+    assert result["tallanto_freshness"]["mode"] == (
+        "client_name_unconfirmed_offline"
+    )
+    assert Path(result["xlsx"]).is_file()
+    assert len(result["transcripts"]) == 1
+    assert replay["reused"] is True
+
+
+def test_daily_export_lock_is_derived_from_exact_ready_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = tmp_path / "pipeline" / "drop" / "ready.sqlite"
+    output = tmp_path / "reports"
+    monkeypatch.setattr(exporter, "PIPELINE_ROOT", tmp_path / "wrong-global-root")
+
+    with exporter.daily_export_lock(ready, output, date(2026, 7, 28)):
+        with pytest.raises(RuntimeError, match="already running"):
+            with exporter.daily_export_lock(
+                ready, output, date(2026, 7, 28)
+            ):
+                pass
+
+    assert (ready.parent / ".daily-export-locks").is_dir()
+    assert not (tmp_path / "wrong-global-root").exists()
+
+
+def test_daily_export_rejects_generation_changed_after_coordinator_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_db, working_db, users, _tallanto, out = _fixture(
+        tmp_path, monkeypatch
+    )
+    _seal_ready(ready_db, ready_count=1)
+
+    with pytest.raises(RuntimeError, match="coordinator decision"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            expected_ready_manifest_sha256="0" * 64,
+        )
+
+    assert not out.exists()
 
 
 def test_current_mango_users_override_archived_manager_name(tmp_path: Path) -> None:
@@ -303,13 +577,12 @@ def test_role_swapped_dialogue_never_reaches_manager_sheet(
         problem_text = " ".join(
             str(cell) for row in wb["Проблемы данных"].iter_rows(values_only=True) for cell in row
         )
-        assert "Текст с таймкодами не совпадает с итоговой расшифровкой" in problem_text
-        assert "Роли менеджера и клиента не подтверждены" not in problem_text
-        assert "Спикер A (роль не подтверждена)" in problem_text
+        assert "Роли менеджера и клиента не подтверждены" in problem_text
+        assert "Роли не подтверждены; не использовать для оценки сотрудника" in problem_text
     wb.close()
 
 
-def test_per_role_rewrite_reports_text_alignment_not_false_role_conflict(
+def test_per_role_rewrite_cannot_override_provider_bound_tracks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
@@ -344,14 +617,13 @@ def test_per_role_rewrite_reports_text_alignment_not_false_role_conflict(
         tallanto_client=FakeTallantoClient(),
     )
 
-    assert result["manager_ready_rows"] == 0
+    assert result["manager_ready_rows"] == 1
     wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
-    problem_text = " ".join(
-        str(cell) for row in wb["Проблемы данных"].iter_rows(values_only=True) for cell in row
+    manager_text = " ".join(
+        str(cell) for row in wb["Звонки"].iter_rows(values_only=True) for cell in row
     )
-    assert "Текст с таймкодами не совпадает с итоговой расшифровкой" in problem_text
-    assert "Роли менеджера и клиента не подтверждены" not in problem_text
-    assert "Спикер A (роль не подтверждена)" in problem_text
+    assert "Здравствуйте. Расскажу про математику." in manager_text
+    assert "Здравствуйте, Анна Иванова, я слушаю вас." not in manager_text
     wb.close()
 
 
@@ -487,7 +759,6 @@ def test_persisted_mutable_sidecar_is_never_confirmed() -> None:
         Path("call.mp3"), variants, "MANAGER:\nПервый ответ.\nCLIENT:\nПервый вопрос."
     )
     assert not chronology_confirmed
-    assert not exporter.manager_roles_confirmed(variants)
 
 
 def test_invalid_stored_line_is_preserved_for_manual_review() -> None:
@@ -530,7 +801,7 @@ def test_equal_cross_role_timecodes_are_excluded_from_manager_report(
     wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
     assert wb["Звонки"].max_row == 1
     assert any(
-        "Порядок реплик не подтверждён" in str(cell)
+        "Роли менеджера и клиента не подтверждены" in str(cell)
         for row in wb["Проблемы данных"].iter_rows(values_only=True)
         for cell in row
     )
@@ -565,10 +836,8 @@ def test_export_merges_pending_rows_and_preserves_dialogue(tmp_path: Path, monke
     assert "MANAGER:" not in transcript and "CLIENT:" not in transcript
     assert sheet.cell(2, headers["ФИО клиента из Tallanto"]).value == "Анна Иванова"
     assert sheet.cell(2, headers["Предметы"]).value == "математика"
-    assert sheet.cell(2, headers["Формат"]).value == "очно"
-    assert sheet.cell(2, headers["Класс"]).value == "7"
-    assert sheet.cell(2, headers["Озвученный бюджет"]).value == "100000 рублей"
-    assert sheet.cell(2, headers["Интерес к скидке"]).value == "Да"
+    for column in ("Формат", "Класс", "Озвученный бюджет", "Интерес к скидке"):
+        assert sheet.cell(2, headers[column]).value is None
     assert headers["Расшифровка разговора, часть 1"] == headers["Краткое содержание разговора"] + 1
     assert "Статус обработки" not in headers and "Школа" not in headers and "Аудиозапись" not in headers
     phone = sheet.cell(2, headers["Телефон клиента"])
@@ -582,6 +851,179 @@ def test_export_merges_pending_rows_and_preserves_dialogue(tmp_path: Path, monke
     assert "сверить с полной расшифровкой" in description
     assert "audio" not in json.dumps(result, ensure_ascii=False).casefold()
     wb.close()
+
+
+def test_missing_second_asr_is_not_manager_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    with sqlite3.connect(ready_db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records "
+            "WHERE source_call_id='call-ready'"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=? "
+            "WHERE source_call_id='call-ready'",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["ready_rows"] == 0
+    assert result["manager_ready_rows"] == 0
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    problems = " ".join(
+        str(cell)
+        for row in wb["Проблемы данных"].iter_rows(values_only=True)
+        for cell in row
+    )
+    assert "Вторая расшифровка GigaAM не готова" in problems
+    wb.close()
+
+
+def test_sealed_manifest_cannot_hide_row_without_second_asr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    manifest_path = _seal_ready(ready_db, ready_count=1)
+    with sqlite3.connect(ready_db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records "
+            "WHERE source_call_id='call-ready'"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=? "
+            "WHERE source_call_id='call-ready'",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+
+    assert result["ready_rows"] == 0
+    assert result["closure_ok"] is False
+    assert result["package_status"] == "INCOMPLETE_DO_NOT_USE_AS_FINAL"
+    assert Path(result["xlsx"]).name.startswith("НЕПОЛНЫЙ")
+
+
+def test_cloud_export_rejects_sealed_manifest_with_incomplete_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, _ = _fixture(tmp_path, monkeypatch)
+    manifest_path = _seal_ready(ready_db, ready_count=1)
+    with sqlite3.connect(ready_db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records "
+            "WHERE source_call_id='call-ready'"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=? "
+            "WHERE source_call_id='call-ready'",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    out = tmp_path / "Yandex.Disk" / "calls"
+    evidence_path = tmp_path / "publication-authority.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mango_yandex_publication_authority_v1",
+                "private_acl_readback_ok": True,
+                "retention_policy_approved": True,
+                "confirmation": "PUBLISH_CLOSED_MANGO_DAY",
+                "day": "2026-07-28",
+                "output_root": str(out.resolve()),
+                "source_ready_manifest_sha256": _sha(manifest_path),
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence_path.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="только закрытый суточный пакет"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+            sealed_only=True,
+            external_publication_evidence=evidence_path,
+        )
+
+    assert not out.exists()
+
+
+def test_cloud_export_fails_closed_when_authority_reader_rejects_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, _ = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    out = tmp_path / "Yandex.Disk" / "calls"
+    evidence_path = tmp_path / "publication-authority.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_path.chmod(0o600)
+
+    def reject_authority(*_args: object, **_kwargs: object) -> bytes:
+        raise RuntimeError("synthetic extended ACL")
+
+    monkeypatch.setattr(exporter, "read_stable_regular_bytes", reject_authority)
+
+    with pytest.raises(RuntimeError, match="доказательство внешней публикации недействительно"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+            sealed_only=True,
+            external_publication_evidence=evidence_path,
+        )
+
+    assert not out.exists()
 
 
 def test_incomplete_row_without_specific_issue_remains_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -610,6 +1052,52 @@ def test_incomplete_row_without_specific_issue_remains_visible(tmp_path: Path, m
     wb.close()
 
 
+def test_daily_export_recovers_interrupted_ready_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _interrupt_ready_publication(ready_db)
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["rows"] == 2
+    assert inspect_ready_publication(ready_db)["recovery_required"] is False
+
+
+def test_missing_target_day_verdict_can_never_be_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    manifest_path = _seal_ready(ready_db, ready_count=1)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["daily_verdicts"] = {}
+    manifest["moscow_dates"] = []
+    manifest["closure_ok"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["closure_ok"] is False
+    assert result["package_status"] == "INCOMPLETE_DO_NOT_USE_AS_FINAL"
+    assert Path(result["xlsx"]).name.startswith("НЕПОЛНЫЙ")
+
+
 def test_repeated_export_reuses_identical_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
     kwargs = {"tallanto_export": tallanto, "tallanto_client": FakeTallantoClient()}
@@ -619,6 +1107,77 @@ def test_repeated_export_reuses_identical_audio(tmp_path: Path, monkeypatch: pyt
     assert (second["transcripts_copied"], second["transcripts_reused"]) == (0, 2)
     assert second["reused"] is True
     assert Path(second["xlsx"]).stat().st_mtime_ns == xlsx_mtime
+
+
+def test_export_reuses_unchanged_day_across_ready_manifest_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+    }
+    first = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        **kwargs,
+    )
+    ready_manifest = ready_db.with_suffix(".manifest.json")
+    original_ready_manifest_sha256 = _sha(ready_manifest)
+    payload = json.loads(ready_manifest.read_text(encoding="utf-8"))
+    payload["enumeration_evidence_sha256"] = "c" * 64
+    ready_manifest.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    second_ready_manifest_sha256 = _sha(ready_manifest)
+
+    second = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        **kwargs,
+    )
+    payload["enumeration_evidence_sha256"] = "d" * 64
+    ready_manifest.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    third_ready_manifest_sha256 = _sha(ready_manifest)
+    third = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        **kwargs,
+    )
+
+    assert first["content_sha256"] == second["content_sha256"] == third[
+        "content_sha256"
+    ]
+    assert second["reused"] is True
+    assert third["reused"] is True
+    assert second["manifest"] == third["manifest"] == first["manifest"]
+    assert second["source_ready_manifest_sha256"] == (
+        original_ready_manifest_sha256
+    )
+    assert third["source_ready_manifest_sha256"] == (
+        original_ready_manifest_sha256
+    )
+    assert second["decision_ready_manifest_sha256"] == (
+        second_ready_manifest_sha256
+    )
+    assert third["decision_ready_manifest_sha256"] == (
+        third_ready_manifest_sha256
+    )
+    assert not list(out.glob("*supplement-*.manifest.json"))
 
 
 def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -651,23 +1210,27 @@ def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, mon
     headers = {value: index for index, value in enumerate(values[0])}
     row = next(item for item in values[1:] if item[headers["Телефон клиента"]] == "+79990001122")
     assert row[headers["Статус смысловой выжимки"]].startswith("Гипотезы:")
-    assert row[headers["Тип звонка по смысловому анализу"]] == "Продажа / подбор обучения"
-    assert row[headers["Краткое содержание разговора"]] == "Клиент обсудил летний лагерь и попросил договор."
-    assert row[headers["Продукт"]] == "летний курс M9"
-    assert row[headers["Возражения и ограничения"]] == "нужно обсудить договор"
-    assert row[headers["Следующий шаг"]] == "Отправить договор"
-    for column in ("Предметы", "Формат", "Целевые экзамены", "Класс", "Срок следующего шага", "Предпочтительный канал", "Озвученный бюджет", "Чувствительность к цене", "Интерес к скидке"):
+    assert row[headers["Краткое содержание разговора"]].startswith(
+        "Стороны разговора не подтверждены"
+    )
+    for column in (
+        "Тип звонка по смысловому анализу", "Продукт",
+        "Возражения и ограничения", "Следующий шаг", "Предметы", "Формат",
+        "Целевые экзамены", "Класс", "Срок следующего шага",
+        "Предпочтительный канал", "Озвученный бюджет",
+        "Чувствительность к цене", "Интерес к скидке",
+    ):
         assert row[headers[column]] is None
     transcript = "\n".join(str(row[index] or "") for name, index in headers.items() if str(name).startswith("Расшифровка разговора"))
-    assert "Спикер A (роль не подтверждена):" in transcript
-    assert "Спикер B (роль не подтверждена):" in transcript
+    assert "Спикер A:" in transcript
+    assert "Спикер B:" in transcript
     assert "Менеджер (" not in transcript and "Клиент:" not in transcript
     description = list(wb["Описание полей"].iter_rows(values_only=True))
     assert any("не является фактом для оценки менеджера или KPI" in str(cell) for item in description for cell in item)
     wb.close()
 
 
-def test_historical_model_speaker_correction_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_historical_model_speaker_correction_cannot_override_provider_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
@@ -695,18 +1258,13 @@ def test_historical_model_speaker_correction_is_review_only(tmp_path: Path, monk
         tallanto_client=FakeTallantoClient(),
     )
 
-    assert result["manager_ready_rows"] == 0
+    assert result["manager_ready_rows"] == 1
     wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
-    assert wb["Звонки"].max_row == 1
-    assert any(
-        "Роли менеджера и клиента не подтверждены" in str(cell)
-        for row in wb["Проблемы данных"].iter_rows(values_only=True)
-        for cell in row
-    )
+    assert wb["Звонки"].max_row == 2
     wb.close()
 
 
-def test_conflicting_topology_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_topology_label_cannot_override_provider_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
@@ -721,10 +1279,10 @@ def test_conflicting_topology_is_review_only(tmp_path: Path, monkeypatch: pytest
 
     result = exporter.export_day(ready_db, working_db, out, date(2026, 7, 28), users, tallanto_export=tallanto, tallanto_client=FakeTallantoClient())
 
-    assert result["manager_ready_rows"] == 0
+    assert result["manager_ready_rows"] == 1
     transcript_name = f"call_{hashlib.sha256(b'call-ready').hexdigest()[:20]}.txt"
     transcript = (Path(result["transcript_dir"]) / transcript_name).read_text(encoding="utf-8")
-    assert "Менеджер:" not in transcript
+    assert "Менеджер:" in transcript and "Клиент:" in transcript
 
 
 def test_call_id_is_hashed_in_transcript_filename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -878,6 +1436,379 @@ def test_ready_database_manifest_mismatch_blocks_export(tmp_path: Path, monkeypa
         exporter.export_day(ready_db, working_db, out, date(2026, 7, 28), users)
 
 
+def test_verify_ready_drop_rejects_manifest_swap_during_db_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, _working_db, _users, _tallanto, _out = _fixture(
+        tmp_path, monkeypatch
+    )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    real_connect = exporter.sqlite3.connect
+    swapped = False
+
+    def swapping_connect(database: object, *args: object, **kwargs: object):
+        nonlocal swapped
+        if not swapped and isinstance(database, str) and "mode=ro" in database:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload["published_at"] = "2026-07-29T00:00:01Z"
+            manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+            swapped = True
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.sqlite3, "connect", swapping_connect)
+
+    with pytest.raises(RuntimeError, match="поколение изменилось"):
+        exporter.verify_ready_drop(ready_db)
+    assert swapped
+
+
+def test_verify_ready_drop_rejects_identical_db_inode_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, _working_db, _users, _tallanto, _out = _fixture(
+        tmp_path, monkeypatch
+    )
+    replacement = tmp_path / "same.sqlite"
+    replacement.write_bytes(ready_db.read_bytes())
+    real_connect = exporter.sqlite3.connect
+    swapped = False
+
+    def swapping_connect(database: object, *args: object, **kwargs: object):
+        nonlocal swapped
+        if not swapped and isinstance(database, str) and "mode=ro" in database:
+            os.replace(replacement, ready_db)
+            swapped = True
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.sqlite3, "connect", swapping_connect)
+
+    with pytest.raises(RuntimeError, match="поколение изменилось"):
+        exporter.verify_ready_drop(ready_db)
+    assert swapped
+
+
+def test_export_rejects_manifest_only_change_during_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    real_apply = exporter.apply_tallanto_names
+
+    def mutate_manifest(*args: object, **kwargs: object):
+        result = real_apply(*args, **kwargs)
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["published_at"] = "2026-07-29T00:00:03Z"
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(exporter, "apply_tallanto_names", mutate_manifest)
+
+    with pytest.raises(RuntimeError, match="поколение изменилось"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+        )
+
+    assert not list(out.glob("*.xlsx")) and not list(out.glob("*.manifest.json"))
+
+
+def test_crash_after_xlsx_resumes_across_unrelated_ready_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    real_write = exporter.write_private_json
+
+    def crash_before_export_manifest(path: Path, payload: object) -> None:
+        if isinstance(payload, dict) and payload.get("schema_version") == exporter.EXPORT_SCHEMA_VERSION:
+            raise OSError("synthetic crash after XLSX")
+        real_write(path, payload)
+
+    monkeypatch.setattr(exporter, "write_private_json", crash_before_export_manifest)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    with pytest.raises(OSError, match="synthetic crash"):
+        exporter.export_day(
+            ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+        )
+
+    xlsx_before = list(out.glob("*.xlsx"))
+    assert len(xlsx_before) == 1
+    assert len(list(out.glob(".daily_export_*.journal.json"))) == 1
+    with sqlite3.connect(ready_db) as con:
+        con.execute("CREATE TABLE unrelated_generation(value TEXT)")
+    _seal_ready(ready_db, ready_count=1)
+    monkeypatch.setattr(exporter, "write_private_json", real_write)
+
+    result = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+
+    assert Path(result["xlsx"]) == xlsx_before[0]
+    assert result["supplement_number"] is None
+    assert len(list(out.glob("*.xlsx"))) == 1
+    assert not list(out.glob("*supplement-*.manifest.json"))
+    assert not list(out.glob(".daily_export_*.journal.json"))
+
+
+def test_changed_day_content_quarantines_interrupted_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    real_write = exporter.write_private_json
+
+    def crash_before_export_manifest(path: Path, payload: object) -> None:
+        if isinstance(payload, dict) and payload.get("schema_version") == exporter.EXPORT_SCHEMA_VERSION:
+            raise OSError("synthetic crash after XLSX")
+        real_write(path, payload)
+
+    monkeypatch.setattr(exporter, "write_private_json", crash_before_export_manifest)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    with pytest.raises(OSError, match="synthetic crash"):
+        exporter.export_day(
+            ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+        )
+    old_xlsx = next(out.glob("*.xlsx"))
+    with sqlite3.connect(ready_db) as con:
+        con.execute("UPDATE call_records SET duration_sec=duration_sec+1")
+    _seal_ready(ready_db, ready_count=1)
+    monkeypatch.setattr(exporter, "write_private_json", real_write)
+
+    result = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    quarantines = list(out.glob(".daily_export_*.quarantine.json"))
+
+    assert len(quarantines) == 1
+    quarantine = json.loads(quarantines[0].read_text(encoding="utf-8"))
+    assert quarantine["status"] == "quarantined_source_content_changed"
+    assert quarantine["xlsx"] == old_xlsx.name
+    assert Path(result["xlsx"]) != old_xlsx
+    assert len(list(out.glob("*.xlsx"))) == 2
+    assert not list(out.glob(".daily_export_*.journal.json"))
+
+
+def test_final_supersedes_immutable_incomplete_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    kwargs = {"tallanto_export": tallanto, "tallanto_client": FakeTallantoClient()}
+    incomplete = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    old_paths = [
+        Path(incomplete["manifest"]),
+        Path(incomplete["xlsx"]),
+        *Path(incomplete["transcript_dir"]).glob("*.txt"),
+    ]
+    old_hashes = {path: _sha(path) for path in old_paths}
+    _seal_ready(ready_db, ready_count=1)
+
+    final = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+    link = final["supersedes_incomplete"]
+
+    assert link["manifest"] == Path(incomplete["manifest"]).name
+    assert link["sha256"] == old_hashes[Path(incomplete["manifest"])]
+    assert all(_sha(path) == digest for path, digest in old_hashes.items())
+    repeated = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+    assert repeated["reused"] is True
+    assert repeated["manifest"] == final["manifest"]
+
+
+def test_late_closed_call_creates_one_immutable_supplement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    base = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    base_paths = [
+        Path(base["manifest"]),
+        Path(base["xlsx"]),
+        *Path(base["transcript_dir"]).glob("*.txt"),
+    ]
+    base_hashes = {path: _sha(path) for path in base_paths}
+    with sqlite3.connect(working_db) as source:
+        pending = source.execute(
+            "SELECT * FROM call_records WHERE source_call_id='call-pending'"
+        ).fetchone()
+    assert pending is not None
+    with sqlite3.connect(ready_db) as target:
+        target.execute(
+            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            pending,
+        )
+        target.execute(
+            "UPDATE call_records SET resolve_status='done', analysis_status='done', "
+            "resolve_json=?, analysis_json=? WHERE source_call_id='call-pending'",
+            (json.dumps({"decision": "automatic"}), json.dumps(_analysis(), ensure_ascii=False)),
+        )
+    _seal_ready(ready_db, ready_count=2)
+
+    supplement = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+
+    assert supplement["supplement_number"] == 1
+    assert supplement["supplement_of"] == Path(base["manifest"]).name
+    assert supplement["supplement_of_sha256"] == base_hashes[Path(base["manifest"])]
+    assert {
+        field: supplement[field]
+        for field in (
+            "mango_unique",
+            "ready_unique",
+            "quarantine_unique",
+            "pending_unique",
+            "unexplained_missing",
+        )
+    } == {
+        "mango_unique": 2,
+        "ready_unique": 2,
+        "quarantine_unique": 0,
+        "pending_unique": 0,
+        "unexplained_missing": 0,
+    }
+    assert all(_sha(path) == digest for path, digest in base_hashes.items())
+    repeated = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+    assert repeated["reused"] is True
+    assert repeated["manifest"] == supplement["manifest"]
+    assert not list(out.glob("*supplement-2.manifest.json"))
+
+    base_manifest = Path(base["manifest"])
+    changed_base = json.loads(base_manifest.read_text(encoding="utf-8"))
+    changed_base["generated_at"] = "2099-01-01T00:00:00+00:00"
+    base_manifest.write_text(json.dumps(changed_base), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="supplement lineage"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+            sealed_only=True,
+        )
+    assert not list(out.glob("*supplement-2.manifest.json"))
+
+
+def test_balance_only_change_creates_supplement_with_new_balance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    _seal_ready(ready_db, ready_count=1)
+    base = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    _seal_ready(
+        ready_db,
+        ready_count=1,
+        mango_count=2,
+        quarantine_count=1,
+    )
+
+    supplement = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+
+    assert supplement["supplement_number"] == 1
+    assert supplement["content_sha256"] != base["content_sha256"]
+    assert supplement["mango_unique"] == 2
+    assert supplement["ready_unique"] == 1
+    assert supplement["quarantine_unique"] == 1
+    assert supplement["quarantine_items"][0]["call_key"] == "quarantine-1"
+    wb = load_workbook(supplement["xlsx"], read_only=True, data_only=True)
+    try:
+        summary = {
+            str(row[0]): row[1]
+            for row in wb["Сводка"].iter_rows(values_only=True)
+            if row and row[0]
+        }
+        problem_rows = list(wb["Проблемы данных"].iter_rows(values_only=True))
+        problems = " ".join(str(cell) for row in problem_rows for cell in row)
+        quarantine_start = next(
+            index for index, row in enumerate(problem_rows)
+            if row and row[0] == "Карантин Stage10"
+        )
+        quarantine_text = " ".join(
+            str(cell) for row in problem_rows[quarantine_start:] for cell in row
+        )
+    finally:
+        wb.close()
+    assert "Карантин Stage10" in problems
+    assert "Аудиозапись не появилась в Mango в течение 72 часов." in problems
+    assert "повторить загрузку вручную" in problems
+    assert "+7999" not in quarantine_text
+    assert summary["Всего звонков"] == 2
+    assert summary["Строк с доступными данными"] == 1
+    assert summary["Требуют проверки"] >= 1
+
+
 def test_tallanto_multiple_matches_are_not_selected(tmp_path: Path) -> None:
     export = tmp_path / "tallanto.csv"
     export.write_text(
@@ -904,7 +1835,7 @@ def test_tallanto_api_is_loaded_once_for_all_missing_phones(tmp_path: Path) -> N
     assert rows[1]["client_fio"] == ""
 
 
-def test_tallanto_api_uses_explicit_snapshot_time_not_copied_file_mtime(
+def test_stale_explicit_tallanto_snapshot_never_calls_api_or_claims_fio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     export = tmp_path / "tallanto.csv"
@@ -922,7 +1853,9 @@ def test_tallanto_api_uses_explicit_snapshot_time_not_copied_file_mtime(
         snapshot_as_of=datetime.fromisoformat("2026-06-20T00:00:00+03:00"),
     )  # type: ignore[arg-type]
 
-    assert seen == ["2026-06-20 00:00:00"]
+    assert seen == []
+    assert rows[0]["tallanto_source"] == "ФИО не подтверждено"
+    assert rows[0]["manager_ready"] is False
 
 
 def test_tallanto_api_failure_is_not_reported_as_phone_absent(tmp_path: Path) -> None:
@@ -940,20 +1873,53 @@ def test_missing_tallanto_export_blocks_matching(tmp_path: Path) -> None:
 
 def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
-    manager_text = "а" * 70_000
-    lines = [f"[00:01.0] Менеджер (Иван): {manager_text}", "[00:02.0] Клиент: конец"]
+    manager_text = "математика " + "а" * 70_000
+    turns = (("operator", "left", manager_text), ("client", "right", "конец"))
+    variants = fx.proven_variants(turns)
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = fx.evidence(
+        turns, source_call_id="call-ready"
+    )
+    variants.update(
+        primary_provider="mlx",
+        secondary_provider="gigaam",
+        manager={
+            "physical_channel": "left",
+            "variant_a": manager_text,
+            "variant_b": manager_text,
+        },
+        client={
+            "physical_channel": "right",
+            "variant_a": "конец",
+            "variant_b": "конец",
+        },
+    )
+    fixture_call = CallRecord(
+        id=1,
+        source_file=str(ready_db.parent.parent / "working/audio/ready.mp3"),
+        source_filename="ready.mp3",
+        source_call_id="call-ready",
+        source_recording_id=fx.RECORDING_ID,
+        duration_sec=125.0,
+        phone="+79990001122",
+        manager_name="19",
+        direction="inbound",
+        started_at=datetime.fromisoformat("2026-07-28 08:00:00").replace(tzinfo=timezone.utc),
+        transcript_variants_json=json.dumps(variants, ensure_ascii=False),
+        transcript_text=f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец",
+    )
+    analysis = valid_v3_analysis(fixture_call)
+    expected = contract.build_dialogue_input(contract.call_record_view(fixture_call)).render()
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
-                con.execute(
-                    "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
-                    (f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец", json.dumps({
-                        "dialogue_lines": lines,
-                        "call_topology": "simple_two_party",
-                        "role_mapping": {"confirmed": True, "manager_quality_allowed": True, "topology": "simple_two_party"},
-                        "manager": {"physical_channel": "left"},
-                        "client": {"physical_channel": "right"},
-                    }, ensure_ascii=False),),
-                )
+            con.execute(
+                "UPDATE call_records SET transcript_text=?, transcript_variants_json=?, analysis_json=? "
+                "WHERE source_call_id='call-ready'",
+                (
+                    fixture_call.transcript_text,
+                    json.dumps(variants, ensure_ascii=False),
+                    json.dumps(analysis, ensure_ascii=False),
+                ),
+            )
     manifest_path = ready_db.with_suffix(".manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
@@ -966,10 +1932,10 @@ def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pyte
     sheet = wb["Звонки"]
     header = next(sheet.iter_rows(values_only=True))
     transcript_columns = [i for i, value in enumerate(header) if str(value).startswith("Расшифровка разговора, часть")]
+    assert result["manager_ready_rows"] == 1, result
     row = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
     restored = "".join(str(row[i] or "") for i in transcript_columns)
-    expected, confirmed = exporter.ordered_dialogue(Path("ignored"), {"dialogue_lines": lines}, "")
-    assert confirmed and restored == expected
+    assert restored == expected
     assert all(len(str(row[i] or "")) <= exporter.TRANSCRIPT_CHUNK for i in transcript_columns)
     transcript_name = f"call_{hashlib.sha256(b'call-ready').hexdigest()[:20]}.txt"
     txt = Path(result["transcript_dir"]) / transcript_name

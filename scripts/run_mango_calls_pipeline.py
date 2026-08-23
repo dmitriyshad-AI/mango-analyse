@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -14,7 +15,11 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     CallsTwoProcessesConfig,
+    run_capture,
+    run_controlled_one,
     run_cycle,
+    run_local_watchdog,
+    run_pipeline,
     run_process_a,
     run_process_b,
     pipeline_freshness,
@@ -25,6 +30,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the isolated two-process Mango calls pipeline.")
     parser.add_argument("--config", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
+    capture = sub.add_parser("capture", help="Mango API -> immutable audio -> capture manifest only.")
+    capture.add_argument("--since")
+    capture.add_argument("--until")
+    sub.add_parser("pipeline", help="Drain a frozen capture snapshot through sequential stages.")
+    sub.add_parser("watchdog", help="Read local heartbeats and provenance without processing calls.")
+    sub.add_parser(
+        "controlled-one",
+        help=(
+            "Run one owner-authorized isolated call from exact Mango capture "
+            "through Timeline staging and local previews."
+        ),
+    )
     process_a = sub.add_parser("process-a", help="Capture, ASR, Resolve+Analyze, publish ready drop DB.")
     process_a.add_argument("--since")
     process_a.add_argument("--until")
@@ -41,39 +58,54 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    previous_umask = os.umask(0o077)
     try:
-        config = CallsTwoProcessesConfig.from_json(Path(args.config))
-        if args.command == "process-a":
-            report = run_process_a(
-                config,
-                since=args.since,
-                until=args.until,
-                skip_capture=args.skip_capture,
-                skip_workers=args.skip_workers,
-            )
-        elif args.command == "process-b":
-            report = run_process_b(config)
-        elif args.command == "cycle":
-            report = run_cycle(
-                config,
-                since=args.since,
-                until=args.until,
-                skip_capture=args.skip_capture,
-                skip_workers=args.skip_workers,
-            )
-        else:
-            report = pipeline_freshness(config)
-    except Exception as exc:
-        report = {
-            "schema_version": "mango_calls_two_processes_v1",
-            "process": args.command,
-            "status": "failed",
-            "stop_reason": f"cli_exception:{type(exc).__name__}",
-            "counters": {},
-        }
-    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if report.get("status") in {"ok", "idle", "locked", "deferred", "fresh"} else 1
+        args = build_parser().parse_args(argv)
+        try:
+            config = CallsTwoProcessesConfig.from_json(Path(args.config))
+            if args.command == "capture":
+                report = run_capture(config, since=args.since, until=args.until)
+            elif args.command == "controlled-one":
+                report = run_controlled_one(
+                    config,
+                    runtime_config_path=Path(args.config),
+                )
+            elif args.command == "pipeline":
+                report = run_pipeline(config)
+            elif args.command == "watchdog":
+                report = run_local_watchdog(config)
+            elif args.command == "process-a":
+                report = run_process_a(
+                    config,
+                    since=args.since,
+                    until=args.until,
+                    skip_capture=args.skip_capture,
+                    skip_workers=args.skip_workers,
+                )
+            elif args.command == "process-b":
+                report = run_process_b(config)
+            elif args.command == "cycle":
+                report = run_cycle(
+                    config,
+                    since=args.since,
+                    until=args.until,
+                    skip_capture=args.skip_capture,
+                    skip_workers=args.skip_workers,
+                )
+            else:
+                report = pipeline_freshness(config)
+        except Exception as exc:
+            report = {
+                "schema_version": "mango_calls_two_processes_v1",
+                "process": args.command,
+                "status": "failed",
+                "stop_reason": f"cli_exception:{type(exc).__name__}",
+                "counters": {},
+            }
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if report.get("status") in {"ok", "idle", "locked", "deferred", "fresh"} else 1
+    finally:
+        os.umask(previous_umask)
 
 
 if __name__ == "__main__":

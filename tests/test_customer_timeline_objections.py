@@ -12,6 +12,9 @@ from mango_mvp.customer_timeline.objections import (
     backfill_customer_objections_v1,
     extract_objections_from_text,
 )
+from mango_mvp.customer_timeline import objections as objections_module
+from mango_mvp.services.dialogue_contract import PROVIDER_EVIDENCE_FIELD
+from tests import mango_provider_fixture as fx
 
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
@@ -805,12 +808,46 @@ def _seed_canonical_calls(db_path: Path, rows: list[tuple[int, str, str]]) -> No
             """
             CREATE TABLE canonical_calls (
               canonical_call_id INTEGER PRIMARY KEY,
-              transcript_client TEXT,
+              source_call_id TEXT,
+              source_recording_id TEXT,
+              transcript_text TEXT,
+              transcript_variants_json TEXT,
               direction TEXT
             )
             """
         )
-        con.executemany(
-            "INSERT INTO canonical_calls (canonical_call_id, transcript_client, direction) VALUES (?, ?, ?)",
-            rows,
+        for canonical_id, client_text, direction in rows:
+            source_call_id = f"call-{canonical_id}"
+            recording_id = f"recording-{canonical_id}"
+            if client_text:
+                turns = (("operator", "left", "Добрый день"), ("client", "right", client_text))
+                variants = fx.proven_variants(turns)
+                variants[PROVIDER_EVIDENCE_FIELD] = fx.evidence_for_recording(
+                    turns, source_call_id=source_call_id, recording_id=recording_id
+                )
+            else:
+                variants = {
+                    "mode": "mono_or_fallback",
+                    "role_mapping": {"status": "unverified_mono_or_legacy", "confirmed": False},
+                    "dialogue_lines": ["[00:01.0] Дорожка левая: Добрый день"],
+                }
+            con.execute(
+                "INSERT INTO canonical_calls VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    canonical_id, source_call_id, recording_id, "",
+                    json.dumps(variants, ensure_ascii=False), direction,
+                ),
+            )
+
+
+def test_legacy_canonical_client_text_is_ignored_without_provider_evidence(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "legacy_canonical.sqlite"
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE canonical_calls (canonical_call_id INTEGER PRIMARY KEY, "
+            "transcript_client TEXT, direction TEXT)"
         )
+        con.execute("INSERT INTO canonical_calls VALUES (1, 'Нам слишком дорого', 'inbound')")
+    assert objections_module._load_canonical_call_texts(db) == {}

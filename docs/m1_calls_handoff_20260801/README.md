@@ -1,6 +1,6 @@
 # Передача конвейера звонков на M1
 
-Актуализировано: 2026-08-07.
+Актуализировано: 2026-08-11.
 
 Это главная инструкция пакета. Она готовит M1, но не доказывает, что служба уже
 работает. Реальные аудио, базы, ASR, Resolve, Analyze и запуск `launchd` требуют
@@ -8,29 +8,29 @@
 
 ## Итоговая схема
 
-- M1 выполняет Process A: получает новые звонки Mango, последовательно запускает
-  один Whisper, один GigaAM, Resolve и Analyze, создаёт запечатанную ready-базу,
-  XLSX и TXT.
-- Готовые XLSX/TXT M1 кладёт в закрытую локальную папку Яндекс Диска.
-- Основной Mac по отдельному read-only SSH-ключу забирает ready-базу и выполняет
-  только Process B рядом с актуальной Customer Timeline.
-- M1 не получает доступ к командам и секретам основного Mac.
-- Google-публикация необязательна. Если её параметры пусты, Яндекс-публикация
-  продолжает работать; частично заполненная Google-конфигурация блокируется.
+- M1 отдельно выполняет лёгкий capture, а затем один тяжёлый pipeline:
+  Whisper → GigaAM → Resolve → Analyze → sealed ready DB.
+- Demand-only Process B вызывается тяжёлым pipeline и пишет только в
+  отдельную локальную Customer Timeline staging на M1.
+- Phase A создаёт только owner-only local safe-plan и суточные пакеты.
+  Google, Яндекс.Диск, production Timeline и основной Mac не изменяются.
+- Plist только отрисовываются для проверки; launchd не устанавливается и не
+  запускается.
 
-Постоянно работает не Codex-диалог, а `launchd` и
-`scripts/run_mango_calls_process.sh`. Codex устанавливает, проверяет и ремонтирует
-этот путь.
+Постояный `launchd` остаётся будущей фазой после лестницы пилота и
+отдельного решения владельца.
 
 ## Канонические документы
 
 Читать строго в таком порядке:
 
 1. этот `README.md`;
-2. `tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md`;
-3. `docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md`;
+2. `tasks/_running/2026-08-11_TZ_m1_calls_service_fast_value.md`;
+3. `docs/MANGO_CALLS_TWO_PROCESSES_RUNBOOK.md`;
 4. `tasks/_inbox_codex/2026-07-31_TZ_m1_calls_stage10_pilot.md`;
-5. `M1_CODEX_PROMPT.md` для запуска новой задачи Codex на M1.
+5. `M1_FAST_SERVICE_CODEX_PROMPT_20260811.md` для запуска новой задачи Codex на M1;
+6. `docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md` — только будущие
+   selective transfer/relocation после отдельного допуска Phase C.
 
 Старый внешний `CANONICAL_GIT_SHA.txt` от 2026-08-01 не является актуальным.
 Новый `CUTOVER_CODE_SHA.txt` создаётся только после завершения всех правок,
@@ -124,6 +124,201 @@ codex login status
 Не копировать `auth.json`. Resolve и Analyze работают в отдельном профиле без
 skills, plugins и MCP. Пользовательские skills нужны только Codex-разработчику.
 
+### 4.1 Проверить готовность ровно одного звонка
+
+Текущий кратчайший путь для нового звонка не требует переноса production-БД и
+не меняет production cursor. Сначала скопировать
+`config.controlled-one.bootstrap.example.json` в отдельный каталог
+`$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/`, заменить все
+плейсхолдеры, создать там `host_id`, выставить каталогам `0700`, файлам `0600`.
+Туда же создать отдельную owner-only копию worker-env `controlled.env` и в ней
+заменить только `MANGO_CALLS_PIPELINE_ROOT` на точный изолированный pipeline;
+общий service-env не использовать. Секреты в Git или командную строку не
+копировать. Конфиг, `host_id` и `controlled.env` должны иметь режим `0600`.
+`production_cursor_guard_path` обязан указывать на настоящий cursor обычного
+сервиса, находящийся вне изолированного pipeline. В `current_google` указать
+реальный email владельца и закрытый allowlist РОПа: это только локальный
+план ACL, сетевой записи или публикации controlled-preview не делает.
+
+Затем создать неизменяемое разрешение на один ID и закрытое окно (не длиннее
+часа, не пересекающее московские сутки):
+
+```bash
+set -euo pipefail
+BOOT="$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/bootstrap.json"
+REQUEST="$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/request.json"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/create_m1_calls_controlled_request.py \
+  --config "$BOOT" \
+  --source-call-id '<EXACT_PROVIDER_CALL_ID>' \
+  --since '<CLOSED_SINCE_ISO8601>' \
+  --until '<CLOSED_UNTIL_ISO8601>' \
+  --expected-count 1 \
+  --out "$REQUEST"
+```
+
+Команда не вызывает Mango, модели и внешние системы. Идентичный повтор
+возвращает `reused=true`; другое окно или ID не перезаписывает существующий
+request. В отдельную финальную копию bootstrap-конфига добавить абсолютный
+`controlled_capture_request_path` и выведенный
+`controlled_capture_request_sha256`. После этого локально проверить полный
+конфиг без запуска обработки:
+
+```bash
+set -euo pipefail
+FINAL="$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/runtime.json"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" - "$FINAL" <<'PY'
+from pathlib import Path
+import sys
+from mango_mvp.customer_timeline.calls_two_processes import CallsTwoProcessesConfig
+CallsTwoProcessesConfig.from_json(Path(sys.argv[1]))
+print("CONTROLLED_CONFIG_OK")
+PY
+```
+
+Только после отдельного разрешения Дмитрия на один реальный звонок запустить:
+
+```bash
+set -euo pipefail
+scripts/run_mango_calls_process.sh \
+  "$FINAL" \
+  "$HOME/.mango_local/controlled-mango-call-<RUN_ID>/state/controlled.env" \
+  controlled-one-worker
+```
+
+Первый отчёт принимается только при `attempted=1`, `attempted_other=0`,
+`processed=1`, зелёном Timeline readback, локальных Google/Yandex preview и
+`production_cursor_unchanged=true`. Повтор обязан показать `downloaded=0`,
+`processed=0` и отсутствие новой записи Timeline. STOP до ASR или следующей
+стадии: API вернул не ровно один разрешённый ID, запись не двухканальная,
+production cursor изменился, любой readback/preview красный или обнаружена
+внешняя запись. Локальные preview не публикуют Google/Яндекс и не являются
+бизнес-приёмкой.
+
+### 4.2 Уже скачанный звонок после разрешённого переноса
+
+Для controlled-1 используется отдельная копия runtime-конфига. Обычный
+service-конфиг сохраняет `"processing_scope": "service"` и
+`"stage_limit": 20`. После переноса рабочей БД и выбора одного уже скачанного
+звонка создать owner-only allowlist без API и моделей:
+
+```bash
+set -euo pipefail
+mkdir -p "$HOME/.mango_local/mango_calls_controlled_one"
+chmod 700 "$HOME/.mango_local/mango_calls_controlled_one"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/create_m1_calls_controlled_allowlist.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --source-call-id '<EXACT_SOURCE_CALL_ID>' \
+  --out "$HOME/.mango_local/mango_calls_controlled_one/allowlist.json"
+```
+
+Скрипт откажет до записи, если SHA кода не совпадает, worktree грязный,
+фактический owner-only `host_id` другой, БД неавторитетна,
+`source_call_id` отсутствует/дублируется либо исходное аудио отсутствует, пусто,
+является символической ссылкой или лежит вне рабочего audio-каталога. Штатный
+hardlink, созданный `hardlink_or_copy`, разрешён и проверяется по inode, SHA и
+размеру; оба ASR читают отдельную приватную копию запуска.
+После проверки строки и аудио этот же скрипт read-only подтверждает lineage
+перенесённого cursor: повторно требует свежий shutdown-proof исходного Mac,
+точный SHA cursor и неизменный cutover manifest. Общий service-маркер
+`cutover_cursor_lineage.json` он не создаёт, поэтому обычные capture/Process A
+остаются STOP до отдельного разрешения cutover. Mango API, модели и обработку
+звонка скрипт не запускает. На время проверки и записи allowlist он удерживает
+локальные pipeline и capture lock; занятый lock, stale или несовпадающее
+доказательство означает STOP до создания allowlist.
+Полученный SHA записать в отдельный `config.controlled-one.json` вместе с:
+
+```json
+{
+  "processing_scope": "controlled_1",
+  "stage_limit": 1,
+  "controlled_call_allowlist_path": "<HOME>/.mango_local/mango_calls_controlled_one/allowlist.json",
+  "controlled_call_allowlist_sha256": "<ALLOWLIST_SHA256>"
+}
+```
+
+Этот конфиг запрещает capture, ingest, `run-all`, Process A/B, cycle, sync и
+publication через оркестратор; самостоятельные publication-скрипты остаются
+за своими confirmation-гейтами и в этой фазе не запускаются. Прямые тяжёлые
+CLI-команды в controlled scope запрещены. Каждый отдельный
+Whisper/GigaAM/Resolve/Analyze worker получает только свежий короткоживущий
+owner-only stage-ticket родительской команды, заново проверяет manifest, SHA,
+code/tenant/host binding, фактический owner-only `host_id`, PID и удерживаемый
+pipeline lock, точные production-провайдеры и единственную строку БД. Ticket
+защищает от случайного прямого CLI и устаревшего запуска, но не является
+криптографической защитой от произвольного процесса того же пользователя
+`dmitriy`: same-UID является локальной границей доверия. Allowlist также связан
+с ID строки, SHA и размером аудио. `stage_limit=1` сам по себе изоляцией не
+считается.
+
+Если после аварийного завершения осталась приватная копия в
+`$HOME/.mango_local/.../state/controlled_runs/`, следующий controlled-one
+завершится STOP до ASR. Не удалять её автоматически: сначала подтвердить, что
+worker не запущен, сверить owner/права и получить решение владельца на очистку.
+Если стадии уже завершились, но удалить каталог копии не удалось, команда
+сохраняет полный отчёт `before/stages/after`, помечает его `status=failed` и
+`pilot_transition_proven=false`, а остаток продолжает блокировать повтор. Так
+результат не теряется, но ошибка уборки не превращается в успешный пилот.
+Каждый controlled-worker также получает kernel-lifeline: при гибели
+оркестратора его sentinel завершает всю отдельную группу worker и его дочерних
+процессов. Пока PID из owner-only heartbeat ещё жив, новый тяжёлый запуск
+завершается STOP до первого worker; вручную запускать второй процесс нельзя.
+
+Только когда на M1 не идёт тяжёлая сборка Customer Timeline, разрешена
+синтетическая проверка моделей без аудио и текста клиентов:
+
+```bash
+set -euo pipefail
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/probe_m1_calls_access.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.controlled-one.json" \
+  --run-offline-model-probes \
+  --run-codex-model-probes \
+  --readiness-target controlled-1
+```
+
+`controlled-1` не требует замера десяти звонков. Обычный запуск без
+`--readiness-target` остаётся строгим `service` и вернёт успех только после
+отдельного доказательства capacity. В отчёте `requested`, `attempted` и
+успешные синтетические вызовы разделены; реальные Resolve/Analyze, аудио и
+внешние записи эта команда не выполняет.
+
+`service_machine_preflight=OK` означает только готовность машины и не разрешает
+запуск службы. `production_service_readiness` и старый `host_readiness`
+остаются `STOP`, пока отдельный owner-reviewed controlled-one evidence не
+свяжет реальный результат, ручную проверку и идемпотентный повтор.
+
+После отдельного разрешения на один реальный звонок единственная допустимая
+команда тяжёлого пилота будет:
+
+```bash
+set -euo pipefail
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  "$HOME/.mango_local/mango_calls_runtime/venv/bin/python" \
+  scripts/run_mango_calls_pipeline.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.controlled-one.json" \
+  controlled-one
+```
+
+Сейчас эту команду не выполнять. Она не делает capture, не запускает Process B
+и не публикует ничего наружу. Отчёт сравнивает digest всех нецелевых строк до и
+после. Первый новый полный проход получает
+`execution_class=transitioned_to_ready`; уже готовая строка —
+`idempotent_noop` и не выдаётся за первый пилот. Отдельный повтор по готовому
+звонку обязан показать по четыре `processed=0`. В обоих отчётах
+`controlled_1_human_pass=false`, `business_pass=false` и `runtime_pass=false`
+до ручной сверки аудио и отдельного гейта.
+`pilot_transition_proven=true` дополнительно требует фактические runtime-
+квитанции MLX Whisper, успешной очистки MLX-кэша и GigaAM; cache reuse или
+отсутствующий финальный JSON worker не выдаются за свежий пилот. Controlled-
+артефакты пишутся в изолированный каталог по хэшу `source_call_id`, поэтому
+совпадающие имена файлов других звонков не перезаписываются.
+
 ### 5. Подготовить локальные файлы
 
 - `~/.mango_secrets/` - каталог `0700`;
@@ -139,14 +334,18 @@ skills, plugins и MCP. Пользовательские skills нужны то�
 - итоговый `pipeline_root` будет `0700`, только внутри `~/.mango_local`, вне
   Git, Яндекс Диска и `~/Library/CloudStorage`.
 
-Значения `<HOME>`, `<CUTOVER_BOOTSTRAP_SINCE_ISO8601>` и
-`<CURRENT_TALLANTO_SNAPSHOT_ISO8601>` обязательно заменить. Старый снимок
-Tallanto от 2026-06-20 не использовать как текущий.
+Значения `<HOME>`, `<CUTOVER_BOOTSTRAP_SINCE_ISO8601>`,
+`<EXPECTED_CODE_SHA>`, `<OWNER_EMAIL>`, `<ROP_EMAIL>` и
+`<CURRENT_TALLANTO_SNAPSHOT_ISO8601>` обязательно заменить. `<HOME>` всегда
+берётся из фактического `$HOME` M1; имя пользователя в шаблонах не зашивается.
+Старый снимок Tallanto от 2026-06-20 не использовать как текущий.
 
-### 6. Подтвердить папку Яндекс Диска
+### 6. Будущая проверка Яндекс Диска — не выполнять в Phase A
 
-Сначала установить клиент Яндекс Диска и убедиться в интерфейсе, что папка
-синхронизируется. Затем создать локальный маркер:
+Этот раздел требует отдельного допуска внешней публикации. В Phase A полный
+пакет остаётся под `$HOME/.mango_local`; клиент Яндекс Диска, marker и
+круговой тест не нужны. После отдельного допуска сначала убедиться в интерфейсе,
+что папка синхронизируется, и только затем создать локальный маркер:
 
 ```bash
 set -euo pipefail
@@ -178,19 +377,24 @@ MANGO_CALLS_ENV_FILE="$HOME/.mango_secrets/mango_calls_m1_worker.env" \
 Проверка выводит только `true/false`. Блокирующие поля перечислены в итоговом
 условии bootstrap: платформа, конфигурация и env, импорты, ffmpeg/ffprobe,
 Mango/Codex/Tallanto, свежий Tallanto-файл, допустимая Google-конфигурация,
-подтверждённая Яндекс-папка, права каталогов, безопасный runtime-путь, место на
+права каталогов, безопасный runtime-путь, место на
 диске, чистый SHA, отсутствие конфликтующих служб и lock. Поля
 `developer_profile_ready`, `google_publish_enabled` и
-`network_access_verified` справочные. `network_access_verified=false` означает,
+`external_publication_ready`, `network_access_verified` справочные и не
+блокируют локальную Phase A. Яндекс-папка в bootstrap Phase A
+не проверяется. `network_access_verified=false` означает,
 что реальные read-only доступы ещё не доказаны; их проверяют отдельными
 микропробами без скачивания партии и без печати персональных данных.
 
 ## Текущий честный статус
 
-- Базовый код и безопасная установка существуют.
-- Яндекс-путь M1 теперь fail-closed и Google не является обязательным. Старый
-  локальный `process-b` сохраняет прежнее поведение до отдельного cutover, чтобы
-  merge подготовительного кода не остановил действующий суточный экспорт.
+- Базовый код fast-service, безопасный render и локальная публикационная
+  подготовка существуют.
+- Phase A plist не вызывает Google/Яндекс. Текущий Google safe-plan и суточные
+  final/incomplete пакеты создаются только локально; внешний execute требует
+  отдельного допуска и exact SHA короткоживущего плана.
+- Selective transfer переносит все неизвестные/незавершённые/multi-аудио и
+  исключает только строго доказанное готовое историческое аудио.
 - До live-cutover M1 должен выполнить ТЗ готовности, закрыть указанные в нём
   гейты полноты и пройти независимый аудит.
 - После этого выполняются ручной контрольный цикл, отдельное решение владельца

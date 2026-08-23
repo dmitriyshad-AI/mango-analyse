@@ -10,7 +10,7 @@ Feature-ID: process.context_reuse_gate.problem_lifecycle_v1
 Problem-ID: process.context_loss_and_duplicate_builds
 Изменение: extend
 Ключевые-символы: task_move,project_now,Problem-ID,Исход
-Ключевые-слова: attempt complete,problem closed,superseded,blocked
+Ключевые-слова: attempt_complete,problem_closed,legacy_unknown,Closure-evidence
 
 Дата: 2026-08-23.
 Предусловие: ТЗ A1, A2 и B приняты в интеграционной ветке.
@@ -29,6 +29,8 @@ Problem-ID: process.context_loss_and_duplicate_builds
 3. `problem_closed` разрешать только с непустым `Closure-evidence:`.
 4. Для legacy-ТЗ без `Problem-ID` сохранить текущую совместимость и показывать
    `legacy_unknown`.
+   Для `superseded` продолжение указывать существующим полем
+   `Следующий шаг:`, не создавать второй реестр.
 5. `project_now.py` генерирует по заголовкам задач:
    - открытые Problem-ID;
    - активную попытку и worktree/HEAD;

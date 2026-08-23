@@ -107,9 +107,12 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _redact_local_paths(text: str, root: Path) -> str:
+    return text.replace(str(root), "[redacted_worktree_path]").replace(str(Path.home()), "[redacted_home]")
+
+
 def _safe_pack_copy(data: bytes, root: Path) -> bytes:
-    text = data.decode("utf-8", errors="replace").replace(str(root), "[redacted_worktree_path]")
-    return mask_pii(text).encode()
+    return mask_pii(_redact_local_paths(data.decode("utf-8", errors="replace"), root)).encode()
 
 
 def _git_required(root: Path, *args: str) -> str:
@@ -280,7 +283,8 @@ def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
         "Начни ответ отдельными строками: `MODE: READ_ONLY`, точные `PACK_DIR`, `MANIFEST`, `NONCE`, "
         "`CONTEXT_READ: task.md, prebuild_inventory.json, git_context.txt, context_files.json, "
         "manifest.json`, затем `HEAD: ...`, `FILES_HASH: ...` из manifest, "
-        "`SELECTED_OWNER: ...` из inventory и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
+        "`SELECTED_OWNER: ...` — только точное значение selected_owner.path без symbol/sha, "
+        "и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
         "Ставь PASS, если приёмка выполнена, даже при наличии неблокирующих нот. "
         "PASS_WITH_FIXES означает обязательную правку до preflight; STOP — сработавшее STOP-условие ТЗ.\n"
         f"Назови полный HEAD {head} и дай конкретные замечания минимум в 200 символах. "
@@ -495,6 +499,7 @@ def create_claude_context_pack(
         "branch_diff_base": "main", "branch_diff_sha256": branch_diff_hash,
         "dedupe_key": _sha(f"{head}\n{prompt_template_hash}\n{files_hash}".encode()),
         "pii_redaction": ["phone", "email"],
+        "input_copy_policy": "source SHA-256 + deterministic PII/local-path redaction; verifier recomputes",
         "secret_handling": "pack inputs blocked; allowlisted source contents referenced by path/hash, not copied",
     }
     pack.mkdir(parents=True, exist_ok=False)
@@ -663,7 +668,7 @@ def run_claude_review(
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         detail = SECRET_RE.sub(
-            "[redacted_secret_like]", mask_pii(result.stderr[-500:].replace(str(root), "[redacted_worktree_path]")),
+            "[redacted_secret_like]", mask_pii(_redact_local_paths(result.stderr[-500:], root)),
         )
         raise ValueError(f"Claude CLI failed rc={result.returncode}: {detail}")
     failed = pack.with_name(f"{pack.name}_claude_cli_failed_{session}.json")
@@ -671,12 +676,12 @@ def run_claude_review(
         output_json = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         sanitized = SECRET_RE.sub(
-            "[redacted_secret_like]", mask_pii(result.stdout.replace(str(root), "[redacted_worktree_path]")),
+            "[redacted_secret_like]", mask_pii(_redact_local_paths(result.stdout, root)),
         )
         failed.write_text(sanitized, encoding="utf-8")
         raise ValueError("Claude CLI returned invalid JSON; sanitized output preserved") from exc
     raw_review = str(output_json.get("result", ""))
-    masked_review = mask_pii(raw_review.replace(str(root), "[redacted_worktree_path]"))
+    masked_review = mask_pii(_redact_local_paths(raw_review, root))
     review, redactions = SECRET_RE.subn("[redacted_secret_like]", masked_review)
     output_json = {"session_id": output_json.get("session_id"), "result": review}
     output_raw = (json.dumps(output_json, ensure_ascii=False) + "\n").encode()

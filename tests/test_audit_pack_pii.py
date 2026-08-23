@@ -76,7 +76,10 @@ def _context_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
         "Feature-ID: feature.context\nProblem-ID: problem.loss\nТелефон +7 999 123-45-67, email client@example.com\n",
         encoding="utf-8",
     )
-    inventory.write_text(json.dumps({"selected_owner": {"path": "scripts/owner.py"}}), encoding="utf-8")
+    inventory.write_text(json.dumps({
+        "selected_owner": {"path": "scripts/owner.py"},
+        "other_worktree": str(Path.home() / "Projects/other-worktree"),
+    }), encoding="utf-8")
     owner.write_text("def owner():\n    return True\n", encoding="utf-8")
 
     def fake_git(_root: Path, *args: str) -> str:
@@ -118,9 +121,12 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert str(root.resolve()) not in (pack / "git_context.txt").read_text(encoding="utf-8")
     assert str(root.resolve()) not in (pack / "manifest.json").read_text(encoding="utf-8")
     assert all(str(root.resolve()) not in item.read_text(encoding="utf-8") for item in pack.iterdir())
+    assert all(str(Path.home()) not in item.read_text(encoding="utf-8") for item in pack.iterdir())
+    assert "deterministic PII/local-path redaction" in manifest["input_copy_policy"]
     assert manifest["code_surface_sha256"] != make_audit_pack._sha(b"")
     assert f"PACK_DIR: {manifest['pack_path']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert f"NONCE: {manifest['review_nonce']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
+    assert "только точное значение selected_owner.path" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert not make_audit_pack._valid_review_result(
         _valid_review(pack).replace(f"MANIFEST: {manifest['pack_path']}/manifest.json\n", ""),
         manifest["head"], manifest["pack_path"], manifest["review_nonce"],

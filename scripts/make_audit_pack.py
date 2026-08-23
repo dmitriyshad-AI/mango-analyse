@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -45,6 +46,7 @@ CONTEXT_PREFIXES = ("src", "scripts", "tests", ".agents", ".claude")
 CONTEXT_EXACT = frozenset({
     "AGENTS.md", "CLAUDE.md", "README.md", "ARCHITECTURE.md",
     "docs/PROJECT_NOW.md", "docs/RUNBOOK.md", "docs/DECISIONS_LOG.md",
+    "scripts/skills/inventory_before_build.py",
 })
 CONTEXT_BLOCKED = frozenset({
     ".codex", ".codex_local", "product_data", "stable_runtime", "runtime", "runs",
@@ -200,6 +202,58 @@ def _task_context_paths(root: Path, text: str) -> tuple[Path, ...]:
     return tuple(found)
 
 
+def _local_import_paths(root: Path, paths: list[Path]) -> tuple[Path, ...]:
+    found: list[Path] = []
+    for path in paths:
+        if path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse((root / path).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeError):
+            continue
+        candidates: list[Path] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = Path(*alias.name.split("."))
+                    candidates.extend((module, Path("src") / module))
+            elif isinstance(node, ast.ImportFrom):
+                module = Path(*(node.module or "").split(".")) if node.module else Path()
+                if node.level:
+                    base = path.parent
+                    for _ in range(node.level - 1):
+                        base = base.parent
+                    candidates.append(base / module)
+                    candidates.extend(base / module / alias.name for alias in node.names if alias.name != "*")
+                else:
+                    candidates.extend((module, Path("src") / module))
+                    candidates.extend(module / alias.name for alias in node.names if alias.name != "*")
+                    candidates.extend(Path("src") / module / alias.name for alias in node.names if alias.name != "*")
+        for stem in candidates:
+            for candidate in (stem.with_suffix(".py"), stem / "__init__.py"):
+                try:
+                    _, safe_rel = _repo_file(root, candidate)
+                except ValueError:
+                    continue
+                safe = Path(safe_rel)
+                if safe not in found:
+                    found.append(safe)
+                break
+    return tuple(found)
+
+
+def _branch_diff(root: Path, base: str = "main") -> tuple[str, tuple[str, ...]]:
+    raw = _git_required(root, "diff", "--name-status", f"{base}...HEAD")
+    safe: list[str] = []
+    for line in raw.splitlines():
+        rel = line.split("\t")[-1].strip()
+        path = Path(rel)
+        allowed = rel in CONTEXT_EXACT or (path.parts and path.parts[0] in CONTEXT_PREFIXES)
+        if allowed and not _forbidden_context_path(path) and mask_pii(rel) == rel:
+            safe.append(rel)
+    return _sha(raw.encode()), tuple(sorted(set(safe)))
+
+
 def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
     manifest_rel = f"{pack_rel}/manifest.json"
     return (
@@ -207,21 +261,26 @@ def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
         f"PACK_DIR: {pack_rel}\nMANIFEST: {manifest_rel}\nNONCE: {nonce}\n"
         "Файлы пакета читай только из PACK_DIR: task.md, prebuild_inventory.json, git_context.txt, "
         "context_files.json и manifest.json. Исходники читай только по путям из context_files.json.\n"
-        "Начни ответ отдельными строками: `MODE: READ_ONLY`, точные `PACK_DIR`, `NONCE`, "
+        "Начни ответ отдельными строками: `MODE: READ_ONLY`, точные `PACK_DIR`, `MANIFEST`, `NONCE`, "
         "`CONTEXT_READ: task.md, prebuild_inventory.json, git_context.txt, context_files.json, "
-        "manifest.json`, затем `HEAD: ...` и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
+        "manifest.json`, затем `HEAD: ...`, `FILES_HASH: ...` из manifest, "
+        "`SELECTED_OWNER: ...` из inventory и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
         f"Назови полный HEAD {head} и дай конкретные замечания минимум в 200 символах. "
         "Не повторяй значения или синтетические примеры токенов/ключей.\n"
     ).encode()
 
 
-def _valid_review_result(text: str, head: str, pack_rel: str, nonce: str) -> bool:
+def _valid_review_result(
+    text: str, head: str, pack_rel: str, nonce: str, files_hash: str, owner_path: str,
+) -> bool:
     folded = text.casefold()
     return (
         len(text) >= 200 and f"head: {head}" in folded and "mode: read_only" in folded
         and re.search(rf"^PACK_DIR:\s*{re.escape(pack_rel)}\s*$", text, re.M)
         and re.search(rf"^MANIFEST:\s*{re.escape(pack_rel)}/manifest\.json\s*$", text, re.M)
         and re.search(rf"^NONCE:\s*{re.escape(nonce)}\s*$", text, re.M)
+        and re.search(rf"^FILES_HASH:\s*{re.escape(files_hash)}\s*$", text, re.M)
+        and re.search(rf"^SELECTED_OWNER:\s*{re.escape(owner_path)}\s*$", text, re.M)
         and _review_verdict(text) in {"PASS", "PASS_WITH_FIXES", "STOP"}
         and all(name in folded for name in CLAUDE_PACK_FILES - {"review_prompt.md"})
     )
@@ -320,7 +379,7 @@ def create_audit_pack(
         "semantic_required": semantic_needed,
         "client_paths": list(DEFAULT_CLIENT_PATHS),
         "files_written_before_manifest": written,
-        "pii_redaction": ["ru_phone", "email"],
+        "pii_redaction": ["phone", "email"],
     }
     (pack / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return pack
@@ -344,11 +403,13 @@ def create_claude_context_pack(
     head = _git_required(root, "rev-parse", "HEAD").strip()
     branch = _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
     surface_hash, safe_status, dirty_context = _code_surface(root, head)
+    branch_diff_hash, branch_changed = _branch_diff(root)
     defaults = [Path(name) for name in CONTEXT_EXACT if (root / name).is_file()]
     task_context = _task_context_paths(root, task_raw.decode("utf-8", errors="ignore"))
     requested = [*defaults, *context_files, *task_context, *dirty_context]
     if owner.get("path"):
         requested.append(Path(owner["path"]))
+    requested.extend(_local_import_paths(root, requested))
     sources: dict[str, str] = {}
     dirty_rel = {path.as_posix() for path in dirty_context}
     for requested_path in dict.fromkeys(requested):
@@ -363,7 +424,11 @@ def create_claude_context_pack(
     pack = _audit_evidence_path(root, pack)
     pack_rel = pack.relative_to(root).as_posix()
     context_json = json.dumps(
-        {"schema_version": "mango_claude_context_files_v1", "files": dict(sorted(sources.items()))},
+        {
+            "schema_version": "mango_claude_context_files_v1",
+            "files": dict(sorted(sources.items())),
+            "changed_vs_main": [path for path in branch_changed if path in sources],
+        },
         ensure_ascii=False, indent=2,
     ).encode() + b"\n"
     git_context = mask_pii(
@@ -398,6 +463,7 @@ def create_claude_context_pack(
         "prompt_sha256": prompt_hash, "prompt_template_sha256": prompt_template_hash,
         "files_hash": files_hash,
         "code_surface_sha256": surface_hash,
+        "branch_diff_base": "main", "branch_diff_sha256": branch_diff_hash,
         "dedupe_key": _sha(f"{head}\n{prompt_template_hash}\n{files_hash}".encode()),
         "pii_redaction": ["phone", "email"],
         "secret_handling": "pack inputs blocked; allowlisted source contents referenced by path/hash, not copied",
@@ -432,7 +498,8 @@ def verify_claude_context(
         for name, wanted in expected_files.items():
             if not (pack / name).is_file() or _sha((pack / name).read_bytes()) != wanted:
                 errors.append(f"context pack byte mismatch: {name}")
-        context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))["files"]
+        context_payload = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))
+        context = context_payload["files"]
         for rel, wanted in context.items():
             source, _ = _repo_file(root, Path(rel))
             if _sha(source.read_bytes()) != wanted:
@@ -459,6 +526,11 @@ def verify_claude_context(
             errors.append("branch/worktree mismatch")
         if _code_surface(root, manifest["head"])[0] != manifest.get("code_surface_sha256"):
             errors.append("code surface mismatch")
+        diff_hash, changed = _branch_diff(root, str(manifest.get("branch_diff_base", "main")))
+        if diff_hash != manifest.get("branch_diff_sha256") or context_payload.get("changed_vs_main") != [
+            path for path in changed if path in context
+        ]:
+            errors.append("branch diff mismatch")
         for label, expected, key in (("task", expected_task, "task_source"), ("inventory", expected_inventory, "inventory_source")):
             source, rel = _repo_file(root, Path(manifest[key]["path"]), label)
             if _sha(source.read_bytes()) != manifest[key]["sha256"]:
@@ -507,12 +579,17 @@ def verify_claude_context(
             if output.resolve() != expected_output.resolve():
                 errors.append("Claude output path is not canonical")
             output_json = json.loads(output.read_text(encoding="utf-8")) if output.is_file() else {}
+            inventory_payload = json.loads((pack / "prebuild_inventory.json").read_text(encoding="utf-8"))
+            owner_path = str((inventory_payload.get("selected_owner") or {}).get("path") or "NONE")
             if output.is_file():
                 _assert_no_secret("Claude output", output.read_bytes())
             if (
                 not output.is_file() or _sha(output.read_bytes()) != data.get("output_sha256")
                 or output_json.get("session_id") != data.get("session")
-                or not _valid_review_result(str(output_json.get("result", "")), manifest["head"], pack_rel, nonce)
+                or not _valid_review_result(
+                    str(output_json.get("result", "")), manifest["head"], pack_rel, nonce,
+                    manifest["files_hash"], owner_path,
+                )
             ):
                 errors.append("Claude output missing, changed or does not name HEAD")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -549,14 +626,26 @@ def run_claude_review(
     if result.returncode:
         detail = SECRET_RE.sub("[redacted_secret_like]", mask_pii(result.stderr[-500:]))
         raise ValueError(f"Claude CLI failed rc={result.returncode}: {detail}")
-    output_json = json.loads(result.stdout)
-    review, redactions = SECRET_RE.subn("[redacted_secret_like]", str(output_json.get("result", "")))
+    failed = pack.with_name(f"{pack.name}_claude_cli_failed_{session}.json")
+    try:
+        output_json = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        sanitized = SECRET_RE.sub("[redacted_secret_like]", mask_pii(result.stdout))
+        failed.write_text(sanitized, encoding="utf-8")
+        raise ValueError("Claude CLI returned invalid JSON; sanitized output preserved") from exc
+    raw_review = str(output_json.get("result", ""))
+    masked_review = mask_pii(raw_review)
+    review, redactions = SECRET_RE.subn("[redacted_secret_like]", masked_review)
     output_json["result"] = review
     output_raw = (json.dumps(output_json, ensure_ascii=False) + "\n").encode()
     _assert_no_secret("sanitized Claude output", output_raw)
+    inventory_payload = json.loads((pack / "prebuild_inventory.json").read_text(encoding="utf-8"))
+    owner_path = str((inventory_payload.get("selected_owner") or {}).get("path") or "NONE")
     if output_json.get("session_id") != session or not _valid_review_result(
         review, manifest["head"], manifest["pack_path"], manifest["review_nonce"],
+        manifest["files_hash"], owner_path,
     ):
+        failed.write_bytes(output_raw)
         raise ValueError("Claude JSON lacks session_id or required structured review")
     if verify_claude_context(root, pack):
         raise ValueError("Claude review changed or invalidated the reviewed surface")
@@ -579,6 +668,7 @@ def run_claude_review(
         "allowed_tools": ["Read", "Glob", "Grep"], "safe_mode": True,
         "command": [*command[:-1], "<review_prompt.md>"],
         "output_secret_like_redactions": redactions,
+        "output_pii_redacted": masked_review != raw_review,
         "output_path": str(stored.relative_to(root)), "output_sha256": _sha(output_raw),
         "repeat_reason": repeat_reason,
     }

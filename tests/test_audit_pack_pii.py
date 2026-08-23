@@ -90,12 +90,15 @@ def _context_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
 
 def _valid_review(pack: Path) -> str:
     manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    inventory = json.loads((pack / "prebuild_inventory.json").read_text(encoding="utf-8"))
+    owner = (inventory.get("selected_owner") or {}).get("path") or "NONE"
     return (
         "MODE: READ_ONLY\n"
         f"PACK_DIR: {manifest['pack_path']}\nMANIFEST: {manifest['pack_path']}/manifest.json\n"
         f"NONCE: {manifest['review_nonce']}\n"
         "CONTEXT_READ: task.md, prebuild_inventory.json, git_context.txt, context_files.json, manifest.json\n"
-        f"HEAD: {manifest['head']}\nVERDICT: PASS\n" + "Проверка выполнена по исходникам. " * 8
+        f"HEAD: {manifest['head']}\nFILES_HASH: {manifest['files_hash']}\nSELECTED_OWNER: {owner}\n"
+        "VERDICT: PASS\n" + "Проверка выполнена по исходникам. " * 8
     )
 
 
@@ -116,6 +119,7 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert not make_audit_pack._valid_review_result(
         _valid_review(pack).replace(f"MANIFEST: {manifest['pack_path']}/manifest.json\n", ""),
         manifest["head"], manifest["pack_path"], manifest["review_nonce"],
+        manifest["files_hash"], "scripts/owner.py",
     )
     assert (pack / "manifest.json").stat().st_mtime_ns >= max(
         item.stat().st_mtime_ns for item in pack.iterdir() if item.name != "manifest.json"
@@ -164,13 +168,44 @@ def test_claude_context_auto_includes_safe_files_named_by_task_without_copying_c
     test_file.parent.mkdir()
     synthetic = "OPENAI_API_KEY=sk-proj-syntheticexamplevalue"
     test_file.write_text(f"FIXTURE = {synthetic!r}\n", encoding="utf-8")
+    dependency = root / "src/local_dep.py"
+    dependency.parent.mkdir()
+    dependency.write_text("VALUE = True\n", encoding="utf-8")
+    sibling = root / "scripts/helper.py"
+    sibling.write_text("SIBLING = True\n", encoding="utf-8")
+    (root / "scripts/owner.py").write_text(
+        "from local_dep import VALUE\nfrom .helper import SIBLING\n", encoding="utf-8",
+    )
     task.write_text(task.read_text(encoding="utf-8") + "Тест-команда: pytest tests/test_owner.py\n", encoding="utf-8")
 
     pack = make_audit_pack.create_claude_context_pack(root, "auto_context", task, inventory)
 
     context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))["files"]
     assert "tests/test_owner.py" in context
+    assert "src/local_dep.py" in context
+    assert "scripts/helper.py" in context
     assert all(synthetic not in item.read_text(encoding="utf-8") for item in pack.iterdir())
+
+
+def test_claude_context_binds_branch_diff_and_marks_changed_context(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    original = make_audit_pack._git_required
+    state = {"diff": "M\tscripts/owner.py\n"}
+
+    def fake_git(repo: Path, *args: str) -> str:
+        if " ".join(args) == "diff --name-status main...HEAD":
+            return state["diff"]
+        return original(repo, *args)
+
+    monkeypatch.setattr(make_audit_pack, "_git_required", fake_git)
+    pack = make_audit_pack.create_claude_context_pack(root, "branch_diff", task, inventory)
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))
+
+    assert manifest["branch_diff_sha256"] == make_audit_pack._sha(state["diff"].encode())
+    assert context["changed_vs_main"] == ["scripts/owner.py"]
+    state["diff"] = ""
+    assert any("branch diff" in item for item in make_audit_pack.verify_claude_context(root, pack))
 
 
 def test_claude_context_rejects_forbidden_and_symlink_sources_without_reading(tmp_path, monkeypatch):
@@ -245,6 +280,52 @@ def test_claude_stop_verdict_creates_evidence_but_blocks_receipt(tmp_path, monke
     receipt = make_audit_pack.run_claude_review(root, pack, claude_bin=binary)
 
     assert any("verdict is not PASS: STOP" in item for item in make_audit_pack.verify_claude_context(root, pack, receipt))
+
+
+def test_malformed_claude_output_is_preserved_for_diagnosis(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    pack = make_audit_pack.create_claude_context_pack(root, "malformed", task, inventory)
+    binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o700)
+
+    def fake_run(command, **_kwargs):
+        session = command[command.index("--session-id") + 1]
+        return make_audit_pack.subprocess.CompletedProcess(
+            command, 0, json.dumps({
+                "session_id": session,
+                "result": "too short +7 999 123-45-67 client@example.com",
+            }), "",
+        )
+
+    monkeypatch.setattr(make_audit_pack.subprocess, "run", fake_run)
+    with pytest.raises(ValueError, match="required structured review"):
+        make_audit_pack.run_claude_review(root, pack, claude_bin=binary)
+    failed = next(pack.parent.glob(pack.name + "_claude_cli_failed_*.json"))
+    failed_text = failed.read_text(encoding="utf-8")
+    assert "+7 999 123-45-67" not in failed_text
+    assert "client@example.com" not in failed_text
+
+
+def test_non_json_claude_output_is_preserved_only_after_sanitizing(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    pack = make_audit_pack.create_claude_context_pack(root, "non_json", task, inventory)
+    binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o700)
+    secret = "OPENAI_API_KEY=sk-proj-syntheticexamplevalue"
+    monkeypatch.setattr(
+        make_audit_pack.subprocess,
+        "run",
+        lambda command, **_kwargs: make_audit_pack.subprocess.CompletedProcess(command, 0, f"not-json {secret}", ""),
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON"):
+        make_audit_pack.run_claude_review(root, pack, claude_bin=binary)
+
+    failed = next(pack.parent.glob(pack.name + "_claude_cli_failed_*.json"))
+    assert secret not in failed.read_text(encoding="utf-8")
+    assert "[redacted_secret_like]" in failed.read_text(encoding="utf-8")
 
 
 def test_claude_context_surface_detects_new_untracked_code(tmp_path, monkeypatch):

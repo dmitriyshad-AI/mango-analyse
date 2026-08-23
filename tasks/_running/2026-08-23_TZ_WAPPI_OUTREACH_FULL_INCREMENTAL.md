@@ -4,6 +4,11 @@
 Зоны: scripts/, tests/, audits/_inbox/wappi_outreach_incremental_20260823/, tasks/, docs/worktrees_registry.md
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_wappi_outreach_incremental.py
 Семантический-аудит: да
+Feature-ID: feature.wappi_outreach_incremental
+Problem-ID: problem.wappi_outreach_full_coverage
+Изменение: extend
+Ключевые-символы: build_case_packets,build_sheet_rows
+Ключевые-слова: Wappi outreach,personal offers,Google Sheet,Claude semantic review
 
 # ТЗ: полный сезонный охват Wappi с ранней бизнес-пользой
 
@@ -34,6 +39,11 @@
 - KB v6.8.
 
 ## Выбранное решение
+
+На время параллельного прогона этот Mac пишет только свои 106 ключей в строки
+`Wappi!2:107`; M1 пишет только строки `108:4417`. Источник распределения —
+`audits/_inbox/wappi_outreach_parallel_m1_20260823/partition_manifest.json`.
+Оба исполнителя записывают только `A:W` и `Z:AB`; `X:Y` не входят в запись.
 
 Рассмотрены варианты:
 
@@ -78,7 +88,7 @@ regex для намерения, теплоты, отказа, маршрута 
 
 ### S500 и SALL
 
-- расширять только после прохода предыдущей ступени;
+- этот Mac расширяет только свой блок MAIN; общий SALL закрывается суммой MAIN+M1;
 - N каждый раз получается новым полным аудитом личных чатов;
 - строк столько же, сколько уникальных ключей;
 - gap/conflict остаются видимыми строками `ПРОВЕРКА`, не исчезают;

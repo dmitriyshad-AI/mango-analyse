@@ -34,7 +34,7 @@
 - `TZ-03-claim-evidence.md`;
 - `TZ-04-safe-normalization-msk.md`;
 - `TZ-05-versioned-google-publisher.md`;
-- решения D-117 и D-118 в `docs/DECISIONS_LOG.md`;
+- решения D-122 и D-123 в `docs/DECISIONS_LOG.md`;
 - замечания владельца от 2026-08-16 о дорожках Mango и экономии токенов.
 
 Это ТЗ задаёт единственный исполнимый порядок и отменяет противоречащие пункты старых документов.

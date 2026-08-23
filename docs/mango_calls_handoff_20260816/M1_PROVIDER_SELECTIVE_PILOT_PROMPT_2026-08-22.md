@@ -18,7 +18,7 @@ SHA. Создай отдельную ветку `codex/m1-provider-selective-pil
 3. ARCHITECTURE.md
 4. docs/PROJECT_NOW.md
 5. docs/RUNBOOK.md
-6. docs/DECISIONS_LOG.md, особенно D-120–D-124
+6. docs/DECISIONS_LOG.md, особенно D-125–D-129
 7. docs/mango_calls_handoff_20260816/M1_QUALITY_V3_INTEGRATION_PROMPT.md
 8. docs/mango_calls_handoff_20260816/M1_GOOGLE_UTM_CUTOVER_2026-08-22.md
 9. docs/mango_calls_handoff_20260816/M1_PROVIDER_SELECTIVE_PILOT_TZ_2026-08-22.md

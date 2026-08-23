@@ -151,7 +151,7 @@ class Settings:
     controlled_call_audio_snapshot_path: Optional[str] = None
     controlled_call_audio_snapshot_sha256: Optional[str] = None
     controlled_call_audio_snapshot_size_bytes: Optional[int] = None
-    resolve_semantic_merge_mode: str = "off"  # off = zero model calls in Resolve (D-122)
+    resolve_semantic_merge_mode: str = "off"  # off = zero model calls in Resolve (D-127)
     codex_resolve_reasoning_effort: str = "medium"
 
 

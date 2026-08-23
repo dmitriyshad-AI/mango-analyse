@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from mango_mvp.models import CallRecord
@@ -135,6 +135,40 @@ def iter_audio_files(root: Path) -> Iterable[Path]:
         yield path
 
 
+def _has_normalized_recording_id(session: Session, source_recording_id: str) -> bool:
+    return session.scalar(
+        select(CallRecord.id).where(
+            func.trim(CallRecord.source_recording_id) == source_recording_id
+        )
+    ) is not None
+
+
+def _insert_call_record(
+    session: Session,
+    values: Dict[str, Any],
+    source_recording_id: Optional[str],
+) -> bool:
+    try:
+        with session.begin_nested():
+            session.add(CallRecord(**values))
+    except IntegrityError as exc:
+        detail = str(exc.orig).casefold()
+        recording_id_violation = "unique" in detail and (
+            "source_recording_id" in detail
+            or "ix_call_records_source_recording_id" in detail
+        )
+        if (
+            not source_recording_id
+            or not recording_id_violation
+            or not _has_normalized_recording_id(session, source_recording_id)
+        ):
+            raise
+        with session.begin_nested():
+            session.add(CallRecord(**{**values, "source_recording_id": None}))
+        return True
+    return False
+
+
 def ingest_from_directory(
     session: Session,
     recordings_dir: Path,
@@ -146,6 +180,7 @@ def ingest_from_directory(
     inserted = 0
     skipped = 0
     failed = 0
+    source_recording_id_conflicts = 0
     failure_types: Dict[str, int] = {}
 
     root = recordings_dir.resolve()
@@ -189,22 +224,27 @@ def ingest_from_directory(
                 started_at = _as_datetime(
                     _pick(row, "started_at", "start_time", "date_time")
                 ) or filename_meta.get("started_at")
-                session.add(
-                    CallRecord(
-                        source_file=abs_path,
-                        source_filename=repair_filename_display(file_path.name),
-                        source_call_id=source_call_id,
-                        source_recording_id=source_recording_id,
-                        audio_codec=audio_meta.get("codec_name"),
-                        sample_rate=audio_meta.get("sample_rate"),  # type: ignore[arg-type]
-                        channels=audio_meta.get("channels"),  # type: ignore[arg-type]
-                        duration_sec=audio_meta.get("duration_sec"),  # type: ignore[arg-type]
-                        phone=phone,
-                        manager_name=repair_manager_name(manager_name),
-                        direction=_pick(row, "direction", "call_direction"),
-                        started_at=started_at,
-                    )
-                )
+                if source_recording_id and _has_normalized_recording_id(
+                    session, source_recording_id
+                ):
+                    source_recording_id = None
+                    source_recording_id_conflicts += 1
+                values = {
+                    "source_file": abs_path,
+                    "source_filename": repair_filename_display(file_path.name),
+                    "source_call_id": source_call_id,
+                    "source_recording_id": source_recording_id,
+                    "audio_codec": audio_meta.get("codec_name"),
+                    "sample_rate": audio_meta.get("sample_rate"),
+                    "channels": audio_meta.get("channels"),
+                    "duration_sec": audio_meta.get("duration_sec"),
+                    "phone": phone,
+                    "manager_name": repair_manager_name(manager_name),
+                    "direction": _pick(row, "direction", "call_direction"),
+                    "started_at": started_at,
+                }
+                if _insert_call_record(session, values, source_recording_id):
+                    source_recording_id_conflicts += 1
             inserted += 1
         except SQLAlchemyError:
             # Database/connection failures are fatal for the run, not bad-audio counters.
@@ -224,5 +264,6 @@ def ingest_from_directory(
         "inserted": inserted,
         "skipped": skipped,
         "failed": failed,
+        "source_recording_id_conflicts": source_recording_id_conflicts,
         "failure_types": failure_types,
     }

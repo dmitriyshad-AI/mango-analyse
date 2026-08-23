@@ -154,6 +154,69 @@ class IngestFilenameParseTest(unittest.TestCase):
 
             self.assertEqual(row.source_recording_id, "recording-1")
 
+    def test_ingest_recovers_late_recording_id_conflict_and_keeps_healthy_row(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ingest_late_recording_id_") as td:
+            root = Path(td)
+            conflict = root / "conflict.mp3"
+            healthy = root / "healthy.mp3"
+            conflict.write_bytes(b"conflict")
+            healthy.write_bytes(b"healthy")
+            metadata = root / "metadata.csv"
+            metadata.write_text(
+                "filename,call_id,recording_id\n"
+                "conflict.mp3,new-conflict,  recording-late  \n"
+                "healthy.mp3,new-healthy,recording-healthy\n",
+                encoding="utf-8",
+            )
+            engine = create_engine(
+                f"sqlite:///{root / 'calls.sqlite'}", future=True
+            )
+            Base.metadata.create_all(bind=engine)
+            with Session(engine, future=True) as session:
+                session.add(
+                    CallRecord(
+                        source_file="old.mp3",
+                        source_filename="old.mp3",
+                        source_call_id="old-call",
+                        source_recording_id="recording-late",
+                    )
+                )
+                session.commit()
+                original_scalar = session.scalar
+                hid_first_recording_check = False
+
+                def simulate_late_conflict(statement):  # noqa: ANN001, ANN202
+                    nonlocal hid_first_recording_check
+                    if (
+                        not hid_first_recording_check
+                        and "trim(call_records.source_recording_id)"
+                        in str(statement).lower()
+                    ):
+                        hid_first_recording_check = True
+                        return None
+                    return original_scalar(statement)
+
+                with patch.object(session, "scalar", side_effect=simulate_late_conflict), patch(
+                    "mango_mvp.services.ingest.probe_audio",
+                    return_value={"codec_name": "mp3"},
+                ):
+                    result = ingest_from_directory(session, root, metadata)
+                rows = {
+                    row.source_call_id: row for row in session.scalars(select(CallRecord)).all()
+                }
+
+            self.assertTrue(hid_first_recording_check)
+            self.assertEqual(result["processed"], 2)
+            self.assertEqual(result["inserted"], 2)
+            self.assertEqual(result["failed"], 0)
+            self.assertEqual(result["source_recording_id_conflicts"], 1)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows["old-call"].source_recording_id, "recording-late")
+            self.assertIsNone(rows["new-conflict"].source_recording_id)
+            self.assertEqual(rows["new-healthy"].source_recording_id, "recording-healthy")
+
     def test_ingest_with_header_only_metadata_is_empty(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_ingest_empty_") as td:
             root = Path(td)

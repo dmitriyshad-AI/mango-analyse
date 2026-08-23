@@ -108,7 +108,7 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
 
     assert "[redacted_phone]" in (pack / "task.md").read_text(encoding="utf-8")
     assert "[redacted_email]" in (pack / "task.md").read_text(encoding="utf-8")
-    assert (pack / "prebuild_inventory.json").read_bytes() == inventory.read_bytes()
+    assert json.loads((pack / "prebuild_inventory.json").read_text(encoding="utf-8"))["selected_owner"]["path"] == "scripts/owner.py"
     manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
     assert set(manifest["files"]) == {"task.md", "prebuild_inventory.json", "git_context.txt", "context_files.json", "review_prompt.md"}
     assert manifest["pii_redaction"] == ["phone", "email"]
@@ -117,6 +117,7 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert manifest["worktree_path_sha256"] == make_audit_pack._sha(str(root.resolve()).encode())
     assert str(root.resolve()) not in (pack / "git_context.txt").read_text(encoding="utf-8")
     assert str(root.resolve()) not in (pack / "manifest.json").read_text(encoding="utf-8")
+    assert all(str(root.resolve()) not in item.read_text(encoding="utf-8") for item in pack.iterdir())
     assert manifest["code_surface_sha256"] != make_audit_pack._sha(b"")
     assert f"PACK_DIR: {manifest['pack_path']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert f"NONCE: {manifest['review_nonce']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")

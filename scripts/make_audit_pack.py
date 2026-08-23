@@ -107,6 +107,11 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _safe_pack_copy(data: bytes, root: Path) -> bytes:
+    text = data.decode("utf-8", errors="replace").replace(str(root), "[redacted_worktree_path]")
+    return mask_pii(text).encode()
+
+
 def _git_required(root: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-c", "core.quotepath=off", *args], cwd=root,
@@ -457,14 +462,15 @@ def create_claude_context_pack(
         f"worktree_path_sha256: {_sha(str(root).encode())}\nstatus:\n"
         + safe_status
     ).encode()
-    task_copy = mask_pii(task_raw.decode("utf-8", errors="replace")).encode()
+    task_copy = _safe_pack_copy(task_raw, root)
+    inventory_copy = _safe_pack_copy(inventory_raw, root)
     evidence_hashes = {"task.md": _sha(task_raw), "prebuild_inventory.json": _sha(inventory_raw), **sources}
     files_hash = _sha("\n".join(f"{name}:{sha}" for name, sha in sorted(evidence_hashes.items())).encode())
     prompt_template_hash = _sha(_review_prompt(head, "<PACK_DIR>", "<NONCE>"))
     nonce = _sha(f"{head}\n{files_hash}\n{prompt_template_hash}".encode())[:32]
     prompt = _review_prompt(head, pack_rel, nonce)
     files = {
-        "task.md": task_copy, "prebuild_inventory.json": inventory_raw,
+        "task.md": task_copy, "prebuild_inventory.json": inventory_copy,
         "git_context.txt": git_context, "context_files.json": context_json,
         "review_prompt.md": prompt,
     }
@@ -564,6 +570,9 @@ def verify_claude_context(
             source, rel = _repo_file(root, Path(manifest[key]["path"]), label)
             if _sha(source.read_bytes()) != manifest[key]["sha256"]:
                 errors.append(f"{label} source drift")
+            pack_name = "task.md" if label == "task" else "prebuild_inventory.json"
+            if _sha(_safe_pack_copy(source.read_bytes(), root)) != expected_files.get(pack_name):
+                errors.append(f"{label} safe copy mismatch")
             if expected is not None and _repo_file(root, expected, label)[1] != rel:
                 errors.append(f"{label} binding mismatch")
         if receipt is not None:
@@ -654,7 +663,7 @@ def run_claude_review(
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         detail = SECRET_RE.sub(
-            "[redacted_secret_like]", mask_pii(result.stderr[-500:]).replace(str(root), "[redacted_worktree_path]"),
+            "[redacted_secret_like]", mask_pii(result.stderr[-500:].replace(str(root), "[redacted_worktree_path]")),
         )
         raise ValueError(f"Claude CLI failed rc={result.returncode}: {detail}")
     failed = pack.with_name(f"{pack.name}_claude_cli_failed_{session}.json")
@@ -662,12 +671,12 @@ def run_claude_review(
         output_json = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         sanitized = SECRET_RE.sub(
-            "[redacted_secret_like]", mask_pii(result.stdout).replace(str(root), "[redacted_worktree_path]"),
+            "[redacted_secret_like]", mask_pii(result.stdout.replace(str(root), "[redacted_worktree_path]")),
         )
         failed.write_text(sanitized, encoding="utf-8")
         raise ValueError("Claude CLI returned invalid JSON; sanitized output preserved") from exc
     raw_review = str(output_json.get("result", ""))
-    masked_review = mask_pii(raw_review).replace(str(root), "[redacted_worktree_path]")
+    masked_review = mask_pii(raw_review.replace(str(root), "[redacted_worktree_path]"))
     review, redactions = SECRET_RE.subn("[redacted_secret_like]", masked_review)
     output_json = {"session_id": output_json.get("session_id"), "result": review}
     output_raw = (json.dumps(output_json, ensure_ascii=False) + "\n").encode()

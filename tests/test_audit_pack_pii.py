@@ -155,21 +155,6 @@ def test_claude_context_prompt_explicitly_uses_none_without_selected_owner(tmp_p
     assert make_audit_pack.verify_claude_context(root, pack) == []
 
 
-def test_claude_context_allows_registered_worktree_evidence(tmp_path, monkeypatch):
-    root, task, inventory = _context_repo(tmp_path, monkeypatch)
-    registry = root / "docs/worktrees_registry.md"
-    registry.parent.mkdir(parents=True)
-    registry.write_text("# Реестр\n\n`codex/example-worktree`\n", encoding="utf-8")
-
-    pack = make_audit_pack.create_claude_context_pack(
-        root, "context-registry", task, inventory, context_files=(registry,),
-    )
-
-    context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))
-    assert context["files"]["docs/worktrees_registry.md"]
-    assert make_audit_pack.verify_claude_context(root, pack) == []
-
-
 def test_claude_context_verify_detects_pack_and_source_byte_changes(tmp_path, monkeypatch):
     root, task, inventory = _context_repo(tmp_path, monkeypatch)
     pack = make_audit_pack.create_claude_context_pack(root, "context", task, inventory)

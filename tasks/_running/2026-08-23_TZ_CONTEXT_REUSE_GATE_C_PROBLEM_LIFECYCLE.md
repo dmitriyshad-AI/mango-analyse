@@ -9,8 +9,8 @@
 Feature-ID: process.context_reuse_gate.problem_lifecycle_v1
 Problem-ID: process.context_loss_and_duplicate_builds
 Изменение: extend
-Ключевые-символы: task_move,project_now,Problem-ID,Исход
-Ключевые-слова: attempt_complete,problem_closed,legacy_unknown,Closure-evidence
+Ключевые-символы: move_task,build_project_now
+Ключевые-слова: attempt_complete,problem_closed,legacy_unknown,Closure-evidence,Problem-ID,Исход
 
 Дата: 2026-08-23.
 Предусловие: ТЗ A1, A2 и B приняты в интеграционной ветке.

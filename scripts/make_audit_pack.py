@@ -52,6 +52,7 @@ CONTEXT_BLOCKED = frozenset({
     ".codex", ".codex_local", "product_data", "stable_runtime", "runtime", "runs",
     "transcripts", "audio", "mail", "calls", "graphify-out",
 })
+SURFACE_IGNORED_PREFIXES = ("audits/_inbox/",)
 CLAUDE_PACK_FILES = frozenset({
     "task.md", "prebuild_inventory.json", "git_context.txt", "context_files.json", "review_prompt.md",
 })
@@ -242,16 +243,26 @@ def _local_import_paths(root: Path, paths: list[Path]) -> tuple[Path, ...]:
     return tuple(found)
 
 
-def _branch_diff(root: Path, base: str = "main") -> tuple[str, tuple[str, ...]]:
+def _safe_context_name(rel: str) -> bool:
+    path = Path(rel)
+    return bool(
+        (rel in CONTEXT_EXACT or (path.parts and path.parts[0] in CONTEXT_PREFIXES))
+        and not _forbidden_context_path(path) and mask_pii(rel) == rel
+    )
+
+
+def _branch_diff(root: Path, base: str = "main") -> tuple[str, tuple[str, ...], tuple[dict[str, str], ...]]:
     raw = _git_required(root, "diff", "--name-status", f"{base}...HEAD")
-    safe: list[str] = []
+    safe, numstat = [], []
     for line in raw.splitlines():
         rel = line.split("\t")[-1].strip()
-        path = Path(rel)
-        allowed = rel in CONTEXT_EXACT or (path.parts and path.parts[0] in CONTEXT_PREFIXES)
-        if allowed and not _forbidden_context_path(path) and mask_pii(rel) == rel:
+        if _safe_context_name(rel):
             safe.append(rel)
-    return _sha(raw.encode()), tuple(sorted(set(safe)))
+    for line in _git_required(root, "diff", "--numstat", f"{base}...HEAD").splitlines():
+        added, deleted, rel = line.split("\t", 2)
+        if _safe_context_name(rel):
+            numstat.append({"path": rel, "added": added, "deleted": deleted})
+    return _sha(raw.encode()), tuple(sorted(set(safe))), tuple(sorted(numstat, key=lambda item: item["path"]))
 
 
 def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
@@ -265,6 +276,8 @@ def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
         "`CONTEXT_READ: task.md, prebuild_inventory.json, git_context.txt, context_files.json, "
         "manifest.json`, затем `HEAD: ...`, `FILES_HASH: ...` из manifest, "
         "`SELECTED_OWNER: ...` из inventory и `VERDICT: PASS|PASS_WITH_FIXES|STOP`.\n"
+        "Ставь PASS, если приёмка выполнена, даже при наличии неблокирующих нот. "
+        "PASS_WITH_FIXES означает обязательную правку до preflight; STOP — сработавшее STOP-условие ТЗ.\n"
         f"Назови полный HEAD {head} и дай конкретные замечания минимум в 200 символах. "
         "Не повторяй значения или синтетические примеры токенов/ключей.\n"
     ).encode()
@@ -296,6 +309,8 @@ def _code_surface(root: Path, head: str | None = None) -> tuple[str, str, tuple[
     hashes, safe_status, safe_files, blocked = [f"head:{head or _git_required(root, 'rev-parse', 'HEAD').strip()}"], [], [], 0
     for line in status:
         rel = line[3:].split(" -> ")[-1].strip().strip('"')
+        if any(rel.startswith(prefix) for prefix in SURFACE_IGNORED_PREFIXES):
+            continue
         rel_path = Path(rel)
         allowed = rel in CONTEXT_EXACT or (rel_path.parts and rel_path.parts[0] in CONTEXT_PREFIXES)
         if not allowed or _forbidden_context_path(rel_path):
@@ -403,7 +418,7 @@ def create_claude_context_pack(
     head = _git_required(root, "rev-parse", "HEAD").strip()
     branch = _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
     surface_hash, safe_status, dirty_context = _code_surface(root, head)
-    branch_diff_hash, branch_changed = _branch_diff(root)
+    branch_diff_hash, branch_changed, branch_numstat = _branch_diff(root)
     defaults = [Path(name) for name in CONTEXT_EXACT if (root / name).is_file()]
     task_context = _task_context_paths(root, task_raw.decode("utf-8", errors="ignore"))
     requested = [*defaults, *context_files, *task_context, *dirty_context]
@@ -411,6 +426,7 @@ def create_claude_context_pack(
         requested.append(Path(owner["path"]))
     requested.extend(_local_import_paths(root, requested))
     sources: dict[str, str] = {}
+    source_scan_warnings: list[str] = []
     dirty_rel = {path.as_posix() for path in dirty_context}
     for requested_path in dict.fromkeys(requested):
         source, rel = _repo_file(root, requested_path)
@@ -418,6 +434,9 @@ def create_claude_context_pack(
         if rel in dirty_rel:
             _assert_no_secret(rel, raw)
             _assert_no_pii(rel, raw)
+        raw_text = raw.decode("utf-8", errors="ignore")
+        if SECRET_RE.search(raw_text) or mask_pii(raw_text) != raw_text:
+            source_scan_warnings.append(rel)
         sources[rel] = _sha(raw)
     pack = (out_root or root / "audits/_inbox") / f"{slug}_{datetime.now():%Y%m%d%H%M%S}"
     _assert_safe_output_path(root, pack)
@@ -428,11 +447,14 @@ def create_claude_context_pack(
             "schema_version": "mango_claude_context_files_v1",
             "files": dict(sorted(sources.items())),
             "changed_vs_main": [path for path in branch_changed if path in sources],
+            "branch_numstat": [item for item in branch_numstat if item["path"] in sources],
+            "source_scan_warnings": sorted(set(source_scan_warnings)),
         },
         ensure_ascii=False, indent=2,
     ).encode() + b"\n"
     git_context = mask_pii(
-        f"head: {head}\nbranch: {branch}\nworktree: {root}\nstatus:\n"
+        f"head: {head}\nbranch: {branch}\nworktree_label: {root.name}\n"
+        f"worktree_path_sha256: {_sha(str(root).encode())}\nstatus:\n"
         + safe_status
     ).encode()
     task_copy = mask_pii(task_raw.decode("utf-8", errors="replace")).encode()
@@ -452,7 +474,8 @@ def create_claude_context_pack(
     manifest = {
         "schema_version": "mango_claude_context_pack_v1", "slug": slug,
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "head": head, "branch": branch, "worktree": str(root),
+        "head": head, "branch": branch, "worktree_label": root.name,
+        "worktree_path_sha256": _sha(str(root).encode()),
         "pack_path": pack_rel, "review_nonce": nonce,
         "review_nonce_kind": "deterministic_binding_not_freshness",
         "feature_id": _field(task_raw.decode(errors="ignore"), "Feature-ID"),
@@ -522,14 +545,20 @@ def verify_claude_context(
             errors.append("prompt/files hash mismatch")
         if _git_required(root, "rev-parse", "HEAD").strip() != manifest.get("head"):
             errors.append("HEAD mismatch")
-        if _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip() != manifest.get("branch") or str(root) != manifest.get("worktree"):
+        if (
+            _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip() != manifest.get("branch")
+            or root.name != manifest.get("worktree_label")
+            or _sha(str(root).encode()) != manifest.get("worktree_path_sha256")
+        ):
             errors.append("branch/worktree mismatch")
         if _code_surface(root, manifest["head"])[0] != manifest.get("code_surface_sha256"):
             errors.append("code surface mismatch")
-        diff_hash, changed = _branch_diff(root, str(manifest.get("branch_diff_base", "main")))
-        if diff_hash != manifest.get("branch_diff_sha256") or context_payload.get("changed_vs_main") != [
-            path for path in changed if path in context
-        ]:
+        diff_hash, changed, numstat = _branch_diff(root, str(manifest.get("branch_diff_base", "main")))
+        if (
+            diff_hash != manifest.get("branch_diff_sha256")
+            or context_payload.get("changed_vs_main") != [path for path in changed if path in context]
+            or context_payload.get("branch_numstat") != [item for item in numstat if item["path"] in context]
+        ):
             errors.append("branch diff mismatch")
         for label, expected, key in (("task", expected_task, "task_source"), ("inventory", expected_inventory, "inventory_source")):
             source, rel = _repo_file(root, Path(manifest[key]["path"]), label)
@@ -624,19 +653,23 @@ def run_claude_review(
     ]
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
-        detail = SECRET_RE.sub("[redacted_secret_like]", mask_pii(result.stderr[-500:]))
+        detail = SECRET_RE.sub(
+            "[redacted_secret_like]", mask_pii(result.stderr[-500:]).replace(str(root), "[redacted_worktree_path]"),
+        )
         raise ValueError(f"Claude CLI failed rc={result.returncode}: {detail}")
     failed = pack.with_name(f"{pack.name}_claude_cli_failed_{session}.json")
     try:
         output_json = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        sanitized = SECRET_RE.sub("[redacted_secret_like]", mask_pii(result.stdout))
+        sanitized = SECRET_RE.sub(
+            "[redacted_secret_like]", mask_pii(result.stdout).replace(str(root), "[redacted_worktree_path]"),
+        )
         failed.write_text(sanitized, encoding="utf-8")
         raise ValueError("Claude CLI returned invalid JSON; sanitized output preserved") from exc
     raw_review = str(output_json.get("result", ""))
-    masked_review = mask_pii(raw_review)
+    masked_review = mask_pii(raw_review).replace(str(root), "[redacted_worktree_path]")
     review, redactions = SECRET_RE.subn("[redacted_secret_like]", masked_review)
-    output_json["result"] = review
+    output_json = {"session_id": output_json.get("session_id"), "result": review}
     output_raw = (json.dumps(output_json, ensure_ascii=False) + "\n").encode()
     _assert_no_secret("sanitized Claude output", output_raw)
     inventory_payload = json.loads((pack / "prebuild_inventory.json").read_text(encoding="utf-8"))

@@ -113,6 +113,10 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert set(manifest["files"]) == {"task.md", "prebuild_inventory.json", "git_context.txt", "context_files.json", "review_prompt.md"}
     assert manifest["pii_redaction"] == ["phone", "email"]
     assert "not copied" in manifest["secret_handling"]
+    assert manifest["worktree_label"] == root.name
+    assert manifest["worktree_path_sha256"] == make_audit_pack._sha(str(root.resolve()).encode())
+    assert str(root.resolve()) not in (pack / "git_context.txt").read_text(encoding="utf-8")
+    assert str(root.resolve()) not in (pack / "manifest.json").read_text(encoding="utf-8")
     assert manifest["code_surface_sha256"] != make_audit_pack._sha(b"")
     assert f"PACK_DIR: {manifest['pack_path']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert f"NONCE: {manifest['review_nonce']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
@@ -180,21 +184,25 @@ def test_claude_context_auto_includes_safe_files_named_by_task_without_copying_c
 
     pack = make_audit_pack.create_claude_context_pack(root, "auto_context", task, inventory)
 
-    context = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))["files"]
+    context_payload = json.loads((pack / "context_files.json").read_text(encoding="utf-8"))
+    context = context_payload["files"]
     assert "tests/test_owner.py" in context
     assert "src/local_dep.py" in context
     assert "scripts/helper.py" in context
+    assert context_payload["source_scan_warnings"] == ["tests/test_owner.py"]
     assert all(synthetic not in item.read_text(encoding="utf-8") for item in pack.iterdir())
 
 
 def test_claude_context_binds_branch_diff_and_marks_changed_context(tmp_path, monkeypatch):
     root, task, inventory = _context_repo(tmp_path, monkeypatch)
     original = make_audit_pack._git_required
-    state = {"diff": "M\tscripts/owner.py\n"}
+    state = {"diff": "M\tscripts/owner.py\n", "numstat": "5\t2\tscripts/owner.py\n"}
 
     def fake_git(repo: Path, *args: str) -> str:
         if " ".join(args) == "diff --name-status main...HEAD":
             return state["diff"]
+        if " ".join(args) == "diff --numstat main...HEAD":
+            return state["numstat"]
         return original(repo, *args)
 
     monkeypatch.setattr(make_audit_pack, "_git_required", fake_git)
@@ -204,7 +212,9 @@ def test_claude_context_binds_branch_diff_and_marks_changed_context(tmp_path, mo
 
     assert manifest["branch_diff_sha256"] == make_audit_pack._sha(state["diff"].encode())
     assert context["changed_vs_main"] == ["scripts/owner.py"]
+    assert context["branch_numstat"] == [{"path": "scripts/owner.py", "added": "5", "deleted": "2"}]
     state["diff"] = ""
+    state["numstat"] = ""
     assert any("branch diff" in item for item in make_audit_pack.verify_claude_context(root, pack))
 
 
@@ -307,6 +317,30 @@ def test_malformed_claude_output_is_preserved_for_diagnosis(tmp_path, monkeypatc
     assert "client@example.com" not in failed_text
 
 
+def test_valid_claude_output_discards_untrusted_extra_fields(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    pack = make_audit_pack.create_claude_context_pack(root, "extra_fields", task, inventory)
+    binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o700)
+
+    def fake_run(command, **_kwargs):
+        session = command[command.index("--session-id") + 1]
+        return make_audit_pack.subprocess.CompletedProcess(command, 0, json.dumps({
+            "session_id": session,
+            "result": _valid_review(pack),
+            "debug": "+7 999 123-45-67 client@example.com",
+        }), "")
+
+    monkeypatch.setattr(make_audit_pack.subprocess, "run", fake_run)
+    receipt = make_audit_pack.run_claude_review(root, pack, claude_bin=binary)
+    output = root / json.loads(receipt.read_text(encoding="utf-8"))["output_path"]
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    assert set(stored) == {"session_id", "result"}
+    assert "+7 999 123-45-67" not in output.read_text(encoding="utf-8")
+    assert "client@example.com" not in output.read_text(encoding="utf-8")
+
+
 def test_non_json_claude_output_is_preserved_only_after_sanitizing(tmp_path, monkeypatch):
     root, task, inventory = _context_repo(tmp_path, monkeypatch)
     pack = make_audit_pack.create_claude_context_pack(root, "non_json", task, inventory)
@@ -317,7 +351,9 @@ def test_non_json_claude_output_is_preserved_only_after_sanitizing(tmp_path, mon
     monkeypatch.setattr(
         make_audit_pack.subprocess,
         "run",
-        lambda command, **_kwargs: make_audit_pack.subprocess.CompletedProcess(command, 0, f"not-json {secret}", ""),
+        lambda command, **_kwargs: make_audit_pack.subprocess.CompletedProcess(
+            command, 0, f"not-json {secret} {root.resolve()}", "",
+        ),
     )
 
     with pytest.raises(ValueError, match="invalid JSON"):
@@ -325,7 +361,9 @@ def test_non_json_claude_output_is_preserved_only_after_sanitizing(tmp_path, mon
 
     failed = next(pack.parent.glob(pack.name + "_claude_cli_failed_*.json"))
     assert secret not in failed.read_text(encoding="utf-8")
+    assert str(root.resolve()) not in failed.read_text(encoding="utf-8")
     assert "[redacted_secret_like]" in failed.read_text(encoding="utf-8")
+    assert "[redacted_worktree_path]" in failed.read_text(encoding="utf-8")
 
 
 def test_claude_context_surface_detects_new_untracked_code(tmp_path, monkeypatch):
@@ -350,6 +388,28 @@ def test_claude_context_surface_detects_new_untracked_code(tmp_path, monkeypatch
     errors = make_audit_pack.verify_claude_context(root, pack)
     assert any("source drift" in item for item in errors)
     assert any("code surface" in item for item in errors)
+
+
+def test_claude_context_surface_ignores_its_own_audit_evidence(tmp_path, monkeypatch):
+    root, task, inventory = _context_repo(tmp_path, monkeypatch)
+    state = {"status": ""}
+
+    def dynamic_git(_root: Path, *args: str) -> str:
+        command = " ".join(args)
+        if command == "rev-parse HEAD":
+            return HEAD + "\n"
+        if command == "rev-parse --abbrev-ref HEAD":
+            return "main\n"
+        if command == "status --porcelain --untracked-files=all":
+            return state["status"]
+        return ""
+
+    monkeypatch.setattr(make_audit_pack, "_git_required", dynamic_git)
+    pack = make_audit_pack.create_claude_context_pack(root, "context", task, inventory)
+    before = make_audit_pack._code_surface(root, HEAD)[0]
+    state["status"] = "?? audits/_inbox/context_claude_receipt.json\n"
+    assert make_audit_pack._code_surface(root, HEAD)[0] == before
+    assert make_audit_pack.verify_claude_context(root, pack) == []
 
 
 def test_claude_context_blocks_env_and_hides_blocked_status_paths(tmp_path, monkeypatch):

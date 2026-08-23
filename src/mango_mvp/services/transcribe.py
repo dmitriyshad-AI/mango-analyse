@@ -23,9 +23,11 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.productization.capture_staging import provider_evidence_sidecar
 from mango_mvp.productization.mango_calls_service_contract import (
     has_dual_asr_or_exception,
 )
+from mango_mvp.productization.owner_only_io import read_stable_regular_bytes
 from mango_mvp.quality.non_conversation import detect_non_conversation_signals
 from mango_mvp.services.controlled_call_scope import (
     call_artifact_directory,
@@ -3232,7 +3234,16 @@ class TranscribeService:
             raise RuntimeError("OpenAI transcription returned empty text")
         return {"text": text, "segments": None}
 
+    @staticmethod
+    def _provider_role_evidence(call: CallRecord) -> Optional[Dict[str, Any]]:
+        try:
+            return TranscribeService._safe_json_dict(read_stable_regular_bytes(provider_evidence_sidecar(
+                Path(str(call.source_file or ""))), label="provider_role_evidence", owner_only_mode=0o600).decode("utf-8"))
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            return None
+
     def _transcribe_call(self, call: CallRecord) -> Dict[str, Any]:
+        provider_evidence = self._provider_role_evidence(call)
         path = controlled_audio_input_path(
             self._settings,
             record_id=int(call.id or 0),
@@ -3578,6 +3589,8 @@ class TranscribeService:
                             },
                             "warnings": warnings,
                         }
+                        if provider_evidence is not None:
+                            variants_payload["provider_role_evidence"] = provider_evidence
                         return {
                             "transcript_manager": output_manager,
                             "transcript_client": output_client,
@@ -3702,6 +3715,8 @@ class TranscribeService:
             },
             "warnings": warnings,
         }
+        if provider_evidence is not None:
+            variants_payload["provider_role_evidence"] = provider_evidence
         return {
             "transcript_manager": transcript_manager,
             "transcript_client": transcript_client,

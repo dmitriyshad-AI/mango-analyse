@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
@@ -49,6 +50,7 @@ from mango_mvp.productization.capture_staging import (
     manifest_assets_exist,
     merge_recording_ids,
     atomic_write_private_json,
+    provider_evidence_sidecar,
     stage_capture_events,
 )
 from mango_mvp.productization.mango_calls_service_contract import (
@@ -95,6 +97,7 @@ from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 from mango_mvp.productization.mango_office_client import (
     DEFAULT_MANGO_BASE_URL,
     DEFAULT_STATS_FIELDS,
+    MangoOfficeApiError,
     MangoOfficeClient,
     MangoOfficeCredentials,
 )
@@ -107,6 +110,7 @@ from mango_mvp.productization.ready_publication import (
 )
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
 from mango_mvp.services.transcribe import TranscribeService
+from mango_mvp.services.dialogue_contract import DialogueContractError, parse_provider_envelope
 from mango_mvp.services.controlled_call_scope import (
     CONTROLLED_CALL_RUN_AUTHORITY_SCHEMA,
     ControlledCaptureRequest,
@@ -176,6 +180,11 @@ REQUIRED_RUNTIME_CALL_RECORD_COLUMNS = frozenset(
         "updated_at",
     }
 )
+
+
+def _entry_recording_id(entry: ManifestEntry) -> str:
+    recording_ids = entry_recording_ids(entry)
+    return recording_ids[0] if len(recording_ids) == 1 and (not entry.canonical_recording_id or entry.canonical_recording_id == recording_ids[0]) else ""
 
 
 @dataclass(frozen=True)
@@ -4600,6 +4609,122 @@ def poll_mango_official_list_pages(
     )
 
 
+def _read_bound_provider_evidence(
+    path: Path,
+    source_call_id: str,
+    recording_id: str,
+    *,
+    batch_dir: Path,
+) -> Optional[Mapping[str, Any]]:
+    try:
+        evidence = json.loads(read_stable_regular_bytes(path, label="provider_role_evidence", owner_only_mode=0o600))
+        batch_sha = str(evidence.get("batch_response_sha256") or "")
+        batch_raw = read_stable_regular_bytes(
+            batch_dir / f"{batch_sha}.json",
+            label="provider_transcripts_batch",
+            owner_only_mode=0o600,
+        )
+        batch_text = batch_raw.decode("utf-8")
+        canonical = dict(
+            MangoOfficeClient.parse_recording_transcripts_response(
+                json.loads(batch_text),
+                source_call_id=source_call_id,
+                raw_body=batch_text,
+                expected_recording_id=recording_id,
+            )
+        )
+        return dict(evidence) if isinstance(evidence, Mapping) and re.fullmatch(r"[0-9a-f]{64}", batch_sha) and hashlib.sha256(batch_raw).hexdigest() == batch_sha and dict(evidence) == canonical else None
+    except (AttributeError, MangoOfficeApiError, OSError, RuntimeError, TypeError, UnicodeError, ValueError):
+        return None
+
+
+def capture_provider_role_evidence(
+    client: MangoOfficeClient,
+    entries: Sequence[ManifestEntry],
+    *,
+    batch_dir: Path,
+    allowed_recording_ids: Sequence[str],
+) -> Mapping[str, Any]:
+    targets: list[tuple[str, str, Path]] = []
+    for entry in entries:
+        recording_id = _entry_recording_id(entry)
+        if entry.status != "downloaded" or not entry.local_audio_path or not recording_id:
+            continue
+        sidecar = provider_evidence_sidecar(Path(entry.local_audio_path))
+        if _read_bound_provider_evidence(
+            sidecar,
+            entry.provider_call_id,
+            recording_id,
+            batch_dir=batch_dir,
+        ):
+            continue
+        targets.append((entry.provider_call_id, recording_id, sidecar))
+    duplicate_ids = {item for item, count in Counter(target[1] for target in targets).items() if count > 1}
+    requested = stored = 0
+    reasons: Counter[str] = Counter()
+    untrusted = sum(target[1] in duplicate_ids for target in targets)
+    reasons["duplicate_recording_id"] += untrusted
+    targets = [target for target in targets if target[1] not in duplicate_ids]
+    allowlist = {
+        str(value).strip() for value in allowed_recording_ids if str(value).strip()
+    }
+    if len(allowlist) > 10:
+        raise RuntimeError("provider_transcripts_allowlist_exceeds_10")
+    not_allowlisted = sum(target[1] not in allowlist for target in targets)
+    untrusted += not_allowlisted
+    reasons["not_allowlisted"] += not_allowlisted
+    targets = [target for target in targets if target[1] in allowlist]
+    if targets:
+        try:
+            batch_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            validate_owner_only_directory(batch_dir, label="provider_transcripts")
+        except (OSError, RuntimeError):
+            reasons["unsafe_batch_storage"] += len(targets)
+            return dict(
+                provider_evidence_requested=0,
+                provider_evidence_stored=0,
+                provider_evidence_untrusted=untrusted + len(targets),
+                provider_evidence_untrusted_reasons=dict(
+                    sorted((+reasons).items())
+                ),
+            )
+    for offset in range(0, len(targets), 10):
+        batch = targets[offset : offset + 10]
+        requested += len(batch)
+        try:
+            payload, raw_body = client.fetch_recording_transcripts([recording_id for _call_id, recording_id, _sidecar in batch])
+        except (MangoOfficeApiError, OSError):
+            untrusted += len(batch)
+            reasons["api_error"] += len(batch)
+            continue
+        raw_bytes = raw_body.encode("utf-8")
+        try:
+            if set(parse_provider_envelope(payload)) != {recording_id for _call_id, recording_id, _sidecar in batch}:
+                raise DialogueContractError("recording_transcripts batch does not match request")
+            atomic_replace_owner_only_bytes(batch_dir / f"{hashlib.sha256(raw_bytes).hexdigest()}.json", raw_bytes, label="provider_transcripts_batch")
+        except (DialogueContractError, OSError, RuntimeError):
+            untrusted += len(batch)
+            reasons["invalid_batch_response"] += len(batch)
+            continue
+        for call_id, recording_id, sidecar in batch:
+            try:
+                evidence = MangoOfficeClient.parse_recording_transcripts_response(
+                    payload, source_call_id=call_id, raw_body=raw_body,
+                    expected_recording_id=recording_id)
+                atomic_write_private_json(sidecar, evidence)
+            except (MangoOfficeApiError, OSError, RuntimeError):
+                untrusted += 1
+                reasons["invalid_record_response"] += 1
+                continue
+            stored += 1
+    return dict(
+        provider_evidence_requested=requested,
+        provider_evidence_stored=stored,
+        provider_evidence_untrusted=untrusted,
+        provider_evidence_untrusted_reasons=dict(sorted((+reasons).items())),
+    )
+
+
 def capture_mango_window(
     config: CallsTwoProcessesConfig,
     since: datetime,
@@ -5207,6 +5332,13 @@ def capture_mango_window(
         require_integrity_metadata=config.strict_ready_provenance,
     )
     latest = manifest_store.latest_by_event_key()
+    attempted_call_ids = {event.provider_call_id for event in (*events, *enumerated_events)}
+    provider_evidence = dict(provider_evidence_requested=0, provider_evidence_stored=0, provider_evidence_untrusted=0, provider_evidence_untrusted_reasons={})
+    if os.environ.get("MANGO_PROVIDER_TRANSCRIPTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        provider_evidence = capture_provider_role_evidence(primary_client,
+            [entry for entry in latest.values() if entry.provider_call_id in attempted_call_ids],
+            batch_dir=config.capture_dir / "provider_transcripts",
+            allowed_recording_ids=os.environ.get("MANGO_PROVIDER_TRANSCRIPTS_ALLOWLIST", "").split(","))
     pending_expired = 0
     expired_reenumerated = 0
     for event_key in expired_keys:
@@ -5373,6 +5505,7 @@ def capture_mango_window(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
         **summary.to_json_dict(),
+        **provider_evidence,
         "incomplete_trailing_manifest_records": incomplete_tail,
         "recovered_trailing_manifest_records": recovered_tail,
         "recovery_incident_sha256": recovery_incident_sha256,
@@ -5610,7 +5743,13 @@ def prepare_ingest_inputs(
             for entry in early_latest.values()
         ):
             raise RuntimeError("controlled capture manifest contains another call")
-    config.working_audio_dir.mkdir(parents=True, exist_ok=True)
+    config.working_audio_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config.working_audio_dir.chmod(0o700)
+    validate_owner_only_directory(
+        config.working_audio_dir,
+        label="working_audio",
+        owner_only_mode=0o700,
+    )
     legacy_topology = normalize_recoverable_legacy_call_states(
         config.working_db
     )
@@ -5638,6 +5777,7 @@ def prepare_ingest_inputs(
     latest: dict[str, ManifestEntry] = {}
     for entry in snapshot["entries"]:
         latest[entry.event_key] = entry
+    recording_id_counts = Counter(_entry_recording_id(entry) for entry in latest.values())
     if controlled_request is not None and any(
         entry.provider_call_id != controlled_request.source_call_id
         for entry in latest.values()
@@ -5675,12 +5815,18 @@ def prepare_ingest_inputs(
         target = config.working_audio_dir / source.name
         action = hardlink_or_copy(source, target)
         actions[action] = actions.get(action, 0) + 1
+        evidence_source = provider_evidence_sidecar(source)
+        if evidence_source.is_file() and not evidence_source.is_symlink():
+            try:
+                atomic_replace_owner_only_bytes(provider_evidence_sidecar(target),
+                    read_stable_regular_bytes(evidence_source, label="provider_role_evidence", owner_only_mode=0o600), label="provider_role_evidence")
+            except (OSError, RuntimeError):
+                skipped["provider_evidence_untrusted"] = skipped.get("provider_evidence_untrusted", 0) + 1
         if entry.provider_call_id in working_call_ids:
             skipped["already_in_working"] = skipped.get("already_in_working", 0) + 1
             continue
-        recording_ids = entry_recording_ids(entry)
-        source_recording_id = recording_ids[0] if len(recording_ids) == 1 else ""
-        if entry.canonical_recording_id and entry.canonical_recording_id != source_recording_id:
+        source_recording_id = _entry_recording_id(entry)
+        if recording_id_counts[source_recording_id] > 1:
             source_recording_id = ""
         rows.append(
             {
@@ -6754,6 +6900,7 @@ def observe_runtime_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str,
     fingerprint["resolve"]["reasoning"] = config.codex_reasoning_effort
     fingerprint["analyze"]["reasoning"] = config.codex_reasoning_effort
     fingerprint["resolve"]["semantic_merge_mode"] = "selective" if os.environ.get("RESOLVE_SEMANTIC_MERGE_MODE", "").strip().lower() == "selective" else "off"
+    fingerprint["resolve"]["provider_role_capture"] = os.environ.get("MANGO_PROVIDER_TRANSCRIPTS", "").strip().lower() in {"1", "true", "yes", "on"}
     errors.extend(validate_runtime_fingerprint(fingerprint))
     return {"ok": not errors, "errors": sorted(set(errors)), "fingerprint": fingerprint}
 

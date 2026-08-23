@@ -861,10 +861,10 @@ def _provider_evidence_check(
     must calibrate the conservative score on real provider responses before any
     content cutover.
 
-    ponytail: capture does not store this field yet, so production stays
-    untrusted by construction.  Ceiling: the M1 1→10 ladder captures a real
-    ``/vpbx/queries/recording_transcripts`` answer and proves the derived
-    binding against audio before any content cutover.
+    ponytail: capture may store this field, but production stays untrusted until
+    it is also bound to an independent ``source_recording_id``.  Ceiling: the M1
+    1→10 ladder proves the derived binding before any content cutover.
+
     """
     evidence = variants.get(PROVIDER_EVIDENCE_FIELD)
     if evidence is None or evidence == {} or evidence == "":

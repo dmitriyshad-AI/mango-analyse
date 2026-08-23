@@ -467,6 +467,103 @@ class AnalyzeServiceTest(unittest.TestCase):
         self.assertEqual(service._detect_call_type(text), "non_conversation")
         self.assertTrue(service._is_non_conversation(text))
 
+    def test_detect_call_type_does_not_inflate_a_short_answer_into_service(self) -> None:
+        """A live hello without business content is reviewable, not service."""
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Алло, здравствуйте.\n\n"
+            "CLIENT:\n"
+            "Да, здравствуйте, слушаю вас."
+        )
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
+    def test_manager_asr_noise_does_not_erase_a_short_live_client_reply(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = "MANAGER:\nтелефон звонит\n\nCLIENT:\nПерезвоните завтра."
+
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
+    def test_unattributed_tracks_keep_an_explicit_short_action_reply(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = "CHANNEL_LEFT:\nАлло, здравствуйте.\n\nCHANNEL_RIGHT:\nПерезвоните завтра."
+
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
+    def test_manager_only_short_phrase_does_not_create_a_live_client(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = "CHANNEL_LEFT:\nХорошо.\n\nCHANNEL_RIGHT:\n"
+
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
+    def test_existing_camp_pickup_is_service_not_a_new_sale(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\nСейчас свяжусь с куратором и выведу детей.\n\n"
+            "CLIENT:\nЯ уже приехал и хочу пораньше забрать детей из летней школы."
+        )
+
+        self.assertEqual(service._detect_call_type(text), "service_call")
+
+    def test_sales_call_is_not_overridden_by_a_generic_transfer_phrase(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\nКурс стоит 120 тысяч рублей, сейчас выведу вас на менеджера.\n\n"
+            "CLIENT:\nХочу записаться на курс и обсудить договор."
+        )
+
+        self.assertEqual(service._detect_call_type(text), "sales_call")
+
+    def test_arrived_sales_lead_is_not_mistaken_for_camp_pickup(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\nРасскажу про занятия, договор и оплату.\n\n"
+            "CLIENT:\nЯ уже приехала к вам и хочу записать ребёнка на курс."
+        )
+
+        self.assertEqual(service._detect_call_type(text), "sales_call")
+
+    def test_email_delivery_discussion_is_not_technical_from_rassylki_substring(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\nПисьмо отправили, возможно, оно попало в рассылки. Проверим адрес.\n\n"
+            "CLIENT:\nПисьмо нашла, сейчас прочитаю и при необходимости перезвоню."
+        )
+
+        self.assertEqual(service._detect_call_type(text), "service_call")
+
+    def test_detect_call_type_still_closes_a_short_call_nobody_answered(self) -> None:
+        """NEG: without a live client reply the short-call rule keeps working."""
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Алло.\n\n"
+            "CLIENT:\n"
+            "Абонент занят."
+        )
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
+    def test_client_asr_artifact_is_not_a_live_short_reply(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = "MANAGER:\nАлло.\n\nCLIENT:\nПродолжение следует. Спасибо за просмотр."
+
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
+    def test_product_with_payment_and_schedule_stays_a_sales_call(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\nДля летней школы расскажу про расписание и оплату.\n\n"
+            "CLIENT:\nХочу записать ребёнка и уточнить стоимость."
+        )
+
+        self.assertEqual(service._detect_call_type(text), "sales_call")
+
+    def test_strong_ivr_marker_wins_over_a_short_yes(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = "MANAGER:\nНажмите 1 для соединения.\n\nCLIENT:\nДа."
+
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+
     def test_normalize_analysis_attaches_transcript_quality_guardrails_high_confidence(self) -> None:
         service = AnalyzeService(make_settings())
         text = (

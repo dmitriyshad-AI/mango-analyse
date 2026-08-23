@@ -510,3 +510,49 @@ def test_the_producer_alone_never_makes_a_call_trusted():
 
     assert dialogue.role_attribution["reason_codes"] == ["provider_evidence_missing"]
     assert "Менеджер" not in dialogue.render()
+
+
+# --------------------------------------------------------------------------
+# Capture -> ingest -> transcribe: how the evidence reaches the stored call
+# --------------------------------------------------------------------------
+
+
+def test_transcription_carries_the_captured_sidecar_into_the_stored_variants(tmp_path):
+    """The sidecar capture wrote is what the first transcription stores.
+
+    No ASR runs here: only the reader that puts the already captured provider
+    answer into ``transcript_variants_json``, which is the payload the strict
+    role guard later re-derives everything from.
+    """
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from mango_mvp.services.transcribe import TranscribeService
+
+    audio = tmp_path / "call.mp3"
+    audio.write_bytes(b"not really audio")
+    evidence = parse(fx.envelope(fx.record(TURNS)))
+    provider_evidence_sidecar(audio).write_text(
+        json.dumps(evidence, ensure_ascii=False), encoding="utf-8"
+    )
+    provider_evidence_sidecar(audio).chmod(0o600)
+
+    class _Call:
+        source_file = str(audio)
+
+    loaded = TranscribeService._provider_role_evidence(_Call())
+
+    assert loaded == evidence
+    # And that payload is exactly what unlocks the named roles downstream.
+    dialogue = contract.build_dialogue_input(stored_call(loaded))
+    assert dialogue.role_attribution["trusted"] is True
+
+
+def test_a_call_without_a_sidecar_stays_without_provider_evidence(tmp_path):
+    from mango_mvp.services.transcribe import TranscribeService
+
+    audio = tmp_path / "call.mp3"
+    audio.write_bytes(b"not really audio")
+
+    class _Call:
+        source_file = str(audio)
+
+    assert TranscribeService._provider_role_evidence(_Call()) is None

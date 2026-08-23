@@ -191,7 +191,7 @@ WEAK_NON_CONVERSATION_MARKERS = (
 
 TECHNICAL_CALL_PATTERNS = (
     re.compile(
-        r"личн\w* кабинет|не открыва\w*|не работа\w*|ошибк\w*|ссылк\w*|подключ\w*|"
+        r"личн\w* кабинет|не открыва\w*|не работа\w*|ошибк\w*|\bссылк\w*|подключ\w*|"
         r"логин|парол\w*|код подтвержден\w*|смс|вебинар|zoom|зум|платформ\w*|"
         r"доступ\w*|тест\b|онлайн[- ]?тест",
         re.I,
@@ -205,6 +205,12 @@ SERVICE_CALL_PATTERNS = (
         r"посещаемост\w*|доступ к урокам|доступ к материалам",
         re.I,
     ),
+)
+
+CURRENT_CAMP_PICKUP_RE = re.compile(
+    r"(?:уже\s+приехал\w*[^.]{0,80}(?:забра|встрет|вывед)|"
+    r"сейчас\s+(?:свяж\w*\s+с\s+куратор\w*|вывед\w+\s+(?:реб[её]нк\w*|дет\w*|ученик\w*)))",
+    re.I,
 )
 
 EXISTING_CLIENT_PROGRESS_PATTERNS = (
@@ -2050,6 +2056,9 @@ class AnalyzeService:
         has_business_content = explicit_sales_signal or technical_signal or service_signal or progress_signal or (
             has_followup and meaningful_dialogue
         )
+
+        if service_signal and CURRENT_CAMP_PICKUP_RE.search(raw):
+            return "service_call"
 
         if any(marker in lowered for marker in STRONG_NON_CONVERSATION_MARKERS) and not has_business_content:
             return "non_conversation"

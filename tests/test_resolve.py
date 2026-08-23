@@ -25,6 +25,7 @@ from mango_mvp.services.dialogue_contract import (
 )
 from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.transcribe import TranscribeService
+from tests import mango_provider_fixture as provider_fx
 from tests.test_dialogue_format import make_settings
 
 
@@ -2055,13 +2056,19 @@ def model_answer(replacements=None):
     }
 
 
+def _selective_projection(service, payload, *, trusted: bool = True):
+    return service._semantic_selective_input(
+        payload, provider_roles_trusted=trusted
+    )
+
+
 class ResolveSemanticMergeGateTest(unittest.TestCase):
     """ТЗ §3: who is escalated, and — much more often — who is not."""
 
     def test_matching_variants_escalate_nothing_and_call_nothing(self) -> None:
         service = ResolveService(semantic_settings())
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_b=MANAGER_A)
         )
 
@@ -2072,10 +2079,19 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         self.assertEqual(block["model_calls"], 0)
         self.assertEqual(block["escalation_reasons"], [])
 
+    def test_provider_trust_argument_is_mandatory_and_false_stops_before_signals(self) -> None:
+        service = ResolveService(semantic_settings())
+
+        with self.assertRaises(TypeError):
+            service._semantic_selective_input(semantic_input())
+        self.assertIsNone(_selective_projection(service, semantic_input(), trusted=False))
+        self.assertEqual(service._semantic_merge_last["fallback_reason"], "unconfirmed_roles")
+        self.assertEqual(service._semantic_merge_last["signals"], {})
+
     def test_two_signals_below_threshold_escalate_only_that_side(self) -> None:
         service = ResolveService(semantic_settings())
 
-        projection = service._semantic_selective_input(semantic_input())
+        projection = _selective_projection(service, semantic_input())
 
         self.assertEqual(projection["editable_roles"], ["manager"])
         block = service._semantic_merge_last
@@ -2091,7 +2107,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         # 36 vs 43 words: only len_ratio falls below its threshold, the dice do not.
         longer = MANAGER_A + " и еще раз до новых скорых встреч"
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_b=longer, client_a="", client_b="")
         )
 
@@ -2105,7 +2121,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_hard_length_loss_escalates_on_its_own_signal(self) -> None:
         service = ResolveService(semantic_settings())
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_a=f"{MANAGER_A} {MANAGER_A}", manager_b=MANAGER_A)
         )
 
@@ -2117,7 +2133,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_a_short_side_never_blocks_the_eligible_other_side(self) -> None:
         service = ResolveService(semantic_settings())
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(client_a="да хорошо спасибо", client_b="да ладно спасибо")
         )
 
@@ -2127,7 +2143,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_numeric_conflict_is_reported_but_never_escalates_by_itself(self) -> None:
         service = ResolveService(semantic_settings())
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(
                 manager_b=MANAGER_A,
                 client_a=f"{CLIENT_SAME} за 47250 рублей",
@@ -2144,7 +2160,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         service = ResolveService(semantic_settings())
         payload = semantic_input()
 
-        projection = service._semantic_selective_input(payload)
+        projection = _selective_projection(service, payload)
 
         for key in ("call_id", "source_filename", "manager_name", "mode"):
             self.assertNotIn(key, projection)
@@ -2161,7 +2177,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
             # What _build_dialogue_resolve_payload really puts there today.
             turn.update({"ts_label": "00:07.0", "speaker_label": "Анна Петрова", "flags": ["same_ts_cross"]})
 
-        projection = service._semantic_selective_input(payload)
+        projection = _selective_projection(service, payload)
 
         for turn in projection["turns"]:
             self.assertEqual(sorted(turn), ["approximate", "baseline_text", "speaker", "ts_sec", "turn_id"])
@@ -2172,7 +2188,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         payload = semantic_input()
         payload["turns"][1]["speaker"] = "channel_left"
 
-        projection = service._semantic_selective_input(payload)
+        projection = _selective_projection(service, payload)
 
         self.assertIsNone(projection)
         block = service._semantic_merge_last
@@ -2186,7 +2202,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         payload = semantic_input()
         payload["turns"][4]["speaker"] = "unknown"
 
-        self.assertIsNone(service._semantic_selective_input(payload))
+        self.assertIsNone(_selective_projection(service, payload))
         self.assertEqual(service._semantic_merge_last["fallback_reason"], "unconfirmed_roles")
 
     def test_the_projection_drops_every_field_nobody_downstream_reads(self) -> None:
@@ -2195,7 +2211,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         payload.update({"duration_sec": 12.5, "providers": {"primary": "whisper"},
                         "quality_hints": {"warnings": ["дословная цитата менеджера"]}})
 
-        projection = service._semantic_selective_input(payload)
+        projection = _selective_projection(service, payload)
 
         self.assertEqual(sorted(projection), ["editable_roles", "glossary", "role_variants",
                                               "schema_version", "semantic_merge", "turns"])
@@ -2209,7 +2225,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_telemetry_holds_numbers_versions_and_codes_only(self) -> None:
         service = ResolveService(semantic_settings())
 
-        service._semantic_selective_input(semantic_input())
+        _selective_projection(service, semantic_input())
         dumped = json.dumps(service._semantic_merge_last, ensure_ascii=False)
 
         for secret in ("Анна", "Петрова", "заявке", "47250", "2026-08-17"):
@@ -2223,16 +2239,16 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_the_same_input_twice_gives_the_same_telemetry(self) -> None:
         service = ResolveService(semantic_settings())
 
-        service._semantic_selective_input(semantic_input())
+        _selective_projection(service, semantic_input())
         first = json.loads(json.dumps(service._semantic_merge_last, ensure_ascii=False))
-        service._semantic_selective_input(semantic_input())
+        _selective_projection(service, semantic_input())
 
         self.assertEqual(service._semantic_merge_last, first)
 
     def test_the_glossary_is_the_live_normalizer_and_nothing_else(self) -> None:
         service = ResolveService(semantic_settings())
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
         )
 
@@ -2248,7 +2264,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
         with patch(
             "mango_mvp.quality.tenant_text_normalizer.TENANT_TEXT_RULESET_VERSIONS", {}
         ):
-            projection = service._semantic_selective_input(
+            projection = _selective_projection(service,
                 semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
             )
 
@@ -2260,7 +2276,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_a_real_foreign_tenant_id_gets_no_glossary_either(self) -> None:
         service = ResolveService(semantic_settings(controlled_call_tenant_id="another_customer"))
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
         )
 
@@ -2272,7 +2288,7 @@ class ResolveSemanticMergeGateTest(unittest.TestCase):
     def test_the_controlled_tenant_of_the_scope_is_the_one_used(self) -> None:
         service = ResolveService(semantic_settings(controlled_call_tenant_id="mango"))
 
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_b=f"{MANAGER_B} центр МПК МФТИ")
         )
 
@@ -2284,7 +2300,7 @@ class ResolveSemanticMergeGuardTest(unittest.TestCase):
 
     def _normalize(self, replacements, *, projection=None, service=None, **kwargs):
         service = service or ResolveService(semantic_settings())
-        projection = projection or service._semantic_selective_input(semantic_input())
+        projection = projection or _selective_projection(service, semantic_input())
         result = service._normalize_dialogue_result(
             projection, model_turns(projection, replacements, **kwargs)
         )
@@ -2338,7 +2354,7 @@ class ResolveSemanticMergeGuardTest(unittest.TestCase):
 
     def test_g1_under_a_numeric_conflict_a_numeric_turn_is_frozen(self) -> None:
         service = ResolveService(semantic_settings())
-        projection = service._semantic_selective_input(
+        projection = _selective_projection(service,
             semantic_input(manager_b=MANAGER_B.replace("47250", "4725"))
         )
 
@@ -2419,7 +2435,7 @@ class ResolveSemanticMergeGuardTest(unittest.TestCase):
         service = ResolveService(semantic_settings())
         payload = semantic_input()
         payload["turns"][1]["flags"] = ["artifact_candidate"]
-        projection = service._semantic_selective_input(payload)
+        projection = _selective_projection(service, payload)
 
         result = service._normalize_dialogue_result(
             projection, model_turns(projection, {5: MANAGER_TURN_3_FIXED}, drops=(2,))
@@ -2445,7 +2461,7 @@ class ResolveSemanticMergeGuardTest(unittest.TestCase):
     def test_the_guard_moves_no_role_no_timecode_and_no_variant(self) -> None:
         service = ResolveService(semantic_settings())
         payload = semantic_input()
-        projection = service._semantic_selective_input(payload)
+        projection = _selective_projection(service, payload)
         before = json.dumps(projection, ensure_ascii=False, sort_keys=True)
 
         result = service._normalize_dialogue_result(
@@ -2460,7 +2476,7 @@ class ResolveSemanticMergeGuardTest(unittest.TestCase):
 
     def test_an_editable_input_without_guard_state_fails_closed(self) -> None:
         service = ResolveService(semantic_settings())
-        projection = service._semantic_selective_input(semantic_input())
+        projection = _selective_projection(service, semantic_input())
         answer = model_turns(projection, {5: MANAGER_TURN_3_FIXED})
         service._semantic_merge_last = None
 
@@ -2749,7 +2765,15 @@ class ResolveSemanticMergeCallTest(unittest.TestCase):
         payload = {
             "mode": "stereo",
             "call_topology": "simple_two_party",
-            "role_mapping": {"confirmed": True, "manager_quality_allowed": True},
+            "role_mapping": dict(provider_fx.PROVEN_ROLE_MAPPING),
+            "dialogue_lines": provider_fx.dialogue_lines(
+                ResolveSemanticMergeLiveRunTest.PROVIDER_TURNS
+            ),
+            PROVIDER_EVIDENCE_FIELD: provider_fx.evidence_for_recording(
+                ResolveSemanticMergeLiveRunTest.PROVIDER_TURNS,
+                source_call_id="call-a",
+                recording_id="recording-a",
+            ),
             "manager": {
                 "physical_channel": "left",
                 "variant_a": MANAGER_A,
@@ -2764,6 +2788,8 @@ class ResolveSemanticMergeCallTest(unittest.TestCase):
             },
         }
         call = CallRecord(
+            source_call_id="call-a",
+            source_recording_id="recording-a",
             source_file="calls/a.mp3",
             source_filename="a.mp3",
             transcript_manager=MANAGER_A,
@@ -2908,12 +2934,16 @@ class ResolveSemanticMergeCallTest(unittest.TestCase):
             self.assertIn(MANAGER_TURN_3_FIXED, candidate["dialogue_lines"][4])
             self.assertIn(CLIENT_TURN_1, candidate["dialogue_lines"][1])
             self.assertEqual(len(candidate["dialogue_lines"]), 5)
-            self.assertTrue(candidate["dialogue_lines"][0].startswith("[00:01.0] Менеджер:"))
-            self.assertTrue(candidate["dialogue_lines"][1].startswith("[00:02.0] Клиент:"))
+            self.assertTrue(
+                candidate["dialogue_lines"][0].startswith("[00:01.0] Дорожка левая:")
+            )
+            self.assertTrue(
+                candidate["dialogue_lines"][1].startswith("[00:03.0] Дорожка правая:")
+            )
             stored = json.loads(candidate["transcript_variants_json"])
-            self.assertFalse(stored["role_mapping"]["confirmed"])
-            self.assertFalse(stored["role_mapping"]["manager_quality_allowed"])
-            self.assertEqual(stored["role_mapping"]["status"], "mutable_sidecar_timing")
+            self.assertTrue(stored["role_mapping"]["confirmed"])
+            self.assertTrue(stored["role_mapping"]["manager_quality_allowed"])
+            self.assertEqual(stored["role_mapping"]["status"], "confirmed_multi_signal")
             self.assertEqual(stored["manager"]["variant_a"], MANAGER_A)
             self.assertEqual(stored["manager"]["variant_b"], MANAGER_B)
             block = service._semantic_merge_last
@@ -2921,6 +2951,50 @@ class ResolveSemanticMergeCallTest(unittest.TestCase):
             self.assertEqual(block["turns_changed_accepted"], 1)
             # Built is not applied: only _choose_best() decides that (ТЗ §12a).
             self.assertFalse(block["applied"])
+
+    def test_trusted_legacy_role_labels_reach_selective_without_being_erased(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_legacy_roles_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            payload["dialogue_lines"] = ResolveSemanticMergeLiveRunTest.DIALOGUE.splitlines()
+            call.transcript_variants_json = json.dumps(payload, ensure_ascii=False)
+            service = self._service(export_dir)
+            seen = []
+            service._run_dialogue_llm = lambda request, **k: (
+                seen.append([turn["speaker"] for turn in request["turns"]])
+                or model_turns(request, {5: MANAGER_TURN_3_FIXED})
+            )
+
+            self.assertIsNotNone(service._resolve_dialogue_with_llm(call, payload))
+            self.assertEqual(seen, [["manager", "client", "manager", "client", "manager"]])
+
+    def test_mutable_physical_channel_copies_fail_closed_before_the_model(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_channel_copy_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            payload["manager"]["physical_channel"] = "right"
+            payload["client"]["physical_channel"] = "left"
+            call.transcript_variants_json = json.dumps(payload, ensure_ascii=False)
+            service = self._service(export_dir)
+            seen = []
+            service._run_dialogue_llm = lambda request, **k: (
+                seen.append([turn["speaker"] for turn in request["turns"]])
+                or model_turns(request, {5: MANAGER_TURN_3_FIXED})
+            )
+
+            self.assertIsNone(service._resolve_dialogue_with_llm(call, payload))
+            self.assertEqual(seen, [])
+
+    def test_mutable_dialogue_sidecar_never_reaches_selective_model(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_mutable_sidecar_") as td:
+            call, payload, export_dir = self._stereo_call(td)
+            payload["dialogue_lines_source"] = "mutable_sidecar"
+            call.transcript_variants_json = json.dumps(payload, ensure_ascii=False)
+            service = self._service(export_dir)
+            seen = []
+            service._run_dialogue_llm = lambda request, **kwargs: seen.append(request)
+
+            self.assertIsNone(service._resolve_dialogue_with_llm(call, payload))
+            self.assertEqual(seen, [])
+            self.assertEqual(service._semantic_merge_last["fallback_reason"], "unconfirmed_roles")
 
     def test_an_error_inside_the_gate_is_baseline_and_not_a_failed_stage(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_semantic_gate_boom_") as td:
@@ -3062,7 +3136,7 @@ class ResolveSemanticMergeDefaultTest(unittest.TestCase):
 
     def test_the_selective_block_is_added_only_when_the_mode_ran(self) -> None:
         service = ResolveService(semantic_settings())
-        service._semantic_selective_input(semantic_input())
+        _selective_projection(service, semantic_input())
 
         payload = service._build_resolve_payload(
             duration_sec=1.0,
@@ -3077,7 +3151,7 @@ class ResolveSemanticMergeDefaultTest(unittest.TestCase):
 
     def test_applied_follows_the_chosen_candidate_and_nothing_else(self) -> None:
         service = ResolveService(semantic_settings())
-        service._semantic_selective_input(semantic_input())
+        _selective_projection(service, semantic_input())
         service._semantic_merge_last["turns_changed_accepted"] = 1
         common = dict(
             duration_sec=1.0,
@@ -3172,6 +3246,13 @@ class ResolveSemanticMergeLiveRunTest(unittest.TestCase):
         f"[00:04.0] Клиент: {CLIENT_TURN_2}\n"
         f"[00:05.0] Менеджер: {MANAGER_TURN_3}\n"
     )
+    PROVIDER_TURNS = (
+        ("operator", "left", MANAGER_TURN_1),
+        ("client", "right", CLIENT_TURN_1),
+        ("operator", "left", MANAGER_TURN_2),
+        ("client", "right", CLIENT_TURN_2),
+        ("operator", "left", MANAGER_TURN_3),
+    )
 
     def _prepare(self, td, **overrides):
         export_dir = Path(td) / "export"
@@ -3190,11 +3271,14 @@ class ResolveSemanticMergeLiveRunTest(unittest.TestCase):
             # Two calls in one run: the first diverges between the two ASR variants, the
             # second is heard identically twice and must reach no model at all.
             for name, manager_b in (("a", MANAGER_B), ("b", MANAGER_A)):
+                source_call_id = f"call-{name}"
+                recording_id = f"recording-{name}"
                 path = export_dir / "calls" / f"{name}_text.txt"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(self.DIALOGUE, encoding="utf-8")
                 session.add(CallRecord(
-                    source_call_id=f"call-{name}",
+                    source_call_id=source_call_id,
+                    source_recording_id=recording_id,
                     source_file=f"calls/{name}.mp3",
                     source_filename=f"{name}.mp3",
                     duration_sec=120.0,
@@ -3207,7 +3291,13 @@ class ResolveSemanticMergeLiveRunTest(unittest.TestCase):
                     transcript_variants_json=json.dumps({
                         "mode": "stereo",
                         "call_topology": "simple_two_party",
-                        "role_mapping": {"confirmed": True, "manager_quality_allowed": True},
+                        "role_mapping": dict(provider_fx.PROVEN_ROLE_MAPPING),
+                        "dialogue_lines": provider_fx.dialogue_lines(self.PROVIDER_TURNS),
+                        PROVIDER_EVIDENCE_FIELD: provider_fx.evidence_for_recording(
+                            self.PROVIDER_TURNS,
+                            source_call_id=source_call_id,
+                            recording_id=recording_id,
+                        ),
                         "manager": {"physical_channel": "left", "variant_a": MANAGER_A,
                                     "variant_b": manager_b, "final": MANAGER_A},
                         "client": {"physical_channel": "right", "variant_a": CLIENT_SAME,
@@ -3287,6 +3377,26 @@ class ResolveSemanticMergeLiveRunTest(unittest.TestCase):
 
             self.assertEqual(result["stale"], 2)
             self.assertFalse(any(key.startswith("semantic_") for key in result))
+
+    def test_live_selective_without_provider_evidence_calls_no_model(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_semantic_untrusted_") as td:
+            settings, session_factory = self._prepare(td)
+            with session_factory() as session:
+                for call in session.query(CallRecord).all():
+                    payload = json.loads(call.transcript_variants_json or "{}")
+                    payload.pop(PROVIDER_EVIDENCE_FIELD, None)
+                    call.transcript_variants_json = json.dumps(payload, ensure_ascii=False)
+                session.commit()
+            service = ResolveService(settings)
+            service._run_dialogue_llm = lambda *_args, **_kwargs: self.fail(
+                "untrusted roles reached the model"
+            )
+
+            with session_factory() as session:
+                result = service.run(session, limit=2)
+
+            self.assertEqual(result["semantic_model_calls"], 0)
+            self.assertEqual(result["semantic_fallback"], 2)
 
     def test_the_default_run_calls_no_model_and_writes_no_block(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_semantic_run_off_") as td:

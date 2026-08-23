@@ -31,6 +31,7 @@ from mango_mvp.services.controlled_call_scope import (
 from mango_mvp.quality.tenant_text_normalizer import (TENANT_TEXT_ENGINE_VERSION, tenant_ruleset_version,
     detect_residual_manager_text_artifacts, normalize_manager_text_with_provenance)
 from mango_mvp.services.dialogue_contract import (
+    build_dialogue_input,
     DialogueContractError,
     PROVIDER_EVIDENCE_FIELD,
     _character_ngrams, _multiset_dice,
@@ -1080,7 +1081,7 @@ class ResolveService:
         return [{"alias": alias, "canonical": rule.normalized_value, "rule_id": rule.rule_ids[0]}
                 for alias, rule in found if rule.rule_ids and rule.ruleset_version][:SEMANTIC_MAX_GLOSSARY]
 
-    def _semantic_selective_input(self, input_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _semantic_selective_input(self, input_payload: Dict[str, Any], *, provider_roles_trusted: bool) -> Optional[Dict[str, Any]]:
         """Divergence gate (ТЗ §3), then the de-identified projection sent to the model (ТЗ §4)."""
         tenant = (self._settings.controlled_call_tenant_id or "").strip() or "mango"
         # Thresholds ride in the cache key: retuning one must miss, not reuse.
@@ -1093,6 +1094,9 @@ class ResolveService:
                 "reasoning": self._settings.codex_resolve_reasoning_effort, "schema_in": "dialogue_resolve_v1+semantic_merge_v1",
                 "thresholds": f"experimental_v1{SEMANTIC_SIGNAL_THRESHOLDS}/{SEMANTIC_HARD_LEN_RATIO}/{SEMANTIC_GUARD_MIN_SUPPORT}/{SEMANTIC_GUARD_MIN_KEPT_LEN}/{SEMANTIC_GUARD_MAX_GROWTH}/{SEMANTIC_MIN_TOKEN_RATIO}",
                 "normalizer": f"{TENANT_TEXT_ENGINE_VERSION}/{tenant_ruleset_version(tenant)}"}}
+        if not provider_roles_trusted:
+            state["fallback_reason"] = "unconfirmed_roles"
+            return None
         raw_turns = input_payload.get("turns") or []
         if {str(turn.get("speaker") or "") for turn in raw_turns} - {"manager", "client"}:
             state["fallback_reason"] = "unconfirmed_roles"  # no confirmed side, nothing to compare
@@ -1717,7 +1721,17 @@ class ResolveService:
         selective = self._semantic_merge_selective()
         # The gate and the glossary run under the caller's fail-soft (ТЗ §7.4, §12b).
         if selective and input_payload:
-            input_payload = self._semantic_selective_input(input_payload)
+            try:
+                trusted_dialogue = build_dialogue_input(resolve_input_snapshot(call))
+            except DialogueContractError:
+                trusted_dialogue = None
+            provider_roles_trusted = bool(trusted_dialogue and trusted_dialogue.trusted and not from_sidecar)
+            if provider_roles_trusted:
+                role_map = {f"channel_{turn['physical_side']}": turn["speaker_kind"] for turn in trusted_dialogue.turns}
+                for turn in input_payload.get("turns") or []:
+                    speaker = str(turn.get("speaker") or "")
+                    turn["speaker"] = speaker if speaker in {"manager", "client"} else role_map.get(speaker, "")
+            input_payload = self._semantic_selective_input(input_payload, provider_roles_trusted=provider_roles_trusted)
         if not input_payload:
             return None
         raw_result = self._run_dialogue_llm(input_payload, selective=selective)

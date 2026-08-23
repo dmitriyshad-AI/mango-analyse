@@ -1397,6 +1397,10 @@ def merge_recording_ids(*groups: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for group in groups for item in group if item))
 
 
+def provider_evidence_sidecar(audio_path: Path) -> Path:
+    return audio_path.with_name(f"{audio_path.name}.provider_transcript.json")
+
+
 def recording_part_paths(target_path: Path, recording_ids: Sequence[str]) -> tuple[Path, ...]:
     paths = [target_path]
     for recording_id in recording_ids[1:]:

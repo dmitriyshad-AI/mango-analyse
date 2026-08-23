@@ -159,10 +159,12 @@ def test_runtime_fingerprint_records_the_semantic_merge_arm(
 ) -> None:
     config = config_for(tmp_path)
     monkeypatch.setenv("RESOLVE_SEMANTIC_MERGE_MODE", "selective")
+    monkeypatch.setenv("MANGO_PROVIDER_TRANSCRIPTS", "true")
 
     observed = calls_runtime.observe_runtime_fingerprint(config)
 
     assert observed["fingerprint"]["resolve"]["semantic_merge_mode"] == "selective"
+    assert observed["fingerprint"]["resolve"]["provider_role_capture"] is True
 
 
 @pytest.mark.parametrize("include_batch_counts", [False, True])
@@ -1577,6 +1579,9 @@ def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytes
             self.calls += 1
             return [{"id": "late"}, {"id": "ready"}] if self.calls == 1 else []
 
+        def fetch_recording_transcripts(self, _recording_ids):
+            pytest.fail("provider transcripts must stay off by default")
+
     class FakeMapper:
         def __init__(self) -> None:
             self.items = iter((no_recording, ready))
@@ -1603,6 +1608,7 @@ def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytes
     monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
     monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
     monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    monkeypatch.delenv("MANGO_PROVIDER_TRANSCRIPTS", raising=False)
 
     report = capture_mango_window(
         config,
@@ -1614,6 +1620,7 @@ def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytes
     assert report["status"] == "ok"
     assert report["api_requests"] == 2
     assert report["api_events_without_recording"] == 1
+    assert report["provider_evidence_requested"] == 0
 
 
 def test_capture_reports_partial_when_one_download_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1839,7 +1846,15 @@ def test_capture_reports_tail_recovered_during_new_append(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+        provider_evidence_sidecar,
+    )
+    from mango_mvp.productization.mango_office_client import (
+        MangoOfficeClient as RealMangoOfficeClient,
+    )
+    from tests import mango_provider_fixture as fx
 
     config = replace(config_for(tmp_path), api_window_hours=1)
     store = CaptureManifestStore(config.capture_manifest)
@@ -1876,13 +1891,24 @@ def test_capture_reports_tail_recovered_during_new_append(
         recording_ref="new-recording",
         raw_payload={},
     )
+    audio = config.recordings_dir / "new-call.mp3"
+    audio.parent.mkdir(parents=True, mode=0o700)
+    audio.write_bytes(b"audio")
+    payload = fx.envelope(fx.record(recording_id="new-recording"))
 
     class FakeClient:
+        parse_recording_transcripts_response = staticmethod(
+            RealMangoOfficeClient.parse_recording_transcripts_response
+        )
+
         def __init__(self, **_: object) -> None:
             pass
 
         def poll_call_history(self, **_: object) -> list[dict[str, str]]:
             return [{"id": "new-call"}]
+
+        def fetch_recording_transcripts(self, _recording_ids):
+            return payload, json.dumps(payload, ensure_ascii=False)
 
     class FakeMapper:
         def from_payload(self, **_: object) -> TelephonyCallEvent:
@@ -1911,7 +1937,7 @@ def test_capture_reports_tail_recovered_during_new_append(
                 client_phone=None,
                 manager_ref=None,
                 status="downloaded",
-                local_audio_path="/synthetic/new-call.mp3",
+                local_audio_path=str(audio),
             )
         )
         return Summary()
@@ -1922,6 +1948,8 @@ def test_capture_reports_tail_recovered_during_new_append(
     monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
     monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
     monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    monkeypatch.setenv("MANGO_PROVIDER_TRANSCRIPTS", "true")
+    monkeypatch.setenv("MANGO_PROVIDER_TRANSCRIPTS_ALLOWLIST", "new-recording")
 
     report = capture_mango_window(
         config,
@@ -1932,6 +1960,10 @@ def test_capture_reports_tail_recovered_during_new_append(
     assert report["status"] == "partial"
     assert report["incomplete_trailing_manifest_records"] == 0
     assert report["recovered_trailing_manifest_records"] == 1
+    assert report["provider_evidence_requested"] == 1
+    assert report["provider_evidence_stored"] == 1
+    assert report["provider_evidence_untrusted"] == 0
+    assert provider_evidence_sidecar(audio).is_file()
     assert len(CaptureManifestStore(config.capture_manifest).read_entries()) == 2
 
 
@@ -2039,6 +2071,9 @@ def test_recent_manifest_overlap_is_clamped_to_exact_enumeration_until(
             requested.append((since, until))
             return []
 
+        def fetch_recording_transcripts(self, _recording_ids):
+            raise AssertionError("provider transcripts must be opt-in")
+
     class Summary:
         failed = 0
 
@@ -2071,6 +2106,7 @@ def test_recent_manifest_overlap_is_clamped_to_exact_enumeration_until(
     assert max(window_until for _window_since, window_until in requested) == exact_until
     assert all(window_until <= exact_until for _window_since, window_until in requested)
     assert report["mango_enumeration_source"]["until"] == exact_until.isoformat()
+    assert report["provider_evidence_requested"] == 0
     calls_runtime.capture_enumeration_evidence_sha256(report)
 
 
@@ -2636,10 +2672,21 @@ def test_persist_capture_snapshot_ingests_without_starting_workers(
 
 
 def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from mango_mvp.services.transcribe import TranscribeService
+    from tests import mango_provider_fixture as fx
+
     config = config_for(tmp_path)
     source = config.recordings_dir / "call.mp3"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"audio")
+    evidence = fx.evidence_for_recording(
+        fx.DEFAULT_TURNS, source_call_id="call-1", recording_id="recording-1"
+    )
+    provider_evidence_sidecar(source).write_text(
+        json.dumps(evidence, ensure_ascii=False), encoding="utf-8"
+    )
+    provider_evidence_sidecar(source).chmod(0o600)
     config.capture_manifest.parent.mkdir(parents=True, exist_ok=True)
     config.capture_manifest.write_text(
         json.dumps(
@@ -2672,6 +2719,15 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
     with config.metadata_csv.open(encoding="utf-8", newline="") as handle:
         metadata = list(csv.DictReader(handle))
     assert metadata[0]["recording_id"] == "recording-1"
+    copied_sidecar = provider_evidence_sidecar(config.working_audio_dir / source.name)
+    assert provider_evidence_sidecar(source).stat().st_nlink == copied_sidecar.stat().st_nlink == 1
+    assert TranscribeService._provider_role_evidence(
+        type("Call", (), {"source_file": str(config.working_audio_dir / source.name)})()
+    ) == evidence
+    provider_evidence_sidecar(source).chmod(0o644)
+    unsafe_repeat = prepare_ingest_inputs(config)
+    assert unsafe_repeat["skipped"]["provider_evidence_untrusted"] == 1
+    assert unsafe_repeat["metadata_rows"] == 1
 
 
 def test_prepare_ingest_inputs_waits_for_recording_set_stabilization(tmp_path: Path) -> None:
@@ -8321,6 +8377,7 @@ def create_ready_call_db(path: Path) -> None:
             CREATE TABLE call_records (
                 id INTEGER PRIMARY KEY,
                 source_call_id TEXT,
+                source_recording_id TEXT,
                 source_filename TEXT NOT NULL,
                 source_file TEXT NOT NULL UNIQUE,
                 started_at TEXT,
@@ -10697,3 +10754,450 @@ def test_transcribe_does_not_apply_a_global_mlx_cache_limit() -> None:
     from mango_mvp.services import transcribe
 
     assert "set_cache_limit" not in inspect.getsource(transcribe)
+
+
+# ---------------------------------------------------------------------------
+# Provider role evidence inside the existing capture path (ТЗ 2026-08-22)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingTranscriptsClient:
+    """The one existing Mango client, answering offline. No network here."""
+
+    def __init__(self, payload: object, error: Exception | None = None) -> None:
+        self.payload = payload
+        self.error = error
+        self.batches: list[list[str]] = []
+
+    def fetch_recording_transcripts(self, recording_ids):
+        self.batches.append(list(recording_ids))
+        if self.error is not None:
+            raise self.error
+        return self.payload, json.dumps(self.payload, ensure_ascii=False)
+
+
+def _downloaded_entry(call_id: str, recording_id: str, audio: Path):
+    from mango_mvp.productization.capture_staging import ManifestEntry
+
+    return ManifestEntry(
+        schema_version="capture_manifest_v1",
+        created_at="2026-08-22T08:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:" + call_id,
+        provider_call_id=call_id,
+        recording_id=recording_id,
+        started_at="2026-08-22T08:00:00+00:00",
+        ended_at=None,
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="downloaded",
+        recording_ids=(recording_id,),
+        local_audio_path=str(audio),
+    )
+
+
+def _captured_audio(tmp_path: Path) -> Path:
+    audio = tmp_path / "recordings" / "2026-08-22__call.mp3"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"captured audio")
+    return audio
+
+
+def test_capture_stores_the_batch_once_and_binds_evidence_to_the_call(
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    payload = fx.envelope(fx.record(fx.DEFAULT_TURNS))
+    raw_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    client = _RecordingTranscriptsClient(payload)
+    entries = [_downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)]
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        entries,
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report == {
+        "provider_evidence_requested": 1,
+        "provider_evidence_stored": 1,
+        "provider_evidence_untrusted": 0,
+        "provider_evidence_untrusted_reasons": {},
+    }
+    # The full batch body is kept exactly once, owner-only, under its own SHA.
+    batch_files = sorted(batch_dir.iterdir())
+    assert [path.name for path in batch_files] == [
+        hashlib.sha256(raw_body).hexdigest() + ".json"
+    ]
+    assert batch_files[0].read_bytes() == raw_body
+    assert batch_files[0].stat().st_mode & 0o077 == 0
+    # The per-call evidence carries only this recording, bound to this call.
+    evidence = json.loads(provider_evidence_sidecar(audio).read_text(encoding="utf-8"))
+    assert evidence["source_call_id"] == fx.SOURCE_CALL_ID
+    assert evidence["recording_id"] == fx.RECORDING_ID
+    assert evidence["batch_response_sha256"] == hashlib.sha256(raw_body).hexdigest()
+    assert json.loads(evidence["raw_response"])["data"]["recording_id"] == fx.RECORDING_ID
+
+
+def test_capture_repeat_reuses_stored_evidence_without_asking_mango_again(
+    tmp_path: Path,
+) -> None:
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    client = _RecordingTranscriptsClient(fx.envelope(fx.record(fx.DEFAULT_TURNS)))
+    entries = [_downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)]
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+
+    calls_runtime.capture_provider_role_evidence(
+        client,
+        entries,
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+    second = calls_runtime.capture_provider_role_evidence(
+        client,
+        entries,
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert second == {
+        "provider_evidence_requested": 0,
+        "provider_evidence_stored": 0,
+        "provider_evidence_untrusted": 0,
+        "provider_evidence_untrusted_reasons": {},
+    }
+    assert len(client.batches) == 1
+    assert len(list(batch_dir.iterdir())) == 1
+
+
+def test_capture_replaces_a_corrupt_sidecar_from_a_fresh_provider_answer(
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    sidecar = provider_evidence_sidecar(audio)
+    sidecar.write_text("{}", encoding="utf-8")
+    sidecar.chmod(0o600)
+    client = _RecordingTranscriptsClient(fx.envelope(fx.record(fx.DEFAULT_TURNS)))
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        [_downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)],
+        batch_dir=tmp_path / "capture" / "provider_transcripts",
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report["provider_evidence_stored"] == 1
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["recording_id"] == fx.RECORDING_ID
+    assert len(client.batches) == 1
+
+
+def test_capture_repairs_a_corrupt_content_addressed_batch(tmp_path: Path) -> None:
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    payload = fx.envelope(fx.record(fx.DEFAULT_TURNS))
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+    client = _RecordingTranscriptsClient(payload)
+    entry = _downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)
+    calls_runtime.capture_provider_role_evidence(
+        client,
+        [entry],
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+    batch_path = batch_dir / f"{hashlib.sha256(raw).hexdigest()}.json"
+    batch_path.write_bytes(b"corrupt")
+    batch_path.chmod(0o600)
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        [entry],
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report["provider_evidence_stored"] == 1
+    assert batch_path.read_bytes() == raw
+    assert len(client.batches) == 2
+
+
+def test_capture_refuses_sidecar_bound_to_another_valid_batch(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    payload = fx.envelope(fx.record(fx.DEFAULT_TURNS))
+    client = _RecordingTranscriptsClient(payload)
+    entry = _downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+    calls_runtime.capture_provider_role_evidence(
+        client,
+        [entry],
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+    other_payload = fx.envelope(fx.record(recording_id="rec-other"))
+    other_raw = json.dumps(other_payload, ensure_ascii=False).encode("utf-8")
+    other_sha = hashlib.sha256(other_raw).hexdigest()
+    other_batch = batch_dir / f"{other_sha}.json"
+    other_batch.write_bytes(other_raw)
+    other_batch.chmod(0o600)
+    sidecar = provider_evidence_sidecar(audio)
+    evidence = json.loads(sidecar.read_text(encoding="utf-8"))
+    evidence["batch_response_sha256"] = other_sha
+    sidecar.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
+    sidecar.chmod(0o600)
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        [entry],
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report["provider_evidence_stored"] == 1
+    assert len(client.batches) == 2
+
+
+def test_capture_refuses_a_symlinked_provider_batch_directory(tmp_path: Path) -> None:
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+    batch_dir.parent.mkdir()
+    batch_dir.symlink_to(outside, target_is_directory=True)
+    client = _RecordingTranscriptsClient(fx.envelope(fx.record(fx.DEFAULT_TURNS)))
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        [_downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)],
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report == {
+        "provider_evidence_requested": 0,
+        "provider_evidence_stored": 0,
+        "provider_evidence_untrusted": 1,
+        "provider_evidence_untrusted_reasons": {"unsafe_batch_storage": 1},
+    }
+    assert client.batches == []
+    assert list(outside.iterdir()) == []
+
+
+def test_refused_provider_answer_leaves_the_call_without_roles_but_not_lost(
+    tmp_path: Path,
+) -> None:
+    """A real ``result=5008`` must not invent roles and must not drop the call."""
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    client = _RecordingTranscriptsClient({"result": 5008})
+    entries = [_downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)]
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        entries,
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report == {
+        "provider_evidence_requested": 1,
+        "provider_evidence_stored": 0,
+        "provider_evidence_untrusted": 1,
+        "provider_evidence_untrusted_reasons": {"invalid_batch_response": 1},
+    }
+    assert not provider_evidence_sidecar(audio).exists()
+    assert audio.is_file()
+    # An invalid envelope is not retained as an orphan transcript batch.
+    assert not any(batch_dir.iterdir())
+    # Nothing was cached as done, so the next cycle may honestly retry.
+    calls_runtime.capture_provider_role_evidence(
+        client,
+        entries,
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+    assert len(client.batches) == 2
+
+
+def test_network_failure_keeps_the_call_and_writes_no_evidence(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from mango_mvp.productization.mango_office_client import MangoOfficeApiError
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    client = _RecordingTranscriptsClient(None, error=MangoOfficeApiError("status=502"))
+    entries = [_downloaded_entry(fx.SOURCE_CALL_ID, fx.RECORDING_ID, audio)]
+    batch_dir = tmp_path / "capture" / "provider_transcripts"
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        entries,
+        batch_dir=batch_dir,
+        allowed_recording_ids=[fx.RECORDING_ID],
+    )
+
+    assert report["provider_evidence_untrusted"] == 1
+    assert report["provider_evidence_stored"] == 0
+    assert not provider_evidence_sidecar(audio).exists()
+    assert not any(batch_dir.iterdir())
+    assert audio.is_file()
+
+
+def test_capture_asks_only_for_calls_with_one_downloaded_recording(
+    tmp_path: Path,
+) -> None:
+    from tests import mango_provider_fixture as fx
+
+    audio = _captured_audio(tmp_path)
+    pending = replace(
+        _downloaded_entry("call-pending", "rec-pending", audio),
+        status="skipped_no_recording",
+        local_audio_path=None,
+    )
+    ambiguous = replace(
+        _downloaded_entry("call-multi", "rec-a", audio),
+        recording_ids=("rec-a", "rec-b"),
+    )
+    client = _RecordingTranscriptsClient(fx.envelope(fx.record(fx.DEFAULT_TURNS)))
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        [pending, ambiguous],
+        batch_dir=tmp_path / "capture" / "provider_transcripts",
+        allowed_recording_ids=["rec-pending", "rec-a", "rec-b"],
+    )
+
+    assert report["provider_evidence_requested"] == 0
+    assert client.batches == []
+
+
+def test_capture_requires_an_explicit_allowlist_of_at_most_ten_ids(tmp_path: Path) -> None:
+    entries = [
+        _downloaded_entry(f"call-{index}", f"rec-{index}", _captured_audio(tmp_path / str(index)))
+        for index in range(11)
+    ]
+    client = _RecordingTranscriptsClient({"result": 5008})
+
+    with pytest.raises(RuntimeError, match="provider_transcripts_allowlist_exceeds_10"):
+        calls_runtime.capture_provider_role_evidence(
+            client,
+            entries,
+            batch_dir=tmp_path / "capture" / "provider_transcripts",
+            allowed_recording_ids=[entry.recording_id for entry in entries],
+        )
+
+    assert client.batches == []
+
+
+def test_capture_quarantines_duplicate_recording_ids_without_blocking_healthy_calls(
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from tests import mango_provider_fixture as fx
+
+    duplicate_a = _captured_audio(tmp_path / "duplicate-a")
+    duplicate_b = _captured_audio(tmp_path / "duplicate-b")
+    healthy = _captured_audio(tmp_path / "healthy")
+    client = _RecordingTranscriptsClient(
+        fx.envelope(fx.record(recording_id="rec-healthy"))
+    )
+
+    report = calls_runtime.capture_provider_role_evidence(
+        client,
+        [
+            _downloaded_entry("call-duplicate-a", "rec-duplicate", duplicate_a),
+            _downloaded_entry("call-duplicate-b", "rec-duplicate", duplicate_b),
+            _downloaded_entry("call-healthy", "rec-healthy", healthy),
+        ],
+        batch_dir=tmp_path / "capture" / "provider_transcripts",
+        allowed_recording_ids=["rec-duplicate", "rec-healthy"],
+    )
+
+    assert report == {
+        "provider_evidence_requested": 1,
+        "provider_evidence_stored": 1,
+        "provider_evidence_untrusted": 2,
+        "provider_evidence_untrusted_reasons": {"duplicate_recording_id": 2},
+    }
+    assert client.batches == [["rec-healthy"]]
+    assert not provider_evidence_sidecar(duplicate_a).exists()
+    assert not provider_evidence_sidecar(duplicate_b).exists()
+    assert provider_evidence_sidecar(healthy).is_file()
+
+
+def test_prepare_ingest_quarantines_duplicate_recording_ids(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore
+
+    config = replace(config_for(tmp_path), recording_set_stabilization_minutes=0)
+    store = CaptureManifestStore(config.capture_manifest)
+    for call_id, recording_id in (
+        ("call-a", "rec-duplicate"),
+        ("call-b", "rec-duplicate"),
+        ("call-c", "rec-healthy"),
+    ):
+        audio = config.recordings_dir / f"{call_id}.mp3"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"audio")
+        store.append(_downloaded_entry(call_id, recording_id, audio))
+
+    report = prepare_ingest_inputs(config)
+    with config.metadata_csv.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert report["audio_files"] == 3
+    assert [row["recording_id"] for row in rows] == ["", "", "rec-healthy"]
+
+
+def test_capture_rejects_the_whole_batch_when_mango_returns_an_extra_record(
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from tests import mango_provider_fixture as fx
+
+    audio_a = _captured_audio(tmp_path / "a")
+    audio_b = _captured_audio(tmp_path / "b")
+    payload = fx.envelope(
+        fx.record(recording_id="rec-a"),
+        fx.record(recording_id="rec-b"),
+        fx.record(recording_id="rec-extra"),
+    )
+
+    report = calls_runtime.capture_provider_role_evidence(
+        _RecordingTranscriptsClient(payload),
+        [
+            _downloaded_entry("call-a", "rec-a", audio_a),
+            _downloaded_entry("call-b", "rec-b", audio_b),
+        ],
+        batch_dir=tmp_path / "capture" / "provider_transcripts",
+        allowed_recording_ids=["rec-a", "rec-b"],
+    )
+
+    assert report == {
+        "provider_evidence_requested": 2,
+        "provider_evidence_stored": 0,
+        "provider_evidence_untrusted": 2,
+        "provider_evidence_untrusted_reasons": {"invalid_batch_response": 2},
+    }
+    assert not provider_evidence_sidecar(audio_a).exists()
+    assert not provider_evidence_sidecar(audio_b).exists()
+    assert not any((tmp_path / "capture" / "provider_transcripts").iterdir())

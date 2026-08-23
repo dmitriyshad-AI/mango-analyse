@@ -250,7 +250,7 @@ def run_inventory(
     candidates: list[InventoryCandidate] = []
     for entry in entries:
         worktree = Path(entry.path)
-        for path in dirty.get(entry.path, set()):
+        for path in sorted(dirty.get(entry.path, set())):
             candidate = worktree / path
             if candidate.is_symlink() and any(path == item or path.startswith(item + "/") for item in CODE_ROOTS):
                 candidates.append(InventoryCandidate(
@@ -269,7 +269,7 @@ def run_inventory(
             worktree_head = _git(worktree, "rev-parse", "HEAD").strip()
             for path, line in _rg_hits(worktree, term, ignore_case=term not in symbol_terms):
                 term_hits.append((entry, worktree, path, line, worktree_head))
-            for path in dirty.get(entry.path, set()):
+            for path in sorted(dirty.get(entry.path, set())):
                 if not any(path == item or path.startswith(item + "/") for item in CODE_ROOTS):
                     continue
                 previous = _run(worktree, ["git", "show", f"HEAD:{path}"])
@@ -308,7 +308,8 @@ def run_inventory(
         candidates.extend(_metadata_hits(root, term))
     for term in (feature_id, problem_id):
         candidates.extend(_metadata_hits(root, term))
-    candidates = list({(item.classification, item.source, item.path, item.line, item.sha, item.symbol): item for item in candidates}.values())
+    unique = {(item.classification, item.source, item.path, item.line, item.sha, item.symbol): item for item in candidates}
+    candidates = sorted(unique.values(), key=lambda item: (item.classification, item.source, item.path, item.line or 0, item.sha or "", item.symbol))
     actionable = [item for item in candidates if item.classification not in {"FALSE_MATCH", "IMPLEMENTED_OFF"}]
     if not actionable and graph_fresh:
         candidates.append(InventoryCandidate("ABSENT_PROVEN", "inventory", "", None, head, terms[0], "all permitted surfaces checked", True))

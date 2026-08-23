@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,6 +70,11 @@ def test_tz_lint_passes_minimal_well_formed_tz(tmp_path: Path) -> None:
                 "Зоны: scripts/, tests/",
                 "Тест-команда: PYTHONPATH=src python3 -m pytest -q tests/test_x.py",
                 "Семантический-аудит: нет",
+                "Feature-ID: feature.test",
+                "Problem-ID: problem.test",
+                "Изменение: extend",
+                "Ключевые-символы: run_test",
+                "Ключевые-слова: test process",
                 "",
                 "## Приёмка",
                 "- тест зелёный",
@@ -763,3 +770,28 @@ def test_inventory_fails_closed_when_rg_stage_errors(tmp_path: Path, monkeypatch
     monkeypatch.setattr(inventory_before_build, "_run", fail_rg)
     with pytest.raises(RuntimeError, match="rg failed"):
         _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])
+
+
+def test_inventory_is_deterministic_across_python_hash_seeds(tmp_path: Path) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {
+        "src/owner.py": "def exact_owner(): pass\n",
+        "scripts/reference.py": "value = 'exact_owner'\n",
+    })
+
+    def run(seed: str) -> dict[str, object]:
+        result = subprocess.run(
+            [
+                sys.executable, str(Path(inventory_before_build.__file__)), "--root", str(repo),
+                "--feature-id", "feature.real", "--problem-id", "problem.real", "--change", "extend",
+                "--symbols", "exact_owner", "--graph", str(graph), "--json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        payload = json.loads(result.stdout)
+        payload.pop("generated_at")
+        return payload
+
+    assert run("1") == run("random")

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +32,8 @@ SAFE_PYTEST_FLAGS = frozenset(
     "-q --quiet --collect-only -v -vv -s -x --exitfirst --disable-warnings --strict-markers --strict-config".split()
 )
 SAFE_PYTEST_OPTION_PREFIXES = ("--tb=", "--color=", "--maxfail=")
+INVENTORY_COVERAGE = frozenset({"graphify", "worktrees", "raw_rg", "git_refs", "tasks", "audits", "decisions"})
+NON_CODE_ZONES = ("docs/", "tasks/", "audits/", "product_data/", "D1_audit_backlog/")
 
 
 @dataclass
@@ -38,6 +42,11 @@ class TzHeader:
     zones: list[str]
     test_cmd: str | None
     semantic: str | None = None
+    feature_id: str | None = None
+    problem_id: str | None = None
+    change: str | None = None
+    symbols: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass
@@ -91,7 +100,46 @@ def parse_tz_header(text: str) -> TzHeader:
         parts = test_cmd.split("`")
         if len(parts) >= 3:
             test_cmd = parts[1].strip()
-    return TzHeader(branch=branch, zones=zones, test_cmd=test_cmd, semantic=semantic)
+    split = lambda value: tuple(item.strip() for item in re.split(r"[,;]", value or "") if item.strip())
+    return TzHeader(
+        branch, zones, test_cmd, semantic,
+        grab_plain("Feature-ID") or grab_bold("Feature-ID"),
+        grab_plain("Problem-ID") or grab_bold("Problem-ID"), grab_plain("Изменение") or grab_bold("Изменение"),
+        split(grab_plain("Ключевые-символы") or grab_bold("Ключевые-символы")),
+        split(grab_plain("Ключевые-слова") or grab_bold("Ключевые-слова")),
+    )
+
+
+def is_code_task(header: TzHeader, text: str = "") -> bool:
+    def non_code(zone: str) -> bool:
+        normalized = zone.replace("\\", "/").removeprefix("./")
+        if Path(normalized).suffix.casefold() in {".py", ".sh", ".js", ".ts", ".tsx", ".go", ".rs", ".java"}:
+            return False
+        return normalized in {".gitignore", "README.md", "ARCHITECTURE.md"} or any(
+            normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in NON_CODE_ZONES
+        )
+    body = re.sub(r"^(?:Зоны|Тест-команда|Ключевые-(?:символы|слова)):\s*.*$", "", text, flags=re.M)
+    code_path = re.search(r"(?<![\w/])(?:src|scripts|tests|\.agents|\.claude)/\S+\.(?:py|sh|js|ts|tsx|go|rs|java)\b", body)
+    return bool(code_path) or not header.zones or not all(non_code(zone) for zone in header.zones)
+
+
+def required_roles(header: TzHeader, text: str) -> list[dict[str, str]]:
+    haystack = " ".join(filter(None, [text, header.feature_id, header.problem_id, header.change, *header.symbols, *header.keywords, *header.zones])).casefold()
+    roles: list[dict[str, str]] = []
+    def add(role: str, model: str, reason: str) -> None:
+        if not any(item["role"] == role for item in roles):
+            roles.append({"role": role, "model": model, "reasoning": "xhigh", "reason": reason})
+    if is_code_task(header, text):
+        add("claude-code", "claude-opus", "independent code context review")
+        add("architect-auditor", "gpt-5.5", "architecture and reuse owner")
+        add("breaker", "gpt-5.5", "adversarial verification")
+    if any(marker in haystack for marker in ("рефактор", "refactor", "удален", "удалить", "cleanup", "уборк", "дубл")):
+        add("cleaner", "gpt-5.5", "cleanup and duplication scope")
+    if (header.semantic or "").casefold() in {"да", "yes", "true"} or any(
+        marker in haystack for marker in ("knowledge_base", "база знаний", "клиент", "crm", "amo", "tallanto", "wappi", "telegram", "email")
+    ):
+        add("business-auditor", "gpt-5.5", "business semantic review")
+    return roles
 
 
 def parse_worktrees_porcelain(text: str) -> list[WorktreeEntry]:
@@ -133,7 +181,7 @@ def parse_worktrees_porcelain(text: str) -> list[WorktreeEntry]:
 
 def _dirty_paths(root: Path) -> list[str]:
     out: list[str] = []
-    for line in _run_git(root, "status", "--porcelain").splitlines():
+    for line in _run_git(root, "status", "--porcelain", "--untracked-files=all").splitlines():
         if not line.strip():
             continue
         path = line[3:].strip().strip('"')
@@ -258,7 +306,71 @@ def _run_collect_only(root: Path, test_cmd: str) -> tuple[int, str]:
     return result.returncode, result.stdout + result.stderr
 
 
-def run_preflight(root: Path, tz_path: Path, *, run_collect: bool = True) -> tuple[bool, list[str]]:
+def _refresh_inventory(root: Path, header: TzHeader) -> tuple[dict[str, object] | None, str | None]:
+    command = [
+        sys.executable, str(root / "scripts/skills/inventory_before_build.py"), "--root", str(root),
+        "--feature-id", header.feature_id or "", "--problem-id", header.problem_id or "",
+        "--change", header.change or "", "--symbols", ",".join(header.symbols),
+        "--keywords", ",".join(header.keywords), "--json",
+    ]
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120)
+    if result.returncode not in {0, 1}:
+        return None, "inventory helper завершился с ошибкой: " + result.stderr[-500:]
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None, "inventory helper не вернул валидный JSON: " + result.stderr[-500:]
+    return payload if isinstance(payload, dict) else None, None if isinstance(payload, dict) else "inventory JSON должен быть object"
+
+def _validate_inventory(root: Path, header: TzHeader, path: Path) -> list[str]:
+    try:
+        supplied = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"inventory не читается: {exc}"]
+    if not isinstance(supplied, dict):
+        return ["inventory JSON должен быть object"]
+    failures: list[str] = []
+    if supplied.get("schema_version") != "mango_prebuild_inventory_v1":
+        failures.append("неверная schema inventory")
+    if supplied.get("feature_id") != header.feature_id or supplied.get("problem_id") != header.problem_id:
+        failures.append("inventory относится к другому Feature-ID/Problem-ID")
+    if not isinstance(supplied.get("coverage"), dict) or set(supplied["coverage"]) != INVENTORY_COVERAGE or not supplied.get("queries") or not supplied.get("generator_command_sha256"):
+        failures.append("inventory coverage/queries/generator hash неполны")
+    candidates = supplied.get("candidates")
+    if not isinstance(candidates, list):
+        failures.append("inventory не содержит evidence candidates")
+        candidates = []
+    decision = supplied.get("decision")
+    owner = supplied.get("selected_owner")
+    if decision == "stop" or supplied.get("unresolved"):
+        failures.append("inventory требует STOP")
+    if decision in {"reuse", "extend", "port"}:
+        wanted = {"DONOR_REF"} if decision == "port" else {"ACTIVE_REUSE", "ACTIVE_EXTEND"}
+        if not isinstance(owner, dict) or not owner.get("path") or not any(
+            item.get("classification") in wanted
+            and item.get("verified_in_raw_source") is True
+            and item.get("path") == owner.get("path")
+            and item.get("symbol") == owner.get("symbol")
+            for item in candidates if isinstance(item, dict)
+        ):
+            failures.append(f"decision={decision} без raw-подтверждённого owner")
+    elif decision == "new":
+        if supplied.get("graph_matches_head") is not True or not any(
+            isinstance(item, dict) and item.get("classification") == "ABSENT_PROVEN" for item in candidates
+        ):
+            failures.append("decision=new без ABSENT_PROVEN на свежем Graphify")
+    else:
+        failures.append("неизвестный inventory decision")
+    current, error = _refresh_inventory(root, header)
+    if error:
+        failures.append(error)
+    elif current is not None:
+        normalized = lambda value: {key: item for key, item in value.items() if key != "generated_at"}
+        if normalized(supplied) != normalized(current):
+            failures.append("inventory протух или подделан: повторный scan отличается")
+    return failures
+
+def run_preflight(root: Path, tz_path: Path, *, inventory_path: Path | None = None, run_collect: bool = True) -> tuple[bool, list[str]]:
     failures: list[str] = []
     root = root.resolve()
     tz_path = tz_path.resolve()
@@ -270,7 +382,23 @@ def run_preflight(root: Path, tz_path: Path, *, run_collect: bool = True) -> tup
         return False, [f"ТЗ вне репозитория: {tz_path}"]
     if not str(rel_tz).startswith("tasks/_running/"):
         failures.append(f"ТЗ должен лежать в tasks/_running, сейчас: {rel_tz}")
-    header = parse_tz_header(tz_path.read_text(encoding="utf-8", errors="ignore"))
+    tz_text = tz_path.read_text(encoding="utf-8", errors="ignore")
+    header = parse_tz_header(tz_text)
+    if is_code_task(header, tz_text):
+        missing = [
+            name for name, value in (
+                ("Feature-ID", header.feature_id), ("Problem-ID", header.problem_id),
+                ("Изменение", header.change), ("Ключевые-символы/слова", header.symbols or header.keywords),
+            ) if not value
+        ]
+        if missing:
+            failures.append("code-ТЗ без обязательных полей: " + ", ".join(missing))
+        elif header.change not in {"new", "extend", "fix", "remove"}:
+            failures.append(f"неверное Изменение: {header.change}")
+        if inventory_path is None:
+            failures.append("code-ТЗ требует --inventory")
+        elif not missing:
+            failures.extend(_validate_inventory(root, header, inventory_path.resolve()))
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
     if header.branch and header.branch != branch:
         failures.append(f"ветка {branch} != заявленной в ТЗ {header.branch}")
@@ -306,15 +434,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--tz", required=True, type=Path)
+    parser.add_argument("--inventory", type=Path)
     parser.add_argument("--skip-collect-only", action="store_true")
     args = parser.parse_args(argv)
-    ok, failures = run_preflight(args.root, args.tz, run_collect=not args.skip_collect_only)
+    ok, failures = run_preflight(args.root, args.tz, inventory_path=args.inventory, run_collect=not args.skip_collect_only)
     if not ok:
         print("PREFLIGHT: СТОП")
         for failure in failures:
             print(f" - {failure}")
         return 1
     print("PREFLIGHT: OK")
+    header = parse_tz_header(args.tz.read_text(encoding="utf-8", errors="ignore"))
+    print("REQUIRED_ROLES: " + json.dumps(required_roles(header, args.tz.read_text(encoding="utf-8", errors="ignore")), ensure_ascii=False))
     return 0
 
 

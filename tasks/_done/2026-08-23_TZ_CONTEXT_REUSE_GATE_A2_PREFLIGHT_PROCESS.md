@@ -1,7 +1,11 @@
+> DONE 2026-08-23 15:13 | ветка codex/context-reuse-gate-20260823 | codex
+
+> TAKE 2026-08-23 14:43 | ветка codex/context-reuse-gate-20260823 | codex
+
 # ТЗ A2: hard gate preflight и правила Claude/Codex
 
-Ветка: codex/context-reuse-preflight-20260823
-Зоны: scripts/skills/tz_lint.py, scripts/preflight.py, tests/test_preflight.py, tests/test_skills_top5_tools.py, .claude/skills/mango-development-process/SKILL.md, .claude/agents/architect-auditor.md, AGENTS.md, CLAUDE.md, tasks/
+Ветка: codex/context-reuse-gate-20260823
+Зоны: scripts/skills/inventory_before_build.py, scripts/skills/tz_lint.py, scripts/preflight.py, tests/test_preflight.py, tests/test_skills_top5_tools.py, .agents/skills/mango-development-process/SKILL.md, .claude/skills/mango-development-process/SKILL.md, .claude/agents/architect-auditor.md, AGENTS.md, CLAUDE.md, tasks/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_preflight.py tests/test_skills_top5_tools.py
 Семантический-аудит: нет
 Feature-ID: process.context_reuse_gate.preflight_v1

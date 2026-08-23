@@ -192,6 +192,12 @@ def _metadata_hits(root: Path, term: str) -> list[InventoryCandidate]:
         for path in audits.glob("*/*"):
             if path.name not in AUDIT_FILES or not path.is_file():
                 continue
+            if path.name == "manifest.json":
+                try:
+                    if json.loads(path.read_text(encoding="utf-8")).get("schema_version") == "mango_claude_context_pack_v1":
+                        continue
+                except (OSError, json.JSONDecodeError):
+                    pass
             for line_no, text in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
                 if term in text:
                     candidates.append(InventoryCandidate("FALSE_MATCH", "audit_metadata", str(path.relative_to(root)), line_no, None, term, "audit lead; raw code confirmation required", False))

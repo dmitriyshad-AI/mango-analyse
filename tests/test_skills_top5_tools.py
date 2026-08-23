@@ -561,6 +561,19 @@ def test_inventory_before_build_stops_on_modified_or_untracked_other_worktree(tm
     assert [item.classification for item in result.candidates].count("PARTIAL_WORKTREE") == 2
 
 
+def test_inventory_metadata_ignores_generated_claude_context_manifest(tmp_path: Path) -> None:
+    audit = tmp_path / "audits/_inbox/context"
+    audit.mkdir(parents=True)
+    (audit / "manifest.json").write_text(json.dumps({
+        "schema_version": "mango_claude_context_pack_v1", "problem_id": "problem.test",
+    }), encoding="utf-8")
+    (audit / "implementation_notes.md").write_text("problem.test is implemented\n", encoding="utf-8")
+
+    hits = inventory_before_build._metadata_hits(tmp_path, "problem.test")
+
+    assert [item.path for item in hits] == ["audits/_inbox/context/implementation_notes.md"]
+
+
 def test_inventory_before_build_does_not_promote_graph_noise_to_found(tmp_path: Path, monkeypatch) -> None:
     _mock_inventory_surface(tmp_path, monkeypatch, hints=["src/unrelated.py"])
 

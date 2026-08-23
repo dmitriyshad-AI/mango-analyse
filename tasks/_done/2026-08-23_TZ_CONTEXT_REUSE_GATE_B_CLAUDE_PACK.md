@@ -1,3 +1,5 @@
+> DONE 2026-08-23 17:06 | ветка codex/context-reuse-gate-20260823 | codex
+
 > TAKE 2026-08-23 15:15 | ветка codex/context-reuse-gate-20260823 | codex
 
 # ТЗ B: воспроизводимый контекст Claude CLI

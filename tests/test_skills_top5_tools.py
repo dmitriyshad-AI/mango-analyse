@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -463,28 +465,301 @@ def test_live_truth_uses_current_heartbeat_when_manifest_is_missing(tmp_path: Pa
     assert snapshot.processes[0].head_source == "heartbeat"
 
 
-def test_inventory_before_build_uses_git_log_and_inventory_summary(tmp_path: Path, monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(_root: Path, command: list[str], *, timeout: int = 60):
-        calls.append(command)
-
-        class Result:
-            returncode = 0
-            stdout = "abc123 existing symbol\n" if "log" in command else ""
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(inventory_before_build, "_run", fake_run)
+def _mock_inventory_surface(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    graph_revision: str = "head123",
+    worktrees: str | None = None,
+    dirty: dict[str, set[str]] | None = None,
+    hits: dict[tuple[str, str], list[tuple[str, int]]] | None = None,
+    hints: list[str] | None = None,
+) -> None:
+    worktrees = worktrees or f"worktree {tmp_path}\nHEAD head123\nbranch refs/heads/main\n"
+    entries = inventory_before_build.parse_worktrees_porcelain(worktrees)
+    monkeypatch.setattr(inventory_before_build, "load_output_manifest", lambda _graph: {"revision": graph_revision})
+    monkeypatch.setattr(inventory_before_build, "graph_source_hints", lambda *_args, **_kwargs: list(hints or []))
+    monkeypatch.setattr(inventory_before_build, "stale_banner", lambda *_args: "graph banner")
+    monkeypatch.setattr(inventory_before_build, "_surface", lambda _root: (entries, worktrees, dirty or {}, {}))
     monkeypatch.setattr(
         inventory_before_build,
-        "build_project_inventory",
-        lambda _config: {"db_files": 0, "archive_candidate_rows": 0},
+        "_rg_hits",
+        lambda root, term, paths=inventory_before_build.CODE_ROOTS, **_kwargs: list((hits or {}).get((str(root), term), [])),
+    )
+    monkeypatch.setattr(inventory_before_build, "_history", lambda *_args: [])
+    monkeypatch.setattr(inventory_before_build, "_metadata_hits", lambda *_args: [])
+    monkeypatch.setattr(inventory_before_build, "_fingerprint", lambda *_args: "sha256:surface")
+    monkeypatch.setattr(inventory_before_build, "_owns_symbol", lambda *_args: True)
+
+    def fake_git(root: Path, *args: str) -> str:
+        if args[:2] == ("rev-parse", "--abbrev-ref"):
+            return "main\n"
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "head123\n" if Path(root) == tmp_path else "donor456\n"
+        if args[:3] == ("show", "-s", "--format=%cI"):
+            return "2026-08-23T12:00:00+03:00\n"
+        return ""
+
+    monkeypatch.setattr(inventory_before_build, "_git", fake_git)
+
+
+def _run_test_inventory(tmp_path: Path) -> inventory_before_build.InventoryResult:
+    graph = tmp_path / "graph.json"
+    graph.write_text("{}", encoding="utf-8")
+    return inventory_before_build.run_inventory(
+        tmp_path,
+        feature_id="feature.test",
+        problem_id="problem.test",
+        change="extend",
+        keywords=["business capability"],
+        symbols=["exact_owner"],
+        graph=graph,
     )
 
-    result = inventory_before_build.run_inventory(tmp_path, keywords=["memory step guard"], symbols=["apply_bot_safe_memory_step_guard"], graph=tmp_path / "missing.json")
 
-    assert result.status == "FOUND"
-    assert any(candidate.source == "git_log_S" for candidate in result.candidates)
-    assert any("log" in command for command in calls)
+def test_inventory_before_build_reuses_exact_current_owner_deterministically(tmp_path: Path, monkeypatch) -> None:
+    hits = {
+        (str(tmp_path), "exact_owner"): [("src/owner.py", 17)],
+        (str(tmp_path), "business capability"): [("src/related.py", 4)],
+    }
+    _mock_inventory_surface(tmp_path, monkeypatch, hits=hits)
+
+    first = _run_test_inventory(tmp_path)
+    second = _run_test_inventory(tmp_path)
+
+    assert first.status_fingerprint == second.status_fingerprint
+    assert first.candidates == second.candidates
+    assert first.decision == second.decision
+    assert first.decision == "extend"
+    assert first.selected_owner["path"] == "src/owner.py"
+    assert any(candidate.classification == "ACTIVE_EXTEND" for candidate in first.candidates)
+    assert set(first.coverage) == {"graphify", "worktrees", "raw_rg", "git_refs", "tasks", "audits", "decisions"}
+
+
+def test_inventory_before_build_stops_on_modified_or_untracked_other_worktree(tmp_path: Path, monkeypatch) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    worktrees = (
+        f"worktree {tmp_path}\nHEAD head123\nbranch refs/heads/main\n\n"
+        f"worktree {other}\nHEAD donor456\nbranch refs/heads/codex/d3\n"
+    )
+    hits = {(str(other), "exact_owner"): [("src/partial.py", 3), ("scripts/untracked.py", 4)]}
+    dirty = {str(other): {"src/partial.py", "scripts/untracked.py"}}
+    _mock_inventory_surface(tmp_path, monkeypatch, worktrees=worktrees, dirty=dirty, hits=hits)
+
+    result = _run_test_inventory(tmp_path)
+
+    assert result.decision == "stop"
+    assert result.unresolved == ["dirty_code_unclassified"]
+    assert [item.classification for item in result.candidates].count("PARTIAL_WORKTREE") == 2
+
+
+def test_inventory_before_build_does_not_promote_graph_noise_to_found(tmp_path: Path, monkeypatch) -> None:
+    _mock_inventory_surface(tmp_path, monkeypatch, hints=["src/unrelated.py"])
+
+    result = _run_test_inventory(tmp_path)
+
+    assert result.decision == "new"
+    assert any(item.classification == "FALSE_MATCH" and not item.verified_in_raw_source for item in result.candidates)
+    assert any(item.classification == "ABSENT_PROVEN" for item in result.candidates)
+
+
+def test_inventory_before_build_ports_donor_and_never_restores_removed_code(tmp_path: Path, monkeypatch) -> None:
+    _mock_inventory_surface(tmp_path, monkeypatch)
+    donor = inventory_before_build.InventoryCandidate("DONOR_REF", "git_history", "src/donor.py", 8, "donor456", "exact_owner", "donor", True)
+    monkeypatch.setattr(inventory_before_build, "_history", lambda *_args: [donor])
+    result = _run_test_inventory(tmp_path)
+    assert result.decision == "port"
+    assert result.selected_owner["sha"] == "donor456"
+
+    removed = inventory_before_build.InventoryCandidate("REMOVED_INTENTIONALLY", "git_history", "src/old.py", 8, "old789", "exact_owner", "removed", True)
+    monkeypatch.setattr(inventory_before_build, "_history", lambda *_args: [removed])
+    result = _run_test_inventory(tmp_path)
+    assert result.decision == "stop"
+    assert "removed_intentionally_requires_owner_decision" in result.unresolved
+
+
+def test_inventory_before_build_stale_graph_blocks_only_absence(tmp_path: Path, monkeypatch) -> None:
+    _mock_inventory_surface(tmp_path, monkeypatch, graph_revision="old000")
+    assert _run_test_inventory(tmp_path).decision == "stop"
+
+    hits = {(str(tmp_path), "exact_owner"): [("src/owner.py", 17)]}
+    _mock_inventory_surface(tmp_path, monkeypatch, graph_revision="old000", hits=hits)
+    assert _run_test_inventory(tmp_path).decision == "extend"
+
+
+def test_inventory_before_build_avoids_mass_or_sensitive_readers_and_writes_contract(tmp_path: Path, monkeypatch) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {"src/owner.py": "def exact_owner(): pass\n"})
+    for name in ("stable_runtime", "product_data", "runtime", "data", "audio", "mail", "calls"):
+        path = repo / name
+        path.mkdir()
+        (path / "sensitive.txt").write_text("must not be read\n", encoding="utf-8")
+    assert not hasattr(inventory_before_build, "build_project_inventory")
+    source = Path(inventory_before_build.__file__).read_text(encoding="utf-8")
+    assert "sqlite" not in source.casefold()
+    assert "stable_runtime" not in source
+    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
+
+    def assert_safe_path(path: Path) -> None:
+        try:
+            relative = path.relative_to(repo)
+        except ValueError:
+            return
+        assert not relative.parts or relative.parts[0] not in {"stable_runtime", "product_data", "runtime", "data", "audio", "mail", "calls"}
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        assert_safe_path(path)
+        return original_read_text(path, *args, **kwargs)
+
+    def guarded_read_bytes(path: Path, *args, **kwargs):
+        assert_safe_path(path)
+        return original_read_bytes(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("sqlite forbidden")))
+
+    result = _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])
+    out = tmp_path / "audit"
+    inventory_before_build._write_outputs(result, out)
+    payload = json.loads((out / "prebuild_inventory.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "mango_prebuild_inventory_v1"
+    assert payload["generator_command_sha256"].startswith("sha256:")
+    assert payload["queries"][:2] == ["feature.real", "problem.real"]
+    assert (out / "prebuild_inventory.md").exists()
+
+
+def _git_test_repo(path: Path, files: dict[str, str]) -> tuple[Path, Path]:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    for name, text in files.items():
+        target = path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=path, check=True)
+    graph = path.parent / f"{path.name}_graph" / "graph.json"
+    graph.parent.mkdir(parents=True)
+    graph.write_text('{"nodes": []}', encoding="utf-8")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True).stdout.strip()
+    (graph.parent / "mango_structural_manifest.json").write_text(json.dumps({"revision": head}), encoding="utf-8")
+    return path, graph
+
+
+def _real_inventory(repo: Path, graph: Path, *, symbols: list[str], keywords: list[str]):
+    return inventory_before_build.run_inventory(
+        repo,
+        feature_id="feature.real",
+        problem_id="problem.real",
+        change="new",
+        keywords=keywords,
+        symbols=symbols,
+        graph=graph,
+    )
+
+
+def test_inventory_real_git_blocks_broad_keyword_and_staged_rename(tmp_path: Path) -> None:
+    broad, broad_graph = _git_test_repo(tmp_path / "broad", {"src/unrelated.py": "data = 1\n"})
+    broad_result = _real_inventory(broad, broad_graph, symbols=[], keywords=["data"])
+    assert broad_result.decision == "stop"
+    assert broad_result.unresolved == ["keyword_lead_requires_classification"]
+
+    renamed, rename_graph = _git_test_repo(tmp_path / "renamed", {"src/owner.py": "def exact_owner():\n    return 1\n"})
+    before = _real_inventory(renamed, rename_graph, symbols=["exact_owner"], keywords=[])
+    repeated = _real_inventory(renamed, rename_graph, symbols=["exact_owner"], keywords=[])
+    assert before.selected_owner["path"] == "src/owner.py"
+    assert before.candidates == repeated.candidates
+    (renamed / "docs").mkdir()
+    subprocess.run(["git", "mv", "src/owner.py", "docs/owner.md"], cwd=renamed, check=True)
+    rename_result = _real_inventory(renamed, rename_graph, symbols=["exact_owner"], keywords=[])
+    assert rename_result.decision == "stop"
+    assert any(item.classification == "PARTIAL_WORKTREE" and item.path == "src/owner.py" for item in rename_result.candidates)
+
+
+def test_inventory_real_git_removed_owner_wins_over_donor(tmp_path: Path) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {"src/owner.py": "def exact_owner():\n    return 1\n"})
+    subprocess.run(["git", "switch", "-qc", "donor"], cwd=repo, check=True)
+    (repo / "src/owner.py").write_text("def exact_owner():\n    return 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "donor change"], cwd=repo, check=True)
+    subprocess.run(["git", "switch", "-q", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "rm", "-q", "src/owner.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "remove owner"], cwd=repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    (graph.parent / "mango_structural_manifest.json").write_text(json.dumps({"revision": head}), encoding="utf-8")
+
+    result = _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])
+
+    assert {item.classification for item in result.candidates} >= {"DONOR_REF", "REMOVED_INTENTIONALLY"}
+    assert result.decision == "stop"
+    assert result.unresolved == ["removed_intentionally_requires_owner_decision"]
+
+
+def test_inventory_fingerprint_does_not_follow_untracked_symlink_and_stops(tmp_path: Path, monkeypatch) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {"README.md": "clean\n"})
+    (repo / "src").mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("def exact_owner(): pass\n", encoding="utf-8")
+    (repo / "src/link.py").symlink_to(external)
+    monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("sqlite forbidden")))
+
+    first = _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])
+    external.write_text("changed sensitive content\n", encoding="utf-8")
+    second = _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])
+
+    assert first.status_fingerprint == second.status_fingerprint
+    assert first.decision == second.decision == "stop"
+    assert any(item.classification == "PARTIAL_WORKTREE" and item.source == "dirty_symlink" for item in first.candidates)
+
+
+def test_inventory_real_git_stops_on_conflicting_active_owners(tmp_path: Path) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {
+        "src/one.py": "def exact_owner(): pass\n",
+        "scripts/two.py": "def exact_owner(): pass\n",
+    })
+
+    result = _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])
+
+    assert result.decision == "stop"
+    assert result.unresolved == ["active_owner_conflict:exact_owner"]
+
+
+def test_inventory_fingerprint_covers_refs_graph_metadata_and_queries(tmp_path: Path) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {"src/owner.py": "def exact_owner(): pass\n"})
+    fingerprints = [_real_inventory(repo, graph, symbols=["exact_owner"], keywords=[]).status_fingerprint]
+
+    subprocess.run(["git", "branch", "unmerged-candidate"], cwd=repo, check=True)
+    fingerprints.append(_real_inventory(repo, graph, symbols=["exact_owner"], keywords=[]).status_fingerprint)
+
+    manifest = graph.parent / "mango_structural_manifest.json"
+    manifest.write_text(json.dumps({"revision": "different"}), encoding="utf-8")
+    fingerprints.append(_real_inventory(repo, graph, symbols=["exact_owner"], keywords=[]).status_fingerprint)
+
+    task = repo / "tasks/_inbox_codex/task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("Feature-ID: feature.real\n", encoding="utf-8")
+    fingerprints.append(_real_inventory(repo, graph, symbols=["exact_owner"], keywords=[]).status_fingerprint)
+
+    audit = repo / "audits/_inbox/check/implementation_notes.md"
+    audit.parent.mkdir(parents=True)
+    audit.write_text("problem.real\n", encoding="utf-8")
+    fingerprints.append(_real_inventory(repo, graph, symbols=["exact_owner"], keywords=[]).status_fingerprint)
+
+    fingerprints.append(_real_inventory(repo, graph, symbols=["exact_owner"], keywords=["new query"]).status_fingerprint)
+    assert len(set(fingerprints)) == len(fingerprints)
+
+
+def test_inventory_fails_closed_when_rg_stage_errors(tmp_path: Path, monkeypatch) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {"src/owner.py": "def exact_owner(): pass\n"})
+    real_run = inventory_before_build._run
+
+    def fail_rg(root: Path, command, *, timeout: int = 60):
+        if command and command[0] == "rg":
+            return subprocess.CompletedProcess(command, 2, "", "broken rg")
+        return real_run(root, command, timeout=timeout)
+
+    monkeypatch.setattr(inventory_before_build, "_run", fail_rg)
+    with pytest.raises(RuntimeError, match="rg failed"):
+        _real_inventory(repo, graph, symbols=["exact_owner"], keywords=[])

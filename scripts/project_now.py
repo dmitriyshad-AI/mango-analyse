@@ -39,6 +39,78 @@ def _queue_files(root: Path, subdir: str, limit: int = 12) -> list[str]:
     return [file.name for file in files[:limit]]
 
 
+def _task_field(text: str, name: str) -> str:
+    match = re.search(rf"^{re.escape(name)}:\s*(.*?)\s*$", text.split("\n## ", 1)[0], re.M)
+    return match.group(1) if match else ""
+
+
+def _task_records(root: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for state in QUEUE_DIRS:
+        for path in (root / "tasks" / state).glob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            stamp = re.search(r"^> (?:TAKE|DONE|FAIL) (\d{4}-\d{2}-\d{2} \d{2}:\d{2})", text, re.M)
+            problem = _task_field(text, "Problem-ID")
+            records.append({
+                "path": path.name, "state": state, "stamp": stamp.group(1) if stamp else "",
+                "problem": problem, "feature": _task_field(text, "Feature-ID"),
+                "outcome": _task_field(text, "Исход") or ("outcome_missing" if problem else "legacy_unknown"),
+                "next": _task_field(text, "Следующий шаг"), "branch": _task_field(text, "Ветка"),
+            })
+    return records
+
+
+def _worktree_heads(root: Path) -> dict[str, tuple[str, str]]:
+    result: dict[str, tuple[str, str]] = {}
+    for block in _run_git(root, "worktree", "list", "--porcelain").split("\n\n"):
+        fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+        branch = fields.get("branch", "").removeprefix("refs/heads/")
+        if branch:
+            result[branch] = (Path(fields.get("worktree", "unknown")).name, fields.get("HEAD", "unknown")[:12])
+    return result
+
+
+def _problem_lifecycle_lines(root: Path) -> list[str]:
+    records, worktrees = _task_records(root), _worktree_heads(root)
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for record in records:
+        if record["problem"]:
+            grouped.setdefault(record["problem"], []).append(record)
+    lines = ["", "## Жизненный цикл проблем", "### Открытые Problem-ID"]
+    open_count = 0
+    for problem, attempts in sorted(grouped.items()):
+        active = [item for item in attempts if item["state"] == "_running"]
+        pending = [item for item in attempts if item["state"] == "_inbox_codex"]
+        completed = sorted(
+            (item for item in attempts if item["state"] in {"_done", "_failed"}),
+            key=lambda item: (item["stamp"], item["path"]),
+        )
+        latest = completed[-1] if completed else None
+        if not active and not pending and latest and latest["outcome"] == "problem_closed":
+            continue
+        open_count += 1
+        active_text = ", ".join(
+            f"{item['path']} | {item['branch'] or 'branch?'} | "
+            f"{worktrees.get(item['branch'], ('worktree?', 'HEAD?'))[0]}@{worktrees.get(item['branch'], ('worktree?', 'HEAD?'))[1]}"
+            for item in active
+        ) or "нет"
+        latest_text = f"{latest['path']} ({latest['outcome']})" if latest else "нет"
+        next_step = next((item["next"] for item in [*active, *pending, *(completed[-1:] or [])] if item["next"]), "не указан")
+        lines.append(f"- `{problem}`: active={active_text}; latest={latest_text}; next={next_step}")
+    if not open_count:
+        lines.append("- нет")
+    conflicts: dict[str, list[str]] = {}
+    for record in (item for item in records if item["state"] == "_running" and item["feature"]):
+        conflicts.setdefault(record["feature"], []).append(record["path"])
+    lines.append("### Конфликты Feature-ID")
+    found = {feature: paths for feature, paths in conflicts.items() if len(paths) > 1}
+    lines.extend(f"- `{feature}`: {', '.join(sorted(paths))}" for feature, paths in sorted(found.items()))
+    if not found:
+        lines.append("- нет")
+    lines.append("")
+    return lines
+
+
 def _recent_audits(root: Path, limit: int = 10) -> list[str]:
     path = root / "audits" / "_inbox"
     if not path.exists():
@@ -166,6 +238,7 @@ def build_project_now(root: Path) -> str:
         if not items:
             lines.append("- нет")
         lines.append("")
+    lines.extend(_problem_lifecycle_lines(root))
     lines.append("## Блокеры")
     blockers = _extract_blockers(root)
     lines.extend(f"- {item}" for item in blockers) if blockers else lines.append("- нет")

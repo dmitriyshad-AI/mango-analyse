@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 ACTION_DIRS = {"take": "_running", "done": "_done", "fail": "_failed"}
+OUTCOMES = {"attempt_complete", "problem_closed", "blocked", "superseded"}
 
 
 def _branch(root: Path) -> str:
@@ -38,7 +40,23 @@ def _resolve_task(root: Path, task: str) -> Path:
     return direct
 
 
-def move_task(root: Path, task: str, action: str, reason: str | None = None) -> Path:
+def _field(body: str, name: str) -> str:
+    match = re.search(rf"^{re.escape(name)}:\s*(.*?)\s*$", body.split("\n## ", 1)[0], re.M)
+    return match.group(1) if match else ""
+
+
+def _set_outcome(body: str, outcome: str) -> str:
+    header, marker, tail = body.partition("\n## ")
+    lines = [line for line in header.splitlines() if not re.match(r"^Исход:\s*", line)]
+    anchor = next((index + 1 for index, line in enumerate(lines) if line.startswith("Problem-ID:")), 0)
+    lines.insert(anchor, f"Исход: {outcome}")
+    rendered = "\n".join(lines) + (marker + tail if marker else "")
+    return rendered + ("\n" if body.endswith("\n") and not rendered.endswith("\n") else "")
+
+
+def move_task(
+    root: Path, task: str, action: str, reason: str | None = None, *, outcome: str | None = None,
+) -> Path:
     src = _resolve_task(root, task).resolve()
     if not src.exists():
         raise FileNotFoundError(f"СТОП: нет файла {src}")
@@ -57,13 +75,29 @@ def move_task(root: Path, task: str, action: str, reason: str | None = None) -> 
     dst = dst_dir / src.name
     if dst.exists():
         raise FileExistsError(f"СТОП: {dst} уже существует")
+    body = src.read_text(encoding="utf-8")
+    problem_id = _field(body, "Problem-ID")
+    if action == "take" and outcome:
+        raise ValueError("СТОП: --outcome указывается при завершении попытки")
+    if action != "take":
+        if problem_id:
+            if outcome not in OUTCOMES:
+                raise ValueError("СТОП: ТЗ с Problem-ID требует --outcome")
+            if (action == "fail" and outcome != "blocked") or (action == "done" and outcome == "blocked"):
+                raise ValueError("СТОП: blocked соответствует --fail, остальные исходы — --done")
+        else:
+            outcome = "legacy_unknown"
+        if outcome == "problem_closed" and not _field(body, "Closure-evidence"):
+            raise ValueError("СТОП: problem_closed требует непустой Closure-evidence")
+        if outcome == "superseded" and not _field(body, "Следующий шаг"):
+            raise ValueError("СТОП: superseded требует поле Следующий шаг")
+        body = _set_outcome(body, outcome)
     stamp = f"> {action.upper()} {datetime.now():%Y-%m-%d %H:%M} | ветка {_branch(root)} | codex"
     if action == "fail":
         clean_reason = (reason or "").strip()
         if not clean_reason:
             raise ValueError("СТОП: --fail требует непустую причину")
         stamp += f" | причина: {clean_reason}"
-    body = src.read_text(encoding="utf-8")
     dst.write_text(stamp + "\n\n" + body, encoding="utf-8")
     if source_is_internal:
         src.unlink()
@@ -78,9 +112,10 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--take", action="store_true")
     group.add_argument("--done", action="store_true")
     group.add_argument("--fail")
+    parser.add_argument("--outcome", choices=sorted(OUTCOMES))
     args = parser.parse_args(argv)
     action = "take" if args.take else "done" if args.done else "fail"
-    dst = move_task(args.root.resolve(), args.task, action, args.fail)
+    dst = move_task(args.root.resolve(), args.task, action, args.fail, outcome=args.outcome)
     print(f"OK: {dst.relative_to(args.root.resolve())}")
     return 0
 

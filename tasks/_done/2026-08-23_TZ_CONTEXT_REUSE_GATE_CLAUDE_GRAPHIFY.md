@@ -1,3 +1,5 @@
+> DONE 2026-08-23 17:46 | ветка codex/context-reuse-gate-20260823 | codex
+
 # Master-ТЗ: контекст без потерь и запрет повторной реализации
 
 Ветка: codex/context-reuse-gate-20260823
@@ -6,6 +8,8 @@
 Семантический-аудит: нет
 Feature-ID: process.context_reuse_gate.v1
 Problem-ID: process.context_loss_and_duplicate_builds
+Исход: problem_closed
+Closure-evidence: audits/_inbox/context_reuse_gate_c_complete_20260823174447
 Изменение: extend
 Ключевые-символы: inventory_before_build,parse_worktrees_porcelain,stale_banner,load_output_manifest,preflight,task_move,make_audit_pack
 Ключевые-слова: existing implementation,feature reuse,partial worktree,Claude context,problem closure
@@ -13,7 +17,6 @@ Problem-ID: process.context_loss_and_duplicate_builds
 Дата: 2026-08-23.
 Статус: master-дизайн. Не брать целиком в `_running`: сначала создать четыре
 атомарных под-ТЗ из раздела «Порядок реализации».
-
 ## 0. Зачем это нужно
 
 В проекте повторяется один и тот же дорогой цикл:

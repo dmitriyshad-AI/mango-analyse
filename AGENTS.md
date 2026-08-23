@@ -57,7 +57,7 @@
 - `tasks/_done/` — завершённые ТЗ и отчёты.
 - `tasks/_failed/` — остановленные ТЗ с причиной.
 
-Перемещай ТЗ только через `python3 scripts/task_move.py`: `--take`, `--done`, `--fail`. Старый inbox не триажить массово без отдельной команды; для залежавшихся задач делай только отчёт `python3 scripts/task_stale_report.py`.
+Перемещай ТЗ только через `python3 scripts/task_move.py`: `--take`, `--done`, `--fail`. Для завершения ТЗ с `Problem-ID` обязателен `--outcome attempt_complete|problem_closed|blocked|superseded`; `problem_closed` требует `Closure-evidence`, а завершённая попытка не закрывает проблему автоматически. Старый inbox не триажить массово без отдельной команды; для залежавшихся задач делай только отчёт `python3 scripts/task_stale_report.py`.
 
 ## Preflight
 
@@ -73,8 +73,8 @@
 Для code-ТЗ это hard gate: до кода обязательны доказательный inventory и роли,
 вычисленные preflight. Канонический порядок и контракт Claude-контекста:
 `.agents/skills/mango-development-process/SKILL.md`. Уже открытый диалог не
-освобождается от этих доказательств: до этапа C это ручной финальный gate,
-после этапа C их проверит `task_move --done`.
+освобождается от этих доказательств. `task_move --done` отдельно проверяет
+явный исход попытки и evidence закрытия проблемы, но не заменяет preflight.
 
 ## Interfaces
 

@@ -388,6 +388,20 @@ def test_projection_rejects_unknown_or_unmapped_dialogue_role(variants):
         projected(transcript_variants_json=json.dumps(variants, ensure_ascii=False))
 
 
+def test_non_conversation_keeps_unmapped_dialogue_without_inventing_roles():
+    analysis = json.loads(record()["analysis_json"])
+    analysis["quality_flags"]["call_type"] = "non_conversation"
+    call = projected(
+        analysis_json=json.dumps(analysis, ensure_ascii=False),
+        transcript_variants_json=json.dumps(
+            {"dialogue_lines": ["[00:01.0] Спикер 1: Короткий вызов"]},
+            ensure_ascii=False,
+        ),
+    )
+
+    assert call["tail"][-1] == "[00:01.0] Не определено: Короткий вызов"
+
+
 def test_legacy_unknown_role_can_only_identify_an_existing_row():
     raw = record(
         transcript_variants_json=json.dumps(

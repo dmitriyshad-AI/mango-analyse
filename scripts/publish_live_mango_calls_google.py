@@ -211,7 +211,9 @@ def role_name(label: Any, mapping: Mapping[str, Any]) -> Optional[str]:
     )
 
 
-def render_transcript(record: Mapping[str, Any]) -> str:
+def render_transcript(
+    record: Mapping[str, Any], *, allow_unmapped_roles: bool = False
+) -> str:
     variants = json_object(record.get("transcript_variants_json"))
     mapping = json_object(variants.get("role_mapping"))
     lines = variants.get("dialogue_lines")
@@ -223,6 +225,8 @@ def render_transcript(record: Mapping[str, Any]) -> str:
                 raise ValueError("dialogue_lines contains a malformed line")
             timestamp, label, content = match.groups()
             role, content = role_name(label, mapping), content.strip()
+            if role is None and allow_unmapped_roles:
+                role = "Не определено"
             if role is None:
                 raise ValueError("dialogue_lines contains an unknown or unmapped role")
             if groups and groups[-1][1] == role:
@@ -305,7 +309,9 @@ def call_projection(record: Mapping[str, Any], manager_map: Mapping[str, Any]) -
         action = str(analysis.get("next_step") or "").strip()
     due = str(next_step.get("due") or "").strip() or str(analysis.get("timeline") or "").strip()
     review = list_text(analysis.get("review_reasons")) or list_text(flags.get("review_reasons")) or "—"
-    transcript = render_transcript(record)
+    transcript = render_transcript(
+        record, allow_unmapped_roles=call_type == "non_conversation"
+    )
     if not transcript:
         raise ValueError("full transcript is empty")
     values = [

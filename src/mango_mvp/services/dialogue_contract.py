@@ -3,10 +3,8 @@
 One strict parser/projection shared by the Google publisher, Analyse, Resolve
 and the offline Excel/AI Office exports: stable ``turn_id``, one source line =
 one turn, neutral but *distinguishable* speakers, and a fail-closed role
-attribution.  ``Менеджер``/``Клиент`` appear only when Mango itself proved the
-channel roles with immutable, call-bound evidence that still matches the stored
-dialogue line for line; text heuristics, direction, file name, greeting and
-channel order never grant trust.
+attribution. Roles appear after valid Mango evidence or accepted whole-track
+model orientation; text heuristics, direction, file name and channel order never grant trust.
 
 Fail-closed by construction: a broken ``transcript_variants_json``, a malformed
 or empty line, a backwards timecode or a partially readable ``dialogue_lines``
@@ -33,7 +31,7 @@ from mango_mvp.quality.tenant_text_normalizer import (
 )
 
 CONTRACT_VERSION = "canonical_dialogue_v1"
-ROLE_GUARD_VERSION = "role_guard_v1"
+ROLE_GUARD_VERSION = "role_guard_v2"
 # ТЗ-03/ТЗ-04 contract versions live next to the dialogue they are computed
 # from, so Analyse and the Google publisher read one definition instead of two.
 ANALYSIS_SCHEMA_VERSION_V3 = "v3"
@@ -84,7 +82,12 @@ PROVIDER_ALIGNMENT_MIN_SIDE_SCORE = 0.72
 PROVIDER_ALIGNMENT_MIN_MARGIN = 0.18
 PROVIDER_ALIGNMENT_MIN_TOKEN_COVERAGE = 0.85
 PROVIDER_ALIGNMENT_MIN_TURN_COVERAGE = 0.60
-TRUSTED_ROLE_STATUSES = frozenset({"confirmed_multi_signal"})
+TRUSTED_ROLE_STATUSES = frozenset({"confirmed_multi_signal", "confirmed_model_channel_orientation", "confirmed_provider_evidence"})
+PROVIDER_ROLE_TRUST_STATUSES = frozenset({
+    "unverified_low_evidence", "unverified_model_low_confidence",
+    "blocked_model_non_two_party", "confirmed_multi_signal",
+    "confirmed_model_channel_orientation", "confirmed_provider_evidence",
+})
 TRUNCATION_MARKER = "[... часть реплик пропущена по лимиту ...]"
 # Kept under the old name for the Analyse tests and callers that import it.
 ANALYSIS_TRUNCATION_MARKER = TRUNCATION_MARKER
@@ -97,7 +100,8 @@ ROLE_REASON_CODES = frozenset(
     {
         "role_mapping_missing", "role_mapping_invalid", "role_mapping_status_not_allowed",
         "role_mapping_not_confirmed", "manager_quality_not_allowed", "unsupported_topology",
-        "invalid_channel_mapping", "speaker_correction_revoked_trust", "mono_or_unknown",
+        "invalid_channel_mapping", "invalid_stored_channel_pair",
+        "speaker_correction_revoked_trust", "mono_or_unknown",
         "non_conversation_not_applicable", "provider_evidence_missing", "provider_evidence_invalid",
         "provider_evidence_call_mismatch", "provider_evidence_dialogue_mismatch",
         "provider_recording_binding_missing", "provider_recording_binding_mismatch",
@@ -111,17 +115,18 @@ ROLE_REASON_CODES = frozenset(
 # One short Russian sentence per code: the owner and the sales head read this,
 # not the code.  Anything unmapped degrades to a safe generic sentence.
 ROLE_REASON_RU = {
-    "role_mapping_missing": "Mango не прислал разметку дорожек звонка",
-    "role_mapping_invalid": "разметка дорожек Mango повреждена",
-    "role_mapping_status_not_allowed": "разметка дорожек не подтверждена Mango",
+    "role_mapping_missing": "система не сохранила разметку дорожек звонка",
+    "role_mapping_invalid": "разметка дорожек повреждена",
+    "role_mapping_status_not_allowed": "разметка дорожек не подтверждена системой",
     "role_mapping_not_confirmed": "разметка дорожек помечена как неподтверждённая",
     "manager_quality_not_allowed": "звонок не допущен к оценке качества работы менеджера",
     "unsupported_topology": "сложный звонок: перевод, конференция или дубль дорожек",
     "invalid_channel_mapping": "дорожки не разложены на две разные стороны",
+    "invalid_stored_channel_pair": "сохранённые дорожки имеют повреждённые физические подписи",
     "speaker_correction_revoked_trust": "модель пыталась переставить говорящего",
     "mono_or_unknown": "запись одноканальная: стороны технически неразличимы",
     "non_conversation_not_applicable": "содержательного разговора в записи нет",
-    "provider_evidence_missing": "нет ответа Mango о том, где менеджер, а где клиент",
+    "provider_evidence_missing": "нет надёжного подтверждения, где менеджер, а где клиент",
     "provider_evidence_invalid": "ответ Mango о сторонах разговора не проходит проверку",
     "provider_evidence_call_mismatch": "ответ Mango относится к другому звонку",
     "provider_recording_binding_missing": (
@@ -150,9 +155,11 @@ ROLE_SPEAKERS = {"manager": "Менеджер", "client": "Клиент"}
 CHANNEL_KINDS = {"left": "channel_left", "right": "channel_right"}
 SIDE_LABELS = {
     "дорожка левая": "left",
+    "спикер a": "left",
     "channel_left": "left",
     "left": "left",
     "дорожка правая": "right",
+    "спикер b": "right",
     "channel_right": "right",
     "right": "right",
 }
@@ -839,9 +846,60 @@ def _channel_pair(mapping: Any) -> Optional[dict[str, str]]:
     return pair if sorted(pair.values()) == ["client", "manager"] else None
 
 
+def _physical_tracks_sha256(variants: Mapping[str, Any]) -> str:
+    blocks = (variants.get("manager"), variants.get("client"))
+    by_side = {
+        str(block.get("physical_channel") or ""): (
+            str(block.get("variant_a") or ""), str(block.get("variant_b") or "")
+        )
+        for block in blocks if isinstance(block, Mapping)
+    }
+    if set(by_side) != {"left", "right"} or not all(
+        text for pair in by_side.values() for text in pair
+    ):
+        return ""
+    return hashlib.sha256("\0".join((*by_side["left"], *by_side["right"])).encode()).hexdigest()
+
+
+def _model_orientation_trusted(
+    mapping: Mapping[str, Any], variants: Mapping[str, Any], source_call_id: str,
+    source_recording_id: str, turns: Sequence[Mapping[str, Any]],
+) -> bool:
+    meta = mapping.get("model_orientation")
+    if not isinstance(meta, Mapping):
+        return False
+    confidence = meta.get("confidence")
+    dialogue_sha = hashlib.sha256(json.dumps(
+        variants.get("dialogue_lines"), ensure_ascii=False, separators=(",", ":")
+    ).encode()).hexdigest()
+    asr_providers = {
+        str(variants.get(key) or "").strip()
+        for key in ("primary_provider", "secondary_provider")
+    }
+    tracks_sha = _physical_tracks_sha256(variants)
+    return bool(
+        mapping.get("status") == "confirmed_model_channel_orientation"
+        and mapping.get("trust_source") == "model_channel_orientation"
+        and meta.get("ordinary_two_party") is True
+        and meta.get("roles") == [mapping.get("left"), mapping.get("right")]
+        and {str(turn.get("side") or "") for turn in turns} >= {"left", "right"}
+        and isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+        and 0.85 <= float(confidence) <= 1.0
+        and mapping.get("confidence") == round(float(confidence), 4)
+        and meta.get("provider") == "codex_cli"
+        and meta.get("prompt_version") == "stereo_track_orientation_v1"
+        and bool(source_call_id) and meta.get("source_call_id") == source_call_id
+        and bool(source_recording_id) and meta.get("source_recording_id") == source_recording_id
+        and meta.get("dialogue_sha256") == dialogue_sha
+        and bool(tracks_sha) and meta.get("tracks_sha256") == tracks_sha
+        and len(asr_providers) == 2 and "" not in asr_providers
+        and isinstance(mapping.get("evidence"), list)
+        and "model_channel_orientation" in mapping["evidence"]
+    )
+
+
 def _provider_evidence_check(
     variants: Mapping[str, Any],
-    pair: Optional[Mapping[str, str]],
     source_call_id: str,
     source_recording_id: str,
     turns: Sequence[Mapping[str, Any]],
@@ -917,11 +975,6 @@ def _provider_evidence_check(
     reason = alignment_report.get("reason")
     if reason is not None or alignment is None:
         return reason or "provider_evidence_dialogue_mismatch", alignment_report
-    proven = {
-        side: PROVIDER_ROLE_TO_INTERNAL[role] for role, side in alignment.items()
-    }
-    if proven != dict(pair or {}):
-        return "provider_evidence_dialogue_mismatch", alignment_report
     return None, alignment_report
 
 
@@ -935,30 +988,54 @@ def evaluate_role_attribution(
     mapping = variants.get("role_mapping")
     pair = _channel_pair(mapping)
     reasons: set[str] = set()
+    status = str(mapping.get("status") or "") if isinstance(mapping, Mapping) else ""
     if not isinstance(mapping, Mapping) or not mapping:
         reasons.add("role_mapping_missing")
     else:
         if str(variants.get("mode") or "") != "stereo":
             reasons.add("mono_or_unknown")
-        if str(mapping.get("status") or "") not in TRUSTED_ROLE_STATUSES:
-            reasons.add("role_mapping_status_not_allowed")
-        if mapping.get("confirmed") is not True:
-            reasons.add("role_mapping_not_confirmed")
-        if mapping.get("manager_quality_allowed") is not True:
-            reasons.add("manager_quality_not_allowed")
         if str(mapping.get("topology") or "") != "simple_two_party":
             reasons.add("unsupported_topology")
         if pair is None:
             reasons.add("invalid_channel_mapping")
-    evidence_reason, alignment_report = _provider_evidence_check(
-        variants, pair, source_call_id, source_recording_id, turns
+    stored_channels = tuple(
+        str(block.get("physical_channel") or "").strip().lower()
+        for role in ("manager", "client")
+        if isinstance((block := variants.get(role)), Mapping)
     )
-    if evidence_reason:
-        reasons.add(evidence_reason)
+    if any(stored_channels) and not stored_side_by_role(variants):
+        reasons.add("invalid_stored_channel_pair")
+    evidence_present = variants.get(PROVIDER_EVIDENCE_FIELD) not in (None, {}, "")
+    evidence_reason, alignment_report = _provider_evidence_check(
+        variants, source_call_id, source_recording_id, turns
+    )
+    provider_trusted = bool(
+        evidence_present and evidence_reason is None
+        and isinstance(mapping, Mapping) and status in PROVIDER_ROLE_TRUST_STATUSES
+    )
+    model_trusted = bool(
+        isinstance(mapping, Mapping)
+        and _model_orientation_trusted(mapping, variants, source_call_id, source_recording_id, turns)
+    )
+    if provider_trusted:
+        trust_source = "provider_evidence"
+    elif model_trusted:
+        trust_source = "model_channel_orientation"
+        if evidence_present and evidence_reason: reasons.add(evidence_reason)
+        if mapping.get("confirmed") is not True: reasons.add("role_mapping_not_confirmed")
+        if mapping.get("manager_quality_allowed") is not True: reasons.add("manager_quality_not_allowed")
+    else:
+        trust_source = "untrusted"
+        if isinstance(mapping, Mapping) and mapping:
+            if status not in TRUSTED_ROLE_STATUSES: reasons.add("role_mapping_status_not_allowed")
+            if mapping.get("confirmed") is not True: reasons.add("role_mapping_not_confirmed")
+            if mapping.get("manager_quality_allowed") is not True: reasons.add("manager_quality_not_allowed")
+        if evidence_reason: reasons.add(evidence_reason)
     result = {
         "version": ROLE_GUARD_VERSION,
         "decision": "untrusted" if reasons else "trusted",
         "trusted": not reasons,
+        "trust_source": trust_source if not reasons else "untrusted",
         "topology": str(mapping.get("topology") or "") if isinstance(mapping, Mapping) else "",
         "reason_codes": sorted(reasons),
     }
@@ -1080,9 +1157,14 @@ def build_dialogue_input(record: Mapping[str, Any]) -> DialogueInput:
         turns=rows,
     )
     pair = _channel_pair(variants.get("role_mapping"))
+    if attribution.get("trust_source") == "provider_evidence":
+        pair = {
+            side: PROVIDER_ROLE_TO_INTERNAL[role]
+            for role, side in attribution["provider_alignment"]["alignment"].items()
+        }
     reasons = set(attribution["reason_codes"])
     reasons.update(row["defect"] for row in rows if row["defect"])
-    if any(
+    if not attribution.get("trusted") and any(
         current["start_sec"] == previous["start_sec"]
         and current["speaker_key"]
         and previous["speaker_key"]
@@ -1137,7 +1219,7 @@ def build_dialogue_input(record: Mapping[str, Any]) -> DialogueInput:
 
 
 def trusted_role_text(record: Mapping[str, Any], role: str) -> str:
-    """Return role text only when this exact call has trusted Mango evidence."""
+    """Return role text only when this exact call has trusted role attribution."""
     if role not in {"manager", "client"}:
         raise ValueError("role must be manager or client")
     try:
@@ -1160,7 +1242,7 @@ def trusted_role_text(record: Mapping[str, Any], role: str) -> str:
 UNTRUSTED_PROJECTION_VERSION = "untrusted_analysis_projection_v1"
 NEUTRAL_TOPIC_VERSION = "neutral_topic_v1"
 UNTRUSTED_SUMMARY = (
-    "Стороны разговора не подтверждены технической разметкой Mango. "
+    "Стороны разговора не подтверждены системой. "
     "Кто что сказал, к чему пришли и какой следующий шаг — по этой записи "
     "автоматически не определяется и требует ручной проверки."
 )
@@ -1270,7 +1352,7 @@ ANALYSIS_REASON_RU = {
         "сохранённый анализ сделан по устаревшим или неполным правилам; нужен повторный анализ"
     ),
     "role_attribution_untrusted": (
-        "Mango не подтвердил, какая дорожка принадлежит менеджеру, а какая клиенту"
+        "система не смогла надёжно определить, где говорит менеджер, а где клиент"
     ),
     "sales_missing_product_and_next_step": (
         "в звонке о продаже не подтверждены продукт и следующий шаг"
@@ -1645,6 +1727,13 @@ def validate_stored_analysis(
         evidence_ids.add(str(entry.get("claim_id")))
         evidence_groups.setdefault(str(entry.get("claim_id")), []).append((entry, turn))
         matched.add((field_path, item_id))
+    started_at = record.get("started_at")
+    if isinstance(started_at, str):
+        try:
+            started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise StoredAnalysisContractError("stored call date is invalid") from exc
+    reference_date = moscow_datetime(started_at).date() if started_at else None
     for group in evidence_groups.values():
         first = group[0][0]
         if any(
@@ -1657,6 +1746,7 @@ def validate_stored_analysis(
             first.get("raw_value"),
             [turn for _entry, turn in group],
             list(dialogue.turns),
+            reference_date,
         ):
             raise StoredAnalysisContractError("claim evidence does not support its value")
     required = {

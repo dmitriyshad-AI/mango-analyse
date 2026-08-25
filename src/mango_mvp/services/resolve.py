@@ -424,8 +424,8 @@ class ResolveService:
         )
         normalize = self._transcribe_helper._normalize_artifact_text
         if (normalize(manager), normalize(client)) != (
-            normalize(call.transcript_manager or ""),
-            normalize(call.transcript_client or ""),
+            normalize(call.transcript_manager or str((payload.get("manager") or {}).get("final") or "")),
+            normalize(call.transcript_client or str((payload.get("client") or {}).get("final") or "")),
         ):
             return []
         return lines
@@ -1466,17 +1466,22 @@ class ResolveService:
             turn_id = int(input_turn["turn_id"])
             out_turn = output_by_id[turn_id]
             role = str(input_turn.get("speaker") or "unknown")
-            requested_role = str(out_turn.get("speaker") or role).strip().lower()
+            raw_requested_role = str(out_turn.get("speaker") or "").strip()
+            requested_role = raw_requested_role.lower() or role
+            localized_role = dialogue_label_role(raw_requested_role)
+            if localized_role in {"manager", "client"}:
+                requested_role = localized_role
             turn_flags = {
                 str(flag).strip().lower()
                 for flag in input_turn.get("flags", [])
                 if str(flag).strip()
             }
-            if requested_role not in {
+            invalid_role_request = bool(raw_requested_role) and requested_role not in {
                 "manager", "client", "unknown", "channel_left", "channel_right",
-            }:
+            }
+            if invalid_role_request:
                 requested_role = role
-            if requested_role != role:
+            if invalid_role_request or requested_role != role:
                 # The model may never move a turn to another physical side or
                 # role: only Mango's own channel markup decides who spoke.  The
                 # rejected candidate is not stored anywhere.
@@ -1677,6 +1682,17 @@ class ResolveService:
             "global_notes": str(normalized_result.get("global_notes") or "").strip(),
         }
         payload["dialogue_lines"] = dialogue_lines
+        role_mapping = payload.get("role_mapping")
+        if (
+            isinstance(role_mapping, dict)
+            and role_mapping.get("status") == "confirmed_model_channel_orientation"
+            and isinstance(role_mapping.get("model_orientation"), dict)
+        ):
+            # Resolve may edit words, but it cannot move a turn between tracks.
+            # Bind the accepted orientation to the safely rebuilt dialogue.
+            role_mapping["model_orientation"]["dialogue_sha256"] = hashlib.sha256(
+                json.dumps(dialogue_lines, ensure_ascii=False, separators=(",", ":")).encode()
+            ).hexdigest()
         if isinstance(llm_meta, dict) and llm_meta:
             payload["dialogue_resolve"]["llm_meta"] = llm_meta
         manager_block = payload.get("manager")
@@ -1724,21 +1740,68 @@ class ResolveService:
         )
         speaker_labels = {int(t["turn_id"]): str(t.get("speaker_label") or "") for t in (input_payload or {}).get("turns", [])}
         selective = self._semantic_merge_selective()
+        provider_roles_trusted, provider_candidate = False, None
         # The gate and the glossary run under the caller's fail-soft (ТЗ §7.4, §12b).
         if selective and input_payload:
             try:
                 trusted_dialogue = build_dialogue_input(resolve_input_snapshot(call))
             except DialogueContractError:
                 trusted_dialogue = None
-            provider_roles_trusted = bool(trusted_dialogue and trusted_dialogue.trusted and not from_sidecar)
+            stored_physical_sides = {
+                str((variants_payload.get(role) or {}).get("physical_channel") or "")
+                for role in ("manager", "client")
+            }
+            provider_roles_trusted = bool(
+                trusted_dialogue
+                and trusted_dialogue.trusted
+                and not from_sidecar
+                and stored_physical_sides == {"left", "right"}
+                and trusted_dialogue.role_attribution.get("trust_source") == "provider_evidence"
+            )
             if provider_roles_trusted:
                 role_map = {f"channel_{turn['physical_side']}": turn["speaker_kind"] for turn in trusted_dialogue.turns}
+                provider_remapped = any(
+                    str((variants_payload.get(role) or {}).get("physical_channel") or "")
+                    != side.removeprefix("channel_")
+                    for side, role in role_map.items()
+                )
+                if provider_remapped:
+                    roles = ("manager", "client")
+                    stored_by_side = {
+                        f"channel_{(variants_payload.get(role) or {}).get('physical_channel', '')}":
+                        variants_payload.get(role, {}) for role in roles
+                    }
+                    variants_by_side = {
+                        f"channel_{(variants_payload.get(role) or {}).get('physical_channel', '')}":
+                        (input_payload.get("role_variants") or {}).get(role, {}) for role in roles
+                    }
+                    input_payload["role_variants"] = {
+                        role: variants_by_side.get(side, {}) for side, role in role_map.items()
+                    }
+                    variants_payload.update({
+                        role: stored_by_side.get(side, {}) for side, role in role_map.items()
+                    })
+                    variants_payload.setdefault("role_mapping", {}).update(
+                        left=role_map.get("channel_left"),
+                        right=role_map.get("channel_right"),
+                        trust_source="provider_evidence",
+                    )
                 for turn in input_payload.get("turns") or []:
                     speaker = str(turn.get("speaker") or "")
                     turn["speaker"] = speaker if speaker in {"manager", "client"} else role_map.get(speaker, "")
+                if provider_remapped:
+                    provider_candidate = self._dialogue_turns_to_candidate(
+                        call,
+                        variants_payload,
+                        {"turns": [
+                            {**turn, "final_text": turn.get("baseline_text", "")}
+                            for turn in input_payload.get("turns") or []
+                        ]},
+                        provider="provider_evidence",
+                    )
             input_payload = self._semantic_selective_input(input_payload, provider_roles_trusted=provider_roles_trusted)
         if not input_payload:
-            return None
+            return provider_candidate if selective and provider_roles_trusted else None
         raw_result = self._run_dialogue_llm(input_payload, selective=selective)
         llm_meta = raw_result.get("_llm_meta") if isinstance(raw_result.get("_llm_meta"), dict) else None
         normalized_result = self._normalize_dialogue_result(input_payload, raw_result)
@@ -1749,7 +1812,7 @@ class ResolveService:
             state["fallback_reason"] = ("reject_rate_exceeded" if sum(state["turns_reset"].values()) * 2 > state["turns_changed_proposed"]
                                         else None if state["turns_changed_accepted"] else "no_accepted_edits")
             if state["fallback_reason"]:
-                return None
+                return provider_candidate if provider_roles_trusted else None
         if from_sidecar:
             role_mapping = variants_payload.get("role_mapping")
             if isinstance(role_mapping, dict):

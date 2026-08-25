@@ -395,7 +395,7 @@ class ExportExcelTest(unittest.TestCase):
             [self._untrusted_call({"analysis_schema_version": "v2", "tags": []})]
         )[0]
 
-        self.assertIn("Mango", row["review_reasons"])
+        self.assertIn("нет надёжного подтверждения", row["review_reasons"])
         self.assertNotIn("role_attribution_untrusted", row["review_reasons"])
 
     def test_a_text_cell_is_never_compiled_into_a_spreadsheet_formula(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -1211,7 +1212,7 @@ class ResolveSharedContractTest(unittest.TestCase):
         llm_payload = {
             "turns": [
                 {"turn_id": 1, "speaker": "manager", "final_text": "Первая"},
-                {"turn_id": 2, "speaker": "client", "final_text": "Вторая"},
+                {"turn_id": 2, "speaker": "Клиент", "final_text": "Вторая"},
             ]
         }
 
@@ -1320,6 +1321,61 @@ class ResolveSharedContractTest(unittest.TestCase):
 
         self.assertFalse(dialogue.role_attribution["trusted"])
         self.assertNotIn("Менеджер", dialogue.render())
+
+    def test_text_only_resolve_keeps_model_track_orientation_trusted(self) -> None:
+        service = ResolveService(make_settings())
+        lines = [
+            "[00:01.0] Дорожка левая: Отправлю дагавор.",
+            "[00:02.0] Дорожка правая: Хорошо, спасибо.",
+        ]
+        tracks = ("Отправлю дагавор.", "Отправлю договор.", "Хорошо, спасибо.", "Хорошо, спасибо.")
+        payload = {
+            "mode": "stereo", "call_topology": "simple_two_party",
+            "primary_provider": "whisper", "secondary_provider": "gigaam",
+            "dialogue_lines": lines,
+            "manager": {"physical_channel": "left", "variant_a": tracks[0], "variant_b": tracks[1]},
+            "client": {"physical_channel": "right", "variant_a": tracks[2], "variant_b": tracks[3]},
+            "role_mapping": {
+                "confirmed": True, "manager_quality_allowed": True,
+                "topology": "simple_two_party", "left": "manager", "right": "client",
+                "status": "confirmed_model_channel_orientation", "confidence": 0.9,
+                "trust_source": "model_channel_orientation",
+                "evidence": ["model_channel_orientation"],
+                "model_orientation": {
+                    "provider": "codex_cli", "prompt_version": "stereo_track_orientation_v1",
+                    "ordinary_two_party": True, "roles": ["manager", "client"],
+                    "confidence": 0.9, "source_call_id": "call-7",
+                    "source_recording_id": "rec-7",
+                    "dialogue_sha256": hashlib.sha256(
+                        json.dumps(lines, ensure_ascii=False, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                    "tracks_sha256": hashlib.sha256("\0".join(tracks).encode()).hexdigest(),
+                },
+            },
+        }
+        normalized = service._normalize_dialogue_result(
+            {"turns": [
+                {"turn_id": 1, "ts_sec": 1.0, "speaker": "channel_left", "baseline_text": tracks[0]},
+                {"turn_id": 2, "ts_sec": 2.0, "speaker": "channel_right", "baseline_text": tracks[2]},
+            ], "role_variants": {}},
+            {"turns": [
+                {"turn_id": 1, "speaker": "channel_left", "final_text": tracks[1]},
+                {"turn_id": 2, "speaker": "channel_right", "final_text": tracks[2]},
+            ]},
+        )
+        candidate = service._dialogue_turns_to_candidate(
+            CallRecord(source_call_id="call-7", source_recording_id="rec-7",
+                       source_file="a.mp3", source_filename="a.mp3"),
+            payload, normalized, provider="codex_cli",
+        )
+        dialogue = build_dialogue_input({
+            "source_call_id": "call-7", "source_recording_id": "rec-7",
+            "transcript_variants_json": candidate["transcript_variants_json"],
+        })
+
+        self.assertIn("договор", candidate["dialogue_lines"][0])
+        self.assertTrue(dialogue.role_attribution["trusted"])
+        self.assertEqual(dialogue.role_attribution["trust_source"], "model_channel_orientation")
 
 
 class ResolveOrderAndSpeakerGuardTest(unittest.TestCase):
@@ -2064,6 +2120,80 @@ def _selective_projection(service, payload, *, trusted: bool = True):
 
 class ResolveSemanticMergeGateTest(unittest.TestCase):
     """ТЗ §3: who is escalated, and — much more often — who is not."""
+
+    def test_model_role_orientation_does_not_unlock_selective_resolve(self) -> None:
+        service = ResolveService(semantic_settings())
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3")
+        input_payload = {"turns": [{"turn_id": 1, "speaker": "channel_left"}]}
+        dialogue = type("Dialogue", (), {
+            "trusted": True,
+            "role_attribution": {"trust_source": "model_channel_orientation"},
+            "turns": (),
+        })()
+        with patch.object(service, "_dialogue_resolve_provider", return_value="codex_cli"), \
+             patch.object(service, "_load_dialogue_lines_from_export", return_value=[]), \
+             patch.object(service, "_build_dialogue_resolve_payload", return_value=input_payload), \
+             patch.object(service, "_semantic_merge_selective", return_value=True), \
+             patch.object(resolve_module, "build_dialogue_input", return_value=dialogue), \
+             patch.object(service, "_semantic_selective_input", return_value=None) as gate, \
+             patch.object(service, "_run_dialogue_llm") as model:
+            self.assertIsNone(service._resolve_dialogue_with_llm(
+                call, {
+                    "dialogue_lines": ["[00:01.0] Дорожка левая: Текст"],
+                    "manager": {"physical_channel": "left"},
+                    "client": {"physical_channel": "right"},
+                }
+            ))
+
+        self.assertIs(gate.call_args.kwargs["provider_roles_trusted"], False)
+        model.assert_not_called()
+
+    def test_provider_orientation_remaps_role_variants_by_physical_side(self) -> None:
+        service = ResolveService(semantic_settings())
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3")
+        request = {"turns": [{"turn_id": 1, "speaker": "channel_left", "speaker_label": "Дорожка левая", "baseline_text": "LEFT CLIENT", "ts_sec": 1.0}, {"turn_id": 2, "speaker": "channel_right", "speaker_label": "Дорожка правая", "baseline_text": "RIGHT MANAGER", "ts_sec": 2.0}],
+                   "role_variants": {"manager": {"variant_a": "LEFT CLIENT"}, "client": {"variant_a": "RIGHT MANAGER"}}}
+        dialogue = type("Dialogue", (), {"trusted": True, "role_attribution": {"trust_source": "provider_evidence"},
+            "turns": ({"physical_side": "left", "speaker_kind": "client"}, {"physical_side": "right", "speaker_kind": "manager"})})()
+        variants = {"mode": "stereo", "dialogue_lines": ["line"], "role_mapping": {}, "manager": {"physical_channel": "left", "variant_a": "LEFT CLIENT"}, "client": {"physical_channel": "right", "variant_a": "RIGHT MANAGER"}}
+        with patch.object(service, "_dialogue_resolve_provider", return_value="codex_cli"), patch.object(service, "_load_dialogue_lines_from_export", return_value=[]), \
+             patch.object(service, "_build_dialogue_resolve_payload", return_value=request), patch.object(service, "_semantic_merge_selective", return_value=True), \
+             patch.object(resolve_module, "build_dialogue_input", return_value=dialogue), patch.object(service, "_semantic_selective_input", return_value=None) as gate:
+            candidate = service._resolve_with_llm(call, variants)
+        remapped = gate.call_args.args[0]
+        self.assertEqual(remapped["role_variants"]["manager"]["variant_a"], "RIGHT MANAGER")
+        self.assertEqual([turn["speaker"] for turn in remapped["turns"]], ["client", "manager"])
+        self.assertEqual(variants["manager"]["physical_channel"], "left")
+        stored = json.loads(candidate["transcript_variants_json"])
+        self.assertEqual((stored["manager"]["physical_channel"], stored["manager"]["variant_a"]), ("right", "RIGHT MANAGER"))
+        self.assertEqual(stored["role_mapping"], {"left": "client", "right": "manager", "trust_source": "provider_evidence"})
+
+    def test_provider_orientation_without_stored_physical_pair_keeps_asr_blocks(self) -> None:
+        service = ResolveService(semantic_settings())
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3")
+        request = {"turns": [{"turn_id": 1, "speaker": "channel_left"}],
+                   "role_variants": {"manager": {"variant_a": "FIRST"}, "client": {"variant_a": "SECOND"}}}
+        dialogue = type("Dialogue", (), {"trusted": True, "role_attribution": {"trust_source": "provider_evidence"},
+            "turns": ({"physical_side": "left", "speaker_kind": "manager"}, {"physical_side": "right", "speaker_kind": "client"})})()
+        variants = {"mode": "stereo", "dialogue_lines": ["line"],
+                    "manager": {"variant_a": "FIRST"}, "client": {"variant_a": "SECOND"}}
+        with patch.object(service, "_dialogue_resolve_provider", return_value="codex_cli"), patch.object(service, "_load_dialogue_lines_from_export", return_value=[]), \
+             patch.object(service, "_build_dialogue_resolve_payload", return_value=request), patch.object(service, "_semantic_merge_selective", return_value=True), \
+             patch.object(resolve_module, "build_dialogue_input", return_value=dialogue), patch.object(service, "_semantic_selective_input", return_value=None) as gate, \
+             patch.object(service, "_run_dialogue_llm") as run_llm:
+            self.assertIsNone(service._resolve_dialogue_with_llm(call, variants))
+        self.assertIs(gate.call_args.kwargs["provider_roles_trusted"], False)
+        run_llm.assert_not_called()
+        self.assertEqual(variants["manager"]["variant_a"], "FIRST")
+        self.assertEqual(variants["client"]["variant_a"], "SECOND")
+
+    def test_canonical_transcribe_payload_loads_without_legacy_role_columns(self) -> None:
+        service = ResolveService(semantic_settings())
+        lines = ["[00:01.0] Дорожка левая: Добрый день", "[00:02.0] Дорожка правая: Здравствуйте"]
+        payload = {"mode": "stereo", "dialogue_lines": lines, "role_mapping": {"left": "manager", "right": "client"},
+                   "manager": {"physical_channel": "left", "final": "Добрый день"}, "client": {"physical_channel": "right", "final": "Здравствуйте"}}
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3", transcript_variants_json=json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(service._load_dialogue_lines_from_export(call), lines)
 
     def test_matching_variants_escalate_nothing_and_call_nothing(self) -> None:
         service = ResolveService(semantic_settings())

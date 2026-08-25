@@ -3236,6 +3236,122 @@ class ClaimEvidenceContractTest(unittest.TestCase):
                         accepted,
                     )
 
+    def test_negative_conditional_or_historical_question_is_not_confirmed_by_yes(self) -> None:
+        service = self._service()
+        for question in (
+            "Не отправлять ссылку на оплату сегодня?",
+            "Не нужно после согласования всех деталей и проверки реквизитов отправлять ссылку на оплату?",
+            "Если реквизиты не подтвердятся, отправить ссылку на оплату?",
+            "При подтверждении реквизитов отправить ссылку на оплату?",
+            "В прошлом году отправляли ссылку на оплату?",
+            "Вчера отправляли ссылку на оплату?",
+            "По вчерашней договорённости отправить ссылку на оплату?",
+            "Отменяем отправку ссылки на оплату?",
+            "После подтверждения реквизитов отправить ссылку на оплату?",
+            "На прошлом созвоне договаривались отправить ссылку на оплату?",
+            "Отказаться от отправки ссылки на оплату?",
+            "Когда подтвердят реквизиты, отправить ссылку на оплату?",
+            "Как только подтвердятся реквизиты, отправить ссылку на оплату?",
+            "В тот раз отправляли ссылку на оплату?",
+            "На предыдущем созвоне договаривались отправить ссылку на оплату?",
+            "При оплате отправить ссылку на оплату?",
+            "После оплаты отправим материалы?",
+            "После записи отправим материалы?",
+            "После оформления отправим материалы?",
+            "После поступления оплаты отправим материалы?",
+            "После звонка отправить материалы?",
+            "Как оплатите, отправим материалы?",
+            "Как закончите встречу, отправить материалы?",
+            "В детстве нужно было отправить материалы?",
+            "Будь реквизиты верными, отправим ссылку на оплату?",
+            "Допустим, отправим материалы?",
+            "Отправлю сейчас по возможности?",
+            "Отправлю сейчас по мере готовности?",
+            "Мы отправим сейчас в зависимости от решения?",
+            "Отправлю сейчас по старой договоренности?",
+            "Отправлю сейчас по прошлой договоренности?",
+            "Перезвоню в пятницу по возможности?",
+            "Отправлю материалы условно завтра?",
+            "Отправлю материалы ориентировочно завтра?",
+            "Отправлю материалы согласно прошлому соглашению завтра?",
+            "Мы отправим вам завтра?",
+            "Тогда перезвоним в пятницу?",
+            "В предыдущий созвон отправляли ссылку на оплату?",
+            "В том разговоре отправляли ссылку на оплату?",
+            "Мы уже отправляли вам ссылку на оплату?",
+            "Мы тогда отправляли вам ссылку на оплату?",
+            "Отправили ссылку на оплату ранее?",
+            "Отправить до 12 бананов?",
+            "Отправить вам до 12 документов?",
+            "Отправить в 99:99?",
+            "Отправить до 32 мая?",
+            "Отправить до 31 февраля?",
+            "Отправить до 12 мая?",
+            "Перезвоните завтра?",
+        ):
+            refs = [
+                {"turn_id": "T0001", "speaker_kind": "manager", "text": question},
+                {"turn_id": "T0002", "speaker_kind": "client", "text": "Да"},
+            ]
+            self.assertFalse(service._claim_refs_support(
+                "structured_fields.next_step.action", "Отправить ссылку на оплату", refs, refs
+            ))
+
+        for question, action in (
+            ("Отправить сейчас?", "Отправить материалы"),
+            ("Перезвоним в пятницу?", "Перезвонить клиенту"),
+            ("Отправить в 19:30?", "Отправить материалы"),
+        ):
+            refs = [
+                {"turn_id": "T0001", "speaker_kind": "manager", "text": question},
+                {"turn_id": "T0002", "speaker_kind": "client", "text": "Да"},
+            ]
+            self.assertTrue(service._claim_refs_support(
+                "structured_fields.next_step.action", action, refs, refs
+            ))
+
+    def test_next_step_rejects_past_or_impossible_direct_deadlines(self) -> None:
+        service = self._service()
+        for text, due in (
+            ("Я обещал перезвонить вчера", "вчера"),
+            ("Перезвоню в 24:00", "в 24:00"),
+            ("Перезвоню 31 февраля", "31 февраля"),
+            ("Перезвоню 31 апреля", "31 апреля"),
+            ("Перезвоню 31.02.2026", "31.02.2026"),
+            ("Перезвоню 01.01.2020", "01.01.2020"),
+            ("Перезвоню 1 января 2020", "1 января 2020"),
+        ):
+            refs = [{"turn_id": "T0001", "speaker_kind": "manager", "text": text}]
+            self.assertFalse(service._claim_refs_support(
+                "structured_fields.next_step.action", "Перезвонить клиенту", refs, refs
+            ))
+            self.assertFalse(service._claim_refs_support(
+                "structured_fields.next_step.due", due, refs, refs
+            ))
+
+        refs = [{"turn_id": "T0001", "speaker_kind": "manager", "text": "Перезвоню 31.12.2099"}]
+        self.assertTrue(service._claim_refs_support(
+            "structured_fields.next_step.action", "Перезвонить клиенту", refs, refs
+        ))
+        self.assertTrue(service._claim_refs_support(
+            "structured_fields.next_step.due", "31.12.2099", refs, refs
+        ))
+
+    def test_next_step_deadline_is_checked_against_call_date_not_read_date(self) -> None:
+        service = self._service()
+        refs = [{
+            "turn_id": "T0001", "speaker_kind": "manager",
+            "text": "Перезвоню 26.08.2026",
+        }]
+        self.assertTrue(service._claim_refs_support(
+            "structured_fields.next_step.due", "26.08.2026", refs, refs,
+            datetime(2026, 8, 24).date(),
+        ))
+        self.assertFalse(service._claim_refs_support(
+            "structured_fields.next_step.due", "26.08.2026", refs, refs,
+            datetime(2026, 8, 27).date(),
+        ))
+
     def test_missing_selected_turn_list_never_opens_the_whole_dialogue(self) -> None:
         service = self._service()
         dialogue = build_dialogue_input(
@@ -3925,6 +4041,13 @@ class ClaimEvidenceContractTest(unittest.TestCase):
                 {"speaker_kind": "manager", "text": "Точно отправлю материалы."},
             )
         )
+        self.assertTrue(
+            service._turn_supports(
+                "structured_fields.next_step.action",
+                "Отправить материалы",
+                {"speaker_kind": "manager", "text": "Точно отправлю материалы, паспорт возьмите при себе."},
+            )
+        )
 
     def test_modal_customer_phrases_are_not_decisions(self) -> None:
         service = self._service()
@@ -4433,7 +4556,7 @@ class AnalysisMetaAndUsageTest(unittest.TestCase):
         self.assertEqual(meta["analysis_schema_version"], "v3")
         self.assertEqual(meta["dialogue_contract_version"], "canonical_dialogue_v1")
         self.assertEqual(meta["dialogue_canonical_sha256"], dialogue.canonical_sha256)
-        self.assertEqual(meta["role_guard_version"], "role_guard_v1")
+        self.assertEqual(meta["role_guard_version"], "role_guard_v2")
         self.assertEqual(meta["prompt_contract_version"], "analyse_v3_claim_evidence_1")
         self.assertEqual(meta["normalizer_engine_version"], "tenant_text_engine_v1")
         self.assertEqual(meta["normalizer_ruleset_version"], "tenant_ru_v1")

@@ -153,6 +153,8 @@ class Settings:
     controlled_call_audio_snapshot_size_bytes: Optional[int] = None
     resolve_semantic_merge_mode: str = "off"  # off = zero model calls in Resolve (D-127)
     codex_resolve_reasoning_effort: str = "medium"
+    stereo_role_orientation_mode: str = "off"
+    stereo_role_orientation_min_confidence: float = 0.85
 
 
 def _optional_int(raw: Optional[str]) -> Optional[int]:
@@ -342,4 +344,6 @@ def get_settings() -> Settings:
         ),
         resolve_semantic_merge_mode=os.getenv("RESOLVE_SEMANTIC_MERGE_MODE", "").strip().lower() or "off",
         codex_resolve_reasoning_effort=os.getenv("CODEX_RESOLVE_REASONING_EFFORT", "").strip().lower() or "medium",
+        stereo_role_orientation_mode=os.getenv("STEREO_ROLE_ORIENTATION_MODE", "").strip().lower() or "off",
+        stereo_role_orientation_min_confidence=_float_env("STEREO_ROLE_ORIENTATION_MIN_CONFIDENCE", 0.85),
     )

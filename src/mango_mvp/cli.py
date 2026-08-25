@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import random
+import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -22,7 +23,7 @@ from mango_mvp.services.analyze import (
     migrate_analysis_payload,
 )
 from mango_mvp.services.controlled_call_scope import enforce_controlled_cli_command
-from mango_mvp.services.dialogue_contract import call_record_view, guard_stored_analysis
+from mango_mvp.services.dialogue_contract import DialogueContractError, build_dialogue_input, call_record_view, guard_stored_analysis
 from mango_mvp.services.export_excel import build_call_rows, build_contact_rows, write_workbook
 from mango_mvp.services.export_ai_office import push_call_insights
 from mango_mvp.services.ingest import ingest_from_directory
@@ -159,7 +160,35 @@ def _dialogue_export_path(call: CallRecord, transcript_export_dir: str | None) -
     return Path(export_dir) / source_path.parent.name / f"{source_path.stem}_text.txt"
 
 
+def _neutralize_legacy_role_headers(text: str) -> str:
+    prefix = r"^([ \t]*(?:\[[^\]\n]+\][ \t]*)?)"
+    text = re.sub(prefix + r"(?:MANAGER|Менеджер)(?:\s*\([^)]*\))?:", r"\1Спикер A:", text, flags=re.I | re.M)
+    return re.sub(prefix + r"(?:CLIENT|Клиент)(?:\s*\([^)]*\))?:", r"\1Спикер B:", text, flags=re.I | re.M)
+
+
 def _current_call_text(call: CallRecord, transcript_export_dir: str | None) -> str:
+    raw_variants = _clean_str(call.transcript_variants_json)
+    if raw_variants:
+        try:
+            payload = json.loads(raw_variants)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("mode") not in {"stereo", "mono_or_fallback"}
+                or not isinstance(payload.get("dialogue_lines"), list)
+                or not payload["dialogue_lines"]
+            ):
+                raise DialogueContractError("variants have no canonical dialogue")
+            dialogue = build_dialogue_input(call_record_view(call))
+            return dialogue.render()
+        except (DialogueContractError, json.JSONDecodeError):
+            original = _neutralize_legacy_role_headers(_clean_str(call.transcript_text))
+            if original:
+                return original
+            manager = _clean_str(call.transcript_manager)
+            client = _clean_str(call.transcript_client)
+            if manager or client:
+                return f"Спикер A:\n{manager}\n\nСпикер B:\n{client}\n"
+            return ""
     export_path = _dialogue_export_path(call, transcript_export_dir)
     if export_path and export_path.exists():
         return export_path.read_text(encoding="utf-8", errors="ignore")
@@ -193,6 +222,24 @@ def _provider_variants_for_export(call: CallRecord) -> Dict[str, str]:
     if mode == "stereo":
         manager = _as_dict(payload.get("manager"))
         client = _as_dict(payload.get("client"))
+        try:
+            dialogue = build_dialogue_input(call_record_view(call))
+        except DialogueContractError:
+            dialogue = None
+        by_side = {_clean_str(block.get("physical_channel")): block for block in (manager, client)}
+        if dialogue and dialogue.trusted and set(by_side) == {"left", "right"}:
+            role_side = {turn["speaker_kind"]: turn["physical_side"] for turn in dialogue.turns}
+            manager, client = (by_side.get(role_side.get(role, ""), {}) for role in ("manager", "client"))
+        else:
+            if set(by_side) == {"left", "right"}:
+                left, right = by_side["left"], by_side["right"]
+            else:
+                left, right = manager, client
+            for provider, variant in ((primary, "variant_a"), (secondary, "variant_b")):
+                left_text, right_text = _clean_str(left.get(variant)), _clean_str(right.get(variant))
+                if left_text or right_text:
+                    out[provider] = f"Спикер A:\n{left_text}\n\nСпикер B:\n{right_text}\n"
+            return out
         a_text = _render_role_text_pair(
             _clean_str(manager.get("variant_a")),
             _clean_str(client.get("variant_a")),

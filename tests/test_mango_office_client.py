@@ -479,9 +479,6 @@ def test_internally_valid_answer_for_another_recording_is_not_rebound_to_the_cal
         ["[00:01.0] Дорожка левая: Совсем другой разговор",
          "[00:03.0] Дорожка правая: Здравствуйте",
          "[00:05.0] Дорожка левая: Слушаю вас"],
-        ["[00:01.0] Дорожка правая: Добрый день",
-         "[00:03.0] Дорожка левая: Здравствуйте",
-         "[00:05.0] Дорожка правая: Слушаю вас"],
         ["[00:01.0] Дорожка левая: Добрый день",
          "[00:03.0] Дорожка правая: Здравствуйте"],
     ],
@@ -495,6 +492,18 @@ def test_evidence_that_does_not_describe_this_dialogue_is_refused(lines):
         "reason_codes"
     ]
     assert "Менеджер" not in dialogue.render()
+
+
+def test_provider_words_derive_roles_when_physical_tracks_are_inverted():
+    evidence = parse(fx.envelope(fx.record(TURNS)))
+    lines = ["[00:01.0] Дорожка правая: Добрый день",
+             "[00:03.0] Дорожка левая: Здравствуйте",
+             "[00:05.0] Дорожка правая: Слушаю вас"]
+
+    dialogue = contract.build_dialogue_input(stored_call(evidence, lines=lines))
+
+    assert dialogue.trusted is True
+    assert [turn["speaker_kind"] for turn in dialogue.turns] == ["manager", "client", "manager"]
 
 
 def test_the_producer_alone_never_makes_a_call_trusted():
@@ -556,3 +565,20 @@ def test_a_call_without_a_sidecar_stays_without_provider_evidence(tmp_path):
         source_file = str(audio)
 
     assert TranscribeService._provider_role_evidence(_Call()) is None
+
+
+def test_a_malformed_sidecar_is_invalid_not_absent(tmp_path):
+    from mango_mvp.productization.capture_staging import provider_evidence_sidecar
+    from mango_mvp.services.transcribe import TranscribeService
+
+    audio = tmp_path / "call.mp3"
+    audio.write_bytes(b"not really audio")
+    provider_evidence_sidecar(audio).write_text("{broken", encoding="utf-8")
+    provider_evidence_sidecar(audio).chmod(0o600)
+
+    class _Call:
+        source_file = str(audio)
+
+    assert TranscribeService._provider_role_evidence(_Call()) == {
+        "invalid_provider_role_evidence": True
+    }

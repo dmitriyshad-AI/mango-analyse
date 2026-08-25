@@ -10,15 +10,137 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from mango_mvp.cli import cmd_export_pilot_bundle, cmd_prepare_resolve_pilot, cmd_sync
+from mango_mvp.cli import _current_call_text, _provider_variants_for_export, cmd_export_pilot_bundle, cmd_prepare_resolve_pilot, cmd_sync
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
+from mango_mvp.services.dialogue_contract import DialogueContractError
 from mango_mvp.services.sync_amocrm import LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE
 from mango_mvp.services.worker import normalize_pipeline_stages
 from tests.test_dialogue_format import make_settings
 
 
 class PrepareResolvePilotCliTest(unittest.TestCase):
+    def test_invalid_provider_evidence_never_exports_business_role_labels(self) -> None:
+        payload = {"mode": "stereo", "primary_provider": "mlx", "secondary_provider": "gigaam", "provider_role_evidence": {"provider": "broken"},
+                   "role_mapping": {"status": "confirmed_multi_signal", "confirmed": True, "manager_quality_allowed": True, "topology": "simple_two_party", "left": "manager", "right": "client"},
+                   "dialogue_lines": ["[00:01.0] Дорожка левая: LEFT CLIENT", "[00:02.0] Дорожка правая: RIGHT MANAGER"],
+                   "manager": {"physical_channel": "left", "variant_a": "LEFT CLIENT", "variant_b": "LEFT B"}, "client": {"physical_channel": "right", "variant_a": "RIGHT MANAGER", "variant_b": "RIGHT B"}}
+        call = CallRecord(source_call_id="call-a", source_recording_id="recording-a", source_file="a.mp3", source_filename="a.mp3", transcript_variants_json=json.dumps(payload, ensure_ascii=False))
+        exported = "\n".join(_provider_variants_for_export(call).values())
+        self.assertNotIn("Менеджер", exported); self.assertNotIn("Клиент:", exported)
+        self.assertIn("Спикер A", exported)
+        self.assertIn("Спикер A", _current_call_text(call, None))
+
+    def test_untrusted_model_orientation_never_exports_business_role_labels(self) -> None:
+        payload = {"mode": "stereo", "primary_provider": "mlx", "role_mapping": {
+            "status": "confirmed_model_channel_orientation", "confirmed": True,
+            "manager_quality_allowed": True, "topology": "simple_two_party",
+            "left": "manager", "right": "client", "trust_source": "model_channel_orientation",
+            "evidence": ["model_channel_orientation"], "confidence": 0.99,
+            "model_orientation": {"provider": "codex_cli", "roles": ["manager", "client"],
+                "confidence": 0.99, "ordinary_two_party": True}},
+            "dialogue_lines": ["[00:01.0] Дорожка левая: LEFT", "[00:02.0] Дорожка правая: RIGHT"],
+            "manager": {"physical_channel": "left", "variant_a": "LEFT"},
+            "client": {"physical_channel": "right", "variant_a": "RIGHT"}}
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3",
+                          transcript_variants_json=json.dumps(payload, ensure_ascii=False))
+        exported = "\n".join(_provider_variants_for_export(call).values())
+        self.assertNotIn("Менеджер", exported)
+        self.assertNotIn("Клиент:", exported)
+        self.assertIn("Спикер A", exported)
+
+    def test_broken_contract_neutralizes_legacy_role_headers(self) -> None:
+        variants = {"mode": "stereo", "primary_provider": "mlx",
+                    "role_mapping": {},
+                    "manager": {"physical_channel": "left", "variant_a": "LEFT"},
+                    "client": {"physical_channel": "right", "variant_a": "RIGHT"}}
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3",
+                          transcript_variants_json=json.dumps(variants),
+                          transcript_text="[00:01.0] Менеджер:\nLEFT\n\n[00:02.0] Клиент:\nRIGHT")
+        with patch("mango_mvp.cli.build_dialogue_input",
+                   side_effect=DialogueContractError("broken")):
+            text = _current_call_text(call, None)
+            exported = "\n".join(_provider_variants_for_export(call).values())
+        self.assertNotIn("MANAGER:", text)
+        self.assertNotIn("CLIENT:", text)
+        self.assertIn("Спикер A:", text)
+        self.assertIn("Спикер B:", text)
+        self.assertIn("Спикер A:", exported)
+
+    def test_untrusted_export_uses_physical_sides_not_legacy_role_headers(self) -> None:
+        payload = {
+            "mode": "stereo", "primary_provider": "mlx", "role_mapping": {},
+            "dialogue_lines": [
+                "[00:01.0] Дорожка левая: LEFT CLIENT",
+                "[00:02.0] Дорожка правая: RIGHT MANAGER",
+            ],
+            "manager": {"physical_channel": "right", "variant_a": "RIGHT MANAGER"},
+            "client": {"physical_channel": "left", "variant_a": "LEFT CLIENT"},
+        }
+        call = CallRecord(
+            source_file="a.mp3", source_filename="a.mp3",
+            transcript_variants_json=json.dumps(payload, ensure_ascii=False),
+            transcript_text="MANAGER:\nRIGHT MANAGER\n\nCLIENT:\nLEFT CLIENT",
+        )
+        text = _current_call_text(call, None)
+        self.assertIn("Спикер A: LEFT CLIENT", text)
+        self.assertIn("Спикер B: RIGHT MANAGER", text)
+
+    def test_broken_variants_fall_back_to_both_legacy_text_columns(self) -> None:
+        call = CallRecord(
+            source_file="a.mp3", source_filename="a.mp3",
+            transcript_variants_json="{", transcript_text="",
+            transcript_manager="FIRST", transcript_client="SECOND",
+        )
+        text = _current_call_text(call, None)
+        self.assertIn("Спикер A:\nFIRST", text)
+        self.assertIn("Спикер B:\nSECOND", text)
+
+    def test_stereo_without_role_mapping_never_exports_business_roles(self) -> None:
+        payload = {"mode": "stereo", "primary_provider": "mlx",
+                   "manager": {"physical_channel": "left", "variant_a": "LEFT"},
+                   "client": {"physical_channel": "right", "variant_a": "RIGHT"}}
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3",
+                          transcript_variants_json=json.dumps(payload),
+                          transcript_manager="LEFT", transcript_client="RIGHT")
+        exported = "\n".join(_provider_variants_for_export(call).values())
+        self.assertNotIn("Менеджер", exported)
+        self.assertNotIn("Клиент:", exported)
+        self.assertIn("Спикер A", exported)
+
+    def test_invalid_variants_json_neutralizes_named_legacy_headers(self) -> None:
+        for raw in ("{", "[]", "null", "{}", '{"mode":"unknown"}'):
+            call = CallRecord(source_file="a.mp3", source_filename="a.mp3",
+                              transcript_variants_json=raw,
+                              transcript_text="[00:01.0] MANAGER (Иван): LEFT\n[00:02.0] Клиент (Анна): RIGHT")
+            text = _current_call_text(call, None)
+            self.assertIn("Спикер A:", text)
+            self.assertIn("Спикер B:", text)
+            self.assertNotIn("MANAGER", text)
+            self.assertNotIn("Клиент", text)
+
+    def test_duplicate_physical_side_keeps_both_neutral_tracks(self) -> None:
+        payload = {"mode": "stereo", "primary_provider": "mlx",
+                   "manager": {"physical_channel": "left", "variant_a": "FIRST TRACK"},
+                   "client": {"physical_channel": "left", "variant_a": "SECOND TRACK"}}
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3",
+                          transcript_variants_json=json.dumps(payload))
+        exported = "\n".join(_provider_variants_for_export(call).values())
+        self.assertIn("Спикер A:\nFIRST TRACK", exported)
+        self.assertIn("Спикер B:\nSECOND TRACK", exported)
+
+    def test_trusted_dialogue_without_stored_physical_pair_keeps_both_tracks(self) -> None:
+        payload = {"mode": "stereo", "primary_provider": "mlx",
+                   "manager": {"variant_a": "FIRST TRACK"},
+                   "client": {"variant_a": "SECOND TRACK"}}
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3",
+                          transcript_variants_json=json.dumps(payload))
+        trusted = type("Dialogue", (), {"trusted": True, "turns": ()})()
+        with patch("mango_mvp.cli.build_dialogue_input", return_value=trusted):
+            exported = "\n".join(_provider_variants_for_export(call).values())
+        self.assertIn("Спикер A:\nFIRST TRACK", exported)
+        self.assertIn("Спикер B:\nSECOND TRACK", exported)
+
     def test_worker_default_stages_exclude_legacy_sync(self) -> None:
         self.assertEqual(
             normalize_pipeline_stages(None),
@@ -350,9 +472,11 @@ class PrepareResolvePilotCliTest(unittest.TestCase):
             mlx_text = (call_dir / "01_mlx.txt").read_text(encoding="utf-8")
             gigaam_text = (call_dir / "02_gigaam.txt").read_text(encoding="utf-8")
             merge_text = (call_dir / "03_initial_merge.txt").read_text(encoding="utf-8")
-            self.assertIn("Менеджер (Иванов Иван)", mlx_text)
+            self.assertIn("Спикер A", mlx_text)
+            self.assertNotIn("Менеджер", mlx_text)
             self.assertIn("Да, слушаю внимательно", gigaam_text)
-            self.assertIn("[00:01.0]", merge_text)
+            self.assertIn("Спикер A", merge_text)
+            self.assertNotIn("Менеджер", merge_text)
             self.assertTrue((out_dir / "manifest.json").exists())
 
 

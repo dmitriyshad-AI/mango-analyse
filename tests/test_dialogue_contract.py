@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -43,20 +44,37 @@ def call(variants, **overrides):
 
 
 def stereo(status="unverified_low_evidence", topology="simple_two_party", **mapping):
+    confirmed = status in {"confirmed_multi_signal", "confirmed_model_channel_orientation"}
     role_mapping = {
         "status": status,
-        "confirmed": status == "confirmed_multi_signal",
-        "manager_quality_allowed": status == "confirmed_multi_signal",
+        "confirmed": confirmed,
+        "manager_quality_allowed": confirmed,
         "topology": topology,
         "left": "manager",
         "right": "client",
     }
+    if status == "confirmed_model_channel_orientation":
+        role_mapping.update(trust_source="model_channel_orientation", evidence=["model_channel_orientation"],
+                            confidence=0.9, model_orientation={"provider": "codex_cli",
+                            "roles": ["manager", "client"], "confidence": 0.9,
+                            "ordinary_two_party": True, "prompt_version": "stereo_track_orientation_v1",
+                            "source_call_id": SOURCE_CALL_ID, "source_recording_id": RECORDING_ID,
+                            "input_sha256": "a" * 64})
     role_mapping.update(mapping)
     payload = {
         "mode": "stereo",
+        "primary_provider": "mlx",
+        "secondary_provider": "gigaam",
         "role_mapping": role_mapping,
         "dialogue_lines": fx.dialogue_lines(PROVEN_TURNS),
     }
+    if status == "confirmed_model_channel_orientation":
+        payload["manager"] = {"physical_channel": "left", "variant_a": PROVEN_TURNS[0][2], "variant_b": PROVEN_TURNS[0][2]}
+        payload["client"] = {"physical_channel": "right", "variant_a": PROVEN_TURNS[1][2], "variant_b": PROVEN_TURNS[1][2]}
+        role_mapping["model_orientation"]["dialogue_sha256"] = hashlib.sha256(json.dumps(payload["dialogue_lines"], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        role_mapping["model_orientation"]["tracks_sha256"] = hashlib.sha256(
+            "\0".join((PROVEN_TURNS[0][2], PROVEN_TURNS[0][2], PROVEN_TURNS[1][2], PROVEN_TURNS[1][2])).encode()
+        ).hexdigest()
     return payload
 
 
@@ -200,6 +218,7 @@ def test_provider_evidence_unlocks_manager_and_client():
         "version": contract.ROLE_GUARD_VERSION,
         "decision": "trusted",
         "trusted": True,
+        "trust_source": "provider_evidence",
         "topology": "simple_two_party",
         "reason_codes": [],
         "source": contract.SOURCE_DIALOGUE_LINES,
@@ -214,13 +233,27 @@ def test_provider_evidence_unlocks_manager_and_client():
     )
 
 
+def test_provider_evidence_cannot_trust_duplicate_stored_physical_side():
+    variants = trusted_variants()
+    variants["manager"] = {"physical_channel": "left", "variant_a": "FIRST TRACK"}
+    variants["client"] = {"physical_channel": "left", "variant_a": "SECOND TRACK"}
+
+    dialogue = contract.build_dialogue_input(call(variants))
+
+    assert dialogue.trusted is False
+    assert "invalid_stored_channel_pair" in dialogue.role_attribution["reason_codes"]
+    assert dialogue.render() == (
+        "[00:01.0] Спикер A: Добрый день\n[00:03.0] Спикер B: Здравствуйте"
+    )
+
+
 def test_provider_evidence_uses_the_proven_side_and_not_the_channel_order():
     """The client can sit on the left track; only the words decide."""
     inverted = (
         ("client", "left", "Добрый день"),
         ("operator", "right", "Здравствуйте"),
     )
-    variants = stereo("confirmed_multi_signal", left="client", right="manager")
+    variants = stereo()
     variants[contract.PROVIDER_EVIDENCE_FIELD] = fx.evidence(inverted)
     dialogue = contract.build_dialogue_input(call(variants))
 
@@ -228,6 +261,113 @@ def test_provider_evidence_uses_the_proven_side_and_not_the_channel_order():
     assert dialogue.render() == (
         "[00:01.0] Клиент: Добрый день\n[00:03.0] Менеджер: Здравствуйте"
     )
+
+
+def test_model_orientation_unlocks_roles_but_records_its_source():
+    dialogue = contract.build_dialogue_input(
+        call(stereo("confirmed_model_channel_orientation"))
+    )
+
+    assert dialogue.trusted is True
+    assert dialogue.role_attribution["trust_source"] == "model_channel_orientation"
+    assert dialogue.render() == (
+        "[00:01.0] Менеджер: Добрый день\n[00:03.0] Клиент: Здравствуйте"
+    )
+
+
+def test_valid_provider_evidence_has_priority_over_opposite_model_mapping():
+    inverted = (("client", "left", "Добрый день"),
+                ("operator", "right", "Здравствуйте"))
+    variants = stereo("confirmed_model_channel_orientation")
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = fx.evidence(inverted)
+    dialogue = contract.build_dialogue_input(call(variants))
+    assert dialogue.trusted is True
+    assert dialogue.role_attribution["trust_source"] == "provider_evidence"
+    assert dialogue.render() == (
+        "[00:01.0] Клиент: Добрый день\n[00:03.0] Менеджер: Здравствуйте"
+    )
+
+
+@pytest.mark.parametrize("status", ("unverified_model_low_confidence", "blocked_model_non_two_party"))
+def test_valid_provider_evidence_survives_a_rejected_model_status(status):
+    variants = stereo()
+    variants["role_mapping"].update(
+        status=status, confirmed=False, manager_quality_allowed=False
+    )
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = evidence()
+    dialogue = contract.build_dialogue_input(call(variants))
+    assert dialogue.trusted is True
+    assert dialogue.role_attribution["trust_source"] == "provider_evidence"
+
+
+@pytest.mark.parametrize("tamper", ("meta", "confidence", "source", "evidence", "roles"))
+def test_model_status_without_complete_provenance_never_unlocks_roles(tamper):
+    variants = stereo("confirmed_model_channel_orientation")
+    mapping = variants["role_mapping"]
+    if tamper == "meta":
+        mapping.pop("model_orientation")
+    elif tamper == "confidence":
+        mapping["model_orientation"]["confidence"] = 0.5
+    elif tamper == "source":
+        mapping.pop("trust_source")
+    elif tamper == "evidence":
+        mapping["evidence"] = []
+    else:
+        mapping["model_orientation"]["roles"] = ["client", "manager"]
+
+    attribution = contract.build_dialogue_input(call(variants)).role_attribution
+
+    assert attribution["trusted"] is False
+
+
+@pytest.mark.parametrize("patch", ({"ordinary_two_party": False}, {"source_call_id": "other"}))
+def test_model_orientation_is_bound_to_this_ordinary_call(patch):
+    variants = stereo("confirmed_model_channel_orientation")
+    variants["role_mapping"]["model_orientation"].update(patch)
+
+    assert contract.build_dialogue_input(call(variants)).trusted is False
+
+
+def test_model_orientation_requires_recording_id_and_current_dialogue_digest():
+    variants = stereo("confirmed_model_channel_orientation")
+    assert contract.build_dialogue_input(call(variants, source_recording_id="")).trusted is False
+
+    changed_track = stereo("confirmed_model_channel_orientation")
+    changed_track["manager"]["variant_a"] = "Чужая дорожка"
+    assert contract.build_dialogue_input(call(changed_track)).trusted is False
+
+    missing_second_asr = stereo("confirmed_model_channel_orientation")
+    missing_second_asr["manager"]["variant_b"] = ""
+    missing_second_asr["role_mapping"]["model_orientation"]["tracks_sha256"] = ""
+    assert contract.build_dialogue_input(call(missing_second_asr)).trusted is False
+
+    duplicate_provider = stereo("confirmed_model_channel_orientation")
+    duplicate_provider["secondary_provider"] = duplicate_provider["primary_provider"]
+    assert contract.build_dialogue_input(call(duplicate_provider)).trusted is False
+
+    copied_mapping = variants["role_mapping"]
+    other = stereo()
+    other["dialogue_lines"][0] = "[00:01.0] Дорожка левая: Другой звонок"
+    other["role_mapping"] = copied_mapping
+    copied_mapping["model_orientation"].update(source_call_id="call-other", source_recording_id="rec-other")
+    assert contract.build_dialogue_input(call(other, source_call_id="call-other", source_recording_id="rec-other")).trusted is False
+
+
+def test_model_orientation_requires_both_physical_sides_after_filtering():
+    variants = stereo("confirmed_model_channel_orientation")
+    variants["dialogue_lines"] = [variants["dialogue_lines"][0]]
+    variants["role_mapping"]["model_orientation"]["dialogue_sha256"] = hashlib.sha256(json.dumps(variants["dialogue_lines"], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    assert contract.build_dialogue_input(call(variants)).trusted is False
+
+
+def test_invalid_provider_evidence_blocks_even_a_model_orientation():
+    variants = stereo("confirmed_model_channel_orientation")
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = {"provider": "broken"}
+
+    attribution = contract.build_dialogue_input(call(variants)).role_attribution
+
+    assert attribution["trusted"] is False
+    assert "provider_evidence_invalid" in attribution["reason_codes"]
 
 
 def test_provider_alignment_tolerates_realistic_asr_and_segmentation_differences():
@@ -275,6 +415,14 @@ def test_provider_alignment_rejects_reordered_cross_side_replies():
         ["role_run_sequence_equal"]
         is False
     )
+
+
+def test_provider_evidence_cannot_override_asr_structure_block():
+    variants = stereo("blocked_asr_structure_disagreement")
+    variants[contract.PROVIDER_EVIDENCE_FIELD] = evidence()
+    dialogue = contract.build_dialogue_input(call(variants))
+    assert dialogue.trusted is False
+    assert "role_mapping_status_not_allowed" in dialogue.role_attribution["reason_codes"]
 
 
 def test_provider_alignment_rejects_reordered_replies_on_the_same_side():
@@ -700,9 +848,6 @@ def test_a_one_sided_recording_has_no_binding_to_derive():
         (["[00:01.0] Дорожка левая: Совсем другой текст",
           "[00:03.0] Дорожка правая: Здравствуйте"],
          "provider_evidence_dialogue_mismatch"),
-        (["[00:01.0] Дорожка правая: Добрый день",
-          "[00:03.0] Дорожка левая: Здравствуйте"],
-         "provider_evidence_dialogue_mismatch"),
         (["[00:01.0] Дорожка левая: Добрый день"],
          "provider_evidence_no_channel_binding"),
         (["[00:01.0] Дорожка левая: Добрый день",
@@ -723,11 +868,8 @@ def test_evidence_that_does_not_describe_this_dialogue_is_refused(lines, expecte
 @pytest.mark.parametrize(
     ("broken", "code"),
     [
-        ({"confirmed": "true"}, "role_mapping_not_confirmed"),
-        ({"manager_quality_allowed": False}, "manager_quality_not_allowed"),
         ({"topology": "uncertain"}, "unsupported_topology"),
         ({"left": "manager", "right": "manager"}, "invalid_channel_mapping"),
-        ({"status": "unverified_after_secondary_backfill"}, "role_mapping_status_not_allowed"),
     ],
 )
 def test_each_broken_role_mapping_field_removes_trust(broken, code):
@@ -737,6 +879,18 @@ def test_each_broken_role_mapping_field_removes_trust(broken, code):
 
     assert attribution["trusted"] is False
     assert code in attribution["reason_codes"]
+
+
+def test_provider_evidence_cannot_override_explicit_role_revocation():
+    variants = trusted_variants()
+    variants["role_mapping"].update(
+        status="mutable_sidecar_timing", confirmed=False, manager_quality_allowed=False
+    )
+
+    attribution = contract.build_dialogue_input(call(variants)).role_attribution
+
+    assert attribution["trusted"] is False
+    assert "role_mapping_not_confirmed" in attribution["reason_codes"]
 
 
 def test_missing_role_mapping_and_mono_mode_are_untrusted():
@@ -788,6 +942,22 @@ def test_different_speakers_are_never_merged_even_on_the_same_timecode():
     assert [turn["text"] for turn in dialogue.turns] == [
         "Сначала клиент", "Потом менеджер", "Снова клиент",
     ]
+
+
+def test_same_timecode_does_not_revoke_trusted_stereo_roles():
+    variants = stereo("confirmed_model_channel_orientation")
+    variants["dialogue_lines"] = [
+        "[00:01.0] Дорожка левая: Добрый день",
+        "[00:01.0] Дорожка правая: Здравствуйте",
+    ]
+    variants["role_mapping"]["model_orientation"]["dialogue_sha256"] = hashlib.sha256(
+        json.dumps(variants["dialogue_lines"], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    dialogue = contract.build_dialogue_input(call(variants))
+
+    assert dialogue.role_attribution["trusted"] is True
+    assert [turn["display_speaker"] for turn in dialogue.turns] == ["Менеджер", "Клиент"]
 
 
 def test_two_identical_unknown_labels_keep_their_own_turn_and_timecode():

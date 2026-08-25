@@ -1195,7 +1195,7 @@ def test_the_review_column_is_a_russian_sentence_and_never_a_raw_code():
     )[publisher.REVIEW_COLUMN_INDEX]
 
     assert "role_attribution_untrusted" not in untrusted
-    assert "разметка дорожек не подтверждена Mango" in untrusted
+    assert "разметка дорожек не подтверждена системой" in untrusted
     assert "sales_missing_next_step" not in coded
     assert "some_future_code" not in coded
     assert "в звонке о продаже не подтверждён следующий шаг" in coded

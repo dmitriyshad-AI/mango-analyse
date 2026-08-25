@@ -375,11 +375,22 @@ PRICE_OBJECTION_RE = re.compile(
     re.I,
 )
 CONDITIONAL_COMMITMENT_RE = re.compile(
-    r"\b(?:если|только\s+если|при\s+условии|при\s+возможности|в\s+случае|"
+    r"\b(?:если|только\s+если|при\s+(?:условии|возможности)|в\s+случае|"
     r"после\s+того[, ]+как|возможно|наверное|вероятно|скорее\s+всего|"
     r"может(?:\s+быть)?|мог(?:ла|ли|ло)?\s+бы|"
     r"рассматрива(?:ю|ем|ет)\s+возможность|(?:я|мы)\s+бы\s+хотел(?:а|и)?|"
     r"хотел(?:а|и|о)?\s+бы|можно\s+(?:было\s+)?бы)\b",
+    re.I,
+)
+NON_CURRENT_YES_QUESTION_RE = re.compile(
+    r"\b(?:(?:не|ни|без)\b|(?:отмен|прекрат|аннулир)\w*|отказ\w*\s+от|"
+    r"если|когда|после|как\s+только|в\s+случае|при\s+\w+|"
+    r"как\s+(?:\w+\s+){0,3}\w+(?:ете|ите|ёте|ут|ют|ат|ят)\b|"
+    r"до\s+(?:подтвержд|согласов|провер|получ|одобр|уточн|выясн|реш[её]н)\w*|"
+    r"раньше|ранее|в\s+тот\s+раз|до\s+этого|"
+    r"(?:в|на)\s+(?:(?:прошл|предыдущ)\w*|т(?:от|ом|ой|у)\w*)\s+"
+    r"(?:звон\w*|созвон\w*|разговор\w*|встреч\w*|переписк\w*|раз\w*)|"
+    r"(?:договаривал|обсуждал|говорил|собирал)\w*)",
     re.I,
 )
 NEXT_STEP_COMMITMENT_RE = re.compile(
@@ -391,6 +402,65 @@ NEXT_STEP_COMMITMENT_RE = re.compile(
     r"ожида(?:ю|ем|ть)|жд(?:у|ём|ем))\b",
     re.I,
 )
+DIRECT_NEXT_STEP_QUESTION_RE = re.compile(
+    r"^\s*(?:перезвон(?:ю|им|ить)|позвон(?:ю|им|ить)|"
+    r"свяж(?:усь|емся|аться)|отправ(?:лю|им|ить)|"
+    r"вышл(?:ю|ем|ать)|пришл(?:ю|ем|ать)|направ(?:лю|им|ить)|"
+    r"скин(?:у|ем|уть)|согласу(?:ю|ем|овать))"
+    r"(?:\s+вам)?\s+"
+    r"(?:сейчас|сегодня|завтра|послезавтра|"
+    r"в\s+(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|"
+    r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?))\s*\?\s*$",
+    re.I,
+)
+NEXT_STEP_PAST_RE = re.compile(
+    r"\b(?:вчера|позавчера|вчерашн\w*|раньше|ранее|в\s+прошл\w*|"
+    r"на\s+прошл\w*|до\s+этого)\b",
+    re.I,
+)
+NEXT_STEP_TIME_RE = re.compile(r"\b(?P<hour>\d{1,2}):(?P<minute>\d{2})\b")
+NEXT_STEP_DATE_RE = re.compile(
+    r"\b(?P<day>\d{1,2})\s+(?P<month>января|февраля|марта|апреля|мая|июня|"
+    r"июля|августа|сентября|октября|ноября|декабря)(?:\s+(?P<year>(?:19|20)\d{2}))?\b",
+    re.I,
+)
+NEXT_STEP_NUMERIC_DATE_RE = re.compile(
+    r"\b(?P<day>\d{1,2})[./-](?P<month>\d{1,2})(?:[./-](?P<year>\d{2}|\d{4}))?\b"
+)
+NEXT_STEP_MONTHS = {
+    name: number for number, name in enumerate(
+        ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+         "августа", "сентября", "октября", "ноября", "декабря"),
+        1,
+    )
+}
+
+
+def _next_step_temporally_valid(text: str, reference_date: Any = None) -> bool:
+    reference_date = reference_date or datetime.now(timezone.utc).date()
+    if NEXT_STEP_PAST_RE.search(text):
+        return False
+    for match in NEXT_STEP_TIME_RE.finditer(text):
+        if int(match["hour"]) > 23 or int(match["minute"]) > 59:
+            return False
+    for match in NEXT_STEP_DATE_RE.finditer(text):
+        try:
+            year = int(match["year"] or 2000)
+            value = datetime(year, NEXT_STEP_MONTHS[match["month"].lower()], int(match["day"]))
+        except ValueError:
+            return False
+        if match["year"] and value.date() < reference_date:
+            return False
+    for match in NEXT_STEP_NUMERIC_DATE_RE.finditer(text):
+        raw_year = match["year"]
+        year = 2000 + int(raw_year) if raw_year and len(raw_year) == 2 else int(raw_year or 2000)
+        try:
+            value = datetime(year, int(match["month"]), int(match["day"]))
+        except ValueError:
+            return False
+        if raw_year and value.date() < reference_date:
+            return False
+    return True
 HISTORICAL_CONTEXT_RE = re.compile(
     r"\b(?:раньше|ранее|когда[- ]то|в\s+прошл(?:ом|ый)\s+"
     r"(?:году|месяце|квартале|семестре|сезоне|раз)|"
@@ -407,6 +477,7 @@ HISTORICAL_CONTEXT_RE = re.compile(
     r"(?:смене|курсе|заезде|сезоне)|"
     r"(?:ещ[её]\s+)?в\s+(?:19|20)\d{2}[- ]?(?:м|ом)?|"
     r"на\s+прошл(?:ом|ый)\s+(?:курсе|лагере|заезде)|"
+    r"на\s+прошл(?:ом|ой)\s+(?:звонке|созвоне|разговоре|встрече|переписке)|"
     r"за\s+прошл(?:ый|ую)\s+(?:курс|смену)|до\s+этого)\b",
     re.I,
 )
@@ -3294,7 +3365,9 @@ class AnalyzeService:
         return None if index < 0 else _LiteralMatch(index, index + len(literal))
 
     @classmethod
-    def _turn_supports(cls, field_path: str, value: Any, turn: Mapping[str, Any]) -> bool:
+    def _turn_supports(
+        cls, field_path: str, value: Any, turn: Mapping[str, Any], reference_date: Any = None
+    ) -> bool:
         """Does this exact reply support the value, and is it not negated?"""
         text = str(turn.get("text") or "")
         speaker = str(turn.get("speaker_kind") or "")
@@ -3323,6 +3396,10 @@ class AnalyzeService:
         ) and speaker != "client":
             return False
         if field_path.startswith("structured_fields.next_step.") and "?" in text:
+            return False
+        if field_path.startswith("structured_fields.next_step.") and not _next_step_temporally_valid(
+            text, reference_date
+        ):
             return False
         if field_path.startswith("structured_fields.next_step.") and (
             CONDITIONAL_COMMITMENT_RE.search(text)
@@ -3397,11 +3474,14 @@ class AnalyzeService:
         value: Any,
         refs: Sequence[Mapping[str, Any]],
         ordered: Sequence[Mapping[str, Any]],
+        reference_date: Any = None,
     ) -> bool:
         """Validate either direct replies or one adjacent question/yes pair."""
         if not refs or len({str(ref.get("turn_id") or "") for ref in refs}) != len(refs):
             return False
-        directly_supported = all(cls._turn_supports(field_path, value, ref) for ref in refs)
+        directly_supported = all(
+            cls._turn_supports(field_path, value, ref, reference_date) for ref in refs
+        )
         if not directly_supported:
             pair_allowed = (
                 field_path in CLIENT_FACT_PATHS
@@ -3430,7 +3510,19 @@ class AnalyzeService:
                 and question.get("speaker_kind") == "manager"
                 and answer.get("speaker_kind") == "client"
                 and "?" in question_text
-                and cls._anchor_match(field_path, value, question_text) is not None
+                and (anchor := cls._anchor_match(field_path, value, question_text)) is not None
+                and (
+                    not field_path.startswith("structured_fields.next_step.")
+                    or DIRECT_NEXT_STEP_QUESTION_RE.search(question_text)
+                )
+                and not (
+                    _contradicted(question_text, anchor.start(), anchor.end())
+                    or re.search(r"\b(?:не|ни|без)\b", question_text[:anchor.start()], re.I)
+                    or CONDITIONAL_COMMITMENT_RE.search(question_text)
+                    or NON_CURRENT_YES_QUESTION_RE.search(question_text)
+                    or re.search(r"\b(?:вчера|позавчера|вчерашн\w*)\b", question_text, re.I)
+                    or _historical_claim(question_text, anchor.start())
+                )
                 and SHORT_AFFIRMATIVE_RE.fullmatch(str(answer.get("text") or ""))
             ):
                 return False
@@ -3462,6 +3554,7 @@ class AnalyzeService:
         turns: Mapping[str, Mapping[str, Any]],
         selected: Sequence[str],
         ordered: Sequence[Mapping[str, Any]],
+        reference_date: Any = None,
     ) -> tuple[list[Mapping[str, Any]], str]:
         """The replies that really prove this value, and where they came from."""
         if request is not None:
@@ -3479,7 +3572,9 @@ class AnalyzeService:
                 if turn is None or str(turn_id) not in set(selected):
                     return [], ""
                 refs.append(turn)
-            if refs and self._claim_refs_support(field_path, value, refs, ordered):
+            if refs and self._claim_refs_support(
+                field_path, value, refs, ordered, reference_date
+            ):
                 return refs[:CLAIM_MAX_TURN_REFS], "model_claim"
             return [], ""
         selected_ids = set(selected)
@@ -3488,7 +3583,9 @@ class AnalyzeService:
                 continue
             if self._anchor_match(field_path, value, turn.get("text")) is None:
                 continue
-            if self._claim_refs_support(field_path, value, [turn], ordered):
+            if self._claim_refs_support(
+                field_path, value, [turn], ordered, reference_date
+            ):
                 return [turn], "deterministic_detector"
         return [], ""
 
@@ -3647,6 +3744,7 @@ class AnalyzeService:
             key = (str(request.get("field_path") or ""), request.get("item_id"))
             requests.setdefault(key, dict(request))
         call_key = self._call_key(call)
+        reference_date = moscow_datetime(call.started_at).date() if call.started_at else None
         evidence: list[Dict[str, Any]] = []
         reasons: list[str] = []
         for field_path, spec in CLAIM_FIELD_PATHS.items():
@@ -3666,6 +3764,7 @@ class AnalyzeService:
                         turns=turns,
                         selected=selected,
                         ordered=ordered,
+                        reference_date=reference_date,
                     )
                     if not refs:
                         reasons.append(claim_field_reason(field_path, item_key))
@@ -3691,6 +3790,7 @@ class AnalyzeService:
                 turns=turns,
                 selected=selected,
                 ordered=ordered,
+                reference_date=reference_date,
             )
             if not refs:
                 container[name] = None

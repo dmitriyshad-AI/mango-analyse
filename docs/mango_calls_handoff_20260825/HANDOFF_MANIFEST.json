@@ -1,0 +1,24 @@
+{
+  "schema_version": "mango_calls_stereo_role_orientation_handoff_v1",
+  "branch": "codex/calls-neutral-analysis-fix-20260824",
+  "code_commit": "fbf179bfee021647d3ab280919fdb1a3d49139c4",
+  "process_skill_branch": "codex/development-process-token-budget-20260825",
+  "process_skill_commit": "631570217d4631e02d06601df287b3df9c9a4078",
+  "targeted_tests": {
+    "passed": 489,
+    "failed": 0
+  },
+  "google_pilot": {
+    "spreadsheet_id": "1-MC_qppe2s5YHSdTtGv1HNVcgC9xYVDX9afyPBuG1X8",
+    "sheet_id": 208240026,
+    "sheet_name": "Сравнение — новый алгоритм",
+    "rows": 25,
+    "columns": 18,
+    "readback_exact": true
+  },
+  "release_status": {
+    "comparison_sheet": "GO",
+    "production": "STOP",
+    "reason": "17 из 25 конспектов слишком бедные; требуется отдельная доработка смыслового извлечения"
+  }
+}

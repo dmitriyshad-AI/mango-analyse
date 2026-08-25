@@ -127,6 +127,7 @@ def test_claude_context_pack_is_minimal_masked_hashed_and_manifest_last(tmp_path
     assert f"PACK_DIR: {manifest['pack_path']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert f"NONCE: {manifest['review_nonce']}" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert "только точное значение selected_owner.path" in (pack / "review_prompt.md").read_text(encoding="utf-8")
+    assert "напиши ровно `SELECTED_OWNER: NONE`" in (pack / "review_prompt.md").read_text(encoding="utf-8")
     assert not make_audit_pack._valid_review_result(
         _valid_review(pack).replace(f"MANIFEST: {manifest['pack_path']}/manifest.json\n", ""),
         manifest["head"], manifest["pack_path"], manifest["review_nonce"],

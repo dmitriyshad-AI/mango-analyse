@@ -1492,7 +1492,7 @@ def value_sha256(value: Any) -> str:
 # this digest. Runtime telemetry is intentionally excluded because it is added
 # after the deterministic business projection has been built.
 MANAGER_OUTPUT_KEYS = (
-    "history_summary", "history_short", "summary", "manager_brief", "structured_fields",
+    "history_summary", "history_short", "summary", "manager_brief", "manager_summary", "structured_fields",
     "display_fields", "crm_blocks", "claim_evidence", "evidence", "normalized_facts",
     "history_summary_meta", "quality_flags", "needs_review", "review_reasons",
     "objections", "pain_points", "next_step", "timeline", "budget",
@@ -2022,6 +2022,7 @@ def project_invalid_stored_analysis(
     safe["manager_brief"] = INVALID_STORED_SUMMARY
     safe["history_summary"] = INVALID_STORED_SUMMARY
     safe["history_short"] = INVALID_STORED_SUMMARY
+    safe["analysis_schema_version"] = ANALYSIS_SCHEMA_VERSION_V3
     safe["follow_up_reason"] = ANALYSIS_REASON_RU["analysis_contract_invalid"]
     flags = safe["quality_flags"]
     flags.update(

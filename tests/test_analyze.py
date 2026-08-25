@@ -64,8 +64,13 @@ def _v3_fields(**overrides: Any) -> dict[str, Any]:
     return fields
 
 
-def _v3_answer(claim_requests=None, **overrides: Any) -> dict[str, Any]:
+def _v3_answer(
+    claim_requests=None,
+    manager_summary: str = "Клиент обсудил вопрос с менеджером.",
+    **overrides: Any,
+) -> dict[str, Any]:
     return {
+        "manager_summary": manager_summary,
         "structured_fields": _v3_fields(**overrides),
         "claim_requests": list(claim_requests or []),
     }
@@ -193,18 +198,16 @@ class AnalyzeServiceTest(unittest.TestCase):
                     [],
                 )
 
-    def test_compact_prompt_asks_only_for_fields_and_claims(self) -> None:
+    def test_compact_prompt_asks_for_useful_summary_fields_and_claims(self) -> None:
         prompt = AnalyzeService(make_settings())._analysis_system_prompt("compact")
 
-        # ТЗ-03: the model fills fields and points at replies; the summary,
-        # the quote, the timecode and the claim id are built by the service.
-        self.assertIn('Return exactly two root keys: "structured_fields" and "claim_requests"', prompt)
+        self.assertIn('Return exactly three root keys: "manager_summary", "structured_fields" and "claim_requests"', prompt)
+        self.assertIn("Every object must contain exactly the keys shown", prompt)
+        self.assertIn("discount_interest is only true, false or null", prompt)
         self.assertIn('"field_path", "item_id", "support_type", "turn_ids"', prompt)
         self.assertIn("structured_fields.next_step.action", prompt)
-        self.assertIn("the service builds all of them from the dialogue itself", prompt)
-        # The model is no longer asked for a конспект of its own at all.
-        self.assertNotIn("dense CRM note", prompt)
-        self.assertNotIn("history_summary", prompt)
+        self.assertIn("manager_summary: 3-5 factual Russian sentences", prompt)
+        self.assertIn('"manager_summary": ""', prompt)
 
     def test_full_prompt_blocks_long_dialogue_as_autoresponder_shortcut(self) -> None:
         prompt = AnalyzeService(make_settings())._analysis_system_prompt("full")
@@ -508,6 +511,13 @@ class AnalyzeServiceTest(unittest.TestCase):
         payload = service._extract_json_payload("{'ok': True, 'value': 'test'}")
         self.assertEqual(payload["ok"], True)
         self.assertEqual(payload["value"], "test")
+
+    def test_extract_json_payload_prefers_last_corrected_object(self) -> None:
+        service = AnalyzeService(make_settings())
+        payload = service._extract_json_payload(
+            '{"ok": false}\nCorrection:\n{"ok": true, "value": "corrected"}'
+        )
+        self.assertEqual(payload, {"ok": True, "value": "corrected"})
 
     def test_price_objection_pattern_does_not_match_centr(self) -> None:
         self.assertIsNone(OBJECTION_PATTERNS["цена"].search("учебный центр"))
@@ -1165,10 +1175,12 @@ class AnalyzeServiceTest(unittest.TestCase):
             direction = "unknown"
 
         compact_payload = {
+            "manager_summary": "Клиент попросил подробнее рассказать про обучение.",
             "structured_fields": _v3_fields(),
             "claim_requests": [],
         }
         full_payload = {
+            "manager_summary": "Клиент интересуется летним лагерем и просит подробности.",
             "structured_fields": _v3_fields(
                 interests={
                     "products": ["летний лагерь"], "format": [],
@@ -1229,12 +1241,14 @@ class AnalyzeServiceTest(unittest.TestCase):
         # empty has to say so through ``result.status``, and that claim gets the
         # very same second opinion the old tag used to get.
         compact_payload = {
+            "manager_summary": "Клиент сообщил, что ссылка на тест не работает.",
             "structured_fields": _v3_fields(
                 result={"status": "non_conversation", "detail": None}
             ),
             "claim_requests": [],
         }
         full_payload = {
+            "manager_summary": "Клиент сообщил, что ссылка на тест не работает, и попросил инструкцию.",
             "structured_fields": _v3_fields(
                 next_step={"action": "Отправить материалы", "due": None}
             ),
@@ -3214,11 +3228,18 @@ class ClaimEvidenceContractTest(unittest.TestCase):
 
     def test_manager_follow_up_question_plus_client_yes_is_an_explicit_agreement(self) -> None:
         service = self._service()
-        for answer, accepted in (("Да.", True), ("Нет.", False)):
+        cases = (
+            ("Перезвоним вам в пятницу?", "Да.", True),
+            ("Перезвоним вам в пятницу?", "Да, в пятницу вечером можно.", True),
+            ("Перезвоним вам в пятницу?", "Да, но не в пятницу, можно в субботу.", False),
+            ("Перезвоним вам в пятницу?", "Нет.", False),
+            ("Все, тогда перезвоню, подскажите, будет удобно в пятницу?", "Да, вечером можно.", True),
+        )
+        for question, answer, accepted in cases:
             dialogue = build_dialogue_input(
                 fx.proven_call(
                     (
-                        ("operator", "left", "Перезвоним вам в пятницу?"),
+                        ("operator", "left", question),
                         ("client", "right", answer),
                     )
                 )
@@ -3228,13 +3249,37 @@ class ClaimEvidenceContractTest(unittest.TestCase):
                 ("structured_fields.next_step.action", "Перезвонить клиенту"),
                 ("structured_fields.next_step.due", "в пятницу"),
             ):
-                with self.subTest(answer=answer, field_path=field_path):
+                with self.subTest(question=question, answer=answer, field_path=field_path):
                     self.assertIs(
                         service._claim_refs_support(
                             field_path, value, list(dialogue.turns), list(dialogue.turns)
                         ),
                         accepted,
                     )
+
+    def test_client_is_not_assigned_a_manager_callback_to_another_organisation(self) -> None:
+        service = self._service()
+        turn = {"turn_id": "T0001", "speaker_kind": "manager", "text": "Вам нужно посмотреть их номер и позвонить."}
+        self.assertFalse(service._claim_refs_support(
+            "structured_fields.next_step.action", "Перезвонить клиенту", [turn], [turn]
+        ))
+
+    def test_lesson_question_is_not_a_time_objection_and_later_subject_refusal_wins(self) -> None:
+        service = self._service()
+        self.assertIsNone(OBJECTION_PATTERNS["время"].search("Когда начинаются занятия?"))
+        self.assertIsNone(OBJECTION_PATTERNS["время"].search("Расскажите расписание занятий."))
+        self.assertIsNotNone(OBJECTION_PATTERNS["время"].search("Есть проблема из-за разницы во времени."))
+        turns = [
+            {"turn_id": "T0001", "speaker_kind": "client", "text": "Интересуют математика и физика."},
+            {"turn_id": "T0002", "speaker_kind": "manager", "text": "Физику не рассматриваете?"},
+            {"turn_id": "T0003", "speaker_kind": "client", "text": "Нет."},
+        ]
+        self.assertFalse(service._claim_refs_support(
+            "structured_fields.interests.subjects", "физика", [turns[0]], turns
+        ))
+        self.assertTrue(service._claim_refs_support(
+            "structured_fields.interests.subjects", "математика", [turns[0]], turns
+        ))
 
     def test_negative_conditional_or_historical_question_is_not_confirmed_by_yes(self) -> None:
         service = self._service()
@@ -4368,13 +4413,10 @@ class ClaimEvidenceContractTest(unittest.TestCase):
 class V3ResponseContractTest(unittest.TestCase):
     """Этап C: anything that is not the v3 answer never becomes a payload."""
 
-    def test_a_free_summary_or_an_authored_quote_rejects_the_whole_answer(self) -> None:
+    def test_unknown_root_or_an_authored_quote_rejects_the_whole_answer(self) -> None:
         cases = (
             ("legacy root keys", {"history_summary": "…", "tags": []}),
-            (
-                "model wrote its own summary",
-                {**_v3_answer(), "history_summary": "Клиент согласился."},
-            ),
+            ("legacy summary key", {**_v3_answer(), "history_summary": "Клиент согласился."}),
             (
                 "model authored the quote",
                 {
@@ -4478,6 +4520,7 @@ class V3ResponseContractTest(unittest.TestCase):
                     result={"status": "probably_paid", "detail": None}
                 ),
             ),
+            ("empty manager summary", _v3_answer(manager_summary="")),
         )
         for label, payload in cases:
             with self.subTest(label):
@@ -4747,6 +4790,26 @@ class AnalysisMetaAndUsageTest(unittest.TestCase):
                 self.assertEqual(row.analysis_status, "failed")
                 self.assertIsNone(row.analysis_json)
                 self.assertEqual(len(json.loads(row.analysis_attempts_json)), 5)
+
+    def test_manager_summary_is_accepted_and_normalized(self) -> None:
+        service = AnalyzeService(make_settings())
+        payload = validate_v3_model_response(
+            _v3_answer(manager_summary="  Клиент попросил перезвонить в среду вечером.  ")
+        )
+        self.assertEqual(
+            payload["manager_summary"],
+            "Клиент попросил перезвонить в среду вечером.",
+        )
+        normalized = service._normalize_analysis(
+            _dialogue_call(),
+            "Менеджер предложил перезвонить. Клиент согласился на среду вечером.",
+            payload,
+        )
+        self.assertEqual(normalized["manager_summary"], payload["manager_summary"])
+        with self.assertRaises(AnalysisContractError):
+            validate_v3_model_response(
+                _v3_answer(manager_summary="Ожидаемый следующий шаг — оплатить курс.")
+            )
 
     def test_trusted_nonconversation_skips_model_and_roundtrips_current_contract(self) -> None:
         turns = (

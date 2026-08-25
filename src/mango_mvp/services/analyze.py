@@ -105,19 +105,19 @@ The input is the canonical dialogue: one whole reply per line, prefixed with its
 turn id (T0001), its timecode and its speaker. Nothing outside those lines is a fact.
 
 Rules:
-- Return exactly two root keys: "structured_fields" and "claim_requests". Any other root key rejects the whole answer.
+- Return exactly three root keys: "manager_summary", "structured_fields" and "claim_requests". Every object must contain exactly the keys shown below; never move, duplicate or add keys. commercial.discount_interest is only true, false or null.
 - Fill a field only when a reply states it. If unsupported, return null or [].
 - The deterministic hints in the user message are candidates only. Never invent facts from hints: a hint no reply supports is not a fact.
 - All text in Russian except emails and phone numbers.
-- Do not write a summary, a story, a comment, a quote, a timecode, a hash or a claim id: the service builds all of them from the dialogue itself.
+- manager_summary: 3-5 factual Russian sentences for a sales manager. State the request, what was discussed, the result and the agreed next step when present. Never turn uncertainty into an agreed or expected next step, and never normalize an unclear name, address or term. Do not mention missing facts or the absence of objections, payment or materials unless a reply explicitly states that absence. Never invent details, quote internal field names, dump the dialogue, or include timecodes, hashes or claim ids.
 - Every non-empty value needs its own item in "claim_requests"; a list value needs one item per element.
 - A claim request has exactly these keys: "field_path", "item_id", "support_type", "turn_ids".
 - "item_id" is the exact list element for a list path and null for a scalar path.
-- "support_type" is "explicit" when the referenced reply literally states the fact, otherwise "inferred".
-- "turn_ids" holds 1 to 3 distinct turn ids that really appear above.
+- "support_type" is "explicit" when natural wording directly states the fact (for example "перезвоню" means follow_up_agreed); otherwise it is "inferred".
+- "turn_ids" holds 1 to 3 distinct turn ids that really appear above; an agreement made by a manager question and the client's answer must cite both adjacent turns.
 - Intention is not a fact: "payment_confirmed" needs a reply about a payment that already happened, and agreement to buy is at most "sale_agreed".
 - A question about a discount is not an agreed discount, and one mention of price is not a price objection.
-- next_step.action must be in Russian.
+- next_step.action must be in Russian; next_step.due must copy the referenced time phrase exactly.
 """
 
 SYSTEM_PROMPT_V3_NON_CONVERSATION_RULE = """- For long transcripts or multi-turn MANAGER/CLIENT dialogue, do not use result.status "non_conversation" just because words like "абонент", "секретарь", "коллекторская организация", "перезвонить", or company auto-greeting markers appear. Use non_conversation only when the client side is exclusively a system/IVR/voicemail/no-live message and there is no human response.
@@ -126,6 +126,7 @@ SYSTEM_PROMPT_V3_NON_CONVERSATION_RULE = """- For long transcripts or multi-turn
 SYSTEM_PROMPT_V3_TAIL = """
 Return exactly these keys:
 {
+  "manager_summary": "",
   "structured_fields": {
     "result": {"status": null, "detail": null},
     "people": {"parent_fio": null, "child_fio": null},
@@ -296,8 +297,8 @@ LATEST_ANALYSIS_SCHEMA_VERSION = "v2"
 # monoliths) and for the v3 claim contract.  The prompt bytes changed, so the
 # cache key changes with them — an old cached answer was produced from a
 # different conversation shape and a different contract.
-ANALYZE_PROMPT_VERSION_COMPACT = "v8"
-ANALYZE_PROMPT_VERSION_FULL = "v9"
+ANALYZE_PROMPT_VERSION_COMPACT = "v18"
+ANALYZE_PROMPT_VERSION_FULL = "v19"
 TRANSCRIPT_QUALITY_GUARDRAILS_VERSION = "non_conversation_v4_live_safeguards"
 NON_CONVERSATION_ADVISORY_ENV = "TELEGRAM_NON_CONVERSATION_ADVISORY"
 TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on", "да"}
@@ -341,7 +342,7 @@ OBJECTION_PATTERNS = {
         r"\bцен(?:а|е|у|ы|ой|ам|ами|ник\w*)\b|\bстоимост\w*\b|\bдорог\w*\b|\bдешев\w*\b|\bбюджет\w*\b",
         re.I,
     ),
-    "время": re.compile(r"нет времени|занят\w*|нагрузк\w*|расписан\w*", re.I),
+    "время": re.compile(r"нет времени|\b(?:я|мы|реб[её]нок)\s+занят(?:а|ы)?\b|нагрузк\w*|не\s+подход\w*\s+расписан\w*|неудобн\w*\s+(?:врем|расписан)\w*|накладыва\w*|разниц\w*\s+(?:во\s+)?врем\w*", re.I),
     "доверие": re.compile(r"кто вы|не слышал\w* о вас|отзыв\w*|гаранти", re.I),
     "неактуально": re.compile(r"не актуальн\w*|не интерес\w*|не нужно", re.I),
 }
@@ -352,7 +353,7 @@ ROLE_PREFIX_RE = re.compile(r"^\s*(manager|client|менеджер|клиент)
 # ТЗ-03: the model points at replies, the service writes the evidence.
 # --------------------------------------------------------------------------
 
-V3_ROOT_KEYS = frozenset({"structured_fields", "claim_requests"})
+V3_ROOT_KEYS = frozenset({"manager_summary", "structured_fields", "claim_requests"})
 CLAIM_REQUEST_KEYS = frozenset({"field_path", "item_id", "support_type", "turn_ids"})
 CLAIM_SUPPORT_TYPES = ("explicit", "inferred")
 CLAIM_MAX_TURN_REFS = 3
@@ -403,14 +404,14 @@ NEXT_STEP_COMMITMENT_RE = re.compile(
     re.I,
 )
 DIRECT_NEXT_STEP_QUESTION_RE = re.compile(
-    r"^\s*(?:перезвон(?:ю|им|ить)|позвон(?:ю|им|ить)|"
+    r"\b(?:перезвон(?:ю|им|ить)|позвон(?:ю|им|ить)|"
     r"свяж(?:усь|емся|аться)|отправ(?:лю|им|ить)|"
     r"вышл(?:ю|ем|ать)|пришл(?:ю|ем|ать)|направ(?:лю|им|ить)|"
     r"скин(?:у|ем|уть)|согласу(?:ю|ем|овать))"
-    r"(?:\s+вам)?\s+"
+    r"[^?]{0,100}\b"
     r"(?:сейчас|сегодня|завтра|послезавтра|"
     r"в\s+(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|"
-    r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?))\s*\?\s*$",
+    r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?))\b[^?]{0,40}\?\s*$",
     re.I,
 )
 NEXT_STEP_PAST_RE = re.compile(
@@ -513,7 +514,7 @@ NEXT_STEP_ACTION_END_PATTERNS: Dict[str, "re.Pattern[str]"] = {
         r"(?:перезванивать|созваниваться|звонить)\s+(?:больше\s+)?"
         r"не\s+(?:надо|нужно|треб\w*)|"
         r"решил\w*\s+больше\s+не\s+(?:созван|звон)\w*|"
-        r"не\s+(?:звон(?:ите|ить)|перезванива(?:йте|ть)))\b",
+        r"не\s+(?:звон(?:ите|ить)|перезванива(?:йте|ть))|(?:вам|тебе)\s+(?:нужно|надо)[^.!?…]{0,80}(?:их|друг\w+\s+организац\w*)\s+номер[^.!?…]{0,30}позвон\w*)\b",
         re.I,
     ),
     "Отправить материалы": re.compile(
@@ -637,7 +638,8 @@ SALE_CANCELLATION_TURN_RE = re.compile(
 )
 SHORT_AFFIRMATIVE_RE = re.compile(
     r"^\s*(?:да|ага|угу|верно|правильно|конечно|именно|подходит|интересует)"
-    r"(?:[\s,.!?…]+(?:да|верно|именно))?[\s.!?…]*$",
+    r"(?:(?:[\s,.!?…]+(?:да|верно|именно))|(?:(?![^.!?…]{0,80}\b(?:не|нет)\b)"
+    r"[\s,.-]+[^.!?…]{0,80}\b(?:можно|подходит|удобно|вечер\w*|утр\w*|дн[её]м)\b[^.!?…]{0,30}))?[\s.!?…]*$",
     re.I,
 )
 
@@ -821,6 +823,10 @@ def validate_v3_model_response(payload: Any) -> Dict[str, Any]:
     extra = set(payload) - V3_ROOT_KEYS - {"quality_flags"}
     if extra or not V3_ROOT_KEYS.issubset(set(payload)):
         raise AnalysisContractError("analysis response root keys are not the v3 contract")
+    manager_summary = payload.get("manager_summary")
+    if not isinstance(manager_summary, str): raise AnalysisContractError("manager_summary is not a string")
+    manager_summary = re.sub(r"\s+", " ", manager_summary).strip()
+    if not manager_summary or len(manager_summary) > 4000 or DIALOGUE_DUMP_LINE_RE.search(manager_summary) or ROLE_PREFIX_RE.search(manager_summary) or re.search(r"\bожидаем\w*\s+следующ\w*\s+шаг\b", manager_summary, re.I): raise AnalysisContractError("manager_summary is invalid")
     try:
         fields = validate_structured_fields(payload.get("structured_fields"), stored=False)
     except ValueError as exc:
@@ -857,6 +863,7 @@ def validate_v3_model_response(payload: Any) -> Dict[str, Any]:
             }
         )
     validated = dict(payload)
+    validated["manager_summary"] = manager_summary
     validated["structured_fields"] = fields
     validated["claim_requests"] = requests
     return validated
@@ -1473,10 +1480,8 @@ class AnalyzeService:
             if payload is not None:
                 return payload
 
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            payload = AnalyzeService._parse_object_candidate(raw[start : end + 1])
+        for candidate in reversed(re.findall(r"(?m)^\s*(\{.*\})\s*$", raw)):
+            payload = AnalyzeService._parse_object_candidate(candidate)
             if payload is not None:
                 return payload
         raise RuntimeError("response does not contain JSON object")
@@ -3298,6 +3303,7 @@ class AnalyzeService:
             "quality_flags": quality_flags,
             # Legacy-compatible keys for existing downstream sync.
             "summary": summary,
+            "manager_summary": self._clean_text(raw.get("manager_summary")),
             "interests": legacy_interests_out,
             "student_grade": grade_current,
             "target_product": target_product,
@@ -3533,6 +3539,11 @@ class AnalyzeService:
             return not any(
                 cls._result_contradicted_after(str(value), ref, ordered) for ref in refs
             )
+        list_anchor = CLAIM_LIST_ANCHORS.get(field_path, {}).get(str(value))
+        if list_anchor and any(
+            index + 1 < len(ordered) and turn.get("speaker_kind") == "manager" and "?" in str(turn.get("text") or "") and list_anchor.search(str(turn.get("text") or "")) and ordered[index + 1].get("speaker_kind") == "client" and re.match(r"^\s*нет\b", str(ordered[index + 1].get("text") or ""), re.I)
+            for index, turn in enumerate(ordered)
+        ): return False
         if field_path.startswith("structured_fields.next_step."):
             if field_path == "structured_fields.next_step.due" and any(
                 cls._next_step_due_superseded_after(str(value), ref, ordered)

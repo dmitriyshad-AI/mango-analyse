@@ -1073,8 +1073,9 @@ def test_projection_does_not_shift_non_generated_time_inside_summary():
     assert row[9] == "Договорились созвониться в 15:00"
 
 
-def test_projection_uses_one_canonical_summary_field_for_google():
+def test_projection_prefers_useful_manager_summary_for_google():
     analysis = json.loads(trusted_record()["analysis_json"])
+    analysis["manager_summary"] = "Клиент выбрал математику и попросил перезвонить завтра."
     analysis["summary"] = "Краткий конспект для рабочей таблицы"
     analysis["history_summary"] = "14.08.2026 09:03 — служебная память"
     row = with_number(
@@ -1082,13 +1083,15 @@ def test_projection_uses_one_canonical_summary_field_for_google():
             analysis_json=json.dumps(with_current_output_hash(analysis), ensure_ascii=False)
         )
     )
-    assert row[9] == "Краткий конспект для рабочей таблицы"
+    assert row[9] == "Клиент выбрал математику и попросил перезвонить завтра."
 
 
-def test_projection_prefers_the_nonduplicating_manager_brief():
+def test_projection_uses_manager_brief_only_as_legacy_fallback():
     analysis = json.loads(trusted_record()["analysis_json"])
     analysis["manager_brief"] = "Обращение по ученику 8 класса. Семья сравнивает варианты."
-    analysis["summary"] = "Тема; результат; возражение; следующий шаг; срок."
+    analysis["history_summary"] = ""
+    analysis["history_short"] = ""
+    analysis["summary"] = ""
     row = with_number(
         trusted_projected(
             analysis_json=json.dumps(with_current_output_hash(analysis), ensure_ascii=False)
@@ -1096,6 +1099,23 @@ def test_projection_prefers_the_nonduplicating_manager_brief():
     )
 
     assert row[9] == "Обращение по ученику 8 класса. Семья сравнивает варианты."
+
+
+def test_utm_display_keeps_only_business_values():
+    raw = (
+        "Предполагаемая связь с заявкой: точный телефон\n"
+        "UTM ниже — снимок карточки AMO\n"
+        "utm_source: yandex\n"
+        "utm_medium: cpc\n"
+        "url: https://kmipt.ru/courses/test/"
+    )
+
+    assert publisher.display_utm_text(raw) == (
+        "utm_source: yandex\nutm_medium: cpc\nurl: https://kmipt.ru/courses/test/"
+    )
+    assert publisher.display_utm_text("UTM отсутствуют в связанной заявке") == "UTM не найдены"
+    assert publisher.display_utm_text("Данные AMO временно недоступны: UTM не обновлены") == "UTM не определены"
+    assert publisher.display_utm_text("UTM ещё не загружены") == "UTM не определены"
 
 
 # --- Этап G: an old analysis_json goes through the same fail-closed gate ----
@@ -2823,7 +2843,7 @@ def test_malformed_done_is_excluded_with_incident_and_never_sync_done(
     assert _db_status(env["db"]) == ("pending", 0)
 
 
-def test_stale_v2_analysis_is_excluded_with_incident_without_business_facts(tmp_path):
+def test_stale_v2_analysis_is_published_as_safe_review_row_without_business_facts(tmp_path):
     stale = json.loads(trusted_record()["analysis_json"])
     stale.update(
         {
@@ -2844,12 +2864,12 @@ def test_stale_v2_analysis_is_excluded_with_incident_without_business_facts(tmp_
     )
 
     calls, identities, errors = publisher.load_calls(db_path, {})
-    dumped = json.dumps(errors, ensure_ascii=False)
+    row = with_number(next(iter(calls.values())))
 
     assert len(identities) == 1
-    assert calls == {}
-    assert errors[next(iter(errors))]["code"] == "projection_analysis_contract_invalid"
-    assert "100 000" not in dumped and "Списать оплату" not in dumped
+    assert len(calls) == 1 and errors == {}
+    assert row[7] == "Да" and row[12] == "—"
+    assert "100 000" not in json.dumps(row, ensure_ascii=False) and "Списать оплату" not in row
 
 
 @pytest.mark.parametrize("source_call_id", [None, ""])
@@ -3544,10 +3564,6 @@ def test_execute_enriches_only_selected_call_then_reuses_owner_cache(
 
     assert first["status"] == "published"
     assert google.rows[0][publisher.UTM_COLUMN_INDEX] == (
-        "Предполагаемая связь с заявкой: точный телефон; "
-        "ближайшая заявка создана за 1 ч до звонка\n"
-        "UTM ниже — снимок карточки AMO при первом сопоставлении, а не "
-        "исторические данные на момент звонка\n"
         "utm_source: yandex\nutm_medium: cpc\nurl: https://kmipt.ru/courses/test/"
     )
     assert amo_calls_after_first == ["contacts", "leads", "leads/10/notes"]
@@ -3594,9 +3610,7 @@ def test_temporary_amo_failure_is_visible_but_not_persisted_as_missing_utm(
     repeated = _run_execute(env["config"])
 
     assert result["status"] == "published"
-    assert google.rows[0][publisher.UTM_COLUMN_INDEX] == (
-        "Данные AMO временно недоступны: UTM не обновлены"
-    )
+    assert google.rows[0][publisher.UTM_COLUMN_INDEX] == "UTM не определены"
     assert result["utm_enrichment"]["skipped"] == 1
     assert repeated["status"] == "no_change"
     assert google.batch_calls == batch_calls

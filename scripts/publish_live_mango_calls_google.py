@@ -162,6 +162,7 @@ ANALYSIS_RESULT_KEYS = (
     "follow_up_reason",
     "summary",
     "manager_brief",
+    "manager_summary",
     "history_short",
 )
 CONFIRMATION = "PUBLISH_MANGO_CALLS_LIVE"
@@ -211,6 +212,16 @@ TRANSCRIPT_COLUMN_INDEX = LIVE_HEADERS.index("Полная расшифровк�
 REVIEW_COLUMN_INDEX = LIVE_HEADERS.index("Что проверить РОПу")
 EVIDENCE_COLUMN_INDEX = LIVE_HEADERS.index("Основание ключевых выводов")
 UTM_COLUMN_INDEX = LIVE_HEADERS.index("UTM и страница заявки")
+
+
+def display_utm_text(raw: str) -> str:
+    lines = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
+    public = [line for line in lines if re.match(r"^(?:utm_[a-z0-9_]+\s*:\s*\S|url\s*:\s*https?://\S+)", line, re.I)]
+    if public:
+        return "\n".join(public)
+    if not lines or lines == ["—"]:
+        return "—"
+    return "UTM не найдены" if any(line.casefold() in {"utm отсутствуют в связанной заявке", "utm не найдены"} for line in lines) else "UTM не определены"
 SORT_KEY_COLUMN_INDEX = MANAGED_COLUMN_COUNT
 LINE_RE = re.compile(r"^\[([^]]+)]\s+([^:]+):\s*(.*)$")
 # The pre-contract projection: it never stripped MANAGER:/CLIENT: prefixes, so
@@ -938,7 +949,7 @@ def safe_call_projection(
             str(record.get("direction") or "").lower(), "Не определено"
         ),
         format_duration(duration), "Не определено", str(record.get("phone") or ""),
-        "Да", "—", summary, result, "—", "—", "—", review, transcript, "—", utm_text,
+        "Да", "—", summary, result, "—", "—", "—", review, transcript, "—", display_utm_text(utm_text),
     ]
     return projection_result(record, values, transcript, {}, analysis_done=False)
 
@@ -953,8 +964,6 @@ def call_projection(
     stored_analysis = required_json_object(record.get("analysis_json"), "analysis_json")
     analysis = guard_stored_analysis(record, stored_analysis)
     guarded_flags = json_object(analysis.get("quality_flags"))
-    if guarded_flags.get("analysis_contract_invalid"):
-        raise ValueError("analysis contract is stale")
     if (
         str(analysis.get("analysis_schema_version") or "").lower()
         != ANALYSIS_SCHEMA_VERSION_V3
@@ -977,10 +986,11 @@ def call_projection(
         or "—"
     )
     summary = normalize_summary_time((
-        str(analysis.get("manager_brief") or "").strip()
-        or str(analysis.get("summary") or "").strip()
-        or str(analysis.get("history_short") or "").strip()
+        str(analysis.get("manager_summary") or "").strip()
         or str(analysis.get("history_summary") or "").strip()
+        or str(analysis.get("history_short") or "").strip()
+        or str(analysis.get("summary") or "").strip()
+        or str(analysis.get("manager_brief") or "").strip()
         or "—"
     ), started)
     objections = list_text(fields.get("objections")) or list_text(analysis.get("objections")) or "—"
@@ -1033,7 +1043,7 @@ def call_projection(
         review,
         transcript,
         manager_claim_evidence_ru(analysis) or "—",
-        utm_text,
+        display_utm_text(utm_text),
     ]
     if any(len(str(value)) > MAX_CELL_CHARS for value in values):
         raise ValueError("cell exceeds 50000 characters")
@@ -2844,6 +2854,7 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
             _preview_state, planned_selected = reserve(
                 deepcopy(audit_state), calls, rows, call_to_row, limit=limit
             )
+            planned_selected += [key for key, call in calls.items() if key not in planned_selected and utm_cache_key(key, call["phone"], int(call["started_epoch"]), call.get("amocrm_lead_id")) not in utm_by_call][:limit - len(planned_selected)]
             shadow_volatile, utm_enrichment = enrich_selected_utm(
                 config=config, calls=calls, selected=planned_selected,
                 cache=utm_by_call, latest=utm_latest,
@@ -2947,6 +2958,7 @@ def run(argv: Optional[Sequence[str]] = None) -> Mapping[str, Any]:
         _preview_state, planned_selected = reserve(
             deepcopy(state), calls, rows, call_to_row, limit=limit
         )
+        planned_selected += [key for key, call in calls.items() if key not in planned_selected and utm_cache_key(key, call["phone"], int(call["started_epoch"]), call.get("amocrm_lead_id")) not in utm_by_call][:limit - len(planned_selected)]
         new_volatile, utm_enrichment = enrich_selected_utm(
             config=config, calls=calls, selected=planned_selected,
             cache=utm_by_call, latest=utm_latest,

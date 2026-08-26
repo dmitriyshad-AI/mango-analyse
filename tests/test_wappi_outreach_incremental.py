@@ -453,7 +453,7 @@ def test_unclassified_call_is_visible_and_blocks_send(tmp_path: Path) -> None:
 
 def _verdict(marker: str = "v", **overrides: str) -> dict[str, str]:
     verdict = {name: f"{name}:{marker}" for name in CANONICAL_VERDICT_COLUMNS}
-    verdict["status"] = "ПРОВЕРКА"
+    verdict["status"] = "МЕНЕДЖЕР СЕГОДНЯ"
     verdict["freshness"] = "АКТУАЛЬНО"
     verdict.update(overrides)
     return verdict
@@ -622,7 +622,12 @@ def test_status_and_freshness_are_a_closed_schema(tmp_path: Path) -> None:
     for status in module.STATUS_VALUES[1:]:
         rows = _verdict_rows(tmp_path)
         rows[0]["verdict"]["status"] = status
-        assert _flat(_sheet(tmp_path, rows)["rows"][0])[1] == status
+        if status in {"ПРОВЕРКА", "НЕ ПИСАТЬ"}:
+            for field in [*(f"message_{i}" for i in range(1, 6)), *(f"date_{i}" for i in range(1, 6)), "signature"]:
+                rows[0]["verdict"][field] = ""
+        sheet = _sheet(tmp_path, rows)
+        assert _flat(sheet["rows"][0])[1] == status
+        assert "p1:c1" not in sheet["analysis_errors"]["by_key"]
     for freshness in module.FRESHNESS_VALUES:
         rows = _verdict_rows(tmp_path)
         rows[0]["verdict"]["freshness"] = freshness
@@ -638,6 +643,39 @@ def test_send_status_requires_current_sources(tmp_path: Path, freshness: str) ->
 
     assert sheet["analysis_errors"]["by_key"]["p1:c1"] == "VERDICT_INVALID"
     assert _flat(sheet["rows"][0])[1] == "ПРОВЕРКА"
+
+
+@pytest.mark.parametrize(("message", "date"), [("текст", ""), ("", "28.08.2026"), ("текст", "   ")])
+def test_message_and_date_must_be_paired(tmp_path: Path, message: str, date: str) -> None:
+    rows = _verdict_rows(tmp_path)
+    rows[0]["verdict"].update(message_1=message, date_1=date)
+
+    sheet = _sheet(tmp_path, rows)
+
+    assert sheet["analysis_errors"]["by_key"]["p1:c1"] == "VERDICT_INVALID"
+    assert _flat(sheet["rows"][0])[12] == ""
+
+
+def test_check_verdict_with_campaign_text_is_quarantined(tmp_path: Path) -> None:
+    rows = _verdict_rows(tmp_path)
+    rows[0]["verdict"]["status"] = "ПРОВЕРКА"
+
+    sheet = _sheet(tmp_path, rows)
+
+    assert sheet["analysis_errors"]["by_key"]["p1:c1"] == "VERDICT_INVALID"
+    assert _flat(sheet["rows"][0])[12] == ""
+
+
+def test_no_write_verdict_keeps_stop_and_strips_campaign_text(tmp_path: Path) -> None:
+    rows = _verdict_rows(tmp_path)
+    rows[0]["verdict"]["status"] = "НЕ ПИСАТЬ"
+    rows[0]["verdict"]["date_1"] = ""
+
+    sheet = _sheet(tmp_path, rows)
+
+    assert "p1:c1" not in sheet["analysis_errors"]["by_key"]
+    assert _flat(sheet["rows"][0])[1] == "НЕ ПИСАТЬ"
+    assert all(not _flat(sheet["rows"][0])[index] for index in range(12, 23))
 
 
 @pytest.mark.parametrize("field, value, message", [
@@ -876,6 +914,20 @@ def test_unchanged_source_reuses_the_previous_verdict_without_a_new_one(tmp_path
     assert reused["rows"][0]["verdict"] == previous["rows"][0]["verdict"]
 
 
+def test_old_check_with_text_requires_fresh_verdict_and_preserves_manual_stop(tmp_path: Path) -> None:
+    previous = _sheet(tmp_path)
+    previous["rows"][0]["verdict"]["status"] = "ПРОВЕРКА"
+    previous["rows"][0]["manual_status_override"] = True
+    previous["rows"][0]["values"]["A:W"][1] = "НЕ ПИСАТЬ"
+
+    repeated = _sheet(tmp_path, [], previous_sheet=previous)
+
+    assert repeated["analysis_errors"]["by_key"] == {"p1:c1": "VERDICT_MISSING"}
+    assert repeated["rows"][0]["reused_verdict"] is False
+    assert _flat(repeated["rows"][0])[1] == "НЕ ПИСАТЬ"
+    assert _flat(repeated["rows"][0])[12] == ""
+
+
 def test_manual_result_changes_render_without_a_new_llm_verdict(tmp_path: Path) -> None:
     payload = module.build_case_packets(**_inputs(tmp_path))
     previous = _sheet(tmp_path)
@@ -887,6 +939,7 @@ def test_manual_result_changes_render_without_a_new_llm_verdict(tmp_path: Path) 
 
     assert sheet["reuse"] == {"new": 0, "reused": 2, "required_keys": []}
     assert _flat(sheet["rows"][0])[1] == "НЕ ПИСАТЬ"
+    assert all(not _flat(sheet["rows"][0])[index] for index in range(12, 23))
 
 
 def test_manual_terminal_status_stays_safe_when_next_run_forgets_manual_state(tmp_path: Path) -> None:

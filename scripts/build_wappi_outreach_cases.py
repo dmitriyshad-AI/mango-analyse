@@ -42,6 +42,7 @@ VERDICT_COLUMNS = {
 SEND_STATUS = "ОТПРАВИТЬ ПОСЛЕ ПРОВЕРКИ ЧАТА"
 STATUS_VALUES = (SEND_STATUS, "МЕНЕДЖЕР СЕГОДНЯ", "ПРОВЕРКА", "НЕ ПИСАТЬ")
 FRESHNESS_VALUES = ("АКТУАЛЬНО", "ОБНОВИТЬ", "СТОП ДЕЙСТВУЕТ")
+class VerdictContentInvariantError(ValueError): pass
 SEND_IDENTITY_STATUSES = frozenset({"OVERLAY_EXACT_SINGLE_LEAD", "REGISTRY_EXACT_SINGLE_LEAD"})
 ROP_DECISIONS = ("", "ОК", "ПРАВИТЬ", "НЕ ПИСАТЬ")
 CAMPAIGN_RESULTS = ("", "ОТПРАВЛЕНО-1", "ОТПРАВЛЕНО-2", "ОТПРАВЛЕНО-3", "ОТПРАВЛЕНО-4",
@@ -491,6 +492,17 @@ def _validate_verdict(key: str, verdict: Any) -> dict[str, str]:
         raise ValueError(f"freshness outside schema for {key}: {verdict['freshness']!r}")
     if verdict["status"] == SEND_STATUS and verdict["freshness"] != "АКТУАЛЬНО":
         raise ValueError(f"send status requires current sources for {key}")
+    messages = [verdict[f"message_{index}"] for index in range(1, 6)]
+    dates = [verdict[f"date_{index}"] for index in range(1, 6)]
+    if verdict["status"] == "НЕ ПИСАТЬ":
+        return {name: "" if name.startswith(("message_", "date_")) or name == "signature" else value
+                for name, value in verdict.items()}
+    if any(bool(message.strip()) != bool(date.strip()) for message, date in zip(messages, dates)):
+        raise VerdictContentInvariantError(f"message/date mismatch for {key}")
+    if verdict["status"] == "ПРОВЕРКА" and any(
+        value.strip() for value in [*messages, *dates, verdict["signature"]]
+    ):
+        raise VerdictContentInvariantError(f"non-send status carries campaign text for {key}")
     return dict(verdict)
 
 
@@ -536,7 +548,6 @@ def _previous_verdicts(
         key, source = str(row.get("key") or ""), str(row.get("source_fingerprint") or "")
         if not key or not source or key in result:
             raise ValueError(f"previous sheet row is unusable: {key!r}")
-        verdict = _validate_verdict(key, row.get("verdict"))
         sticky_status = None
         if row.get("manual_status_override"):
             values = row.get("values") or {}
@@ -545,6 +556,10 @@ def _previous_verdicts(
             if rendered not in STATUS_VALUES:
                 raise ValueError(f"previous sheet manual status is unusable: {key!r}")
             sticky_status = rendered
+        try:
+            verdict = _validate_verdict(key, row.get("verdict"))
+        except VerdictContentInvariantError:
+            source, verdict = "", _error_verdict()
         result[key] = (source, verdict, sticky_status)
     return result
 
@@ -635,6 +650,9 @@ def build_sheet_rows(
         cells: list[str | None] = [None] * len(SHEET_COLUMNS)
         for name, index in VERDICT_COLUMNS.items():
             cells[index] = verdict[name]
+        if rendered_status in {"ПРОВЕРКА", "НЕ ПИСАТЬ"}:
+            for name in [*(f"message_{i}" for i in range(1, 6)), *(f"date_{i}" for i in range(1, 6)), "signature"]:
+                cells[VERDICT_COLUMNS[name]] = ""
         cells[1] = rendered_status
         cells[26] = rendered_freshness
         cells[0] = key

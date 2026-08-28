@@ -16,7 +16,7 @@
 
 | Путь | HEAD / ветка | Назначение | Условие удаления |
 |---|---|---|---|
-| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_final_20260828` | `5e47b894`, `codex/m1-customer-timeline-final-20260828` | Чистый M1-worktree финализации Customer Timeline; только staging/read-only, без production flip. | После финальной приёмки ветки и пакета передачи M4. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_final_20260828` | `HEAD`, `codex/m1-customer-timeline-final-20260828` | Чистый M1-worktree финализации Customer Timeline; только staging/read-only, без production flip. | После финальной приёмки ветки и пакета передачи M4. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `676cc772`, `claude/timeline-final-20260803` | Канонический путь данных и старого Customer Timeline. Ветку не использовать для нового кода. | Только после отдельного cutover на проверенный `main` и новой проверки PID/HEAD/env. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/context-reuse-gate-20260823` | `950eef0b`, `codex/context-reuse-gate-20260823` | Незавершённый грязный worktree отдельного context-reuse gate. Не использовать и не менять из Wappi-задачи. | После завершения, коммита и отдельной приёмки context-reuse gate. |
 | `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main`, `a3593d74` на момент сверки | Чистый канонический код. | После переноса канонического `main` в основной путь. |
@@ -36,6 +36,37 @@
 
 Поглощённый worktree `model-owned-semantics-cleanup-20260811` удалён
 12 августа после проверки чистоты и `merge-base --is-ancestor ... main`.
+
+### Зарегистрированные изолированные ветки M1
+
+Сверка `git worktree list --porcelain` от 2026-08-28. Эти worktree относятся
+к отдельным Calls, ASR и прежним Timeline-трекам; текущая задача их не меняет:
+
+- `codex/asr-single-call-progress-20260818`
+- `codex/gigaam-batch-20260814`
+- `codex/gigaam-parallel-20260814`
+- `codex/gigaam-v3-batch-20260814`
+- `codex/google-publisher-20260815`
+- `codex/mango-calls-m4-handoff-20260816`
+- `codex/pipeline-interactive-20260814`
+- `codex/pipeline-stall-watchdog-20260818`
+- `codex/selective-gigaam-v2-20260814`
+- `codex/m1-autonomous-bootstrap-20260807`
+- `codex/m1-calls-cutover-20260807`
+- `codex/m1-calls-provider-selective-integration-20260823`
+- `codex/m1-calls-provider-selective-integration-20260824`
+- `codex/m1-calls-real-service-final-20260812`
+- `codex/m1-calls-service-fast-value-20260811`
+- `codex/m1-customer-timeline-exam-regrade-20260812`
+- `codex/m1-customer-timeline-finalization-20260807`
+- `codex/m1-customer-timeline-followup-20260811`
+- `codex/m1-customer-timeline-release-evidence-20260811`
+- `codex/m1-customer-timeline-working-final-20260812`
+- `codex/memory-selection-quality-20260731`
+- `codex/p0-live-exam-20260731`
+- `codex/p0-output-floor-20260730`
+- `codex/timeline-quality-20260731`
+- `codex/unblock-memory-filters-20260730`
 
 ## M1
 

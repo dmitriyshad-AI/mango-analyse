@@ -563,6 +563,13 @@ def test_inventory_maps_every_symbol_and_keeps_later_definition_in_same_file(tmp
     )
 
 
+def test_inventory_owner_match_does_not_accept_symbol_prefix() -> None:
+    assert inventory_before_build._owner_text("class CustomerTimelineReadApi:", "CustomerTimelineReadApi")
+    assert not inventory_before_build._owner_text(
+        "class CustomerTimelineReadApiConfig:", "CustomerTimelineReadApi",
+    )
+
+
 def test_inventory_before_build_stops_on_modified_or_untracked_other_worktree(tmp_path: Path, monkeypatch) -> None:
     other = tmp_path / "other"
     other.mkdir()

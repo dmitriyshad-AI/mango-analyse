@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -81,7 +82,14 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout
 
 
-def _rg_hits(root: Path, term: str, paths: Sequence[str] = CODE_ROOTS, *, ignore_case: bool = False) -> list[tuple[str, int]]:
+def _rg_hits(
+    root: Path,
+    term: str,
+    paths: Sequence[str] = CODE_ROOTS,
+    *,
+    ignore_case: bool = False,
+    all_matches_per_path: bool = False,
+) -> list[tuple[str, int]]:
     existing = [path for path in paths if (root / path).exists()]
     if not existing:
         return []
@@ -99,7 +107,9 @@ def _rg_hits(root: Path, term: str, paths: Sequence[str] = CODE_ROOTS, *, ignore
             continue
         data = item["data"]
         pair = (str(data["path"]["text"]), int(data["line_number"]))
-        if pair not in hits:
+        if pair not in hits and (
+            all_matches_per_path or not any(path == pair[0] for path, _line in hits)
+        ):
             hits.append(pair)
         if len(hits) > 200:
             raise RuntimeError(f"query too broad: {term!r}")
@@ -119,7 +129,13 @@ def _dirty_paths(status: str) -> set[str]:
 
 
 def _owner_text(text: str, symbol: str) -> bool:
-    return any(marker in text.strip() for marker in (f"def {symbol}", f"class {symbol}", f"{symbol} =", f"{symbol}=", f"{symbol}:"))
+    stripped = text.strip()
+    escaped = re.escape(symbol)
+    return bool(
+        re.match(rf"^(?:async\s+)?def\s+{escaped}\b", stripped)
+        or re.match(rf"^class\s+{escaped}\b", stripped)
+        or re.match(rf"^{escaped}(?:\s*:[^=]+)?\s*=", stripped)
+    )
 
 
 def _owns_symbol(root: Path, path: str, line: int, symbol: str) -> bool:
@@ -312,7 +328,12 @@ def run_inventory(
             if not worktree.is_dir():
                 continue
             worktree_head = _git(worktree, "rev-parse", "HEAD").strip()
-            for path, line in _rg_hits(worktree, term, ignore_case=term not in symbol_terms):
+            for path, line in _rg_hits(
+                worktree,
+                term,
+                ignore_case=term not in symbol_terms,
+                all_matches_per_path=term in symbol_terms,
+            ):
                 term_hits.append((entry, worktree, path, line, worktree_head))
             for path in sorted(dirty.get(entry.path, set())):
                 if not any(path == item or path.startswith(item + "/") for item in CODE_ROOTS):

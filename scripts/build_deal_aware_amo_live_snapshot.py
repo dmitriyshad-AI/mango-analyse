@@ -534,7 +534,7 @@ def _load_env_files() -> None:
 
 
 def safe_text(value: Any) -> str:
-    return str(value or "").replace("\u2028", " ").strip()
+    return str("" if value is None else value).replace("\u2028", " ").strip()
 
 
 def safe_int(value: Any) -> int:

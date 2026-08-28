@@ -207,6 +207,7 @@ def build_call_lineage(
     source_filename: str | None,
     started_at: str,
     duplicate_base_ids: AbstractSet[str],
+    updated_at: str | None = None,
 ) -> dict[str, str | None]:
     source_id = stable_call_source_id(
         source_kind=source_kind,
@@ -217,6 +218,7 @@ def build_call_lineage(
         duplicate_base_ids=duplicate_base_ids,
     )
     normalized_at = normalize_call_started_at(started_at)
+    normalized_updated_at = normalize_call_started_at(updated_at) if updated_at else normalized_at
     return {
         "call_id": source_id,
         "provider_call_id": source_id,
@@ -227,5 +229,5 @@ def build_call_lineage(
         "source_filename": source_filename,
         "call_at": normalized_at,
         "event_at": normalized_at,
-        "updated_at": normalized_at,
+        "updated_at": normalized_updated_at,
     }

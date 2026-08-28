@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 
-MODULE_PATH = Path('/Users/dmitrijfabarisov/Projects/Mango analyse/scripts/build_messages28_master_exports.py')
+MODULE_PATH = Path(__file__).resolve().parents[1] / 'scripts/build_messages28_master_exports.py'
 spec = importlib.util.spec_from_file_location('build_messages28_master_exports', MODULE_PATH)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader

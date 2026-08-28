@@ -326,7 +326,7 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--code-root", default=str(ROOT))
-    parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/mail_pipeline"))
+    parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/state/mail_pipeline"))
     parser.add_argument("--max-process-age-hours", type=float, default=4.0)
     parser.add_argument("--skip-link-enrich", action="store_true")
     return parser.parse_args(argv)

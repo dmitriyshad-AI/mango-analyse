@@ -48,7 +48,10 @@ def _config(tmp_path: Path, prod: Path, staging: Path) -> Path:
     return path
 
 
-def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Path) -> None:
+def test_build_snapshot_compacts_atomically_then_reader_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -71,14 +74,123 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
         }
     ]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(build_snapshot, "git_status_short", lambda _root: "")
+    monkeypatch.setattr(
+        build_snapshot,
+        "nightly_manifest_report",
+        lambda _cfg: {
+            "ok": True,
+            "staging_sha256": publish_common.sha256_file(staging),
+            "staging_size_bytes": staging.stat().st_size,
+        },
+    )
+    quick_check_calls: list[Path] = []
+    real_quick_check = reader_smoke.quick_check
+
+    def counted_quick_check(path: Path) -> str:
+        quick_check_calls.append(path)
+        return real_quick_check(path)
+
+    monkeypatch.setattr(reader_smoke, "quick_check", counted_quick_check)
+    monkeypatch.setattr(
+        build_snapshot,
+        "table_counts",
+        lambda *_args, **_kwargs: pytest.fail(
+            "retained snapshot counts must come from the compaction balance"
+        ),
+    )
 
     report, ok = build_snapshot.build_snapshot(cfg, execute=True, snapshot_name="prod_test")
 
     assert ok is True
+    assert len(quick_check_calls) == 1
     snapshot_db = Path(report["snapshot_db"])
-    manifest = json.loads((snapshot_db.parent / "build_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((snapshot_db.parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["integrity_check"] == "ok"
     assert manifest["quick_check"] == "ok"
     assert manifest["counts"]["timeline_events"] >= 1
+    assert manifest["compaction"]["business_counts_match"] is True
+    assert manifest["compaction"]["audit_log_source_rows"] > 0
+    assert manifest["compaction"]["audit_log_snapshot_rows"] == 0
+    assert manifest["compaction"]["table_policy"]["mode"] == "explicit_allowlist_fail_closed"
+    assert manifest["compaction"]["table_policy"]["unknown_source_tables"] == []
+    assert manifest["compaction"]["table_policy"]["lineage_tables_retained"] == [
+        "ingestion_cursors",
+        "ingestion_runs",
+    ]
+    assert manifest["compaction"]["table_policy"]["schema_only_rows_omitted"]["audit_log"] == (
+        "forensic_audit_rows_not_required_by_reader"
+    )
+    assert manifest["compaction"]["indexes_omitted"] == [
+        "ix_bot_context_chunks_active_customer_time",
+        "ix_timeline_events_active_customer_time",
+    ]
+    assert manifest["compaction"]["indexes_omitted_source_bytes"] > 0
+    assert manifest["compaction"]["index_omission_evidence"] == {
+        "ix_bot_context_chunks_active_customer_time": {
+            "retained_prefix_index": "ix_chunks_customer_event_time",
+            "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+            "reason": "reader_active_filter_keeps_customer_scoped_prefix",
+        },
+        "ix_timeline_events_active_customer_time": {
+            "retained_prefix_index": "ix_timeline_events_customer_time",
+            "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+            "reason": "reader_active_filter_keeps_customer_scoped_prefix",
+        },
+    }
+    assert manifest["compaction"]["within_size_limit"] is True
+    assert manifest["fallback_search"]["ok"] is True
+    assert manifest["reader_smoke"]["status"] == "ok"
+    assert manifest["bot_visibility_stored"] == 1
+    assert manifest["bot_visible_after_reader_policy"] == 1
+    assert manifest["writer_identity_stable"] is True
+    assert not (snapshot_db.parent / ".customer_timeline.tmp.sqlite").exists()
+    with sqlite3.connect(snapshot_db) as con:
+        assert con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+        assert con.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE name = 'timeline_event_fts' OR name LIKE 'timeline_event_fts_%'
+               OR name = 'bot_context_chunk_fts' OR name LIKE 'bot_context_chunk_fts_%'
+            """
+        ).fetchone()[0] == 0
+        snapshot_indexes = {
+            str(row[0])
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "ix_timeline_events_customer_time" in snapshot_indexes
+        assert "ix_chunks_customer_event_time" in snapshot_indexes
+        assert "ix_timeline_events_source" in snapshot_indexes
+        assert not set(manifest["compaction"]["indexes_omitted"]) & snapshot_indexes
+        event_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT event_id FROM timeline_events "
+                "WHERE tenant_id=? AND customer_id=? AND superseded_by IS NULL "
+                "ORDER BY event_at DESC,event_id DESC LIMIT 50",
+                ("foton", staging_customer),
+            )
+        )
+        chunk_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT chunk_id FROM bot_context_chunks "
+                "WHERE tenant_id=? AND customer_id=? AND superseded_by IS NULL "
+                "ORDER BY event_at DESC,chunk_id DESC LIMIT 50",
+                ("foton", staging_customer),
+            )
+        )
+        assert "ix_timeline_events_customer_time" in event_plan
+        assert "ix_chunks_customer_event_time" in chunk_plan
+        source_lookup_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM timeline_events "
+                "WHERE tenant_id=? AND source_system=? AND event_type=? AND source_id=?",
+                ("foton", "amocrm_task", "amo_task", "task:probe"),
+            )
+        )
+        assert "COVERING INDEX ix_timeline_events_source" in source_lookup_plan
 
     smoke_report, smoke_ok = reader_smoke.smoke(cfg, snapshot_db=snapshot_db)
     assert smoke_ok is True
@@ -90,6 +202,80 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
     mismatch_report, mismatch_ok = reader_smoke.smoke(cfg, snapshot_db=snapshot_db)
     assert mismatch_ok is False
     assert mismatch_report["internal_control_customers"][0]["count_mismatches"]["events_total"]["actual"] == 1
+
+
+def test_compact_reader_rejects_unknown_table_before_copy(tmp_path: Path) -> None:
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    staging, _customer_id = seed_timeline_db(staging_root)
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "CREATE TABLE surprise_technical_cache "
+            "(tenant_id TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO surprise_technical_cache VALUES ('foton','{\"unexpected\":true}')"
+        )
+        con.commit()
+    snapshot = tmp_path / "snapshot" / "customer_timeline.sqlite"
+
+    with pytest.raises(
+        publish_common.PublishSnapshotError,
+        match="rejects unknown tables: surprise_technical_cache",
+    ):
+        build_snapshot.build_compact_reader(staging, snapshot)
+
+    assert not snapshot.exists()
+
+
+def test_compact_reader_uses_insert_change_count_without_destination_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    staging, _customer_id = seed_timeline_db(staging_root)
+    snapshot = tmp_path / "snapshot" / "customer_timeline.sqlite"
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        con = real_connect(*args, **kwargs)
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(build_snapshot.sqlite3, "connect", traced_connect)
+
+    report = build_snapshot.build_compact_reader(staging, snapshot)
+
+    assert report["business_counts_match"] is True
+    assert any(statement == "SELECT changes()" for statement in statements)
+    assert not any(
+        "SELECT COUNT(*) FROM main." in statement
+        for statement in statements
+    )
+
+
+def test_snapshot_table_counts_queries_only_non_compaction_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[tuple[str, ...]] = []
+
+    def fallback_counts(_path: Path, tables: tuple[str, ...]) -> dict[str, int]:
+        requested.append(tables)
+        return {"external_summary": 3}
+
+    monkeypatch.setattr(build_snapshot, "table_counts", fallback_counts)
+
+    counts = build_snapshot.snapshot_table_counts(
+        tmp_path / "snapshot.sqlite",
+        ("timeline_events", "external_summary"),
+        {"table_counts": {"timeline_events": {"source": 17, "snapshot": 17}}},
+    )
+
+    assert counts == {"timeline_events": 17, "external_summary": 3}
+    assert requested == [("external_summary",)]
 
 
 def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path: Path) -> None:
@@ -151,10 +337,10 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
     assert gate["ok"] is False
     assert gate["violations"]["allowed_mail_forbidden_primary_reason"] == 1
     assert gate["violations"]["allowed_mail_bot_visible_false"] == 1
-    assert gate["violations"]["allowed_mail_unapproved_client_unsafe_reason"] == 1
+    assert gate["violations"]["allowed_mail_client_unsafe"] == 1
 
 
-def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_path: Path) -> None:
+def test_reader_smoke_blocks_client_unsafe_money_and_secret_mail_tags(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -213,11 +399,10 @@ def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_pat
 
     money_report, money_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
 
-    assert money_ok is True
+    assert money_ok is False
     money_gate = money_report["mail_allowed_safety_gate"]
-    assert money_gate["ok"] is True
-    assert money_gate["counts"]["allowed_mail_variant_b_client_unsafe"] == 1
-    assert money_gate["violations"] == {}
+    assert money_gate["ok"] is False
+    assert money_gate["violations"]["allowed_mail_client_unsafe"] == 1
 
     with sqlite3.connect(staging) as con:
         con.execute(

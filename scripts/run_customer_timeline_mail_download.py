@@ -297,7 +297,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", help="Perform read-only IMAP downloads.")
     parser.add_argument("--code-root", default=str(ROOT))
     parser.add_argument("--data-root", default=str(ROOT))
-    parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/mail_pipeline"))
+    parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/state/mail_pipeline"))
     parser.add_argument("--dotenv", default=str(DEFAULT_SECRET))
     parser.add_argument("--sent-mailbox-name", default="Sent")
     parser.add_argument("--since-days", type=int, default=3)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 import time
@@ -10,6 +11,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
+import mango_mvp.customer_timeline.nightly_incremental as nightly_incremental_module
 from mango_mvp.customer_timeline import CustomerIdentity, CustomerTimelineSQLiteStore, IdentityStatus
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
@@ -40,6 +44,39 @@ def customer(customer_id: str = "customer:test-1") -> CustomerIdentity:
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_source_proof(
+    manifest_path: Path,
+    *,
+    source_path: Path,
+    finished_at: datetime,
+    rows_written: int = 0,
+    max_event_at: str | None = None,
+) -> None:
+    builder_manifest = manifest_path.with_name("builder_manifest.json")
+    builder_manifest.write_text('{"status":"ok"}\n', encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "finished_at": finished_at.isoformat(),
+                "rows_written": rows_written,
+                "max_event_at": max_event_at or (
+                    "2026-08-28T10:00:00+00:00" if rows_written else None
+                ),
+                "output_jsonl": str(source_path),
+                "output_sha256": sha256_file(source_path),
+                "builder_manifest": str(builder_manifest),
+                "builder_manifest_sha256": sha256_file(builder_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def base_config(tmp_path: Path, source_path: Path) -> NightlyIncrementalConfig:
@@ -396,6 +433,208 @@ def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failu
     assert cursor is not None
     assert cursor.metadata["consecutive_failures"] == 2
     assert cursor.metadata["alert"] is True
+
+
+def test_proved_source_is_verified_immediately_before_read(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    source_path.write_text("", encoding="utf-8")
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(proof_path, source_path=source_path, finished_at=datetime.now(timezone.utc))
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                normalizer="mail_archive_stage2",
+                proof_manifest_path=proof_path,
+                proof_manifest_sha256=sha256_file(proof_path),
+                proof_max_age_hours=72,
+            ),
+        ),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is True
+    proof = report["sources"][0]["artifact_proof"]
+    assert proof["status"] == "ok"
+    assert proof["manifest_sha256"] == sha256_file(proof_path)
+    assert proof["output_sha256"] == sha256_file(source_path)
+
+
+def test_proved_source_reads_verified_fd_across_atomic_path_replace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    source_path.write_text("", encoding="utf-8")
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(proof_path, source_path=source_path, finished_at=datetime.now(timezone.utc))
+    original = nightly_incremental_module.source_artifact_proof
+
+    def replace_after_proof(source, **kwargs):
+        result = original(source, **kwargs)
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text('{"unexpected":true}\n', encoding="utf-8")
+        replacement.replace(source_path)
+        return result
+
+    monkeypatch.setattr(nightly_incremental_module, "source_artifact_proof", replace_after_proof)
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(IncrementalSourceConfig(
+            name="mail_stage2", source_system="mail_archive_stage2", path=source_path,
+            normalizer="mail_archive_stage2", proof_manifest_path=proof_path,
+            proof_manifest_sha256=sha256_file(proof_path), proof_max_age_hours=72,
+        ),),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["source_errors"] == []
+    assert report["gate_passed"] is True
+    assert report["sources"][0]["rows_total"] == 0
+
+
+def test_proved_source_blocks_in_place_mutation_after_verification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    source_path.write_text("", encoding="utf-8")
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(proof_path, source_path=source_path, finished_at=datetime.now(timezone.utc))
+    original = nightly_incremental_module.source_artifact_proof
+
+    def mutate_after_proof(source, **kwargs):
+        result = original(source, **kwargs)
+        source_path.write_text('{"unexpected":true}\n', encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(nightly_incremental_module, "source_artifact_proof", mutate_after_proof)
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(IncrementalSourceConfig(
+            name="mail_stage2", source_system="mail_archive_stage2", path=source_path,
+            normalizer="mail_archive_stage2", proof_manifest_path=proof_path,
+            proof_manifest_sha256=sha256_file(proof_path), proof_max_age_hours=72,
+        ),),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is False
+    assert report["source_errors"][0]["reason"] == "source_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("manifest_field", "manifest_value", "expected_reason"),
+    (
+        ("rows_written", 0, "output_verification_failed"),
+        ("max_event_at", "2026-08-27T10:00:00+00:00", "max_event_at_mismatch"),
+    ),
+)
+def test_proved_source_blocks_manifest_jsonl_balance_mismatch(
+    tmp_path: Path,
+    manifest_field: str,
+    manifest_value: object,
+    expected_reason: str,
+) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    write_jsonl(
+        source_path,
+        [{
+            "source_id": "mail-proof-row",
+            "customer_id": "customer:1",
+            "event_at": "2026-08-28T10:00:00+00:00",
+        }],
+    )
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(
+        proof_path,
+        source_path=source_path,
+        finished_at=datetime.now(timezone.utc),
+        rows_written=1,
+    )
+    proof_payload = json.loads(proof_path.read_text(encoding="utf-8"))
+    proof_payload[manifest_field] = manifest_value
+    proof_path.write_text(json.dumps(proof_payload), encoding="utf-8")
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(IncrementalSourceConfig(
+            name="mail_stage2",
+            source_system="mail_archive_stage2",
+            path=source_path,
+            normalizer="mail_archive_stage2",
+            proof_manifest_path=proof_path,
+            proof_manifest_sha256=sha256_file(proof_path),
+            proof_max_age_hours=72,
+        ),),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is False
+    assert report["sources"][0]["artifact_proof"]["reason"] == expected_reason
+
+
+def test_stale_proved_source_never_advances_existing_cursor(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    source_path.write_text("", encoding="utf-8")
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(
+        proof_path,
+        source_path=source_path,
+        finished_at=datetime.now(timezone.utc) - timedelta(hours=73),
+    )
+    with CustomerTimelineSQLiteStore(
+        tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path
+    ) as store:
+        before = store.upsert_ingestion_cursor(
+            "foton",
+            "mail_archive_stage2",
+            last_cursor_ts=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            metadata={"sentinel": "keep"},
+        ).to_json_dict()
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                normalizer="mail_archive_stage2",
+                proof_manifest_path=proof_path,
+                proof_manifest_sha256=sha256_file(proof_path),
+                proof_max_age_hours=72,
+            ),
+        ),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is False
+    assert report["source_errors"][0]["reason"] == "source_stale"
+    with CustomerTimelineSQLiteStore.open_read_only(
+        tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path
+    ) as store:
+        after = store.get_ingestion_cursor("foton", "mail_archive_stage2").to_json_dict()
+    assert after == before
 
 
 def test_nightly_incremental_cli_returns_nonzero_when_required_gate_fails(

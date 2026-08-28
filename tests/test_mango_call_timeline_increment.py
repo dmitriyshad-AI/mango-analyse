@@ -82,6 +82,7 @@ def create_call_records_db(path: Path, rows: list[dict]) -> None:
               source_filename TEXT,
               source_file TEXT,
               started_at TEXT,
+              updated_at TEXT,
               phone TEXT,
               manager_name TEXT,
               direction TEXT,
@@ -97,17 +98,24 @@ def create_call_records_db(path: Path, rows: list[dict]) -> None:
         con.executemany(
             """
             INSERT INTO call_records (
-              id, source_call_id, source_filename, source_file, started_at, phone,
+              id, source_call_id, source_filename, source_file, started_at, updated_at, phone,
               manager_name, direction, duration_sec, analysis_status, analysis_json, transcript_text,
               amocrm_contact_id, amocrm_lead_id
             )
             VALUES (
-              :id, :source_call_id, :source_filename, :source_file, :started_at, :phone,
+              :id, :source_call_id, :source_filename, :source_file, :started_at, :updated_at, :phone,
               :manager_name, :direction, :duration_sec, :analysis_status, :analysis_json, :transcript_text,
               :amocrm_contact_id, :amocrm_lead_id
             )
             """,
-            [{**row, "transcript_text": row.get("transcript_text", "")} for row in rows],
+            [
+                {
+                    **row,
+                    "updated_at": row.get("updated_at", row["started_at"]),
+                    "transcript_text": row.get("transcript_text", ""),
+                }
+                for row in rows
+            ],
         )
 
 
@@ -160,7 +168,14 @@ def analysis(summary: str = "Клиент уточнил стоимость.", *
     )
 
 
-def run_producer(tmp_path: Path, *, timeline_db: Path, package_db: Path, limit: int | None = None) -> tuple[list[dict], dict]:
+def run_producer(
+    tmp_path: Path,
+    *,
+    timeline_db: Path,
+    package_db: Path,
+    limit: int | None = None,
+    since: str | None = None,
+) -> tuple[list[dict], dict]:
     out_jsonl = tmp_path / "mango_increment.jsonl"
     report_out = tmp_path / "producer_report.json"
     argv = [
@@ -175,10 +190,48 @@ def run_producer(tmp_path: Path, *, timeline_db: Path, package_db: Path, limit: 
     ]
     if limit is not None:
         argv.extend(["--limit", str(limit)])
+    if since is not None:
+        argv.extend(["--since", since])
     assert producer.main(argv) == 0
     events = [json.loads(line) for line in out_jsonl.read_text(encoding="utf-8").splitlines() if line.strip()]
     report = json.loads(report_out.read_text(encoding="utf-8"))
     return events, report
+
+
+def test_producer_filters_on_call_records_updated_at_not_old_call_date(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    package_db = tmp_path / "calls.sqlite"
+    create_call_records_db(
+        package_db,
+        [{
+            "id": 1,
+            "source_call_id": "late-analysis",
+            "source_filename": "late.wav",
+            "source_file": "/ignored/late.wav",
+            "started_at": "2026-01-01T09:00:00+00:00",
+            "updated_at": "2026-06-25T10:00:00+00:00",
+            "phone": "+7 916 111-22-33",
+            "manager_name": None,
+            "direction": "inbound",
+            "duration_sec": 60,
+            "analysis_status": "done",
+            "analysis_json": analysis(),
+            "amocrm_contact_id": None,
+            "amocrm_lead_id": None,
+        }],
+    )
+
+    events, report = run_producer(
+        tmp_path,
+        timeline_db=timeline_db,
+        package_db=package_db,
+        since="2026-06-25T09:55:00+00:00",
+    )
+
+    assert report["rows_selected"] == 1
+    assert events[0]["call_at"] == "2026-01-01T09:00:00+00:00"
+    assert events[0]["updated_at"] == "2026-06-25T10:00:00+00:00"
 
 
 def run_canonical_producer(tmp_path: Path, *, timeline_db: Path, canonical_db: Path) -> tuple[list[dict], dict]:

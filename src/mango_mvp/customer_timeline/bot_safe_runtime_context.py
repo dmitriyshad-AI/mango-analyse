@@ -22,6 +22,16 @@ from mango_mvp.customer_timeline.source_policy import (
     MANGO_PROCESSED_SOURCE_SYSTEM,
     is_non_contentful_call_record,
 )
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    FAMILY_LINK_SCOPE_CANONICAL_IN,
+    FAMILY_LINK_SCOPE_INVALID,
+    FAMILY_LINK_SCOPE_LEGACY_NUMERIC,
+    FAMILY_LINK_SCOPE_OUT,
+    family_link_timeline_scope_state,
+    family_timeline_scope_decision,
+    is_explicit_graduate_student_type,
+    next_grade_from_student_type,
+)
 from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE
 
 
@@ -1009,7 +1019,7 @@ def _build_bot_safe_family_projection(
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
         placeholders = ",".join("?" for _ in members)
         raw_rows = con.execute(
-            f"SELECT customer_id, child_key, grades_json, subjects_json, brand, status, confidence "
+            f"SELECT customer_id, child_key, grades_json, subjects_json, brand, status, confidence, record_json "
             f"FROM family_links_v1 WHERE tenant_id=? AND customer_id IN ({placeholders}) "
             "ORDER BY customer_id, child_key",
             (tenant_id, *members),
@@ -1023,7 +1033,22 @@ def _build_bot_safe_family_projection(
             for row in rows
         ):
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
-        candidate_children = rows
+        scope_rows = [(row, _family_link_scope_state(row)) for row in rows]
+        family_scope = family_timeline_scope_decision(state for _row, state in scope_rows)
+        if family_scope == FAMILY_LINK_SCOPE_INVALID:
+            return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
+        candidate_children = [
+            row
+            for row, state in scope_rows
+            if state in {FAMILY_LINK_SCOPE_CANONICAL_IN, FAMILY_LINK_SCOPE_LEGACY_NUMERIC}
+        ]
+        if rows and (family_scope == FAMILY_LINK_SCOPE_OUT or not candidate_children):
+            return {
+                "child_scope": "out_of_scope",
+                "needs_clarification": False,
+                "context_blocked": True,
+                "timeline_scope_eligible": False,
+            }
         children = [row for row in candidate_children if _normalize_brand(row["brand"]) == active_brand]
         selected = children[0] if len(candidate_children) == 1 and len(children) == 1 else None
         scope = "single" if selected is not None else "needs_clarification"
@@ -1307,6 +1332,11 @@ def _safe_json_list(raw: object, *, kind: str) -> list[str]:
     for value in values:
         text = _clean_text(value).casefold().replace("ё", "е")
         if kind == "grade":
+            if is_explicit_graduate_student_type(text):
+                continue
+            target_grade = next_grade_from_student_type(text)
+            if target_grade is not None:
+                text = str(target_grade)
             if not re.fullmatch(r"(?:[1-9]|10|11)(?:\s*(?:класс|кл\.?))?", text):
                 continue
         elif kind == "subject":
@@ -1318,6 +1348,28 @@ def _safe_json_list(raw: object, *, kind: str) -> list[str]:
         if text not in result:
             result.append(text)
     return result[:8]
+
+
+def _family_link_scope_state(
+    row: Mapping[str, Any] | sqlite3.Row,
+) -> str:
+    """Read current or legacy family-link student type without guessing from names."""
+    values = dict(row)
+    try:
+        record = json.loads(str(values.get("record_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return FAMILY_LINK_SCOPE_INVALID
+    if not isinstance(record, Mapping):
+        return FAMILY_LINK_SCOPE_INVALID
+    if not isinstance(record.get("student_types"), list) and not isinstance(record.get("grades"), list):
+        try:
+            raw_legacy = json.loads(str(values.get("grades_json") or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return FAMILY_LINK_SCOPE_INVALID
+        if not isinstance(raw_legacy, list):
+            return FAMILY_LINK_SCOPE_INVALID
+        record = {**record, "grades": raw_legacy}
+    return family_link_timeline_scope_state(record)
 
 
 def _timeline_record(raw: object) -> Mapping[str, Any]:
@@ -1379,6 +1431,8 @@ def _opportunity_brand(raw: object) -> str:
 
 def _family_dossier_item(projection: Mapping[str, Any], *, active_brand: str) -> Mapping[str, Any]:
     if not projection:
+        return {}
+    if projection.get("timeline_scope_eligible") is False:
         return {}
     if projection.get("needs_clarification") is True:
         text = (

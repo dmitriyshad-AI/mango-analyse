@@ -1898,6 +1898,55 @@ def test_family_graph_generated_at_ignores_future_source_rows(tmp_path: Path) ->
     assert report["generated_at"] != "2099-01-01T00:00:00+00:00"
 
 
+@pytest.mark.parametrize(
+    ("student_type", "expected_grades", "finished", "target", "eligible", "graduate"),
+    (
+        ("8_klass", ["9"], [8], [9], True, False),
+        ("8 класс", ["9"], [8], [9], True, False),
+        ("10_klass", ["11"], [10], [11], True, False),
+        ("10 класс", ["11"], [10], [11], True, False),
+        ("vypusknik", [], [], [], False, True),
+        ("Выпускник", [], [], [], False, True),
+    ),
+)
+def test_family_graph_projects_tallanto_completed_grade_contract(
+    tmp_path: Path,
+    student_type: str,
+    expected_grades: list[str],
+    finished: list[int],
+    target: list[int],
+    eligible: bool,
+    graduate: bool,
+) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:grade", phone="+79000000123")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        "customer:grade",
+        "student-grade",
+        "grade-parent@example.com",
+        student_name="Анна",
+        student_type=student_type,
+    )
+
+    build_family_graph(
+        FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True)
+    )
+
+    with sqlite3.connect(db_path) as con:
+        grades_json, record_json = con.execute(
+            "SELECT grades_json,record_json FROM family_links_v1 WHERE customer_id='customer:grade'"
+        ).fetchone()
+    record = json.loads(record_json)
+    assert json.loads(grades_json) == expected_grades
+    assert record["student_types"] == [student_type]
+    assert record["finished_grades"] == finished
+    assert record["target_grades"] == target
+    assert record["timeline_scope_eligible"] is eligible
+    assert record["explicit_graduate"] is graduate
+
+
 def test_family_graph_never_marks_multiple_children_high_without_unique_mention(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:multi", phone="+79000000002")

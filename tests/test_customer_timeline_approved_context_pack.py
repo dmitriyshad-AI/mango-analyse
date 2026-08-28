@@ -27,7 +27,7 @@ from mango_mvp.customer_timeline.approval_decisions import (
     validate_customer_timeline_approval_decisions,
 )
 from mango_mvp.customer_timeline.approved_context_pack import main
-from tests.test_customer_timeline_read_api import seed_timeline_db
+from tests.test_customer_timeline_read_api import seed_ready_manager_action, seed_timeline_db
 
 
 FIXED_TIME = datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
@@ -371,6 +371,12 @@ def build_approval_artifacts(
 ) -> tuple[Path, str, Path, Path, Path]:
     db_path, customer_id = seed_timeline_db(tmp_path)
     remove_open_conflicts(db_path)
+    seed_ready_manager_action(
+        db_path,
+        tmp_path,
+        customer_id=customer_id,
+        as_of=FIXED_TIME,
+    )
     workspace_path = tmp_path / "approval" / "workspace.json"
     decisions_path = tmp_path / "approval" / f"{decision}_decisions.jsonl"
     report_path = tmp_path / "approval" / f"{decision}_validation_report.json"

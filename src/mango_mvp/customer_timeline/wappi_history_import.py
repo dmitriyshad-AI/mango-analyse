@@ -1411,185 +1411,6 @@ def _build_safe_amo_talk_client(env_file: Path) -> Any:
 
 
 @dataclass(frozen=True)
-class WappiWidgetContactHydrationPlan:
-    records: tuple[TimelineSourceRecord, ...]
-    report: Mapping[str, Any]
-    idempotency_key: str
-
-
-def plan_wappi_widget_contact_hydration(
-    *,
-    timeline_db: Path,
-    allowed_root: Path,
-    widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]],
-    amo_mcp_env_file: Path | None,
-    tenant_id: str = "foton",
-    workers: int = 4,
-    amo_client: Any = None,
-) -> WappiWidgetContactHydrationPlan:
-    """Fetch and normalize widget-proven AMO contacts without writing Timeline."""
-    from types import SimpleNamespace
-
-    from mango_mvp.customer_timeline.amo_incremental import load_amo_link_index, normalize_cards_source
-    from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, embedded_items, read_mcp_env
-
-    db_path = guard_customer_timeline_output_path(timeline_db, Path(allowed_root))
-    wanted = {
-        str(item.get("contact_id") or "").strip()
-        for item in widget_links.values()
-        if str(item.get("status") or "") == "resolved" and str(item.get("contact_id") or "").strip()
-    }
-    hydrated: set[str] = set()
-    with open_readonly_sqlite(db_path) as con:
-        if sqlite_table_exists(con, "timeline_events"):
-            hydrated.update(
-                str(row[0])
-                for row in con.execute(
-                    "SELECT DISTINCT json_extract(record_json, '$.record.entity_id') FROM timeline_events "
-                    "WHERE tenant_id = ? "
-                    "AND source_system = 'amocrm_snapshot' AND event_type = 'amo_contact_snapshot' "
-                    "AND (superseded_by IS NULL OR superseded_by = '')",
-                    (tenant_id,),
-                )
-            )
-    missing = tuple(sorted(wanted - hydrated))
-    if not missing:
-        return WappiWidgetContactHydrationPlan(
-            records=(),
-            idempotency_key=stable_digest([]),
-            report={
-                "requested": 0,
-                "fetched": 0,
-                "normalized": 0,
-                "fetch_errors": 0,
-                "write_status_counts": {},
-                "errors": 0,
-                "applied": False,
-            },
-        )
-    if amo_client is None:
-        if amo_mcp_env_file is None:
-            raise ValueError("AMO MCP env file is required to hydrate Wappi contacts")
-        amo_client = AmoMcpClient(read_mcp_env(amo_mcp_env_file))
-
-    batches = chunks(missing, 50)
-
-    def fetch_contacts(batch: Sequence[str]) -> tuple[Mapping[str, Any], ...]:
-        try:
-            payload = amo_client.amo_api_get(
-                path="contacts",
-                params={"filter[id][]": list(batch), "with": "leads"},
-                limit=len(batch),
-            )
-        except Exception:  # noqa: BLE001 - aggregate only; never expose raw AMO payloads.
-            return ()
-        requested = set(batch)
-        return tuple(
-            contact
-            for contact in embedded_items(payload, "contacts")
-            if str(contact.get("id") or "") in requested
-        )
-
-    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-        fetched_batches = tuple(pool.map(fetch_contacts, batches))
-    fetched_by_id = {
-        str(contact.get("id")): contact
-        for batch in fetched_batches
-        for contact in batch
-    }
-    fallback_ids = tuple(contact_id for contact_id in missing if contact_id not in fetched_by_id)
-
-    def fetch_contact(contact_id: str) -> Mapping[str, Any] | None:
-        if not contact_id.isdigit():
-            return None
-        try:
-            contact = amo_client.amo_api_get(
-                path=f"contacts/{int(contact_id)}",
-                params={"with": "leads"},
-                limit=1,
-            )
-        except Exception:  # noqa: BLE001 - aggregate only; never expose raw AMO payloads.
-            return None
-        return contact if str(contact.get("id") or "") == contact_id else None
-
-    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-        fallback_contacts = tuple(pool.map(fetch_contact, fallback_ids))
-    fetched_by_id.update(
-        (str(contact.get("id")), contact)
-        for contact in fallback_contacts
-        if contact is not None
-    )
-    fetched = tuple(fetched_by_id[contact_id] for contact_id in missing if contact_id in fetched_by_id)
-    link_index = load_amo_link_index(db_path, tenant_id=tenant_id)
-    rows, normalization = normalize_cards_source(
-        fetched,
-        pages=1,
-        page_cap_hit=False,
-        path="contacts",
-        entity_type="contact",
-        cursor_name="amo_contacts_widget_hydrate",
-        link_index=link_index,
-        config=SimpleNamespace(max_pages=1),
-    )
-    observed_at = datetime.now(timezone.utc)
-    records = tuple(
-        TimelineSourceRecord(
-            source_system="amo_contacts_widget_hydrate",
-            source_ref=str(row["source_ref"]),
-            payload=row,
-            observed_at=observed_at,
-        )
-        for row in rows
-    )
-    return WappiWidgetContactHydrationPlan(
-        records=records,
-        idempotency_key=stable_digest(sorted(missing)),
-        report={
-            "requested": len(missing),
-            "batches": len(batches),
-            "fallback_requested": len(fallback_ids),
-            "fallback_fetched": sum(contact is not None for contact in fallback_contacts),
-            "fetched": len(fetched),
-            "normalized": len(rows),
-            "fetch_errors": len(missing) - len(fetched),
-            "normalization": {key: value for key, value in normalization.items() if not key.startswith("_")},
-            "write_status_counts": {},
-            "errors": 0,
-            "applied": False,
-        },
-    )
-
-
-def apply_wappi_widget_contact_hydration_plan(
-    store: CustomerTimelineSQLiteStore,
-    plan: WappiWidgetContactHydrationPlan,
-    *,
-    tenant_id: str = "foton",
-) -> Mapping[str, Any]:
-    """Apply a prepared hydration plan through the caller's canonical Store transaction."""
-
-    if not plan.records:
-        return dict(plan.report)
-    from mango_mvp.customer_timeline.ingestion import AmoSnapshotNormalizer
-
-    report = TimelineImportService(store).import_records(
-        plan.records,
-        normalizer=AmoSnapshotNormalizer(tenant_id=tenant_id),
-        tenant_id=tenant_id,
-        source_ref="amocrm:contacts:wappi_widget_hydrate",
-        idempotency_key=plan.idempotency_key,
-        dry_run=False,
-        actor="wappi_widget_contact_hydrate",
-    )
-    return {
-        **plan.report,
-        "write_status_counts": dict(report.write_status_counts),
-        "errors": len(report.errors),
-        "applied": not report.errors,
-    }
-
-
-@dataclass(frozen=True)
 class WappiChatResolution:
     status: str
     customer_id: Optional[str] = None
@@ -2002,8 +1823,18 @@ def run_wappi_history_import(
     widget_link_report: Mapping[str, Any] = {}
     widget_event_link_report: Mapping[str, Any] = {}
     widget_talk_link_report: Mapping[str, Any] = {}
-    widget_contact_hydrate_report: Mapping[str, Any] = {}
-    widget_contact_hydration_plan: WappiWidgetContactHydrationPlan | None = None
+    # Wappi owns native chat-to-AMO link extraction, but never AMO Timeline
+    # entities.  The dedicated amo_incremental_shadow step is the single
+    # writer for amocrm_snapshot rows.  Missing AMO identities therefore stay
+    # pending here instead of being silently hydrated by a second owner.
+    widget_contact_hydrate_report: Mapping[str, Any] = {
+        "status": "not_owned_by_wappi",
+        "owner": "amo_incremental_shadow",
+        "requested": 0,
+        "fetched": 0,
+        "errors": 0,
+        "applied": False,
+    }
     if config.widget_link_db is not None:
         if not config.refresh_widget_links and not config.widget_link_db.exists():
             widget_setup_errors.append("wappi_amo_widget:reuse_link_db_missing")
@@ -2102,15 +1933,6 @@ def run_wappi_history_import(
             else None
         ),
     )
-    if config.apply and widget_links and not widget_setup_errors:
-        widget_contact_hydration_plan = plan_wappi_widget_contact_hydration(
-            timeline_db=config.timeline_db,
-            allowed_root=config.allowed_root,
-            widget_links=widget_links,
-            amo_mcp_env_file=config.amo_mcp_env_file,
-            tenant_id=config.tenant_id,
-        )
-        widget_contact_hydrate_report = dict(widget_contact_hydration_plan.report)
     if not client_was_provided and config.widget_link_db is not None:
         client = build_readonly_wappi_client(
             config.env_file,
@@ -2511,14 +2333,6 @@ def run_wappi_history_import(
         ) as store:
             store_summary_before = store.summary()
             with store.bulk_write():
-                if widget_contact_hydration_plan is not None:
-                    widget_contact_hydrate_report = apply_wappi_widget_contact_hydration_plan(
-                        store,
-                        widget_contact_hydration_plan,
-                        tenant_id=config.tenant_id,
-                    )
-                    if int(widget_contact_hydrate_report.get("errors") or 0):
-                        raise RuntimeError("Wappi AMO contact hydration failed after validation")
                 for source_system, group in grouped.items():
                     report = TimelineImportService(store).import_records(
                         group,
@@ -2570,9 +2384,7 @@ def run_wappi_history_import(
                 )
             store_summary_after = store.summary()
     checkpoint_committed = False
-    amo_read_active = bool(
-        amo_auto_resolver is not None or widget_contact_hydrate_report.get("requested")
-    )
+    amo_read_active = amo_auto_resolver is not None
     safety = {
         **timeline_import_cli_safety_contract(write_product_timeline_db=apply_effective),
         "read_local_files_only": False,
@@ -2583,6 +2395,7 @@ def run_wappi_history_import(
         "amo_auto_resolver_enabled": amo_auto_resolver is not None,
         "amo_transport": "AmoMcpClient" if amo_read_active else "disabled",
         "amo_read_only_methods": ["GET"] if amo_read_active else [],
+        "amo_timeline_write": False,
         "send_messenger": False,
         "write_crm": False,
         "write_tallanto": False,
@@ -2672,7 +2485,7 @@ def run_wappi_history_import(
             "input_hashes_start": input_hashes_start,
             "timeline_db": db_identity_end,
             "timeline_db_start": db_identity_start,
-            "timeline_db_after_hydrate": db_identity_validation_base,
+            "timeline_db_validation_base": db_identity_validation_base,
             "timeline_db_pre_apply": db_identity_pre_apply,
             "input_source_id_set_hash": stable_digest(
                 sorted(

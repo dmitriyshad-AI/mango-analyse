@@ -28,6 +28,7 @@ from mango_mvp.customer_timeline.tallanto_cards_sync import (
     run_tallanto_cards_sync,
     universe_fingerprint,
 )
+from mango_mvp.customer_timeline.tallanto_finished_grade import next_grade_from_student_type
 from scripts.import_tallanto_payments_to_timeline import (
     TallantoPaymentsImportConfig,
     run_tallanto_payments_import,
@@ -725,6 +726,7 @@ def test_map_raw_contact_keeps_confirmed_business_fields_only() -> None:
     assert "unsupported@example.com" not in str(mapped)
     assert mapped["parent_fio"] == "Иванова Анна"
     assert mapped["student_type"] == "10 класс"
+    assert next_grade_from_student_type(mapped["student_type"]) == 11
     assert mapped["branch"] == "Долгопрудный"
     assert mapped["subjects"] == "Физика, Математика"
     assert mapped["amo_contact_id"] == "123"

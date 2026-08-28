@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     report = run_nightly_service(service_config_from_json(Path(args.config)))
+    exit_code = 0 if report.get("overall_status") == "ok" else 1
     if args.summary_only:
         report = {
             "schema_version": report.get("schema_version"),
@@ -55,7 +56,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "safety": report.get("safety"),
         }
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

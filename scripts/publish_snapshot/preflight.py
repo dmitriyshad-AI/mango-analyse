@@ -167,6 +167,16 @@ def nightly_manifest_report(cfg: PublishConfig) -> dict[str, Any]:
             "failed_required_steps": failed_required_steps,
             "partial_failure": service_report.get("partial_failure"),
             "overall_status": service_report.get("overall_status"),
+            "source_counts": list(snapshot_manifest.get("source_counts") or ()),
+            "ingestion_cursors": list(snapshot_manifest.get("ingestion_cursors") or ()),
+            "mail_link_enrich": dict(snapshot_manifest.get("mail_link_enrich") or {}),
+            "identity_integrity": dict(snapshot_manifest.get("identity_integrity") or {}),
+            "required_sources_check": dict(
+                snapshot_manifest.get("required_sources_check")
+                or service_report.get("required_sources_check")
+                or {}
+            ),
+            "source_degradation": dict(snapshot_manifest.get("source_degradation") or {}),
         }
     )
     if service_report:

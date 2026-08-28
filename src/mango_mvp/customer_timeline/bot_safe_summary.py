@@ -439,6 +439,7 @@ def _build_customer_draft(
         conflicts=conflicts,
         customer_id=customer_id,
     )
+    next_step_metadata = _safe_next_step_metadata(next_step)
     safe_next_step = _safe_next_step(next_step)
     text = _render_safe_text(brand=brand, slots=slots, safe_next_step=safe_next_step)
     if not text:
@@ -469,7 +470,7 @@ def _build_customer_draft(
             "opportunity_count": len(opportunities),
             "event_count": len(events),
             "source_chunk_count": len(source_chunks),
-            "next_step": _safe_next_step_metadata(next_step),
+            "next_step": next_step_metadata,
             "safe_next_step": safe_next_step,
             "safe_slots": {
                 "child_class": slots.child_class,
@@ -489,7 +490,7 @@ def _build_customer_draft(
         source_opportunity_count=len(opportunities),
         source_event_count=len(events),
         source_chunk_count=len(source_chunks),
-        next_step_status=next_step.status,
+        next_step_status=next_step_metadata["status"],
     )
 
 
@@ -933,7 +934,7 @@ def _known_field_names(slots: BotSafeExtractedSlots) -> tuple[str, ...]:
 
 
 def _safe_next_step(next_step: NextStepResolution) -> str:
-    if next_step.status != "active":
+    if next_step.resolution_kind != "proven_manager_action" or next_step.status != "active":
         return ""
     value = _safe_fragment(next_step.display_text, max_len=180)
     if not value:
@@ -955,11 +956,15 @@ def _safe_next_step(next_step: NextStepResolution) -> str:
 
 
 def _safe_next_step_metadata(next_step: NextStepResolution) -> Mapping[str, str]:
+    informational = next_step.to_informational_json_dict()
     return {
         "schema_version": CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
-        "status": next_step.status,
+        "resolution_kind": next_step.resolution_kind,
+        "status": str(informational["status"]),
         "confidence": next_step.confidence,
-        "reason_code": next_step.reason_code,
+        "reason_code": str(informational["reason_code"]),
+        "historical_status": str(informational["historical_status"]),
+        "historical_reason_code": str(informational["historical_reason_code"]),
         "source_event_id": next_step.source_event_id,
         "source_event_at": next_step.source_event_at,
         "source_event_type": next_step.source_event_type,

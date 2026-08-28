@@ -127,7 +127,9 @@ def db_inventory(paths: Sequence[Path]) -> list[Mapping[str, Any]]:
 def staging_root_for(*, state_dir: Path, timeline_db: Path) -> Path:
     state_dir = state_dir.resolve()
     timeline_db = timeline_db.resolve()
-    staging_root = state_dir.parent
+    if state_dir.name != "mail_pipeline" or state_dir.parent.name != "state":
+        raise RuntimeError("mail_state_dir_not_under_codex_staging")
+    staging_root = state_dir.parents[1]
     if staging_root.name != "staging" or staging_root.parent.name != ".codex_local":
         raise RuntimeError("mail_state_dir_not_under_codex_staging")
     if staging_root not in timeline_db.parents:
@@ -248,7 +250,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--code-root", default=str(ROOT))
     parser.add_argument("--data-root", required=True)
-    parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/mail_pipeline"))
+    parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/state/mail_pipeline"))
     parser.add_argument(
         "--timeline-db",
         default=str(ROOT / ".codex_local/staging/customer_timeline_staging.sqlite"),

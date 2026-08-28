@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 import mango_mvp.customer_timeline.bot_safe_runtime_context as runtime_context_module
 from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
@@ -21,6 +23,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     _is_current_access_event,
     _mango_call_item_visible_for_bot,
     _bot_safe_item_pii_findings,
+    _safe_json_list,
     _sanitize_channel_history_text_for_bot,
     scan_bot_safe_context_pii,
     scrub_customer_memory_text,
@@ -48,6 +51,14 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+
+
+def test_bot_family_grade_projection_uses_next_grade_and_hides_graduates() -> None:
+    assert _safe_json_list('["8_klass"]', kind="grade") == ["9"]
+    assert _safe_json_list('["8 класс"]', kind="grade") == ["9"]
+    assert _safe_json_list('["10_klass"]', kind="grade") == ["11"]
+    assert _safe_json_list('["vypusknik"]', kind="grade") == []
+    assert _safe_json_list('["Выпускник"]', kind="grade") == []
 
 
 def test_bot_safe_crm_context_default_off() -> None:
@@ -140,6 +151,86 @@ def test_bot_safe_crm_context_prepends_single_child_family_projection(tmp_path: 
     live_context = {"active_brand": "foton", "read_only_customer_context": context}
     live_memory = build_customer_memory_for_prompt(live_context, active_brand="foton")
     assert "класс: 8" in live_memory.prompt_text
+
+
+def test_bot_safe_crm_context_legacy_finished_eight_projects_next_grade_nine(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE customer_id=?",
+            (
+                json.dumps(["8_klass"]),
+                json.dumps({"grades": ["8_klass"]}),
+                customer_id,
+            ),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["timeline_context"]["family_dossier"]["child"]["grades"] == ["9"]
+    assert "класс: 9" in context["summary"]
+
+
+@pytest.mark.parametrize("other_type", ("11_klass", "Listener"))
+def test_bot_safe_crm_context_excludes_terminal_family_without_canonical_sibling(
+    tmp_path: Path,
+    other_type: str,
+) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id, second_child=True)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:1'",
+            (json.dumps(["vypusknik"]), json.dumps({"grades": ["vypusknik"]})),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:2'",
+            (json.dumps([other_type]), json.dumps({"grades": [other_type]})),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["found"] is False
+    assert "онлайн-курс" not in json.dumps(context, ensure_ascii=False)
+
+
+def test_bot_safe_crm_context_keeps_canonical_child_with_terminal_sibling(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id, second_child=True)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:1'",
+            (json.dumps(["vypusknik"]), json.dumps({"grades": ["vypusknik"]})),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:2'",
+            (json.dumps(["8_klass"]), json.dumps({"grades": ["8_klass"]})),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    dossier = context["timeline_context"]["family_dossier"]
+    assert dossier["child_scope"] == "single"
+    assert dossier["child"]["grades"] == ["9"]
 
 
 def test_bot_safe_crm_context_hides_history_when_child_is_ambiguous(tmp_path: Path) -> None:

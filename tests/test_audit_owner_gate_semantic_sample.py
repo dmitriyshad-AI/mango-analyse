@@ -118,13 +118,14 @@ def test_acceptance_workbook_has_five_raw_review_sheets(tmp_path: Path, monkeypa
     assert "customer_identities" in [value for row in wb["Доказательства"].iter_rows(values_only=True) for value in row]
     assert "conflict:1" in [value for row in wb["Конфликты"].iter_rows(values_only=True) for value in row]
     assert out.stat().st_mode & 0o777 == 0o600
+    assert len(MODULE._ACCEPTANCE_BUSINESS_REVIEW_COLUMNS) == 5
 
 
 def test_acceptance_owner50_keeps_candidate_and_excluded_families() -> None:
     control = [
-        ("family:1", "candidate", "brand_unproven", "Бренд не подтвержден", *("",) * 14),
-        ("family:1", "candidate", "product_missing", "Нет продукта", *("",) * 14),
-        ("family:2", "excluded", "opt_out", "Просили не писать", *("",) * 14),
+        ("family:1", "candidate", "brand_unproven", "Бренд не подтвержден", *("",) * (len(MODULE.OWNER50_CONTROL_COLUMNS) - 4)),
+        ("family:1", "candidate", "product_missing", "Нет продукта", *("",) * (len(MODULE.OWNER50_CONTROL_COLUMNS) - 4)),
+        ("family:2", "excluded", "opt_out", "Просили не писать", *("",) * (len(MODULE.OWNER50_CONTROL_COLUMNS) - 4)),
     ]
 
     rows = MODULE._acceptance_owner50_rows([], control, {"family:1", "family:2"})
@@ -322,7 +323,7 @@ def test_acceptance_does_not_report_unconfirmed_or_absent_lesson_as_visit(
 
 @pytest.mark.parametrize(
     ("student_type", "expected"),
-    (("Listener", True), ("1_klass", True), ("10_klass", True), ("11_klass", False), ("vypusknik", False)),
+    (("Listener", False), ("1_klass", True), ("10_klass", True), ("11_klass", False), ("vypusknik", False)),
 )
 def test_business_population_is_anchored_in_current_tallanto_students(
     tmp_path: Path,

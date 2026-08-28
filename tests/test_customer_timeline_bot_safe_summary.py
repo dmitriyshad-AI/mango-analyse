@@ -306,8 +306,13 @@ def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_pat
     payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
     next_step = payload["metadata"]["next_step"]
 
-    assert report.next_step_status_counts["active"] == 1
-    assert next_step["status"] == "active"
+    assert report.next_step_status_counts["empty"] == 1
+    assert next_step["resolution_kind"] == "historical_hint"
+    assert next_step["status"] == "empty"
+    assert next_step["reason_code"] == "historical_hint_only"
+    assert next_step["historical_status"] == "active"
+    assert next_step.get("action", "") == ""
+    assert next_step.get("display_text", "") == ""
     assert next_step["source_event_id"] == event.event_id
     assert "Следующий безопасный шаг:" not in dumped
     assert "договор" not in dumped.casefold()

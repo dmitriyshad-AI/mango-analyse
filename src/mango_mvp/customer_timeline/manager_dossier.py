@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -23,11 +23,14 @@ from mango_mvp.customer_timeline.freshness import (
     source_freshness_rows,
 )
 from mango_mvp.customer_timeline.next_step_resolver import (
-    NEXT_STEP_STATUS_ACTIVE,
+    ManagerActionReadSnapshot,
+    ManagerActionResolution as DossierManagerAction,
     NEXT_STEP_STATUS_EMPTY,
     _event_text,
     _is_non_closing_service_event,
-    resolve_customer_next_step,
+    is_meaningful_manager_action,
+    load_manager_action_read_snapshot,
+    resolve_customer_manager_action,
 )
 from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
@@ -37,6 +40,13 @@ from mango_mvp.customer_timeline.store import (
     customer_entity_ref_values,
     customer_timeline_readonly_uri,
     open_family_identity_conflict_customer_ids,
+)
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    FAMILY_LINK_SCOPE_INVALID,
+    FAMILY_LINK_SCOPE_OUT,
+    family_link_student_type_contract,
+    family_link_timeline_scope_state,
+    family_timeline_scope_decision,
 )
 from mango_mvp.knowledge_base.price_axes_catalog import extract_price_query_axes, select_price
 
@@ -163,6 +173,38 @@ OWNER50_REASON_TEXT = {
     "person_origin_unproven": "Нет структурного происхождения контакта (AMO-контакт или Tallanto ID) -- имя не подтверждено как клиент",
     "human_name_unproven": "Имя человека не подтверждено структурным источником",
 }
+MANAGER_ACTION_REVIEW_TEXT = {
+    "identity_conflict_open": "Есть открытый конфликт идентификации",
+    "amo_task_missing": "В AMO не доказана открытая задача",
+    "amo_tasks_cursor_missing": "Нет подтверждённого курсора AMO Tasks",
+    "amo_tasks_cursor_in_future": "Время проверки AMO Tasks некорректно",
+    "amo_tasks_cursor_stale": "Проверка AMO Tasks устарела",
+    "amo_tasks_cursor_incomplete": "Полная исходная выборка AMO Tasks не подтверждена",
+    "amo_tasks_cursor_not_ok": "Последнее чтение AMO Tasks не подтверждено",
+    "amo_tasks_import_missing": "Нет завершённого импорта AMO Tasks",
+    "amo_tasks_import_not_completed": "Последний импорт AMO Tasks не завершён",
+    "amo_tasks_import_in_future": "Время импорта AMO Tasks некорректно",
+    "amo_tasks_import_stale": "Импорт AMO Tasks устарел",
+    "task_completed": "Задача AMO уже закрыта",
+    "task_completion_unknown": "Статус задачи AMO не доказан",
+    "task_owner_missing": "В задаче AMO не указан ответственный",
+    "task_owner_invalid": "Ответственный задачи AMO некорректен",
+    "task_owner_actor_mismatch": "Ответственный задачи AMO не совпадает с владельцем события",
+    "task_due_missing": "В задаче AMO отсутствует срок",
+    "task_due_not_absolute": "Срок задачи AMO записан некорректно",
+    "task_due_not_future": "Срок задачи AMO уже прошёл",
+    "task_due_mismatch": "Срок задачи AMO не совпадает в источниках",
+    "task_action_not_concrete": "Действие задачи AMO недостаточно конкретно",
+    "task_action_mismatch": "Текст действия задачи AMO не совпадает в источниках",
+    "task_match_not_strong": "Связь задачи AMO с клиентом не доказана",
+    "task_pending_attribution": "Принадлежность задачи AMO ещё не проверена",
+    "task_id_provenance_mismatch": "task_id не совпадает с первичным источником AMO",
+    "task_source_ref_mismatch": "Ссылка на задачу AMO не совпадает с task_id",
+    "task_opportunity_foreign_customer": "Сделка AMO принадлежит другому клиенту",
+    "task_opportunity_lead_mismatch": "Сделка AMO не совпадает с lead_id задачи",
+    "task_opportunity_status_missing": "Активный статус сделки AMO не доказан",
+    "task_opportunity_not_active": "Сделка AMO уже не активна",
+}
 # требование E2 (26.07): три новых поля в самом конце -- НЕ вставлять в середину, позиционные
 # индексы существующих колонок (в т.ч. в тестах) на них полагаются.
 OWNER50_REQUIRED_COLUMNS = (
@@ -172,6 +214,7 @@ OWNER50_REQUIRED_COLUMNS = (
     "Формула ранга", "Действие одной фразой",
     "ID ребёнка (адресат)", "Ребёнок (адресат)", "Класс (адресат)",
     "Члены семьи",
+    "Ответственный задачи", "Срок задачи", "AMO task_id", "AMO lead_id",
 )
 MANAGER_OPTOUT_PHRASES = (
     "не пишите",
@@ -302,7 +345,7 @@ def owner50_tier_reason_text(code: str) -> str:
         return f"Активен риск-сигнал {code.split(':', 1)[1]}"
     if code.startswith("classification_error:"):
         return f"Внутренняя ошибка классификации ({code.split(':', 1)[1]}) — строка исключена, не подана как готовая"
-    return OWNER50_TIER_REASON_TEXT.get(code, code)
+    return OWNER50_TIER_REASON_TEXT.get(code) or MANAGER_ACTION_REVIEW_TEXT.get(code) or code
 
 
 def classify_family(family: Mapping[str, Any], *, as_of: datetime | None = None) -> dict[str, Any]:
@@ -362,7 +405,8 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         signal: {"signal_type", "created_at", "evidence_text", "event_id", "source_system"} | None -- Г5.
             event_id+source_system -- ТОЛЬКО если разрешаются в реальное события events_by_id
             с СОВПАДАЮЩИМ source_system (требование архитектора #2); иначе signal_ok=False.
-        next_step: {"action", "due"} | None -- Г6.
+        manager_action: DossierManagerAction converted to a mapping. READY requires its
+            readiness_state="ready"; its action/due are the only operational next step.
         product: {"name", "brand", "verified", "source", "seats_available", "grade_min", "grade_max"} | None -- Г7.
             source, начинающийся с "kb" (в проде -- "kb_price_axes_catalog:<entry_id>" из
             _owner50_select_price_entry/_owner50_product_from_price_entry, требование #3) --
@@ -505,7 +549,22 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         # правка Fable #2: устаревший сигнал (>30 дней) -- уже не повод писать "сегодня".
         missing.append("stale_signal")
 
-    next_step = _mapping(family.get("next_step"))
+    manager_action = _mapping(family.get("manager_action"))
+    manager_action_state = _clean_text(manager_action.get("readiness_state")).casefold()
+    manager_reason_codes = tuple(
+        dict.fromkeys(
+            _clean_text(code)
+            for code in manager_action.get("readiness_reason_codes") or ()
+            if _clean_text(code)
+        )
+    )
+    if manager_action_state != "ready":
+        manager_reason = _clean_text(manager_action.get("reason"))
+        missing.extend(manager_reason_codes or (manager_reason or "amo_task_missing",))
+    next_step = {
+        "action": manager_action.get("action"),
+        "due": manager_action.get("due_at"),
+    }
     next_step_ok = (
         _owner50_is_concrete_next_step(str(next_step.get("action") or ""))
         and _parse_iso_datetime(next_step.get("due")) is not None
@@ -635,13 +694,13 @@ def resolve_evidence_source(event_id: str, events_by_id: Mapping[str, Mapping[st
 
 def owner50_action_text(family: Mapping[str, Any]) -> str:
     """Правка Fable #1: одна императивная фраза "кому + что + срок" для READY-строки
-    ("тест 5 секунд" -- менеджер прочитал и сразу звонит). Пусто, если next_step.action
-    не задан -- в этом случае строка и не должна была стать READY (см. Г6 выше)."""
-    next_step = _mapping(family.get("next_step"))
-    action = _clean_text(next_step.get("action"))
+    ("тест 5 секунд" -- менеджер прочитал и сразу звонит). Источник действия
+    и срока -- только строгий manager_action из AMO Tasks."""
+    manager_action = _mapping(family.get("manager_action"))
+    action = _clean_text(manager_action.get("action"))
     if not action:
         return ""
-    due = _clean_text(next_step.get("due"))
+    due = _clean_text(manager_action.get("due_at"))
     who = _clean_text(_mapping(family.get("identity")).get("display_name"))
     pieces = [action.rstrip(".")]
     if who and who.casefold() not in action.casefold():
@@ -696,6 +755,8 @@ def _owner50_resolve_child_grade(child: Mapping[str, Any], as_of: datetime) -> i
 
 
 def _owner50_child_is_graduate(child: Mapping[str, Any], as_of: datetime) -> bool:
+    if child.get("grade_semantics") == "tallanto_finished_grade":
+        return child.get("is_graduate") is True
     if child.get("is_graduate"):
         return True
     grade = _owner50_resolve_child_grade(child, as_of)
@@ -768,13 +829,14 @@ def _owner50_is_concrete_next_step(text: str) -> bool:
     value = _clean_text(text)
     if value.casefold().startswith(_OWNER50_CLARIFY_INTEREST_PREFIX):
         return True  # спека §5.3: "уточнить интерес" -- легальный шаг сам по себе, даже короткий
-    return _meaningful_next_step(value)
+    return is_meaningful_manager_action(value)
 
 
 def _owner50_select_target_child(
     verified_children: Sequence[Any],
     child_grade_sets: Sequence[set[int]],
     child_is_graduate: Sequence[bool],
+    child_in_timeline_scope: Sequence[bool] | None = None,
 ) -> tuple[Any, int | None, bool]:
     """Требование E2 (26.07): продукт/предложение адресованы ОДНОМУ конкретному ребёнку, не
     "младшему классу из всей истории семьи". child_grade_sets[i] -- это МНОЖЕСТВО ВСЕХ
@@ -794,10 +856,16 @@ def _owner50_select_target_child(
         "самый младший из подходящих" (то же запрещённое гадание, просто на уровне детей,
         а не истории одного ребёнка)."""
     eligible: list[tuple[Any, int]] = []
-    for child_row, grades, is_graduate in zip(verified_children, child_grade_sets, child_is_graduate):
+    scopes = child_in_timeline_scope or [False] * len(verified_children)
+    for child_row, grades, is_graduate, in_scope in zip(
+        verified_children, child_grade_sets, child_is_graduate, scopes,
+    ):
         if is_graduate:
             continue
-        single_grades = {grade for grade in grades if 1 <= grade <= 10}
+        single_grades = {
+            grade for grade in grades
+            if 1 <= grade <= 10 or (in_scope and grade == 11)
+        }
         if len(single_grades) == 1:
             eligible.append((child_row, next(iter(single_grades))))
     if not eligible:
@@ -807,6 +875,38 @@ def _owner50_select_target_child(
         return None, None, True
     child_row, grade = eligible[0]
     return child_row, grade, False
+
+
+def _owner50_tallanto_grade_contract(child: Any) -> tuple[bool, bool, bool, set[int]]:
+    """Return (has_contract, in_scope, explicit_graduate, target_grades)."""
+    record, valid = _owner50_tallanto_record(child)
+    return family_link_student_type_contract(record) if valid else (True, False, True, set())
+
+
+def _owner50_tallanto_scope_state(child: Any) -> str:
+    record, valid = _owner50_tallanto_record(child)
+    return family_link_timeline_scope_state(record) if valid else FAMILY_LINK_SCOPE_INVALID
+
+
+def _owner50_tallanto_record(child: Any) -> tuple[Mapping[str, Any], bool]:
+    try:
+        raw = child["record_json"]
+    except (KeyError, TypeError, IndexError):
+        raw = child.get("record_json") if isinstance(child, Mapping) else None
+    parsed = _json_any(raw) if isinstance(raw, str) else raw
+    if not isinstance(parsed, Mapping):
+        return {}, False
+    record = dict(parsed)
+    if not isinstance(record.get("student_types"), list) and not isinstance(record.get("grades"), list):
+        try:
+            grades_raw = child["grades_json"]
+        except (KeyError, TypeError, IndexError):
+            grades_raw = child.get("grades_json") if isinstance(child, Mapping) else None
+        grades = _json_any(grades_raw) if isinstance(grades_raw, str) else grades_raw
+        if not isinstance(grades, list):
+            return {}, False
+        record["grades"] = grades
+    return record, True
 
 
 def _owner50_family_assumptions(family: Mapping[str, Any], children: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -850,12 +950,11 @@ class CustomerDossier:
     next_step_source: str = ""
     action_status: str = NEXT_STEP_STATUS_EMPTY
     no_action_reason_code: str = ""
+    manager_action: DossierManagerAction = field(default_factory=DossierManagerAction)
     objections: tuple[DossierRow, ...] = field(default_factory=tuple)
     chronology: tuple[DossierRow, ...] = field(default_factory=tuple)
     interests: tuple[DossierMarker, ...] = field(default_factory=tuple)
     pains: tuple[DossierMarker, ...] = field(default_factory=tuple)
-
-
 def build_customer_dossier(
     con: sqlite3.Connection,
     *,
@@ -863,6 +962,8 @@ def build_customer_dossier(
     customer_id: str,
     canonical_calls: Mapping[str, str] | None = None,
     actuality_header: str = "",
+    as_of: datetime | None = None,
+    manager_action_read_snapshot: ManagerActionReadSnapshot | None = None,
 ) -> CustomerDossier:
     con.row_factory = sqlite3.Row
     customer = con.execute(
@@ -938,8 +1039,19 @@ def build_customer_dossier(
         interests.extend(_markers_from_client_text(client_text, INTEREST_MARKER_RE, kind="interest", label="Интерес из звонка", source=source))
         pains.extend(_markers_from_client_text(client_text, PAIN_MARKER_RE, kind="pain", label="Боль из звонка", source=source))
     signals = _signal_rows(con, tenant_id=tenant_id, customer_id=customer_id)
-    next_step, next_step_source, action_status, no_action_reason_code = _next_step_for_dossier(
-        con, tenant_id=tenant_id, customer_id=customer_id, signals=signals
+    manager_action = resolve_customer_manager_action(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=as_of,
+        read_snapshot=manager_action_read_snapshot,
+    )
+    action_ready = manager_action.readiness_state == "ready"
+    next_step = manager_action.action if action_ready else ""
+    next_step_source = (
+        f"amo_task:{manager_action.action_provenance.get('task_id', '')}"
+        if action_ready
+        else ""
     )
     return CustomerDossier(
         tenant_id=str(customer["tenant_id"]),
@@ -961,8 +1073,9 @@ def build_customer_dossier(
         signals=tuple(signals),
         next_step=next_step,
         next_step_source=next_step_source,
-        action_status=action_status,
-        no_action_reason_code=no_action_reason_code,
+        action_status=manager_action.status,
+        no_action_reason_code=manager_action.reason,
+        manager_action=manager_action,
         objections=tuple(_objection_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
         chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=12)),
         interests=tuple(_dedupe_markers(interests, limit=8)),
@@ -1003,6 +1116,17 @@ def build_manager_dossier_workbook(
             raise RuntimeError(f"manager freshness gate failed: {reasons}")
         segment_total = _full_dossier_segment_count(con, tenant_id=tenant_id)
         actuality_header = _actuality_header(freshness, reconcile)
+        manager_action_as_of = datetime.now(timezone.utc)
+        manager_action_read_snapshot = (
+            load_manager_action_read_snapshot(
+                con,
+                tenant_id=tenant_id,
+                customer_ids=ids,
+                as_of=manager_action_as_of,
+            )
+            if ids
+            else None
+        )
         dossiers: list[CustomerDossier] = []
         missing_customer_ids: list[str] = []
         exclusion_counts: Counter[str] = Counter()
@@ -1024,6 +1148,8 @@ def build_manager_dossier_workbook(
                         customer_id=customer_id,
                         canonical_calls=canonical_calls,
                         actuality_header=actuality_header,
+                        as_of=manager_action_as_of,
+                        manager_action_read_snapshot=manager_action_read_snapshot,
                     )
                 )
             except ValueError:
@@ -1050,6 +1176,9 @@ def build_manager_dossier_workbook(
         "next_step_rows_total": sum(1 for item in dossiers if item.next_step),
         "missing_next_step_rows_total": sum(1 for item in dossiers if not item.next_step),
         "action_status_counts": dict(sorted(Counter(item.action_status for item in dossiers).items())),
+        "manager_action_readiness_counts": dict(sorted(Counter(
+            item.manager_action.readiness_state for item in dossiers
+        ).items())),
         "no_action_reason_counts": dict(sorted(Counter(
             item.no_action_reason_code for item in dossiers if item.no_action_reason_code
         ).items())),
@@ -1688,6 +1817,12 @@ def _owner50_family_rows(
         include_purchases="customer_purchases_v1" in available,
         include_objections="customer_objections_v1" in available,
     )
+    manager_action_read_snapshot = load_manager_action_read_snapshot(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=tuple(str(row["customer_id"]) for row in snapshot["signals"]),
+        as_of=as_of,
+    )
     selected_families = frozenset(str(value) for value in family_ids if str(value))
     grouped: dict[str, dict[str, list[sqlite3.Row]]] = defaultdict(lambda: defaultdict(list))
     for kind in ("signals", "members", "children", "opportunities", "events", "risk_signals", "purchases", "objections"):
@@ -1743,6 +1878,7 @@ def _owner50_family_rows(
     )
     candidates: list[dict[str, Any]] = []
     control: list[tuple[str, ...]] = []
+    manager_actions_by_customer: dict[str, DossierManagerAction] = {}
     for family_id, family in grouped.items():
         # требование аудиторов BLOCKED #4 (полная классификация семей): раньше семья без
         # сигналов, прошедших SQL-предфильтр, тихо пропускалась здесь ("if not signals:
@@ -1836,23 +1972,38 @@ def _owner50_family_rows(
         # 6-классником ошибочно исключалась целиком, потому что 11 просто попадал в общий
         # набор. Правильно: считать выпускника ПО КАЖДОМУ ребёнку отдельно и исключать,
         # только если это истинно для ВСЕХ верифицированных детей (all(), не any()).
-        child_grade_sets = [
-            {
+        grade_contracts = [_owner50_tallanto_grade_contract(row) for row in verified_children]
+        grade_scope_states = [_owner50_tallanto_scope_state(row) for row in verified_children]
+        child_grade_sets = []
+        child_is_graduate = []
+        child_in_timeline_scope = []
+        for row, contract in zip(verified_children, grade_contracts):
+            has_contract, in_scope, explicit_graduate, target_grades = contract
+            legacy_grades = {
                 int(value)
-                for value in re.findall(r"(?<!\d)(?:[1-9]|10|11)(?!\d)", _join_list_json(row["grades_json"]))
+                for value in re.findall(
+                    r"(?<!\d)(?:[1-9]|10|11)(?!\d)", _join_list_json(row["grades_json"])
+                )
             }
-            for row in verified_children
-        ]
-        child_is_graduate = [
-            11 in grades or bool(OWNER50_GRADUATE_RE.search(_clean_text(row["canonical_name"])))
-            for row, grades in zip(verified_children, child_grade_sets)
-        ]
+            grades = target_grades if has_contract and target_grades else legacy_grades
+            child_grade_sets.append(grades)
+            child_in_timeline_scope.append(in_scope)
+            child_is_graduate.append(
+                explicit_graduate
+                if has_contract
+                else 11 in grades or bool(
+                    OWNER50_GRADUATE_RE.search(_clean_text(row["canonical_name"]))
+                )
+            )
         grade_values = {grade for grades in child_grade_sets for grade in grades}
         grade_values.update(int(match.group(1)) for offer in offers for match in OWNER50_OFFER_GRADE_RE.finditer(offer))
         if verified_children:
-            if all(child_is_graduate):
+            family_scope = family_timeline_scope_decision(grade_scope_states)
+            if family_scope == FAMILY_LINK_SCOPE_INVALID:
+                missing_reasons.append("child_grade_unproven")
+            elif family_scope == FAMILY_LINK_SCOPE_OUT or all(child_is_graduate):
                 hard_reasons.append("grade_11_or_graduate")
-            elif not any(1 <= grade <= 10 for grade in grade_values):
+            elif not any(child_in_timeline_scope) and not any(1 <= grade <= 10 for grade in grade_values):
                 missing_reasons.append("child_grade_unproven")
         elif 11 in grade_values or any(OWNER50_GRADUATE_RE.search(offer) for offer in offers):
             hard_reasons.append("grade_11_or_graduate")
@@ -2207,6 +2358,7 @@ def _owner50_family_rows(
                 [verified_children[index] for index in child_indexes],
                 [child_grade_sets[index] for index in child_indexes],
                 [child_is_graduate[index] for index in child_indexes],
+                [child_in_timeline_scope[index] for index in child_indexes],
             )
             target_child_key = _clean_text(target_child["child_key"]) if target_child is not None else ""
             target_child_name = _clean_text(target_child["canonical_name"]) if target_child is not None else ""
@@ -2255,16 +2407,24 @@ def _owner50_family_rows(
                 else None
             )
 
-            # expires_at — срок жизни сигнала, а не обещанный срок действия менеджера.
-            due_dt = next(
-                (
-                    parsed
-                    for key in ("follow_up_due_at", "manager_followup_deadline", "deadline_at", "due_at")
-                    if (parsed := _parse_iso_datetime(signal_record.get(key))) is not None
-                ),
-                None,
-            )
-            next_step_action = _clean_text(signal_record.get("recommended_action")) or OWNER50_NEXT_ACTION[signal_type]
+            # Рабочее действие Owner50 -- ровно то же DossierManagerAction, что и в
+            # карточке. Сигнал остаётся основанием, но не подменяет AMO task.
+            if customer_id not in manager_actions_by_customer:
+                manager_actions_by_customer[customer_id] = resolve_customer_manager_action(
+                    con,
+                    tenant_id=tenant_id,
+                    customer_id=customer_id,
+                    as_of=as_of,
+                    read_snapshot=manager_action_read_snapshot,
+                )
+            manager_action = manager_actions_by_customer[customer_id]
+            due_dt = _parse_iso_datetime(manager_action.due_at)
+            next_step_action = manager_action.action
+            action_provenance = _mapping(manager_action.action_provenance)
+            task_id = _clean_text(action_provenance.get("task_id"))
+            lead_id = _clean_text(action_provenance.get("lead_id"))
+            task_event_id = _clean_text(action_provenance.get("event_id"))
+            task_source_system = _clean_text(action_provenance.get("source_system"))
             # требование E2 (26.07): classify_family решает "продукт подтверждён именно для
             # этого ребёнка" через _owner50_product_confirmed(product, brands, children, ...) --
             # раньше сюда шли ВСЕ верифицированные дети семьи (min(grades) из истории каждого),
@@ -2317,10 +2477,7 @@ def _owner50_family_rows(
                     "event_id": classify_event_id,
                     "source_system": classify_source_system,
                 },
-                "next_step": {
-                    "action": next_step_action,
-                    "due": due_dt.date().isoformat() if due_dt else "",
-                },
+                "manager_action": asdict(manager_action),
                 "product": product_dict,
                 "target_child_ambiguous": target_child_ambiguous,
                 "last_objection": last_objection,
@@ -2355,6 +2512,12 @@ def _owner50_family_rows(
                     "event", _owner50_event_evidence_text(event), f"timeline_events:{event_id}",
                     event_id=event_id, source_system=_clean_text(event.get("source_system")), at=event.get("event_at"),
                     known_records=known_records,
+                ))
+            if task_event_id:
+                evidence.append(_owner50_evidence_item(
+                    "amo_task", next_step_action, f"timeline_events:{task_event_id}",
+                    event_id=task_event_id, source_system=task_source_system,
+                    at=action_provenance.get("event_at"), known_records=known_records,
                 ))
             for opportunity in opportunities:
                 offer_evidence = _dedupe_texts([
@@ -2477,6 +2640,10 @@ def _owner50_family_rows(
                 "target_child_name": target_child_name,
                 "target_child_grade": str(target_grade) if target_grade is not None else "",
                 "family_members": "; ".join(member_texts),
+                "task_responsible": manager_action.responsible_name or manager_action.responsible_ref,
+                "task_due_at": manager_action.due_at,
+                "task_id": task_id,
+                "lead_id": lead_id,
             }
             # требование архитектора #1: READY/CANDIDATE/EXCLUDED -- CANDIDATE никогда не
             # попадает в READY_50 (candidates), только в CANDIDATES со статусом candidate.
@@ -2498,6 +2665,9 @@ def _owner50_family_rows(
                         evidence_at=row_common["evidence_at"], next_action=row_common["next_action"],
                         offer=row_common["offer"], payment=row_common["payment"],
                         family_members=row_common["family_members"],
+                        task_responsible=row_common["task_responsible"],
+                        task_due_at=row_common["task_due_at"],
+                        task_id=row_common["task_id"], lead_id=row_common["lead_id"],
                     )
                 )
             else:
@@ -2513,6 +2683,9 @@ def _owner50_family_rows(
                         evidence_at=row_common["evidence_at"], next_action=row_common["next_action"],
                         offer=row_common["offer"], payment=row_common["payment"],
                         family_members=row_common["family_members"],
+                        task_responsible=row_common["task_responsible"],
+                        task_due_at=row_common["task_due_at"],
+                        task_id=row_common["task_id"], lead_id=row_common["lead_id"],
                     )
                 )
             break
@@ -2654,7 +2827,7 @@ def _owner50_snapshot(
               AND (
                 event.direction IN ('inbound','outbound')
                 OR event.event_type IN (
-                  'amo_contact_snapshot','tallanto_student_snapshot','tallanto_group','tallanto_abonement'
+                  'amo_contact_snapshot','amo_task','tallanto_student_snapshot','tallanto_group','tallanto_abonement'
                 )
                 OR json_extract(event.record_json,'$.record.module')='most_class'
                 OR (
@@ -2845,6 +3018,7 @@ OWNER50_CONTROL_COLUMNS = (
     "Бренд", "Контакт", "Телефон", "Email", "Канал", "Дата основания",
     "Дети", "Сигнал", "Основание", "Следующий шаг", "Предложение", "Оплаты", "Действие",
     "Члены семьи",
+    "Ответственный задачи", "Срок задачи", "AMO task_id", "AMO lead_id",
 )
 
 
@@ -2867,6 +3041,10 @@ def _owner50_control_rows(
     offer: str = "",
     payment: str = "",
     family_members: str = "",
+    task_responsible: str = "",
+    task_due_at: str = "",
+    task_id: str = "",
+    lead_id: str = "",
 ) -> list[tuple[str, ...]]:
     return [
         (
@@ -2874,6 +3052,7 @@ def _owner50_control_rows(
             brand, name, phone, email, channel, evidence_at,
             children, signal_type, evidence_text, next_action, offer, payment, action_text,
             family_members,
+            task_responsible, task_due_at, task_id, lead_id,
         )
         for reason in dict.fromkeys(reasons)
     ]
@@ -2887,6 +3066,7 @@ def _owner50_control_row_from_ready(row: Mapping[str, Any], *, status: str, code
         row["brand"], row["name"], row["phone"], row["email"], row["channel"], row["evidence_at"],
         row["children"], row["signal_type"], row["evidence_text"], row["next_action"],
         row["offer"], row["payment"], row["action_text"], row["family_members"],
+        row["task_responsible"], row["task_due_at"], row["task_id"], row["lead_id"],
     )
 
 
@@ -3142,103 +3322,12 @@ def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -
             parts.append(f"важность: {row['severity']}")
         if row["expires_at"]:
             parts.append(f"до: {row['expires_at']}")
-        if action and _meaningful_next_step(action):
+        if action and is_meaningful_manager_action(action):
             parts.append(f"рекомендация: {action}")
         if evidence:
             parts.append(f"основание: {evidence}")
         result.append(DossierRow("Сигналы", "; ".join(parts), f"derived_signals:{row['signal_type']}"))
     return result
-
-
-def _next_step_from_signals(signals: Sequence[DossierRow]) -> str:
-    for signal in signals:
-        match = re.search(r"рекомендация:\s*([^;]+)", signal.text)
-        if not match:
-            continue
-        value = _clean_text(match.group(1))
-        if _meaningful_next_step(value):
-            return value
-    return ""
-
-
-def _next_step_for_dossier(
-    con: sqlite3.Connection,
-    *,
-    tenant_id: str,
-    customer_id: str,
-    signals: Sequence[DossierRow],
-) -> tuple[str, str, str, str]:
-    rows = con.execute(
-        """
-        SELECT event_id, customer_id, event_at, event_type, source_system, source_id,
-               source_ref, subject, summary, text_preview, direction, record_json
-        FROM timeline_events
-        WHERE tenant_id = ? AND customer_id = ?
-          AND (superseded_by IS NULL OR superseded_by = '')
-          AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
-          AND (event_type != 'mango_call' OR match_status = 'strong_unique')
-        ORDER BY event_at DESC, event_id DESC
-        LIMIT 500
-        """,
-        (tenant_id, customer_id),
-    ).fetchall()
-    events: list[Mapping[str, Any]] = []
-    for row in rows:
-        stored = _safe_json(row["record_json"])
-        event = dict(row)
-        event["record"] = dict(stored["record"]) if isinstance(stored.get("record"), Mapping) else {}
-        event["metadata"] = dict(stored["metadata"]) if isinstance(stored.get("metadata"), Mapping) else {}
-        event["stage_before"] = stored.get("stage_before")
-        event["stage_after"] = stored.get("stage_after")
-        events.append(event)
-    conflicts: list[Mapping[str, Any]] = []
-    if _table_exists(con, "timeline_conflicts"):
-        customer_refs = set(customer_entity_ref_values(customer_id))
-        for row in con.execute(
-            "SELECT conflict_type, status, record_json FROM timeline_conflicts WHERE tenant_id = ? AND status = 'open'",
-            (tenant_id,),
-        ).fetchall():
-            record = dict(_safe_json(row["record_json"]))
-            entity_refs = {str(item) for item in (record.get("entity_refs") or ())}
-            if customer_refs.isdisjoint(entity_refs):
-                continue
-            record.setdefault("conflict_type", row["conflict_type"])
-            record.setdefault("status", row["status"])
-            conflicts.append(record)
-    if customer_id in open_family_identity_conflict_customer_ids(con, tenant_id) and not any(
-        "ambiguous_identity" in str(conflict.get("conflict_type") or "").casefold()
-        for conflict in conflicts
-    ):
-        conflicts.append(
-            {
-                "conflict_type": "ambiguous_identity",
-                "status": "open",
-                "summary": "canonical customer or family conflict",
-            }
-        )
-    resolved = resolve_customer_next_step(
-        events,
-        readiness={"open_conflicts": len(conflicts)},
-        conflicts=conflicts,
-        customer_id=customer_id,
-    )
-    if resolved.status == NEXT_STEP_STATUS_ACTIVE and _meaningful_next_step(resolved.action):
-        return resolved.display_text, "timeline_events", resolved.status, ""
-    if resolved.status != NEXT_STEP_STATUS_EMPTY:
-        return "", "", resolved.status, resolved.reason_code
-    fallback = _next_step_from_signals(signals)
-    if fallback:
-        return fallback, "derived_signals", NEXT_STEP_STATUS_ACTIVE, ""
-    return "", "", resolved.status, resolved.reason_code
-
-
-def _meaningful_next_step(value: str) -> bool:
-    text = value.casefold()
-    if not text or text in {"уточнить у менеджера", "связаться с клиентом", "позвонить клиенту"}:
-        return False
-    if "посмотреть историю" in text:
-        return False
-    return len(text.split()) >= 3
 
 
 def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
@@ -3684,6 +3773,10 @@ def _write_owner50_workbook(
                 row["target_child_name"],
                 row["target_child_grade"],
                 row["family_members"],
+                row["task_responsible"],
+                row["task_due_at"],
+                row["task_id"],
+                row["lead_id"],
             )
         )
         for item in row["evidence"]:
@@ -3736,7 +3829,11 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
     wb = Workbook()
     overview = wb.active
     overview.title = "Оглавление"
-    overview.append(("customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг", "Статус действия", "Код причины бездействия", "Интересов", "Болей", "Возражений", "Хронология"))
+    overview.append((
+        "customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг",
+        "Статус действия", "Код причины бездействия", "Ответственный", "Срок",
+        "Готовность", "Интересов", "Болей", "Возражений", "Хронология",
+    ))
     overview.freeze_panes = "A2"
     for cell in overview[1]:
         cell.font = Font(bold=True)
@@ -3752,6 +3849,9 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
                 dossier.next_step,
                 dossier.action_status,
                 dossier.no_action_reason_code,
+                dossier.manager_action.responsible_name or dossier.manager_action.responsible_ref,
+                dossier.manager_action.due_at,
+                dossier.manager_action.readiness_state,
                 len(dossier.interests),
                 len(dossier.pains),
                 len(dossier.objections),
@@ -3782,6 +3882,29 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
             )
         )
         ws.append(("Статус действия", dossier.action_status, dossier.no_action_reason_code or "Активный шаг"))
+        if dossier.manager_action.readiness_state == "review" and dossier.manager_action.action:
+            task_id = _clean_text(dossier.manager_action.action_provenance.get("task_id"))
+            lead_id = _clean_text(dossier.manager_action.action_provenance.get("lead_id"))
+            ws.append((
+                "Кандидат действия (REVIEW)",
+                dossier.manager_action.action,
+                f"AMO task_id={task_id or 'не доказан'}; lead_id={lead_id or 'не доказан'}",
+            ))
+        ws.append((
+            "Ответственный",
+            dossier.manager_action.responsible_name or dossier.manager_action.responsible_ref or "Не доказан",
+            _display_source(dossier.next_step_source or "amo_task"),
+        ))
+        ws.append((
+            "Срок",
+            dossier.manager_action.due_at or "Не доказан",
+            _display_source(dossier.next_step_source or "amo_task"),
+        ))
+        ws.append((
+            "Готовность",
+            dossier.manager_action.readiness_state,
+            _manager_action_review_text(dossier.manager_action),
+        ))
         for row in dossier.objections:
             ws.append((row.section, row.text, _display_source(row.source)))
         for item in dossier.interests:
@@ -3825,3 +3948,10 @@ def _display_source(source: str) -> str:
         "telegram_history": "Telegram история",
     }
     return mapping.get(text, text or "Источник не указан")
+
+
+def _manager_action_review_text(action: DossierManagerAction) -> str:
+    if not action.readiness_reason_codes:
+        return "Все обязательные поля доказаны"
+    primary = action.reason or action.readiness_reason_codes[0]
+    return MANAGER_ACTION_REVIEW_TEXT.get(primary, "Требуется проверка данных AMO")

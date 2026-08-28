@@ -49,6 +49,9 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert profile["customer"]["primary_email"] == "p***@example.com"
         assert profile["manager_projection"]["amo_contact_ids"] == ["contact-raw-1"]
         assert profile["manager_projection"]["amo_lead_ids"] == ["lead-1", "lead-raw-1"]
+        assert profile["manager_projection"]["schema_version"] == "customer_profile_manager_projection_v2"
+        assert profile["manager_projection"]["manager_action"]["readiness_state"] == "review"
+        assert "identity_conflict_open" in profile["manager_projection"]["manager_action"]["readiness_reason_codes"]
         assert {item["link_value"] for item in profile["manager_projection"]["identity_links"]} == {"contact-raw-1", "lead-raw-1"}
         assert profile["customer_id_mappings"] == [
             {
@@ -91,6 +94,98 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert "hidden" not in raw_text
 
 
+def test_read_api_projects_same_exact_amo_task_manager_action(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    as_of = NOW + timedelta(minutes=5)
+    due = NOW + timedelta(days=1)
+    with sqlite3.connect(db_path) as con:
+        opportunity_id = str(con.execute(
+            "SELECT opportunity_id FROM customer_opportunities WHERE customer_id=? AND source_id='lead-1'",
+            (customer_id,),
+        ).fetchone()[0])
+        con.execute("UPDATE timeline_conflicts SET status='resolved',resolved_at=?", (NOW.isoformat(),))
+        con.execute(
+            "INSERT OR REPLACE INTO ingestion_cursors "
+            "(tenant_id,source_system,last_cursor_ts,updated_at,metadata_json) VALUES (?,?,?,?,?)",
+            (
+                "foton", "amo_tasks_updated_at", (as_of - timedelta(minutes=2)).isoformat(),
+                (as_of - timedelta(minutes=1)).isoformat(),
+                json.dumps({"metadata": {"bootstrap_complete": True, "last_status": "ok"}}),
+            ),
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO ingestion_runs
+            (run_id,tenant_id,source_system,source_ref,run_kind,idempotency_key,status,
+             started_at,finished_at,input_hash,accepted_count,rejected_count,output_ref,error,
+             record_hash,record_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "run:read-api-task", "foton", "amocrm_snapshot", "amocrm:tasks:updated_at",
+                "amo_tasks_incremental", "read-api-fixture", "completed",
+                (as_of - timedelta(minutes=3)).isoformat(), (as_of - timedelta(minutes=1)).isoformat(),
+                "fixture", 1, 0, None, None, "fixture", "{}",
+            ),
+        )
+        con.commit()
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                opportunity_id=opportunity_id,
+                event_type="amo_task",
+                event_at=NOW + timedelta(minutes=2),
+                source_system="amocrm_snapshot",
+                source_id="task-read-api",
+                source_ref="amo:task:task-read-api",
+                direction="internal",
+                actor_name="Анна Менеджер",
+                actor_ref="amo:user:17",
+                text_preview="Позвонить и согласовать расписание",
+                summary="Open AMO task",
+                match_status="strong_unique",
+                record={
+                    "action_text": "Позвонить и согласовать расписание",
+                    "next_step": {
+                        "action": "Позвонить и согласовать расписание",
+                        "due": due.isoformat(),
+                    },
+                    "responsible_user_id": "17",
+                    "responsible_user_name": "Анна Менеджер",
+                    "complete_till": due.isoformat(),
+                    "completed": False,
+                    "provenance": {
+                        "task_id": "task-read-api",
+                        "entity_type": "leads",
+                        "entity_id": "lead-1",
+                        "opportunity_source_system": "amocrm_snapshot",
+                        "opportunity_source_id": "lead-1",
+                    },
+                },
+                metadata={"actor_role": "manager"},
+                created_at=NOW,
+            )
+        )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        profile = api.customer_profile("foton", customer_id, as_of=as_of)
+
+    action = profile["manager_projection"]["manager_action"]
+    assert action["readiness_state"] == "ready"
+    assert action["action"] == "Позвонить и согласовать расписание"
+    assert action["responsible_ref"] == "amo:user:17"
+    assert action["due_at"] == due.isoformat()
+    assert action["action_provenance"]["task_id"] == "task-read-api"
+    assert profile["next_step_resolution"]["resolution_kind"] == "historical_hint"
+    assert profile["next_step_resolution"]["status"] != "active"
+    assert profile["next_step_resolution"]["action"] == ""
+    assert profile["next_step_resolution"]["display_text"] == ""
+
+
 def test_read_api_lists_customers_paginates_searches_and_filters_bot_context(tmp_path: Path) -> None:
     db_path, customer_id = seed_timeline_db(tmp_path)
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
@@ -131,6 +226,178 @@ def test_read_api_lists_customers_paginates_searches_and_filters_bot_context(tmp
     assert search["result"]["items"][0]["record"]
     assert "raw_payload" not in json.dumps(search, ensure_ascii=False)
     assert timeline["items"][0]["event_type"] == "mango_call"
+
+
+def test_operational_list_and_search_hide_graduate_only_but_keep_mixed_family_history(
+    tmp_path: Path,
+) -> None:
+    db_path, _customer_id = seed_timeline_db(tmp_path)
+    scoped_customers = (
+        ("customer:graduate", "Graduate only"),
+        ("customer:mixed-graduate", "Mixed graduate"),
+        ("customer:mixed-active", "Mixed active"),
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index, (customer_id, display_name) in enumerate(scoped_customers, start=1):
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status="strong",
+                    display_name=display_name,
+                    primary_phone=f"+790000001{index:02d}",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="email_message",
+                    event_at=NOW + timedelta(minutes=index),
+                    source_system="mail_archive_stage2",
+                    source_id=f"scope-poison-{index}",
+                    direction="inbound",
+                    subject="scope-poison operational search",
+                    match_status="strong_unique",
+                    created_at=NOW + timedelta(minutes=index),
+                )
+            )
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=f"scope-bot-{index}",
+                    source_system="customer_timeline_bot_safe_summary",
+                    source_ref=f"botsafe:scope-{index}",
+                    chunk_type="bot_safe_summary",
+                    text=f"scope-poison bot context {index}",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata={"brand_context_authorized": True},
+                    created_at=NOW + timedelta(minutes=index),
+                )
+            )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS family_links_v1 (
+              tenant_id TEXT NOT NULL, family_id TEXT NOT NULL, customer_id TEXT NOT NULL,
+              child_key TEXT NOT NULL, canonical_name TEXT NOT NULL, name_variants_json TEXT NOT NULL,
+              grades_json TEXT NOT NULL, subjects_json TEXT NOT NULL, brand TEXT NOT NULL,
+              status TEXT NOT NULL, confidence TEXT NOT NULL, reason TEXT NOT NULL,
+              source_refs_json TEXT NOT NULL, evidence_count INTEGER NOT NULL, created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL, record_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, family_id, customer_id, child_key)
+            )
+            """
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS ix_family_links_v1_customer "
+            "ON family_links_v1(tenant_id,customer_id,status,confidence)"
+        )
+        for family_id, customer_id in (
+            ("family:graduate", "customer:graduate"),
+            ("family:mixed", "customer:mixed-graduate"),
+            ("family:mixed", "customer:mixed-active"),
+        ):
+            con.execute(
+                "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "foton", family_id, customer_id, "confident", "high", "test",
+                    NOW.isoformat(), NOW.isoformat(), f"hash:{customer_id}", "{}",
+                ),
+            )
+        for family_id, customer_id, child_key, student_type in (
+            ("family:graduate", "customer:graduate", "child:graduate", "Выпускник"),
+            ("family:mixed", "customer:mixed-graduate", "child:mixed-graduate", "Выпускник"),
+            ("family:mixed", "customer:mixed-active", "child:mixed-active", "8"),
+        ):
+            con.execute(
+                "INSERT INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "foton", family_id, customer_id, child_key, child_key, "[]",
+                    json.dumps([student_type], ensure_ascii=False), "[]", "foton", "confident", "high",
+                    "test", "[]", 1, NOW.isoformat(), f"hash:{child_key}",
+                    json.dumps({"grades": [student_type]}, ensure_ascii=False),
+                ),
+            )
+        con.execute(
+            "UPDATE customer_identities SET updated_at=? WHERE customer_id='customer:graduate'",
+            ((NOW + timedelta(hours=1)).isoformat(),),
+        )
+        con.execute(
+            """
+            INSERT INTO timeline_events
+            (event_id,dedupe_key,tenant_id,customer_id,opportunity_id,event_type,event_at,
+             source_system,source_id,source_ref,direction,match_status,content_key,superseded_by,
+             confidence,importance,subject,text_preview,summary,created_at,record_hash,record_json)
+            SELECT 'event:graduate-limit-poison','dedupe:graduate-limit-poison',tenant_id,
+                   customer_id,opportunity_id,event_type,?,source_system,'graduate-limit-poison',
+                   source_ref,direction,match_status,NULL,superseded_by,confidence,importance,
+                   subject,text_preview,summary,?,'hash:graduate-limit-poison',
+                   json_set(record_json,'$.event_id','event:graduate-limit-poison',
+                                       '$.source_id','graduate-limit-poison','$.event_at',?)
+            FROM timeline_events
+            WHERE customer_id='customer:graduate' AND source_id='scope-poison-1'
+            """,
+            (
+                (NOW + timedelta(hours=1)).isoformat(),
+                (NOW + timedelta(hours=1)).isoformat(),
+                (NOW + timedelta(hours=1)).isoformat(),
+            ),
+        )
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        traced_sql: list[str] = []
+        api.store._con.set_trace_callback(traced_sql.append)
+        listed = api.list_customers("foton", limit=100)
+        searched = api.search(
+            "foton", "scope-poison", scopes=("events",), as_of=NOW + timedelta(days=1), limit=100,
+        )
+        first_listed = api.list_customers("foton", limit=1)
+        first_searched = api.search(
+            "foton", "scope-poison", scopes=("events",), as_of=NOW + timedelta(days=1), limit=1,
+        )
+        graduate_history = api.customer_profile("foton", "customer:graduate", as_of=NOW + timedelta(days=1))
+        graduate_bot = api.bot_context(
+            "foton", "customer:graduate", allowed_only=True, as_of=NOW + timedelta(days=1)
+        )
+        graduate_internal = api.bot_context(
+            "foton", "customer:graduate", allowed_only=False, as_of=NOW + timedelta(days=1)
+        )
+        mixed_bot = api.bot_context(
+            "foton", "customer:mixed-active", allowed_only=True, as_of=NOW + timedelta(days=1)
+        )
+        api.store._con.set_trace_callback(None)
+
+    listed_ids = {item["customer_id"] for item in listed["items"]}
+    searched_ids = {item["record"]["customer_id"] for item in searched["result"]["items"]}
+    assert "customer:graduate" not in listed_ids
+    assert "customer:graduate" not in searched_ids
+    assert {"customer:mixed-graduate", "customer:mixed-active"} <= listed_ids
+    assert {"customer:mixed-graduate", "customer:mixed-active"} <= searched_ids
+    assert len(first_listed["items"]) == 1
+    assert first_listed["items"][0]["customer_id"] != "customer:graduate"
+    assert len(first_searched["result"]["items"]) == 1
+    assert first_searched["result"]["items"][0]["record"]["customer_id"] != "customer:graduate"
+    assert graduate_history["found"] is True
+    assert graduate_history["timeline"]["items"]
+    assert graduate_bot["out_of_scope"] is True
+    assert graduate_bot["summary"]["out_of_scope"] is True
+    assert graduate_bot["items"] == []
+    assert graduate_bot["summary"]["allowed_chunks"] == 0
+    assert graduate_internal["out_of_scope"] is False
+    assert graduate_internal["items"]
+    assert mixed_bot["out_of_scope"] is False
+    assert mixed_bot["items"]
+    family_link_reads = [sql for sql in traced_sql if "FROM family_links_v1" in sql]
+    assert family_link_reads
+    assert all("customer_id IN" in sql for sql in family_link_reads)
 
 
 def test_read_api_skips_malformed_record_without_crashing_customer_memory(tmp_path: Path) -> None:
@@ -827,3 +1094,89 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
     )
     store.close()
     return db_path, customer.customer_id
+
+
+def seed_ready_manager_action(
+    db_path: Path,
+    tmp_path: Path,
+    *,
+    customer_id: str,
+    as_of: datetime,
+) -> None:
+    """Shared synthetic fixture for a fully proven open AMO manager task."""
+    due_at = as_of + timedelta(days=1)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            "UPDATE customer_opportunities SET source_system='amocrm_snapshot',status='open',closed_at=NULL "
+            "WHERE tenant_id='foton' AND customer_id=? AND source_id='lead-1'",
+            (customer_id,),
+        )
+        opportunity_id = str(con.execute(
+            "SELECT opportunity_id FROM customer_opportunities "
+            "WHERE tenant_id='foton' AND customer_id=? AND source_id='lead-1'",
+            (customer_id,),
+        ).fetchone()["opportunity_id"])
+        con.execute(
+            "INSERT OR REPLACE INTO ingestion_cursors "
+            "(tenant_id,source_system,last_cursor_ts,updated_at,metadata_json) VALUES (?,?,?,?,?)",
+            (
+                "foton", "amo_tasks_updated_at", (as_of - timedelta(minutes=2)).isoformat(),
+                (as_of - timedelta(minutes=1)).isoformat(),
+                json.dumps({"metadata": {"bootstrap_complete": True, "last_status": "ok"}}),
+            ),
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO ingestion_runs
+            (run_id,tenant_id,source_system,source_ref,run_kind,idempotency_key,status,
+             started_at,finished_at,input_hash,accepted_count,rejected_count,output_ref,error,
+             record_hash,record_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "run:approval-ready-task", "foton", "amocrm_snapshot", "amocrm:tasks:updated_at",
+                "amo_tasks_incremental", "approval-ready-fixture", "completed",
+                (as_of - timedelta(minutes=3)).isoformat(), (as_of - timedelta(minutes=1)).isoformat(),
+                "fixture", 1, 0, None, None, "fixture", "{}",
+            ),
+        )
+        con.commit()
+    task_id = "task:approval-ready"
+    action = "Позвонить и согласовать расписание"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                opportunity_id=opportunity_id,
+                event_type="amo_task",
+                event_at=as_of - timedelta(minutes=2),
+                source_system="amocrm_snapshot",
+                source_id=task_id,
+                source_ref=f"amo:task:{task_id}",
+                direction="internal",
+                actor_name="Анна Менеджер",
+                actor_ref="amo:user:17",
+                summary="Open AMO task",
+                text_preview=action,
+                record={
+                    "action_text": action,
+                    "next_step": {"action": action, "due": due_at.isoformat()},
+                    "responsible_user_id": "17",
+                    "responsible_user_name": "Анна Менеджер",
+                    "complete_till": due_at.isoformat(),
+                    "completed": False,
+                    "provenance": {
+                        "task_id": task_id,
+                        "entity_type": "leads",
+                        "entity_id": "lead-1",
+                        "opportunity_source_system": "amocrm_snapshot",
+                        "opportunity_source_id": "lead-1",
+                    },
+                },
+                metadata={"actor_role": "manager"},
+                match_status="strong_unique",
+                created_at=as_of - timedelta(minutes=2),
+            )
+        )

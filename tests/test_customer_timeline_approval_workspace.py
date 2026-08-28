@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -180,6 +181,45 @@ def test_approval_workspace_is_deterministic_with_fixed_generated_at(tmp_path: P
     )
 
     assert first == second
+
+
+def test_approval_workspace_never_calls_task_review_generic_ready(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        for conflict_id, raw_record in con.execute(
+            "SELECT conflict_id,record_json FROM timeline_conflicts"
+        ).fetchall():
+            record = json.loads(raw_record)
+            record["status"] = "resolved"
+            record["resolved_at"] = FIXED_TIME.isoformat()
+            con.execute(
+                "UPDATE timeline_conflicts SET status='resolved',resolved_at=?,record_json=? "
+                "WHERE conflict_id=?",
+                (
+                    FIXED_TIME.isoformat(),
+                    json.dumps(record, ensure_ascii=False, sort_keys=True),
+                    conflict_id,
+                ),
+            )
+        con.commit()
+
+    workspace = build_customer_timeline_approval_workspace(
+        config=CustomerTimelineApprovalWorkspaceConfig(timeline_db=db_path, allowed_root=tmp_path),
+        tenant_id="foton",
+        customer_id=customer_id,
+        generated_at=FIXED_TIME,
+    )
+    html = render_customer_timeline_approval_workspace_html(workspace)
+
+    assert workspace["summary"]["manager_action_state"] == "review"
+    assert workspace["summary"]["manager_action_reason"]
+    assert workspace["summary"]["status"] == "needs_manager_action_review"
+    assert "REVIEW_MANAGER_ACTION" in {item["action"] for item in workspace["review_queue"]}
+    assert "READY_FOR_OPERATOR_APPROVAL_REVIEW" not in {
+        item["action"] for item in workspace["review_queue"]
+    }
+    assert "Manager action" in html
+    assert workspace["summary"]["manager_action_reason"] in html
 
 
 def add_html_named_customer(tmp_path: Path, db_path: Path) -> None:

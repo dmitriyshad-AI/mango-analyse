@@ -37,6 +37,14 @@ class FakeDiscoveryImap:
         return "BYE", []
 
 
+def test_mail_pipeline_defaults_share_single_state_tree() -> None:
+    expected = download.ROOT / ".codex_local/staging/state/mail_pipeline"
+
+    assert Path(download.parse_args([]).state_dir) == expected
+    assert Path(process.parse_args(["--data-root", "/tmp/mail-data"]).state_dir) == expected
+    assert Path(mail_import.parse_args([]).state_dir) == expected
+
+
 def test_mail_download_discovers_exact_required_mailboxes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -136,7 +144,7 @@ def test_mail_download_updates_cursor_only_after_both_mailboxes_succeed(
         ),
     )
 
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     report = download.execute(
         download.parse_args(
             [
@@ -302,7 +310,7 @@ def _insert_mail_timeline_event(
 
 def test_mail_process_reuses_builder_and_timeline_cursor(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
     incoming = data_root / download.CANONICAL_RELATIVE_ROOT / "incoming/regru_edu/inbox/mail_archive.sqlite"
     _write_archive(canonical, sha="a" * 64, event_at="2026-07-12T10:02:00+00:00")
@@ -349,7 +357,7 @@ def test_mail_process_reuses_builder_and_timeline_cursor(tmp_path: Path) -> None
 
 def test_mail_process_overlap_preserves_existing_strong_link_without_enrich_metadata(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     sha = "c" * 64
     canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
     _write_archive(canonical, sha=sha, event_at="2026-07-12T10:02:00+00:00")
@@ -397,7 +405,7 @@ def test_mail_process_overlap_preserves_existing_strong_link_without_enrich_meta
 
 def test_mail_process_missing_only_selects_absent_sha_with_fallback_date(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
     _write_archive(canonical, sha="a" * 64, event_at="2026-07-01T10:00:00+00:00")
     with sqlite3.connect(canonical) as con:
@@ -475,7 +483,12 @@ def test_mail_import_reads_cursor_from_wal_mode_backup_without_sidecars(tmp_path
 
 
 def test_mail_process_rejects_prod_or_non_staging_timeline_paths(tmp_path: Path) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    staging = tmp_path / ".codex_local/staging"
+    state = staging / "state/mail_pipeline"
+    assert process.staging_root_for(
+        state_dir=state,
+        timeline_db=staging / "customer_timeline_staging.sqlite",
+    ) == staging.resolve()
     with pytest.raises(RuntimeError, match="timeline_db_outside_codex_staging"):
         process.staging_root_for(
             state_dir=state,
@@ -485,6 +498,11 @@ def test_mail_process_rejects_prod_or_non_staging_timeline_paths(tmp_path: Path)
         process.staging_root_for(
             state_dir=tmp_path / "shared/mail_pipeline",
             timeline_db=tmp_path / "shared/timeline.sqlite",
+        )
+    with pytest.raises(RuntimeError, match="mail_state_dir_not_under_codex_staging"):
+        process.staging_root_for(
+            state_dir=staging / "mail_pipeline",
+            timeline_db=staging / "customer_timeline_staging.sqlite",
         )
 
 
@@ -510,7 +528,7 @@ def test_mail_process_rejects_failed_download_manifest(tmp_path: Path) -> None:
 
 
 def test_mail_import_rejects_non_mail_config(tmp_path: Path) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = {"head": "abc", "worktree": "tree"}
@@ -544,7 +562,7 @@ def test_mail_import_rejects_non_mail_config(tmp_path: Path) -> None:
 def test_mail_import_is_fail_loud_when_incremental_gate_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)
@@ -661,7 +679,7 @@ def test_mail_import_run_incremental_converts_exception_to_failed_result(
 def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)
@@ -758,7 +776,7 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
 def test_mail_import_execute_restores_full_cursor_after_enrich_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)

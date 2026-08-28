@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
+from typing import Any, BinaryIO, Iterable, Iterator, Mapping, Optional, Sequence
 
 from mango_mvp.customer_profile.builder import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_timeline.bot_safe_summary import BotSafeSummaryBuildConfig, build_bot_safe_summaries
@@ -50,15 +52,32 @@ class IncrementalSourceConfig:
     required: bool = True
     ignore_cursor: bool = False
     preserve_cursor: bool = False
+    proof_manifest_path: Optional[Path] = None
+    proof_manifest_sha256: Optional[str] = None
+    proof_max_age_hours: Optional[float] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_key(self.name, "source name"))
         object.__setattr__(self, "source_system", normalize_key(self.source_system, "source_system"))
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
         object.__setattr__(self, "path", Path(self.path))
+        if self.proof_manifest_path is not None:
+            object.__setattr__(self, "proof_manifest_path", Path(self.proof_manifest_path))
         object.__setattr__(self, "normalizer", normalize_key(self.normalizer, "normalizer"))
         if self.source_ref is not None:
             object.__setattr__(self, "source_ref", require_text(self.source_ref, "source_ref"))
+        if self.proof_manifest_sha256 is not None:
+            digest = str(self.proof_manifest_sha256).strip().lower()
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise ValueError("proof_manifest_sha256 must be a lowercase SHA256 digest")
+            object.__setattr__(self, "proof_manifest_sha256", digest)
+        if self.proof_max_age_hours is not None:
+            max_age = float(self.proof_max_age_hours)
+            if max_age <= 0:
+                raise ValueError("proof_max_age_hours must be positive")
+            if self.proof_manifest_path is None:
+                raise ValueError("proof_max_age_hours requires proof_manifest_path")
+            object.__setattr__(self, "proof_max_age_hours", max_age)
 
     @property
     def effective_source_ref(self) -> str:
@@ -116,10 +135,11 @@ class SourceLoadResult:
     affected_customer_ids: Sequence[str]
     would_change_customer_ids: Sequence[str]
     skipped_reason: Optional[str] = None
+    artifact_proof: Optional[Mapping[str, Any]] = None
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return {
-            "source": asdict(self.source) | {"path": str(self.source.path)},
+            "source": incremental_source_config_json(self.source),
             "cursor_before": self.cursor_before,
             "fetch_from": self.fetch_from.isoformat() if self.fetch_from else None,
             "rows_total": self.rows_total,
@@ -129,6 +149,7 @@ class SourceLoadResult:
             "affected_customer_ids": list(self.affected_customer_ids),
             "would_change_customer_ids": list(self.would_change_customer_ids),
             "skipped_reason": self.skipped_reason,
+            "artifact_proof": dict(self.artifact_proof or {}),
             "required": self.source.required,
             "status": "failed" if self.skipped_reason and self.source.required else (
                 "skipped" if self.skipped_reason else "ok"
@@ -472,7 +493,11 @@ def run_nightly_incremental(
                 }
                 report["sources"].append(source_report)
                 if loaded.skipped_reason:
-                    if not source.preserve_cursor:
+                    manifest_unready = bool(source.proof_manifest_path) and loaded.skipped_reason in {
+                        "source_unavailable",
+                        "source_stale",
+                    }
+                    if not source.preserve_cursor and not manifest_unready:
                         update_source_failure_cursor(store, source, skipped_reason=loaded.skipped_reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=loaded.skipped_reason))
                     continue
@@ -605,7 +630,7 @@ def source_failure_report(
     error: Exception | None = None,
 ) -> Mapping[str, Any]:
     payload: dict[str, Any] = {
-        "source": asdict(source) | {"path": str(source.path)},
+        "source": incremental_source_config_json(source),
         "cursor_before": None,
         "fetch_from": None,
         "rows_total": 0,
@@ -643,7 +668,61 @@ def load_incremental_jsonl_source(
     )
     if not source.ignore_cursor and fetch_from is None and cursor is not None and not has_source_ref_cursors(cursor.metadata):
         fetch_from = cursor.last_cursor_ts
-    if not source.path.exists():
+    source_handle: BinaryIO | None = None
+    try:
+        if source.proof_manifest_path is not None:
+            source_handle = source.path.open("rb")
+        proof_reason, artifact_proof = source_artifact_proof(source, output_handle=source_handle)
+    except OSError:
+        proof_reason, artifact_proof = "source_unavailable", None
+    if proof_reason or (source_handle is None and not source.path.exists()):
+        if source_handle is not None:
+            source_handle.close()
+        return SourceLoadResult(
+            source=source,
+            cursor_before=cursor.last_cursor_ts.isoformat() if cursor else None,
+            fetch_from=fetch_from,
+            rows_total=0,
+            rows_selected=0,
+            records=(),
+            max_source_ts=None,
+            affected_customer_ids=(),
+            would_change_customer_ids=(),
+            skipped_reason=proof_reason or "source_unavailable",
+            artifact_proof=artifact_proof,
+        )
+    try:
+        expected_identity = tuple((artifact_proof or {}).get("output_file_identity") or ())
+        if source_handle is not None:
+            rows, output_sha256 = read_jsonl_handle(
+                source_handle,
+                source.path,
+                expected_identity=expected_identity,
+            )
+            declared_sha256 = str((artifact_proof or {}).get("declared_output_sha256") or "")
+            declared_rows = (artifact_proof or {}).get("rows_written")
+            if output_sha256 != declared_sha256:
+                raise OSError(f"verified JSONL SHA mismatch: {source.path}")
+            if len(rows) != declared_rows:
+                raise OSError(f"verified JSONL row balance mismatch: {source.path}")
+            artifact_proof = {
+                **dict(artifact_proof or {}),
+                "status": "ok",
+                "reason": "manifest_and_output_verified",
+                "output_sha256": output_sha256,
+                "rows_verified": len(rows),
+            }
+        else:
+            rows = read_jsonl(source.path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        if artifact_proof is None:
+            raise
+        failed_proof = {
+            **dict(artifact_proof or {}),
+            "status": "unavailable",
+            "reason": "output_verification_failed",
+            "error_type": type(exc).__name__,
+        }
         return SourceLoadResult(
             source=source,
             cursor_before=cursor.last_cursor_ts.isoformat() if cursor else None,
@@ -655,8 +734,11 @@ def load_incremental_jsonl_source(
             affected_customer_ids=(),
             would_change_customer_ids=(),
             skipped_reason="source_unavailable",
+            artifact_proof=failed_proof,
         )
-    rows = read_jsonl(source.path)
+    finally:
+        if source_handle is not None:
+            source_handle.close()
     selected_rows = []
     max_ts: Optional[datetime] = None
     affected: set[str] = set()
@@ -680,6 +762,36 @@ def load_incremental_jsonl_source(
             observed_at=ts,
         )
         records.append(record)
+    declared_max_event_at = (artifact_proof or {}).get("max_event_at")
+    declared_max_ts = (
+        parse_datetime(declared_max_event_at, "manifest_max_event_at")
+        if declared_max_event_at
+        else None
+    )
+    if artifact_proof is not None and declared_max_ts != max_ts:
+        return SourceLoadResult(
+            source=source,
+            cursor_before=cursor.last_cursor_ts.isoformat() if cursor else None,
+            fetch_from=fetch_from,
+            rows_total=len(rows),
+            rows_selected=0,
+            records=(),
+            max_source_ts=None,
+            affected_customer_ids=(),
+            would_change_customer_ids=(),
+            skipped_reason="source_unavailable",
+            artifact_proof={
+                **dict(artifact_proof or {}),
+                "status": "unavailable",
+                "reason": "max_event_at_mismatch",
+                "computed_max_event_at": max_ts.isoformat() if max_ts else None,
+            },
+        )
+    if artifact_proof is not None:
+        artifact_proof = {
+            **dict(artifact_proof),
+            "max_event_at_verified": max_ts.isoformat() if max_ts else None,
+        }
     return SourceLoadResult(
         source=source,
         cursor_before=cursor.last_cursor_ts.isoformat() if cursor else None,
@@ -690,7 +802,142 @@ def load_incremental_jsonl_source(
         max_source_ts=max_ts,
         affected_customer_ids=tuple(sorted(affected)),
         would_change_customer_ids=(),
+        artifact_proof=artifact_proof,
     )
+
+
+def incremental_source_config_json(source: IncrementalSourceConfig) -> dict[str, Any]:
+    payload = asdict(source)
+    payload["path"] = str(source.path)
+    if source.proof_manifest_path is not None:
+        payload["proof_manifest_path"] = str(source.proof_manifest_path)
+    return payload
+
+
+def source_artifact_proof(
+    source: IncrementalSourceConfig,
+    *,
+    now: datetime | None = None,
+    output_handle: BinaryIO | None = None,
+) -> tuple[str | None, Mapping[str, Any] | None]:
+    """Validate one saved producer manifest immediately before reading JSONL.
+
+    The producer manifest is the source of truth for freshness and bytes.  A
+    stale or replaced manifest is a structured unavailable source, never an
+    excuse to advance the ingestion cursor.
+    """
+
+    manifest_path = source.proof_manifest_path
+    if manifest_path is None:
+        return None, None
+    base: dict[str, Any] = {
+        "manifest_path": str(manifest_path),
+        "status": "unavailable",
+    }
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        base["manifest_sha256"] = manifest_sha256
+        base["manifest_mtime_utc"] = datetime.fromtimestamp(
+            manifest_path.stat().st_mtime, timezone.utc
+        ).isoformat()
+        if (
+            source.proof_manifest_sha256 is not None
+            and manifest_sha256 != source.proof_manifest_sha256
+        ):
+            base["reason"] = "manifest_sha_mismatch"
+            return "source_stale", base
+        payload = json.loads(manifest_bytes.decode("utf-8"))
+        if not isinstance(payload, Mapping) or payload.get("status") != "ok":
+            base["reason"] = "manifest_not_ok"
+            return "source_unavailable", base
+        finished_raw = str(payload.get("finished_at") or "").strip()
+        finished = datetime.fromisoformat(finished_raw.replace("Z", "+00:00"))
+        if finished.tzinfo is None or finished.utcoffset() is None:
+            raise ValueError("finished_at must include timezone")
+        finished = finished.astimezone(timezone.utc)
+        checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        age_hours = (checked_at - finished).total_seconds() / 3600
+        base.update(
+            {
+                "finished_at": finished.isoformat(),
+                "checked_at": checked_at.isoformat(),
+                "age_hours": round(age_hours, 6),
+                "max_event_at": payload.get("max_event_at"),
+                "rows_written": payload.get("rows_written"),
+            }
+        )
+        if age_hours < 0 or (
+            source.proof_max_age_hours is not None
+            and age_hours > source.proof_max_age_hours
+        ):
+            base["reason"] = "manifest_outside_freshness_window"
+            return "source_stale", base
+        declared_output = Path(str(payload.get("output_jsonl") or "")).expanduser().resolve(
+            strict=False
+        )
+        if declared_output != source.path.expanduser().resolve(strict=False):
+            base["reason"] = "output_path_mismatch"
+            return "source_unavailable", base
+        if output_handle is None and not source.path.is_file():
+            base["reason"] = "output_missing"
+            return "source_unavailable", base
+        declared_output_sha = str(payload.get("output_sha256") or "").strip().lower()
+        if len(declared_output_sha) != 64 or any(
+            character not in "0123456789abcdef" for character in declared_output_sha
+        ):
+            base["reason"] = "output_sha_invalid"
+            return "source_unavailable", base
+        output_stat = (
+            os.fstat(output_handle.fileno())
+            if output_handle is not None
+            else source.path.stat()
+        )
+        if output_handle is not None:
+            output_handle.seek(0)
+            base["output_file_identity"] = list(_file_identity(output_stat))
+        base["declared_output_sha256"] = declared_output_sha
+        base["output_mtime_utc"] = datetime.fromtimestamp(
+            output_stat.st_mtime, timezone.utc
+        ).isoformat()
+        rows_written = payload.get("rows_written")
+        if not isinstance(rows_written, int) or isinstance(rows_written, bool) or rows_written < 0:
+            base["reason"] = "rows_written_invalid"
+            return "source_unavailable", base
+        max_event_at = payload.get("max_event_at")
+        if rows_written > 0 and not str(max_event_at or "").strip():
+            base["reason"] = "max_event_at_missing"
+            return "source_unavailable", base
+        if max_event_at:
+            parsed_max = datetime.fromisoformat(str(max_event_at).replace("Z", "+00:00"))
+            if parsed_max.tzinfo is None or parsed_max.utcoffset() is None:
+                raise ValueError("max_event_at must include timezone")
+        builder_path_raw = str(payload.get("builder_manifest") or "").strip()
+        builder_sha = str(payload.get("builder_manifest_sha256") or "").strip().lower()
+        if not builder_path_raw or len(builder_sha) != 64:
+            base["reason"] = "builder_lineage_missing"
+            return "source_unavailable", base
+        builder_path = Path(builder_path_raw).expanduser().resolve(strict=False)
+        if builder_path.parent != source.path.expanduser().resolve(strict=False).parent:
+            base["reason"] = "builder_lineage_path_mismatch"
+            return "source_unavailable", base
+        if not builder_path.is_file() or _sha256_file(builder_path) != builder_sha:
+            base["reason"] = "builder_lineage_mismatch"
+            return "source_unavailable", base
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        base["reason"] = "manifest_invalid"
+        return "source_unavailable", base
+    base["status"] = "pending_output_verification"
+    base["reason"] = "manifest_verified"
+    return None, base
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def update_source_failure_cursor(
@@ -793,6 +1040,40 @@ def read_jsonl(path: Path) -> tuple[Mapping[str, Any], ...]:
                 raise ValueError(f"JSONL row must be an object: {path}")
             rows.append(parsed)
     return tuple(rows)
+
+
+def _file_identity(item: os.stat_result) -> tuple[int, int, int, int]:
+    # ctime changes when an atomic replacement unlinks the old pathname, even
+    # though this descriptor's immutable bytes did not change.
+    return (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+
+
+def read_jsonl_handle(
+    handle: BinaryIO,
+    path: Path,
+    *,
+    expected_identity: Sequence[int] = (),
+) -> tuple[tuple[Mapping[str, Any], ...], str]:
+    """Parse and hash the pinned descriptor in one pass."""
+
+    opened = os.fstat(handle.fileno())
+    if expected_identity and tuple(expected_identity) != _file_identity(opened):
+        raise OSError(f"verified JSONL changed before it was read: {path}")
+    rows: list[Mapping[str, Any]] = []
+    digest = hashlib.sha256()
+    for line in handle:
+        digest.update(line)
+        text = line.strip()
+        if not text:
+            continue
+        parsed = json.loads(text)
+        if not isinstance(parsed, Mapping):
+            raise ValueError(f"JSONL row must be an object: {path}")
+        rows.append(parsed)
+    after = os.fstat(handle.fileno())
+    if _file_identity(opened) != _file_identity(after):
+        raise OSError(f"verified JSONL changed while being read: {path}")
+    return tuple(rows), digest.hexdigest()
 
 
 def normalized_timestamp(row: Mapping[str, Any]) -> str:
@@ -907,6 +1188,14 @@ def completed_import_source_names(imports: Iterable[Mapping[str, Any]]) -> list[
 
 def summarize_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
     source_statuses = Counter(str(item.get("status") or ("skipped" if item.get("skipped_reason") else "ok")) for item in report.get("sources", ()))
+    artifact_proofs = {
+        str(item.get("source", {}).get("source_system") or ""): dict(item["artifact_proof"])
+        for item in report.get("sources", ())
+        if isinstance(item, Mapping)
+        and isinstance(item.get("source"), Mapping)
+        and isinstance(item.get("artifact_proof"), Mapping)
+        and item.get("artifact_proof")
+    }
     return {
         "schema_version": report.get("schema_version"),
         "overall_status": report.get("overall_status"),
@@ -917,6 +1206,7 @@ def summarize_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
         "affected_customer_count": report.get("affected_customer_count"),
         "changed_customer_count": report.get("changed_customer_count"),
         "completed_import_sources": completed_import_source_names(report.get("imports", ())),
+        "source_artifact_proofs": artifact_proofs,
         "phase_seconds": report.get("phase_seconds"),
         "safety": report.get("safety"),
     }

@@ -354,9 +354,7 @@ def cmd_owner50(args: argparse.Namespace) -> int:
 
 
 CURRENT_TALLANTO_STUDENT_TYPES = frozenset(
-    {"listener", "слушатель"}
-    | {f"{grade}_klass" for grade in range(1, 11)}
-    | {f"{grade} класс" for grade in range(1, 11)}
+    f"{grade}_klass" for grade in range(1, 11)
 )
 
 
@@ -604,6 +602,13 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
 
 
 _ACCEPTANCE_SHEETS = ("Семьи 30", "Хронология", "Доказательства", "Конфликты", "Owner50")
+_ACCEPTANCE_BUSINESS_REVIEW_COLUMNS = (
+    "B1. Полезно без существенной правки (да/нет)",
+    "B2. Секунд до следующего шага",
+    "B3. False READY (да/нет/не READY)",
+    "B4. Критическая ошибка (да/нет)",
+    "B5. Комментарий аудитора",
+)
 
 
 def _write_acceptance_workbook(path: Path, sheets: Mapping[str, tuple[Sequence[str], Sequence[Sequence[Any]]]]) -> None:
@@ -913,7 +918,7 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     owner_headers = list(OWNER50_CONTROL_COLUMNS)
 
     sheets = {
-        "Семьи 30": (("№", "family_id", "customer_id", "Основной контакт (роль не подтверждена)", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий"), families),
+        "Семьи 30": (("№", "family_id", "customer_id", "Основной контакт (роль не подтверждена)", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий", *_ACCEPTANCE_BUSINESS_REVIEW_COLUMNS), families),
         "Хронология": (("family_id", "customer_id", "event_id", "Дата/время", "Тип события", "Источник", "Направление", "Тема", "Краткое содержание", "Полный текст", "source_ref"), chronology),
         "Доказательства": (("family_id", "Тип", "Доказательство", "Точное поле", "Дата", "source_system", "event_id/record_id", "Проверяемо"), evidence),
         "Конфликты": (("family_id", "conflict_id", "Тип", "Критичность", "Статус", "Дата", "Исходная запись", "F1. Статус", "F2. Комментарий"), conflicts),
@@ -944,6 +949,8 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     scrubbed_manifest["owner50_ready_rows"] = status_counts["READY"]
     scrubbed_manifest["owner50_candidate_rows"] = status_counts["CANDIDATE"]
     scrubbed_manifest["owner50_excluded_rows"] = status_counts["EXCLUDED"]
+    scrubbed_manifest["business_review_columns"] = list(_ACCEPTANCE_BUSINESS_REVIEW_COLUMNS)
+    scrubbed_manifest["business_review_status"] = "awaiting_manual_scores"
     scrubbed_manifest["chronology_row_limit_applied"] = False
     (out_root / "acceptance_selection_manifest.json").write_text(
         json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"

@@ -5,6 +5,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,8 +16,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig  # noqa: E402
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore  # noqa: E402
 from mango_mvp.customer_timeline.stage4b_bot_opening import (  # noqa: E402
-    _MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS,
     _MAIL_OUTPUT_SECRET_TAGS,
 )
 from scripts.publish_snapshot.common import (  # noqa: E402
@@ -81,7 +82,6 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
         if not _table_exists(con, "a2v3_mail_event_facts") or not _table_exists(con, "bot_context_chunks"):
             return {"ok": True, "skipped": True, "reason": "mail_facts_or_chunks_table_missing"}
-        allowed_reason_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS)
         primary_reason_placeholders = ",".join("?" for _ in _MAIL_FORBIDDEN_PRIMARY_REASONS)
         secret_tag_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_SECRET_TAGS)
         counts = {
@@ -160,9 +160,9 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     tuple(_MAIL_OUTPUT_SECRET_TAGS),
                 ).fetchone()[0]
             ),
-            "allowed_mail_unapproved_client_unsafe_reason": int(
+            "allowed_mail_client_unsafe": int(
                 con.execute(
-                    f"""
+                    """
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
                     JOIN a2v3_mail_event_facts AS f
@@ -171,35 +171,15 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                      AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
-                      AND f.client_safe = 0
-                      AND f.client_safe_reason NOT IN ({allowed_reason_placeholders})
-                    """,
-                    tuple(_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
-                ).fetchone()[0]
-            ),
-            "allowed_mail_variant_b_client_unsafe": int(
-                con.execute(
-                    f"""
-                    SELECT COUNT(*)
-                    FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f
-                      ON f.event_id = b.event_id
-                     AND f.tenant_id = b.tenant_id
-                     AND f.customer_id = b.customer_id
-                    WHERE b.source_system = 'mail_archive_stage2'
-                      AND b.allowed_for_bot = 1
-                      AND f.bot_visible = 1
-                      AND f.client_safe = 0
-                      AND f.client_safe_reason IN ({allowed_reason_placeholders})
-                    """,
-                    tuple(_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
+                      AND f.client_safe != 1
+                    """
                 ).fetchone()[0]
             ),
         }
     violations = {
         key: value
         for key, value in counts.items()
-        if key not in {"allowed_mail_chunks", "allowed_mail_variant_b_client_unsafe"} and int(value) > 0
+        if key != "allowed_mail_chunks" and int(value) > 0
     }
     return {
         "ok": not violations,
@@ -207,8 +187,8 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
         "counts": counts,
         "violations": violations,
         "policy": (
-            "opened mail chunks require A2 bot_visible=1; money/tax/contract may be opened for manager drafts; "
-            "missing facts, bot_visible=0, secret tags, and primary manager-review reasons block publish"
+            "opened mail chunks require A2 client_safe=1 and bot_visible=1; missing facts, "
+            "client_safe=0, bot_visible=0, secret tags, and manager-review reasons block publish"
         ),
     }
 
@@ -350,13 +330,63 @@ def run_internal_smoke(db_path: Path, allowed_root: Path, tenant_id: str, contro
     return results
 
 
+def bot_visibility_counts(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    as_of: datetime | None = None,
+) -> dict[str, object]:
+    """Count stored and effective visibility through the canonical reader policy."""
+
+    cutoff = as_of or datetime.now(timezone.utc)
+    with CustomerTimelineSQLiteStore.open_read_only(
+        db_path,
+        allowed_root=db_path.parent,
+        clock=lambda: cutoff,
+    ) as store:
+        stored = int(
+            store._con.execute(  # noqa: SLF001 - acceptance probes the canonical store policy.
+                """
+                SELECT COUNT(*) FROM bot_context_chunks
+                WHERE tenant_id=? AND allowed_for_bot=1
+                  AND (superseded_by IS NULL OR superseded_by='')
+                """,
+                (tenant_id,),
+            ).fetchone()[0]
+        )
+        clauses = ["tenant_id = ?"]
+        params: list[object] = [tenant_id]
+        store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
+            clauses,
+            params,
+            customer_id=None,
+            opportunity_id=None,
+            since=None,
+            until=cutoff,
+            allowed_for_bot=True,
+        )
+        effective = int(
+            store._con.execute(  # noqa: SLF001 - read-only acceptance count.
+                "SELECT COUNT(*) FROM bot_context_chunks WHERE " + " AND ".join(clauses),
+                tuple(params),
+            ).fetchone()[0]
+        )
+    return {
+        "as_of": cutoff.isoformat(),
+        "bot_visible_stored": stored,
+        "bot_visible_after_reader_policy": effective,
+        "reader_policy_blocked": stored - effective,
+    }
+
+
 def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
     cfg = load_config(config_path)
     report = report_base(cfg, "reader_smoke")
     db_path = snapshot_db.expanduser().resolve(strict=False)
     variables = {"db": db_path, "allowed_root": db_path.parent, "tenant_id": cfg.tenant_id}
     reader_results = []
-    ok = quick_check(db_path) == "ok"
+    snapshot_quick_check = quick_check(db_path)
+    ok = snapshot_quick_check == "ok"
     for reader in cfg.readers:
         command = reader.get("smoke_command")
         if command:
@@ -373,14 +403,16 @@ def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
     ok = ok and bool(mail_safety["ok"])
     mango_safety = mango_processed_allowed_safety_gate(db_path)
     ok = ok and bool(mango_safety["ok"])
+    visibility = bot_visibility_counts(db_path, tenant_id=cfg.tenant_id)
     report.update(
         {
             "snapshot_db": str(db_path),
-            "quick_check": quick_check(db_path),
+            "quick_check": snapshot_quick_check,
             "reader_results": reader_results,
             "internal_control_customers": internal_results,
             "mail_allowed_safety_gate": mail_safety,
             "mango_processed_allowed_safety_gate": mango_safety,
+            "bot_visibility": visibility,
             "status": "ok" if ok else "failed",
         }
     )

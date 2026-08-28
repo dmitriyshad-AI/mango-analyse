@@ -56,6 +56,7 @@ class SourceRow:
     source_filename: str | None
     source_file: str | None
     started_at: str
+    updated_at: str
     phone: str | None
     manager_name: str | None
     direction: str | None
@@ -110,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     all_filtered = filter_rows(rows, since=since, until=until)
     filtered = list(all_filtered)
-    filtered.sort(key=lambda item: parse_source_datetime(item.started_at) or datetime.min.replace(tzinfo=timezone.utc))
+    filtered.sort(key=lambda item: parse_source_datetime(item.updated_at) or datetime.min.replace(tzinfo=timezone.utc))
     if args.limit is not None:
         filtered = filtered[: max(0, args.limit)]
     events: list[Mapping[str, Any]] = []
@@ -223,6 +224,7 @@ def discover_package_call_dbs(root: Path) -> list[Path]:
 
 def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[SourceRow]:
     snapshot = read_call_source_snapshot(path, table=table)
+    _require_source_updated_at(snapshot, source_kind=source_kind)
     return [_source_row_from_mapping(row, source_kind=source_kind, source_db=snapshot.path) for row in snapshot.ready_rows]
 
 
@@ -256,6 +258,7 @@ def read_ready_call_rows_with_base_counts(
         "started_at",
         "call_at",
         "event_at",
+        "updated_at",
     )
     snapshot = read_call_source_snapshot(
         path,
@@ -263,6 +266,7 @@ def read_ready_call_rows_with_base_counts(
         include_all_rows=True,
         all_columns=identity_columns,
     )
+    _require_source_updated_at(snapshot, source_kind=source_kind)
     ready_rows = [
         _source_row_from_mapping(row, source_kind=source_kind, source_db=snapshot.path)
         for row in snapshot.ready_rows
@@ -273,6 +277,11 @@ def read_ready_call_rows_with_base_counts(
         source_db=snapshot.path,
     )
     return ready_rows, source_id_base_counts(duplicate_rows)
+
+
+def _require_source_updated_at(snapshot, *, source_kind: str) -> None:
+    if source_kind == "call_records" and "updated_at" not in snapshot.columns:
+        raise ValueError(f"required call column updated_at missing in {snapshot.path}")
 
 
 def _duplicate_candidate_rows(
@@ -297,6 +306,7 @@ def _source_row_from_mapping(
 ) -> SourceRow:
     row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename") or ""
     started_at = first_text(row, "started_at", "call_at", "event_at") or ""
+    updated_at = first_text(row, "updated_at") or started_at
     return SourceRow(
         source_kind=source_kind,
         source_db=str(source_db),
@@ -305,6 +315,7 @@ def _source_row_from_mapping(
         source_filename=first_text(row, "source_filename"),
         source_file=first_text(row, "source_file"),
         started_at=started_at,
+        updated_at=updated_at,
         phone=first_text(row, "phone", "client_phone", "normalized_phone", "Телефон клиента"),
         manager_name=first_text(row, "manager_name", "Менеджер"),
         direction=first_text(row, "direction", "Направление звонка"),
@@ -332,6 +343,7 @@ def build_event_payload(
         source_call_id=row.source_call_id,
         source_filename=row.source_filename,
         started_at=row.started_at,
+        updated_at=row.updated_at,
         duplicate_base_ids=duplicate_base_ids,
     )
     source_id = str(lineage["call_id"])
@@ -444,12 +456,12 @@ def source_id_base_counts(rows: Sequence[SourceRow]) -> Counter[str]:
 def filter_rows(rows: Iterable[SourceRow], *, since: datetime | None, until: datetime | None) -> list[SourceRow]:
     result: list[SourceRow] = []
     for row in rows:
-        started = parse_source_datetime(row.started_at)
-        if started is None:
+        updated = parse_source_datetime(row.updated_at)
+        if updated is None:
             continue
-        if since is not None and started < since:
+        if since is not None and updated < since:
             continue
-        if until is not None and started >= until:
+        if until is not None and updated >= until:
             continue
         result.append(row)
     return result

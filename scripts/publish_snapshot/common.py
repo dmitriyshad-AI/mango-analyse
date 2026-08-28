@@ -28,6 +28,7 @@ DEFAULT_COUNT_TABLES = (
     "ingestion_cursors",
 )
 SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
+COMPACT_READER_MAX_BYTES = 5_942_681_600
 
 
 class PublishSnapshotError(RuntimeError):
@@ -141,6 +142,14 @@ def quick_check(path: Path) -> str:
     con = sqlite_ro(path)
     try:
         return str(con.execute("PRAGMA quick_check").fetchone()[0])
+    finally:
+        con.close()
+
+
+def integrity_check(path: Path) -> str:
+    con = sqlite_ro(path)
+    try:
+        return str(con.execute("PRAGMA integrity_check").fetchone()[0])
     finally:
         con.close()
 
@@ -400,21 +409,6 @@ def wal_checkpoint_truncate(db_path: Path) -> Mapping[str, Any]:
     if not ok:
         raise PublishSnapshotError(f"wal checkpoint failed: row={row}, wal_size={wal_size}")
     return {"row": row, "wal_path": str(wal), "wal_size": wal_size}
-
-
-def vacuum_into(source_db: Path, target_db: Path) -> None:
-    if target_db.exists():
-        raise PublishSnapshotError(f"snapshot DB already exists: {target_db}")
-    target_db.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(source_db), timeout=30)
-    try:
-        con.execute(f"VACUUM INTO {sql_literal(str(target_db))}")
-    finally:
-        con.close()
-
-
-def sql_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 def disk_report(path: Path, required_bytes: int) -> Mapping[str, Any]:

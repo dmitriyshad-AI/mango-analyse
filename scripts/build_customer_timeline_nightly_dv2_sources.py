@@ -19,6 +19,8 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -38,8 +40,13 @@ from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
     REQUIRED_MANIFEST_SOURCE_STEP_MAP,
 )
-
-DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
+from scripts.run_customer_timeline_mail_download import (  # noqa: E402
+    atomic_write_json,
+    sha256_file,
+)
+# The checked-out repository is the only code/source root for this build.
+# Host-specific historical paths made self-heal unusable after handoff.
+DEFAULT_SOURCE_ROOT = ROOT
 DEFAULT_MANGO_CALLS_SERVICE_CONFIG = Path(
     os.getenv(
         "MANGO_CALLS_SERVICE_CONFIG",
@@ -53,7 +60,6 @@ DEFAULT_STAGING_ROOT = DEFAULT_NIGHTLY_HOME / ".codex_local" / "staging"
 DEFAULT_OUT_ROOT = DEFAULT_STAGING_ROOT / "nightly_dv2_sources"
 DEFAULT_TIMELINE_DB = DEFAULT_STAGING_ROOT / "customer_timeline_staging.sqlite"
 DEFAULT_BASE_SERVICE_CONFIG = DEFAULT_STAGING_ROOT / "nightly_service" / "customer_timeline_nightly_service_config.json"
-DEFAULT_CURSOR = "2026-06-19T14:53:27+00:00"
 DEFAULT_TALLANTO_ATTENDANCE_SINCE = "2026-06-09T00:00:00+03:00"
 DEFAULT_TALLANTO_READONLY_ENV = Path("~/.mango_secrets/tallanto_readonly.env").expanduser()
 DEFAULT_WAPPI_ENV = Path.home() / ".mango_secrets" / "amo_wappi.env"
@@ -71,7 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mail-data-root", default=str(DEFAULT_MAIL_DATA_ROOT))
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--timeline-db", default=str(DEFAULT_TIMELINE_DB))
-    parser.add_argument("--mail-cursor", default=DEFAULT_CURSOR)
+    parser.add_argument(
+        "--state-root",
+        help="Existing persistent state tree; defaults to <timeline-db parent>/state.",
+    )
     parser.add_argument("--base-service-config", default=str(DEFAULT_BASE_SERVICE_CONFIG))
     parser.add_argument(
         "--mango-calls-service-config",
@@ -83,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--amo-tasks-snapshot",
         help="Existing local AMO Tasks CSV for the first incremental Tasks cursor.",
     )
+    parser.add_argument(
+        "--tallanto-identity-db",
+        action="append",
+        help="Existing read-only Tallanto identity DB; repeat for multiple exact inputs.",
+    )
     parser.add_argument("--text-limit", type=int, default=1200)
     return parser
 
@@ -93,40 +107,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     mail_data_root = Path(args.mail_data_root).expanduser().resolve(strict=False)
     out_root = Path(args.out_root).expanduser().resolve(strict=False)
     timeline_db = Path(args.timeline_db).expanduser().resolve(strict=False)
+    state_root = (
+        Path(args.state_root).expanduser().resolve(strict=False)
+        if args.state_root
+        else (timeline_db.parent / "state").resolve(strict=False)
+    )
     base_service_config = Path(args.base_service_config).expanduser().resolve(strict=False)
     mango_calls_service_config = Path(args.mango_calls_service_config).expanduser().resolve(strict=False)
+    expected_state_root = (timeline_db.parent / "state").resolve(strict=False)
+    if state_root != expected_state_root:
+        raise RuntimeError("state_root must be the single <staging>/state tree")
     out_root.mkdir(parents=True, exist_ok=True)
-    mail_cursor = parse_dt(args.mail_cursor)
-
-    mail_jsonl = out_root / "mail_archive_stage2_incremental.jsonl"
-    mail_manifest = out_root / "mail_archive_stage2_incremental_manifest.json"
-    mail_report = build_mail_increment(
-        mail_data_root,
-        out_jsonl=mail_jsonl,
-        manifest_path=mail_manifest,
-        since=mail_cursor,
-        text_limit=args.text_limit,
-        timeline_db=timeline_db,
-    )
-    mango_manifest = out_root / "mango_api_freshness_manifest.json"
+    state_root.mkdir(parents=True, exist_ok=True)
+    mail_report = resolve_mail_process_input(state_root)
+    mail_jsonl = Path(str(mail_report["output_jsonl"]))
+    mail_process_manifest = Path(str(mail_report["process_manifest"]))
+    freshness_root = state_root / "freshness"
+    freshness_root.mkdir(parents=True, exist_ok=True)
+    mango_manifest = freshness_root / "mango_api_freshness_manifest.json"
     mango_report = build_mango_freshness(source_root, mango_manifest)
-    tallanto_manifest = out_root / "tallanto_freshness_manifest.json"
-    tallanto_report = build_tallanto_freshness(tallanto_manifest)
     service_config = build_service_config(
         timeline_db=timeline_db,
-        out_root=out_root,
+        state_root=state_root,
         mail_data_root=mail_data_root,
         mail_jsonl=mail_jsonl,
-        mail_manifest=mail_manifest,
-        mango_manifest=mango_manifest,
-        tallanto_manifest=tallanto_manifest,
-        base_service_config=base_service_config,
-        mango_calls_service_config=mango_calls_service_config,
-        amo_tasks_snapshot=(
-            Path(args.amo_tasks_snapshot).expanduser().resolve(strict=False)
-            if args.amo_tasks_snapshot
+        mail_process_manifest=mail_process_manifest,
+        mail_process_manifest_sha256=(
+            str(mail_report["process_manifest_sha256"])
+            if mail_report.get("process_manifest_sha256")
             else None
         ),
+        mango_manifest=mango_manifest,
+        base_service_config=base_service_config,
+        mango_calls_service_config=mango_calls_service_config,
+        amo_tasks_snapshot=resolve_amo_tasks_snapshot(
+            state_root,
+            explicit=args.amo_tasks_snapshot,
+        ),
+        tallanto_identity_dbs=args.tallanto_identity_db,
     )
     config_out = (
         Path(args.service_config_out).expanduser().resolve(strict=False)
@@ -144,11 +162,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": "customer_timeline_nightly_dv2_source_builder_v1",
         "source_root": str(source_root),
         "out_root": str(out_root),
+        "state_root": str(state_root),
         "timeline_db": str(timeline_db),
         "service_config": str(config_out),
         "mail": mail_report,
         "mango_api_freshness": mango_report,
-        "tallanto_freshness": tallanto_report,
         "safety": {
             "writes_prod_db": False,
             "opens_prod_db": False,
@@ -161,6 +179,66 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
+
+
+def resolve_amo_tasks_snapshot(state_root: Path, *, explicit: str | None) -> Path | None:
+    if explicit:
+        return Path(explicit).expanduser().resolve(strict=False)
+    candidate = state_root / "amo_tasks" / "amo_tasks_snapshot.csv"
+    return candidate if candidate.is_file() else None
+
+
+def resolve_mail_process_input(state_root: Path) -> Mapping[str, Any]:
+    """Resolve the sole mail producer output without rebuilding or copying it."""
+
+    mail_root = state_root / "mail_pipeline"
+    process_root = mail_root / "process"
+    process_manifest = mail_root / "mail_process_manifest.json"
+    output_jsonl = process_root / "mail_archive_stage2_incremental.jsonl"
+    builder_manifest = process_root / "mail_increment_builder_manifest.json"
+    missing = {
+        "status": "missing",
+        "reason": "mail_process_manifest_missing",
+        "process_manifest": str(process_manifest),
+        "output_jsonl": str(output_jsonl),
+        "builder_manifest": str(builder_manifest),
+        "verified": False,
+    }
+    if not process_manifest.is_file():
+        return missing
+    try:
+        payload = json.loads(process_manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("mail_process_manifest_unreadable") from exc
+    if not isinstance(payload, Mapping) or payload.get("status") != "ok":
+        raise RuntimeError("mail_process_manifest_not_ok")
+    declared_output = Path(str(payload.get("output_jsonl") or "")).expanduser().resolve(strict=False)
+    declared_builder = Path(str(payload.get("builder_manifest") or "")).expanduser().resolve(strict=False)
+    if declared_output != output_jsonl.resolve(strict=False):
+        raise RuntimeError("mail_process_output_path_mismatch")
+    if declared_builder != builder_manifest.resolve(strict=False):
+        raise RuntimeError("mail_process_builder_manifest_path_mismatch")
+    if not output_jsonl.is_file() or not builder_manifest.is_file():
+        raise RuntimeError("mail_process_artifact_missing")
+    output_sha = sha256_file(output_jsonl)
+    builder_sha = sha256_file(builder_manifest)
+    if output_sha != payload.get("output_sha256"):
+        raise RuntimeError("mail_process_output_sha_mismatch")
+    if builder_sha != payload.get("builder_manifest_sha256"):
+        raise RuntimeError("mail_process_builder_manifest_sha_mismatch")
+    return {
+        "status": "verified",
+        "process_manifest": str(process_manifest),
+        "process_manifest_sha256": sha256_file(process_manifest),
+        "output_jsonl": str(output_jsonl),
+        "output_sha256": output_sha,
+        "builder_manifest": str(builder_manifest),
+        "builder_manifest_sha256": builder_sha,
+        "rows_written": int(payload.get("rows_written") or 0),
+        "max_event_at": payload.get("max_event_at"),
+        "finished_at": payload.get("finished_at"),
+        "verified": True,
+    }
 
 
 def build_mail_increment(
@@ -280,7 +358,7 @@ def build_mail_increment(
         "max_event_at": max_event_at,
         "safety": {"network_calls": False, "runs_llm": False, "writes_prod_db": False},
     }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(manifest_path, manifest)
     return manifest
 
 
@@ -416,7 +494,7 @@ def build_mango_freshness(source_root: Path, manifest_path: Path) -> Mapping[str
         {
             "path": str(path),
             "name": path.name,
-            "mtime": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+            "mtime_utc": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
             "has_plan_summary": (path / "plan_summary.json").exists(),
             "has_ra_final_summary": any(path.rglob("RA_FINAL_SUMMARY.json")),
         }
@@ -429,50 +507,47 @@ def build_mango_freshness(source_root: Path, manifest_path: Path) -> Mapping[str
         "items": items,
         "safety": {"network_calls": False, "runs_asr": False},
     }
-    manifest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return report
-
-
-def build_tallanto_freshness(manifest_path: Path) -> Mapping[str, Any]:
-    staging_root = manifest_path.parent.parent
-    snapshot = staging_root / "block2_tallanto" / "tallanto_money_snapshot.json"
-    report = {
-        "schema_version": "tallanto_freshness_manifest_v1",
-        "snapshot_path": str(snapshot),
-        "snapshot_exists": snapshot.exists(),
-        "status": "optional_skip_no_nightly_ready_export",
-        "cursor_tallanto_snapshot": "2026-05-21T08:59:36+00:00",
-        "cursor_tallanto_crm_call": "2026-06-04T16:54:54+00:00",
-        "safety": {"network_calls": False, "writes_tallanto": False},
-    }
-    manifest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(manifest_path, report)
     return report
 
 
 def build_service_config(
     *,
     timeline_db: Path,
-    out_root: Path,
+    state_root: Path,
     mail_jsonl: Path,
-    mail_manifest: Path,
+    mail_process_manifest: Path | None = None,
+    mail_process_manifest_sha256: str | None = None,
     mango_manifest: Path,
-    tallanto_manifest: Path,
     base_service_config: Path | None = None,
     mango_calls_service_config: Path | None = None,
     mail_data_root: Path = DEFAULT_MAIL_DATA_ROOT,
     amo_tasks_snapshot: Path | None = None,
+    tallanto_identity_dbs: Sequence[Path | str] | None = None,
 ) -> Mapping[str, Any]:
     allowed_root = timeline_db.parent.resolve(strict=False)
+    state_root = Path(state_root).resolve(strict=False)
+    if state_root != (allowed_root / "state").resolve(strict=False):
+        raise RuntimeError("state_root must be the single <staging>/state tree")
     mail_data_root = Path(mail_data_root).expanduser()
     steps: list[Mapping[str, Any]] = []
-    mango_sweep_jsonl = out_root / "mango_processed_sweep.jsonl"
+    calls_root = state_root / "calls"
+    amo_root = state_root / "amo_incremental"
+    wappi_root = state_root / "wappi"
+    mail_root = state_root / "mail_pipeline"
+    tallanto_cards_root = state_root / "tallanto_cards"
+    runtime_root = state_root
+    mango_sweep_jsonl = calls_root / "mango_processed_sweep.jsonl"
     calls_config_path = Path(mango_calls_service_config or DEFAULT_MANGO_CALLS_SERVICE_CONFIG)
     mango_processed_calls_db = configured_calls_working_db(calls_config_path)
     if not mango_processed_calls_db.is_file():
         raise FileNotFoundError(
             f"configured Mango Calls working DB is missing: {mango_processed_calls_db}"
         )
-    tallanto_identity_dbs = existing_tallanto_identity_dbs(mail_data_root)
+    resolved_tallanto_identity_dbs = resolve_tallanto_identity_dbs(
+        mail_data_root,
+        explicit=tallanto_identity_dbs,
+    )
     steps.append(
         {
             "name": "mango_processed_sweep",
@@ -488,10 +563,11 @@ def build_service_config(
                 "package_globs": [],
                 "package_dbs": [str(mango_processed_calls_db)],
                 "source_service_config": str(calls_config_path.resolve(strict=False)),
+                "safety_overlap_seconds": 300,
                 "out_jsonl": str(mango_sweep_jsonl),
-                "report_out": str(out_root / "mango_processed_sweep_producer_report.json"),
-                "manifest_path": str(out_root / "mango_processed_sweep_manifest.json"),
-                "inventory_out": str(out_root / "mango_processed_sweep_inventory.json"),
+                "report_out": str(calls_root / "producer_report.json"),
+                "manifest_path": str(calls_root / "mango_processed_sweep_manifest.json"),
+                "inventory_out": str(calls_root / "mango_processed_sweep_inventory.json"),
             },
         }
     )
@@ -504,65 +580,37 @@ def build_service_config(
         if isinstance(step, Mapping) and step.get("name") == "calls_and_amo_incremental":
             calls_step = step
             break
-    normalized = json.loads(json.dumps(calls_step)) if calls_step is not None else {
-        "name": "calls_and_amo_incremental",
-        "kind": "nightly_incremental",
-        "config": {
-            "journal_path": str(out_root / "calls_and_amo_incremental_journal.jsonl"),
-            "safety_margin_seconds": 0,
-            "sources": [
-                {
-                    "name": "mango_processed_sweep",
-                    "source_system": "mango_processed_summary",
-                    "path": str(mango_sweep_jsonl),
-                    "source_ref": "mango:processed_sweep:latest",
-                    "normalizer": "mango_processed_summary",
-                    "required": True,
-                }
-            ],
-        },
-    }
+    normalized = json.loads(json.dumps(calls_step)) if calls_step is not None else {}
+    normalized["name"] = "calls_and_amo_incremental"
+    normalized["kind"] = "nightly_incremental"
     normalized["required"] = True
     normalized["enabled"] = True
-    call_sources = {
-        str(source.get("source_system") or ""): source
-        for source in normalized.get("config", {}).get("sources", [])
-        if isinstance(source, Mapping)
-    }
-    missing_call_sources = sorted(REQUIRED_CALL_SOURCES.keys() - call_sources.keys())
-    if missing_call_sources:
-        raise RuntimeError(
-            "calls_and_amo_incremental misses required sources: " + ",".join(missing_call_sources)
-        )
-    for source_system, normalizer in REQUIRED_CALL_SOURCES.items():
-        source = call_sources[source_system]
-        if source.get("normalizer") != normalizer or source.get("required") is not True:
-            raise RuntimeError(f"calls_and_amo_incremental source contract is invalid: {source_system}")
-        source_path = Path(str(source.get("path") or "")).expanduser().resolve(strict=False)
-        try:
-            source_path.relative_to(allowed_root)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"calls_and_amo_incremental source is outside persistent staging root: {source_system}"
-            ) from exc
-    journal_path = Path(str(normalized.get("config", {}).get("journal_path") or "")).expanduser().resolve(
+    calls_incremental_config = dict(normalized.get("config") or {})
+    calls_incremental_config.setdefault("safety_margin_seconds", 0)
+    calls_incremental_config["journal_path"] = str(calls_root / "import_journal.jsonl")
+    # Exactly one writer owns each source. AMO is handled by the dedicated
+    # amo_incremental step, so inherited AMO/legacy sources are deliberately
+    # discarded instead of creating a second importer.
+    calls_incremental_config["sources"] = [
+        {
+            "name": "mango_processed_sweep",
+            "source_system": "mango_processed_summary",
+            "path": str(mango_sweep_jsonl),
+            "source_ref": "mango:processed_sweep:latest",
+            "normalizer": "mango_processed_summary",
+            "required": True,
+            "ignore_cursor": False,
+            "preserve_cursor": False,
+        }
+    ]
+    normalized["config"] = calls_incremental_config
+    journal_path = Path(str(calls_incremental_config["journal_path"])).expanduser().resolve(
         strict=False
     )
     try:
         journal_path.relative_to(allowed_root)
     except ValueError as exc:
         raise RuntimeError("calls_and_amo_incremental journal is outside persistent staging root") from exc
-    mango_source_found = False
-    for source in normalized.get("config", {}).get("sources", []):
-        if source.get("source_system") == "mango_processed_summary":
-            mango_source_found = True
-            source["name"] = "mango_processed_sweep"
-            source["path"] = str(mango_sweep_jsonl)
-            source["source_ref"] = "mango:processed_sweep:latest"
-            source["ignore_cursor"] = True
-            source["preserve_cursor"] = True
-    if not mango_source_found:
-        raise RuntimeError("calls_and_amo_incremental misses mango_processed_summary source")
     steps.append(normalized)
     amo_step = {
             "name": "amo_incremental_shadow",
@@ -573,7 +621,7 @@ def build_service_config(
                 "source_db": str(timeline_db),
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
-                "out_root": str(out_root / "amo_incremental_shadow"),
+                "out_root": str(amo_root),
                 "mcp_env": str(DEFAULT_AMO_MCP_ENV),
                 "safety_overlap_seconds": 300,
                 "page_limit": 20,
@@ -600,7 +648,9 @@ def build_service_config(
                 "amo_mcp_env_file": str(DEFAULT_WAPPI_AMO_ENV),
                 "shared_phone_stoplist": str(DEFAULT_WAPPI_STOPLIST),
                 "amo_auto_resolver_enabled": True,
-                "widget_link_db": str(allowed_root / "wappi_amo_links.sqlite"),
+                "widget_link_db": str(
+                    wappi_root / "wappi_amo_links.sqlite"
+                ),
                 "apply": True,
                 "require_nonempty_profiles": True,
                 "require_widget_linkage": False,
@@ -613,7 +663,9 @@ def build_service_config(
                 "sleep_seconds": 0.2,
                 "show_all_chats": True,
                 "complete_message_history": True,
-                "checkpoint_dir": str(out_root / "wappi_history_checkpoint"),
+                "checkpoint_dir": str(
+                    wappi_root / "checkpoint"
+                ),
             },
         }
     )
@@ -624,7 +676,9 @@ def build_service_config(
             "enabled": True,
             "required": True,
             "config": {
-                "journal_path": str(out_root / "mail_archive_incremental_journal.jsonl"),
+                "journal_path": str(
+                    mail_root / "process" / "mail_incremental_journal.jsonl"
+                ),
                 "safety_margin_seconds": 0,
                 "sources": [
                     {
@@ -634,6 +688,13 @@ def build_service_config(
                         "source_ref": "nightly_dv2:mail_archive_stage2",
                         "normalizer": "mail_archive_stage2",
                         "required": True,
+                        "proof_manifest_path": str(
+                            mail_process_manifest
+                            if mail_process_manifest is not None
+                            else mail_root / "mail_process_manifest.json"
+                        ),
+                        "proof_manifest_sha256": mail_process_manifest_sha256,
+                        "proof_max_age_hours": 72.0,
                     }
                 ],
             },
@@ -648,11 +709,11 @@ def build_service_config(
             "config": {
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
-                "out_dir": str(out_root / "mail_link_enrich"),
+                "out_dir": str(mail_root / "mail_link_enrich"),
                 "tenant_id": "foton",
                 "apply": True,
                 "reconsider_pending": True,
-                "tallanto_identity_dbs": [str(path) for path in tallanto_identity_dbs],
+                "tallanto_identity_dbs": [str(path) for path in resolved_tallanto_identity_dbs],
             },
         }
     )
@@ -701,7 +762,7 @@ def build_service_config(
             "config": {
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
-                "out_root": str(out_root / "tallanto_cards_sync"),
+                "out_root": str(tallanto_cards_root),
                 "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
                 "tenant_id": "foton",
                 "max_pages": DEFAULT_TALLANTO_CARDS_MAX_PAGES,
@@ -717,7 +778,7 @@ def build_service_config(
             "config": {
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
-                "out_path": str(out_root / "family_graph_refresh.json"),
+                "out_path": str(runtime_root / "family_graph_refresh.json"),
                 "tenant_id": "foton",
                 "apply": True,
             },
@@ -746,7 +807,7 @@ def build_service_config(
             "config": {
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
-                "out_dir": str(out_root / "stage4b_bot_opening"),
+                "out_dir": str(runtime_root / "stage4b_bot_opening"),
                 "tenant_id": "foton",
                 "apply": True,
                 "defer_full_db_check": True,
@@ -773,7 +834,7 @@ def build_service_config(
                 "mango_api_freshness",
                 mango_manifest,
                 cursor_source_system="mango_api_freshness",
-                cursor_ts=DEFAULT_CURSOR,
+                cursor_ts=freshness_cursor_from_manifest(mango_manifest),
                 reason="optional_local_daily_capture_monitor_only",
             ),
         ]
@@ -788,8 +849,9 @@ def build_service_config(
         "config_schema_version": NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
         "timeline_db": str(timeline_db),
         "allowed_root": str(allowed_root),
-        "out_root": str(out_root / "nightly_service_runs"),
-        "publish_dir": str(allowed_root / "nightly_service" / "published"),
+        "state_root": str(runtime_root),
+        "out_root": str(runtime_root / "nightly_service_runs"),
+        "publish_dir": str(runtime_root / "published"),
         "tenant_id": "foton",
         "steps": steps,
         # B2/B1: the 10 mandatory business sources the nightly manifest must
@@ -798,6 +860,40 @@ def build_service_config(
         # drift out of sync with the gate that enforces it.
         "required_manifest_sources": list(REQUIRED_MANIFEST_SOURCE_STEP_MAP.keys()),
     }
+
+
+def resolve_tallanto_identity_dbs(
+    mail_data_root: Path,
+    *,
+    explicit: Sequence[Path | str] | None,
+) -> tuple[Path, ...]:
+    if explicit is None:
+        return tuple(existing_tallanto_identity_dbs(mail_data_root))
+    resolved: list[Path] = []
+    for raw in explicit:
+        try:
+            path = Path(raw).expanduser().resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Tallanto identity DB is missing: {raw}") from exc
+        if not path.is_file():
+            raise FileNotFoundError(f"Tallanto identity DB is not a file: {path}")
+        if path not in resolved:
+            resolved.append(path)
+    if not resolved:
+        raise ValueError("explicit Tallanto identity DB list is empty")
+    return tuple(resolved)
+
+
+def freshness_cursor_from_manifest(path: Path) -> str:
+    """Use measured local freshness; an absent manifest must never look fresh."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        latest = payload.get("latest")
+        if isinstance(latest, Mapping) and latest.get("mtime_utc"):
+            return parse_dt(str(latest["mtime_utc"])).isoformat()
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return datetime.fromtimestamp(0, timezone.utc).isoformat()
 
 
 def monitor_step(
@@ -840,9 +936,13 @@ def read_jsonl(path: Path) -> list[Mapping[str, Any]]:
 
 def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
     path.chmod(0o600)
 
 

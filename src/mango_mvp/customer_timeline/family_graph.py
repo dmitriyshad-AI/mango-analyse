@@ -19,6 +19,12 @@ from mango_mvp.customer_timeline.store import (
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
 )
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    finished_grade_from_student_type,
+    is_explicit_graduate_student_type,
+    next_grade_from_student_type,
+    student_type_in_timeline_scope,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -65,6 +71,7 @@ class ChildEvidence:
     tallanto_student_id: str = ""
     name: str = ""
     grade: str = ""
+    student_type: str = ""
     subject: str = ""
     brand: str = "unknown"
     quote: str = ""
@@ -184,6 +191,8 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             event_record = _json_loads(row["record_json"]).get("record") or {}
             payload = event_record.get("payload") or {}
             name = str(payload.get("display_name") or "").strip()
+            student_type = str(payload.get("student_type") or "").strip()
+            target_grade = next_grade_from_student_type(student_type)
             if not name or customer_id not in contexts:
                 continue
             tallanto_snapshot_customers.add(customer_id)
@@ -194,7 +203,8 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                     event_at=str(row["event_at"] or ""),
                     tallanto_student_id=student_id,
                     name=name,
-                    grade=str(payload.get("student_type") or ""),
+                    grade=str(target_grade) if target_grade is not None else "",
+                    student_type=student_type,
                     subject=str(payload.get("subjects") or ""),
                     brand=str(event_record.get("brand") or "unknown"),
                 )
@@ -216,6 +226,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                         tallanto_student_id=(next(iter(group_student_ids)) if len(group_student_ids) == 1 else ""),
                         name=str(group["canonical_name"]),
                         grade="; ".join(group["grades"]),
+                        student_type="; ".join(group.get("student_types", ())),
                         subject="; ".join(group["subjects"]),
                         brand=str(group["brand"]),
                     )
@@ -1202,6 +1213,17 @@ def _build_family_rows(
                 else _child_key(context.family_id, group.name_key)
             )
             status, confidence, reason = _family_confidence(group, valid_groups=valid_groups, identity_risks=identity_risks)
+            student_types = sorted({item.student_type for item in group.evidence if item.student_type})
+            finished_grades = sorted({
+                grade
+                for value in student_types
+                if (grade := finished_grade_from_student_type(value)) is not None
+            })
+            target_grades = sorted({
+                grade
+                for value in student_types
+                if (grade := next_grade_from_student_type(value)) is not None
+            })
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
                 "tenant_id": context.tenant_id,
@@ -1211,6 +1233,15 @@ def _build_family_rows(
                 "canonical_name": group.canonical_name,
                 "name_variants": sorted(group.names),
                 "grades": sorted(group.grades),
+                "student_types": student_types,
+                "finished_grades": finished_grades,
+                "target_grades": target_grades,
+                "explicit_graduate": any(
+                    is_explicit_graduate_student_type(value) for value in student_types
+                ),
+                "timeline_scope_eligible": any(
+                    student_type_in_timeline_scope(value) for value in student_types
+                ),
                 "subjects": sorted(group.subjects),
                 "brand": group.brand,
                 "status": status,
@@ -1263,6 +1294,7 @@ def _load_persisted_family_groups(
         """,
         (tenant_id,),
     ):
+        record = _json_loads(row["record_json"])
         groups[str(row["customer_id"])].append(
             {
                 "family_id": str(row["family_id"]),
@@ -1278,8 +1310,9 @@ def _load_persisted_family_groups(
                 "reason": str(row["reason"] or "persisted_family_graph"),
                 "source_refs": _json_list(row["source_refs_json"]),
                 "tallanto_student_ids": _json_list(
-                    _json_loads(row["record_json"]).get("tallanto_student_ids", [])
+                    record.get("tallanto_student_ids", [])
                 ),
+                "student_types": _json_list(record.get("student_types", [])),
             }
         )
     return groups

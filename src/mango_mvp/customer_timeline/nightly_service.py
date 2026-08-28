@@ -9,14 +9,16 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
-from datetime import datetime, timezone
+from collections import defaultdict
+from dataclasses import dataclass, fields as dataclass_fields, is_dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, NoReturn, Optional, Sequence
 
 from mango_mvp.customer_timeline.amo_incremental import AmoIncrementalConfig, run_amo_incremental
 from mango_mvp.customer_timeline.derived_signals import backfill_sg_v1_signals
 from mango_mvp.customer_timeline.nightly_incremental import (
+    NIGHTLY_INCREMENTAL_SCHEMA_VERSION,
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
     completed_import_source_names,
@@ -44,6 +46,7 @@ from mango_mvp.customer_timeline.tallanto_cards_sync import (
     run_tallanto_cards_sync,
 )
 from mango_mvp.customer_timeline.wappi_history_import import (
+    WAPPI_HISTORY_IMPORT_SCHEMA_VERSION,
     WappiFetchLimits,
     WappiHistoryImportConfig,
     run_wappi_history_import,
@@ -88,7 +91,7 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v11"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v13"
 DEFAULT_TALLANTO_CARDS_MAX_PAGES = 500
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
@@ -108,6 +111,22 @@ DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS = 6.0 * 3600.0
 # Set generously above the ~24h nightly cadence so one missed/late run does
 # not immediately flip a healthy, quiet source to "stale".
 SOURCE_PROOF_STALE_AFTER_HOURS = 36.0
+
+# Wappi and Mail are mandatory stages.  Keep this list exact so failures in a
+# similarly named/optional stage cannot inherit their publication semantics.
+# An exception in any listed stage is always blocking.  Only a returned Wappi
+# report can be degraded, and only after wappi_degradation_evidence() proves
+# that its partial checkpoint and database writes are internally consistent.
+DEGRADABLE_SOURCE_STEP_KEYS = frozenset(
+    {
+        ("wappi_history_incremental", "wappi_history"),
+        ("mail_archive_incremental", "nightly_incremental"),
+        ("mail_link_enrich", "mail_link_enrich"),
+    }
+)
+DEGRADABLE_MANIFEST_SOURCE_LABELS = frozenset(
+    {"email", "wappi_telegram", "wappi_max"}
+)
 
 
 @dataclass(frozen=True)
@@ -149,9 +168,11 @@ class NightlyServiceConfig:
     # same generous default and behave exactly as before for fast steps.
     step_timeout_seconds: float = 1800.0
     # B2: opt-in list of business-source labels (see
-    # REQUIRED_MANIFEST_SOURCE_STEP_MAP) that must show status "ok" in this
-    # run before the manifest is allowed to publish as latest. Empty by
-    # default so existing narrow/test configs are unaffected.
+    # REQUIRED_MANIFEST_SOURCE_STEP_MAP) whose proof must be reported in this
+    # run. Blocking sources must show "ok" before latest is published; a
+    # controlled Wappi partial read or unchanged missing Mail input may instead
+    # report explicit degraded proof.
+    # Empty by default so existing narrow/test configs are unaffected.
     required_manifest_sources: Sequence[str] = ()
     # B3: see DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS above.
     total_runtime_budget_seconds: float = DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS
@@ -398,7 +419,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 try:
                     step_report = run_mail_link_enrich(step.mail_link_config)
                 except Exception as exc:  # optional enrichment must fail-soft through the service report.
-                    if step.required:
+                    if step.required or degradable_source_step(step):
                         failed_required_steps.append(step.name)
                     report["steps"].append(
                         failed_step_report(
@@ -668,12 +689,33 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 )
                 continue
             if step.kind == "wappi_history":
+                if step.wappi_history_config is None:
+                    reason = f"enabled step {step.name} requires config"
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=reason,
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                        )
+                    )
+                    continue
                 try:
-                    if step.wappi_history_config is None:
-                        raise ValueError(f"enabled step {step.name} requires config")
+                    owners_before = wappi_existing_owner_state(
+                        timeline_db,
+                        tenant_id=config.tenant_id,
+                    )
                     step_report = run_wappi_history_import(step.wappi_history_config)
+                    owners_after = wappi_existing_owner_state(
+                        timeline_db,
+                        tenant_id=config.tenant_id,
+                        existing_owner_keys=owners_before["_owner_keys"],
+                    )
                 except Exception as exc:
-                    failed_required_steps.append(step.name)
+                    if step.required or degradable_source_step(step):
+                        failed_required_steps.append(step.name)
                     report["steps"].append(
                         failed_step_report(
                             index=index,
@@ -687,8 +729,18 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
                 step_summary = step_report.get("summary") or {}
-                status = "ok" if step_report.get("publish_ready") is True else "failed"
-                if status == "failed":
+                degradation_evidence = wappi_degradation_evidence(
+                    step_report,
+                    owners_before=owners_before,
+                    owners_after=owners_after,
+                )
+                status = "ok" if step_report.get("publish_ready") is True else (
+                    "degraded"
+                    if degradable_source_step(step)
+                    and wappi_structured_degradation_ok(step_report, degradation_evidence)
+                    else "failed"
+                )
+                if status == "failed" and (step.required or degradable_source_step(step)):
                     failed_required_steps.append(step.name)
                 report["steps"].append(
                     {
@@ -700,8 +752,33 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "report_path": str(step_path),
                         "summary": {
                             **step_summary,
+                            "validation_ok": bool(step_report.get("validation_ok")),
+                            "fetch_complete": bool(step_report.get("fetch_complete")),
+                            "source_persistence_complete": bool(
+                                step_report.get("source_persistence_complete")
+                            ),
                             "attribution_complete": bool(step_report.get("attribution_complete")),
                             "publish_ready": bool(step_report.get("publish_ready")),
+                            "limit_hits": list(step_report.get("limit_hits") or ()),
+                            "attribution_warnings": list(
+                                step_report.get("attribution_warnings") or ()
+                            ),
+                            "checkpoint": summarize_wappi_checkpoint(
+                                step_report.get("checkpoint")
+                            ),
+                            "degradation_evidence": degradation_evidence,
+                            "existing_wappi_owner_fingerprint": {
+                                "before": {
+                                    "count": owners_before.get("count"),
+                                    "table_counts": owners_before.get("table_counts"),
+                                    "sha256": owners_before.get("owners_sha256"),
+                                },
+                                "after": {
+                                    "count": owners_after.get("count"),
+                                    "table_counts": owners_after.get("table_counts"),
+                                    "sha256": owners_after.get("owners_sha256"),
+                                },
+                            },
                             "completed_import_sources": completed_import_source_names(
                                 (step_report.get("import_reports") or {}).values()
                             ),
@@ -885,10 +962,40 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     )
                 )
                 continue
+            mail_probe: sqlite3.Connection | None = None
             try:
-                step_report = run_nightly_incremental(step.config)
+                incremental_config = mail_incremental_run_config(step)
+                mail_degradation_candidate = degradable_source_step(step)
+                if mail_degradation_candidate:
+                    mail_probe = sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True)
+                    mail_probe.execute("PRAGMA query_only=ON")
+                mail_state_before = (
+                    mail_degradation_state(
+                        mail_probe,
+                        tenant_id=config.tenant_id,
+                        source_systems=tuple(
+                            source.source_system for source in incremental_config.sources
+                        ),
+                    )
+                    if mail_degradation_candidate
+                    else None
+                )
+                step_report = run_nightly_incremental(incremental_config)
+                mail_state_after = (
+                    mail_degradation_state(
+                        mail_probe,
+                        tenant_id=config.tenant_id,
+                        source_systems=tuple(
+                            source.source_system for source in incremental_config.sources
+                        ),
+                    )
+                    if mail_state_before is not None
+                    else None
+                )
             except Exception as exc:  # service-level fail-soft: report and keep manifest writing.
-                if step.required:
+                if mail_probe is not None:
+                    mail_probe.close()
+                if step.required or degradable_source_step(step):
                     failed_required_steps.append(step.name)
                 report["steps"].append(
                     failed_step_report(
@@ -900,14 +1007,43 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     )
                 )
                 continue
+            if mail_probe is not None:
+                mail_probe.close()
             step_path = run_dir / f"{index:02d}_{step.name}.json"
             write_json(step_path, step_report)
             summary = summarize_report(step_report)
             step_failed_required_sources = summary.get("failed_required_sources") or ()
             step_gate_passed = bool(summary.get("gate_passed", True))
-            status = "ok" if step_gate_passed else "failed_required_source"
-            if not step_gate_passed and step.required:
+            mail_evidence = (
+                mail_degradation_evidence(
+                    step_report,
+                    config=incremental_config,
+                    state_before=mail_state_before,
+                    state_after=mail_state_after,
+                )
+                if mail_state_before is not None and mail_state_after is not None
+                else None
+            )
+            mail_degraded = bool(
+                not step_gate_passed
+                and mail_evidence is not None
+                and mail_structured_degradation_ok(mail_evidence)
+            )
+            status = (
+                "ok"
+                if step_gate_passed
+                else "degraded"
+                if mail_degraded
+                else "failed_required_source"
+            )
+            if (
+                not step_gate_passed
+                and not mail_degraded
+                and (step.required or degradable_source_step(step))
+            ):
                 failed_required_steps.append(step.name)
+            if mail_evidence is not None:
+                summary = {**summary, "degradation_evidence": mail_evidence}
             report["steps"].append(
                 {
                     "index": index,
@@ -937,7 +1073,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         # and cursors (manifest["source_counts"]/["ingestion_cursors"]) as
         # proof, instead of trusting each step's self-reported status alone.
         manifest = build_snapshot_manifest(timeline_db, tenant_id=config.tenant_id)
-        # B4 fail-loud: the 10 mandatory business sources are checked against
+        # B4 fail-loud: every declared business source is checked against
         # *proof* -- real timeline_events counts/ingestion_cursors freshness
         # and each step's own reported numbers -- not merely whether a
         # mapped step's name/status says "ok" (opt-in via
@@ -946,7 +1082,10 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         # two independent sources (Telegram and MAX) when only one of them
         # actually has fresh data, and what stops a step that always
         # self-reports "ok" from covering for a source whose cursor has not
-        # moved in weeks.
+        # moved in weeks. Missing AMO/Tallanto/Calls or derived proofs block
+        # latest; Wappi and an unchanged missing Mail input may be explicitly
+        # degraded only after a fully proved structured report (see
+        # manifest_source_missing_is_degradable).
         required_sources_check = check_required_manifest_sources(
             report["steps"],
             config.required_manifest_sources,
@@ -955,9 +1094,21 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
             mail_link_enrich=manifest["mail_link_enrich"],
             now=datetime.now(timezone.utc),
         )
+        degraded_source_labels = [
+            label
+            for label in required_sources_check["missing"]
+            if manifest_source_missing_is_degradable(label, report["steps"])
+        ]
+        blocking_source_labels = [
+            label
+            for label in required_sources_check["missing"]
+            if label not in degraded_source_labels
+        ]
+        required_sources_check["degraded"] = degraded_source_labels
+        required_sources_check["blocking_missing"] = blocking_source_labels
         report["required_sources_check"] = required_sources_check
         failed_required_steps.extend(
-            f"required_manifest_source:{label}" for label in required_sources_check["missing"]
+            f"required_manifest_source:{label}" for label in blocking_source_labels
         )
         # B5: a corrupted staging DB must never publish "latest", even if
         # every individual step reported ok -- integrity of the file the bot
@@ -973,6 +1124,35 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         manifest["service_report_path"] = str(run_dir / "service_report.json")
         manifest["published_at"] = datetime.now(timezone.utc).isoformat()
         manifest["required_sources_check"] = required_sources_check
+        degraded_steps = [
+            {
+                "name": str(step.get("name") or ""),
+                "kind": str(step.get("kind") or ""),
+                "reason": str(step.get("reason") or "source_gate_not_ready"),
+                "report_path": step.get("report_path"),
+                "summary": dict(step.get("summary") or {}),
+                "failed_required_sources": list(
+                    step.get("failed_required_sources") or ()
+                ),
+                **(
+                    {"error_type": str(step.get("error_type"))}
+                    if step.get("error_type")
+                    else {}
+                ),
+            }
+            for step in report["steps"]
+            if step.get("status") == "degraded"
+        ]
+        degraded_sources = {
+            label: dict(required_sources_check["proofs"].get(label) or {})
+            for label in degraded_source_labels
+        }
+        report["degraded_steps"] = degraded_steps
+        report["degraded_sources"] = degraded_sources
+        manifest["source_degradation"] = {
+            "steps": degraded_steps,
+            "sources": degraded_sources,
+        }
         failed_required_steps = list(dict.fromkeys(failed_required_steps))
         report["failed_required_steps"] = failed_required_steps
         report["partial_failure"] = bool(failed_required_steps)
@@ -981,11 +1161,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
             "blocked"
             if failed_required_steps
             else "pass_with_notes"
-            if any(
-                step.get("kind") == "wappi_history"
-                and step.get("summary", {}).get("attribution_complete") is False
-                for step in report["steps"]
-            )
+            if degraded_steps or degraded_sources
             else "pass"
         )
         manifest_path = publish_dir / f"customer_timeline_snapshot_{run_id}.json"
@@ -1032,6 +1208,12 @@ def service_config_from_json(path: Path) -> NightlyServiceConfig:
             raise ValueError(chain_reason)
     timeline_db = Path(str(payload["timeline_db"]))
     allowed_root = Path(str(payload.get("allowed_root") or timeline_db.parent))
+    canonical_full_config = set(required_sources) == set(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
+    if canonical_full_config or payload.get("state_root") is not None:
+        state_root = Path(str(payload.get("state_root") or "")).expanduser().resolve(strict=False)
+        expected_state_root = (timeline_db.parent / "state").expanduser().resolve(strict=False)
+        if state_root != expected_state_root:
+            raise ValueError("state_root must be the single <staging>/state tree")
     out_root = Path(str(payload["out_root"]))
     publish_dir = Path(str(payload["publish_dir"]))
     tenant_id = str(payload.get("tenant_id") or "foton")
@@ -1324,6 +1506,21 @@ def source_from_json(payload: Any, *, tenant_id: str) -> IncrementalSourceConfig
         required=bool(payload.get("required", True)),
         ignore_cursor=bool(payload.get("ignore_cursor", False)),
         preserve_cursor=bool(payload.get("preserve_cursor", False)),
+        proof_manifest_path=(
+            Path(str(payload["proof_manifest_path"]))
+            if payload.get("proof_manifest_path")
+            else None
+        ),
+        proof_manifest_sha256=(
+            str(payload["proof_manifest_sha256"])
+            if payload.get("proof_manifest_sha256")
+            else None
+        ),
+        proof_max_age_hours=(
+            float(payload["proof_max_age_hours"])
+            if payload.get("proof_max_age_hours") is not None
+            else None
+        ),
     )
 
 
@@ -1350,6 +1547,416 @@ def failed_step_report(
         if diagnostics_path:
             payload["error_diagnostics_path"] = str(diagnostics_path)
     return payload
+
+
+def degradable_source_step(step: NightlyServiceStep) -> bool:
+    """Return whether this is one of the exact controlled Wappi/Mail stages.
+
+    Exceptions are blocking for every controlled stage.  The list is also
+    used to prevent an accidentally optional canonical stage from publishing
+    latest after an unproved failure.
+    """
+
+    return (step.name, step.kind) in DEGRADABLE_SOURCE_STEP_KEYS
+
+
+def _is_sha256(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _reported_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+MAIL_EXPECTED_UNREADY_REASONS = frozenset({"source_unavailable", "source_stale"})
+
+
+def mail_degradation_state(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    source_systems: Sequence[str],
+) -> Mapping[str, Any]:
+    """Read the same-connection change counter and exact Mail cursor rows."""
+
+    systems = tuple(sorted(set(str(item) for item in source_systems)))
+    placeholders = ",".join("?" for _ in systems)
+    cursor_rows = [] if not systems else [
+        list(row)
+        for row in con.execute(
+            "SELECT tenant_id,source_system,last_cursor_ts,updated_at,metadata_json "
+            f"FROM ingestion_cursors WHERE tenant_id=? AND source_system IN ({placeholders}) "
+            "ORDER BY source_system",
+            (tenant_id, *systems),
+        )
+    ]
+    cursor_payload = json.dumps(cursor_rows, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "data_version": int(con.execute("PRAGMA data_version").fetchone()[0]),
+        "cursor_count": len(cursor_rows),
+        "cursor_rows_sha256": hashlib.sha256(cursor_payload.encode("utf-8")).hexdigest(),
+    }
+
+
+def mail_incremental_run_config(step: NightlyServiceStep) -> NightlyIncrementalConfig:
+    """Preserve the exact cursor for legacy Mail config with an absent JSONL."""
+
+    assert step.config is not None
+    if not degradable_source_step(step) or not step.config.sources:
+        return step.config
+    expected_missing = all(
+        source.source_system == "mail_archive_stage2"
+        and source.normalizer == "mail_archive_stage2"
+        and not source.path.is_file()
+        for source in step.config.sources
+    )
+    if not expected_missing:
+        return step.config
+    return replace(
+        step.config,
+        sources=tuple(replace(source, preserve_cursor=True) for source in step.config.sources),
+    )
+
+
+def mail_degradation_evidence(
+    report: Mapping[str, Any],
+    *,
+    config: NightlyIncrementalConfig,
+    state_before: Mapping[str, Any],
+    state_after: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    sources_report = report.get("sources") if isinstance(report.get("sources"), list) else []
+    source_errors = (
+        report.get("source_errors") if isinstance(report.get("source_errors"), list) else []
+    )
+    configured_names = {source.name for source in config.sources}
+    failure_names = {
+        str(item.get("source") or "")
+        for item in source_errors
+        if isinstance(item, Mapping)
+    }
+    reasons = {
+        str(item.get("reason") or "")
+        for item in source_errors
+        if isinstance(item, Mapping)
+    }
+    source_rows_empty = bool(sources_report) and all(
+        isinstance(item, Mapping)
+        and str(item.get("skipped_reason") or "") in MAIL_EXPECTED_UNREADY_REASONS
+        and _reported_int(item.get("rows_total")) == 0
+        and _reported_int(item.get("rows_selected")) == 0
+        and _reported_int(item.get("records")) == 0
+        for item in sources_report
+    )
+    checks = {
+        "structured_report": report.get("schema_version")
+        == NIGHTLY_INCREMENTAL_SCHEMA_VERSION,
+        "gate_not_ready": report.get("gate_passed") is False,
+        "only_expected_email_failure": bool(config.sources)
+        and all(
+            source.source_system == "mail_archive_stage2"
+            and source.normalizer == "mail_archive_stage2"
+            and source.required
+            and (source.preserve_cursor or source.proof_manifest_path is not None)
+            for source in config.sources
+        )
+        and failure_names == configured_names
+        and bool(reasons)
+        and reasons.issubset(MAIL_EXPECTED_UNREADY_REASONS),
+        "no_import_or_cursor_writes": report.get("imports") == []
+        and report.get("cursor_updates") == []
+        and _reported_int(report.get("changed_customer_count")) == 0
+        and source_rows_empty,
+        "business_duplicates_zero": source_rows_empty
+        and report.get("imports") == [],
+        "exact_cursor_preserved": state_before.get("cursor_count")
+        == state_after.get("cursor_count")
+        and state_before.get("cursor_rows_sha256")
+        == state_after.get("cursor_rows_sha256"),
+        "no_database_commit": state_before.get("data_version")
+        == state_after.get("data_version"),
+    }
+    return {
+        "checks": checks,
+        "cursor_before": {
+            "count": state_before.get("cursor_count"),
+            "sha256": state_before.get("cursor_rows_sha256"),
+        },
+        "cursor_after": {
+            "count": state_after.get("cursor_count"),
+            "sha256": state_after.get("cursor_rows_sha256"),
+        },
+        "database_data_version": {
+            "before": state_before.get("data_version"),
+            "after": state_after.get("data_version"),
+        },
+    }
+
+
+def mail_structured_degradation_ok(evidence: Mapping[str, Any]) -> bool:
+    checks = evidence.get("checks") if isinstance(evidence.get("checks"), Mapping) else {}
+    return bool(checks) and all(value is True for value in checks.values())
+
+
+def wappi_existing_owner_state(
+    timeline_db: Path,
+    *,
+    tenant_id: str,
+    existing_owner_keys: Mapping[str, Sequence[str]] | None = None,
+) -> Mapping[str, Any]:
+    """Fingerprint pre-existing business rows owned by the Wappi importer.
+
+    New rows are intentionally ignored on the second read: they must not be
+    able to compensate for replacement or corruption of an older row.  The
+    predicates mirror the existing Wappi normalizer and cleanup ownership
+    markers; no new source taxonomy is introduced here.
+    """
+
+    with sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True) as con:
+        con.execute("PRAGMA query_only=ON")
+        queries = {
+            "timeline_events": (
+                "SELECT event_id,source_system,source_id,customer_id,opportunity_id,"
+                "match_status,superseded_by,record_hash FROM timeline_events "
+                "WHERE tenant_id=? AND source_system IN ('wappi_telegram','wappi_max')"
+            ),
+            # CROSS JOIN fixes the efficient indexed order: first the small
+            # Wappi event set, then chunks by event_id.  A direct source_system
+            # filter would scan the 1+ GB chunks table because it has no source
+            # index.
+            "bot_context_chunks": (
+                "SELECT chunk.chunk_id,chunk.customer_id,chunk.opportunity_id,chunk.event_id,"
+                "chunk.source_system,chunk.source_ref,chunk.allowed_for_bot,"
+                "chunk.requires_manager_review,chunk.superseded_by,chunk.record_hash "
+                "FROM timeline_events AS event CROSS JOIN bot_context_chunks AS chunk "
+                "ON chunk.tenant_id=event.tenant_id AND chunk.event_id=event.event_id "
+                "WHERE event.tenant_id=? "
+                "AND event.source_system IN ('wappi_telegram','wappi_max') "
+                "AND chunk.source_system IN ('wappi_telegram','wappi_max')"
+            ),
+            "identity_links": (
+                "SELECT link_id,customer_id,link_type,link_value,source_system,source_ref,"
+                "match_class,confidence,record_hash FROM identity_links "
+                "WHERE tenant_id=? AND source_system IN ('wappi_telegram','wappi_max')"
+            ),
+            "customer_id_mappings": (
+                "SELECT mapping_id,old_customer_id,new_customer_id,mapping_kind,"
+                "resolution_status,reason,record_hash FROM customer_id_mappings "
+                "WHERE tenant_id=? AND reason='wappi_provisional_exact_identity_upgrade'"
+            ),
+            "timeline_conflicts": (
+                "SELECT conflict_id,conflict_type,severity,status,resolved_at,record_hash "
+                "FROM timeline_conflicts WHERE tenant_id=? "
+                "AND conflict_type='pending_attribution' AND json_valid(record_json) "
+                "AND json_extract(record_json,'$.metadata.source_system') "
+                "IN ('wappi_telegram','wappi_max')"
+            ),
+            "customer_identities": (
+                "WITH wappi_customer_ids(customer_id) AS ("
+                "SELECT customer_id FROM timeline_events INDEXED BY ix_timeline_events_source "
+                "WHERE tenant_id=?1 "
+                "AND source_system IN ('wappi_telegram','wappi_max') "
+                "AND customer_id IS NOT NULL "
+                "UNION SELECT customer_id FROM identity_links WHERE tenant_id=?1 "
+                "AND source_system IN ('wappi_telegram','wappi_max') "
+                "AND customer_id IS NOT NULL) "
+                "SELECT customer.customer_id,customer.identity_status,customer.display_name,"
+                "customer.primary_phone,customer.primary_email,customer.record_hash "
+                "FROM wappi_customer_ids AS owner CROSS JOIN customer_identities AS customer "
+                "ON customer.customer_id=owner.customer_id AND customer.tenant_id=?1 "
+                "UNION SELECT customer_id,identity_status,display_name,primary_phone,primary_email,"
+                "record_hash FROM customer_identities WHERE tenant_id=?1 "
+                "AND json_valid(record_json) "
+                "AND json_extract(record_json,'$.metadata.provisional_wappi_family')=1"
+            ),
+        }
+        current_by_table = {
+            table: {
+                str(row[0]): tuple("" if value is None else str(value) for value in row)
+                for row in con.execute(query, (tenant_id,))
+            }
+            for table, query in queries.items()
+        }
+
+    tracked_by_table = {
+        table: tuple(
+            sorted(
+                current
+                if existing_owner_keys is None
+                else existing_owner_keys.get(table, ())
+            )
+        )
+        for table, current in current_by_table.items()
+    }
+    rows = [
+        (table, current_by_table[table].get(key, (key, "missing")))
+        for table in sorted(tracked_by_table)
+        for key in tracked_by_table[table]
+    ]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    tracked_table_counts = {
+        table: len(keys) for table, keys in sorted(tracked_by_table.items())
+    }
+    table_counts = {
+        table: sum(key in current_by_table[table] for key in keys)
+        for table, keys in sorted(tracked_by_table.items())
+    }
+    return {
+        "_owner_keys": tracked_by_table,
+        "tracked_table_counts": tracked_table_counts,
+        "table_counts": table_counts,
+        "count": sum(table_counts.values()),
+        "owners_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+    }
+
+
+def wappi_degradation_evidence(
+    report: Mapping[str, Any],
+    *,
+    owners_before: Mapping[str, Any],
+    owners_after: Mapping[str, Any],
+) -> Mapping[str, bool]:
+    """Reduce a Wappi partial report to the invariants required for degrade.
+
+    This deliberately trusts no exception path and no bare ``publish_ready``
+    boolean.  A resumable partial read is safe only after its input identity,
+    transaction, persisted rows, duplicate balance and checkpoint all agree.
+    """
+
+    summary = report.get("summary") if isinstance(report.get("summary"), Mapping) else {}
+    writes = report.get("writes") if isinstance(report.get("writes"), Mapping) else {}
+    checkpoint = (
+        report.get("checkpoint") if isinstance(report.get("checkpoint"), Mapping) else {}
+    )
+    profiles = checkpoint.get("profiles")
+    profiles = profiles if isinstance(profiles, Mapping) else {}
+    provenance = (
+        report.get("provenance") if isinstance(report.get("provenance"), Mapping) else {}
+    )
+    hashes_start = provenance.get("input_hashes_start")
+    hashes_end = provenance.get("input_hashes")
+    hashes_start = hashes_start if isinstance(hashes_start, Mapping) else {}
+    hashes_end = hashes_end if isinstance(hashes_end, Mapping) else {}
+    worktree_start = provenance.get("worktree_start")
+    worktree_pre_apply = provenance.get("worktree_pre_apply")
+    store_before = (
+        report.get("store_summary_before")
+        if isinstance(report.get("store_summary_before"), Mapping)
+        else {}
+    )
+    store_after = (
+        report.get("store_summary_after")
+        if isinstance(report.get("store_summary_after"), Mapping)
+        else {}
+    )
+    counts_before = (
+        store_before.get("counts") if isinstance(store_before.get("counts"), Mapping) else {}
+    )
+    counts_after = (
+        store_after.get("counts") if isinstance(store_after.get("counts"), Mapping) else {}
+    )
+    limit_hits = {str(item) for item in report.get("limit_hits") or ()}
+    deferred_limit_hits = {
+        str(item) for item in checkpoint.get("deferred_limit_hits") or ()
+    }
+    incomplete_profiles = [
+        entry
+        for entry in profiles.values()
+        if isinstance(entry, Mapping) and entry.get("complete") is False
+    ]
+    safety = report.get("safety") if isinstance(report.get("safety"), Mapping) else {}
+    messages_missing = _reported_int(summary.get("messages_missing_from_timeline"))
+    messages_present = _reported_int(summary.get("messages_present_in_timeline"))
+    messages_expected = _reported_int(summary.get("messages_expected_in_timeline"))
+    duplicate_source_ids = _reported_int(summary.get("duplicate_source_ids_before_import"))
+    events_before = _reported_int(counts_before.get("timeline_events"))
+    events_after = _reported_int(counts_after.get("timeline_events"))
+
+    return {
+        "structured_report": report.get("schema_version")
+        == WAPPI_HISTORY_IMPORT_SCHEMA_VERSION,
+        "partial_apply": report.get("mode") == "apply"
+        and report.get("dry_run") is False
+        and report.get("validation_ok") is False
+        and report.get("fetch_complete") is False
+        and report.get("publish_ready") is False,
+        "input_sha_stable": bool(hashes_start)
+        and hashes_start == hashes_end
+        and _is_sha256(hashes_start.get("importer"))
+        and _is_sha256(hashes_start.get("phase1_config"))
+        and isinstance(worktree_start, Mapping)
+        and worktree_start == worktree_pre_apply,
+        "source_accounting_complete": report.get("source_accounting_complete") is True
+        and report.get("local_accounting_complete") is True,
+        "source_persistence_complete": report.get("source_persistence_complete") is True
+        and messages_missing == 0
+        and messages_present is not None
+        and messages_present == messages_expected,
+        "business_duplicates_zero": duplicate_source_ids == 0,
+        "database_write_atomic": writes.get("applied") is True
+        and writes.get("import_groups_single_transaction") is True
+        and writes.get("post_import_cleanup_same_transaction") is True
+        and writes.get("all_db_mutations_single_transaction") is True,
+        "previous_timeline_preserved": events_before is not None
+        and events_after is not None
+        and store_after.get("validation_ok") is True
+        and events_after >= events_before,
+        "existing_wappi_owners_preserved": owners_before.get("count")
+        == owners_after.get("count")
+        and owners_before.get("owners_sha256") == owners_after.get("owners_sha256"),
+        "checkpoint_consistent": checkpoint.get("enabled") is True
+        and checkpoint.get("complete") is False
+        and checkpoint.get("committed") is True
+        and bool(profiles)
+        and all(isinstance(entry, Mapping) for entry in profiles.values())
+        and bool(incomplete_profiles)
+        and all(str(entry.get("stop_reason") or "").strip() for entry in incomplete_profiles)
+        and isinstance(report.get("limit_hits"), list)
+        and isinstance(checkpoint.get("deferred_limit_hits"), list)
+        and deferred_limit_hits.issubset(limit_hits),
+        "no_import_errors": isinstance(report.get("errors"), list)
+        and not report.get("errors"),
+        "safety_ok": safety.get("ok") is True,
+    }
+
+
+def wappi_structured_degradation_ok(
+    report: Mapping[str, Any],
+    evidence: Mapping[str, bool],
+) -> bool:
+    return report.get("publish_ready") is False and bool(evidence) and all(
+        value is True for value in evidence.values()
+    )
+
+
+def summarize_wappi_checkpoint(raw: Any) -> Mapping[str, Any]:
+    checkpoint = raw if isinstance(raw, Mapping) else {}
+    profiles = checkpoint.get("profiles")
+    profiles = profiles if isinstance(profiles, Mapping) else {}
+    stop_reasons: dict[str, int] = {}
+    reset_reasons: dict[str, int] = {}
+    complete_profiles = 0
+    for entry in profiles.values():
+        if not isinstance(entry, Mapping):
+            continue
+        if entry.get("complete") is True:
+            complete_profiles += 1
+        for field, counts in (("stop_reason", stop_reasons), ("reset_reason", reset_reasons)):
+            reason = str(entry.get(field) or "").strip()
+            if reason:
+                counts[reason] = counts.get(reason, 0) + 1
+    return {
+        "enabled": bool(checkpoint.get("enabled")),
+        "complete": bool(checkpoint.get("complete")),
+        "committed": bool(checkpoint.get("committed")),
+        "deferred_limit_hits": list(checkpoint.get("deferred_limit_hits") or ()),
+        "profiles_total": len(profiles),
+        "complete_profiles": complete_profiles,
+        "incomplete_profiles": len(profiles) - complete_profiles,
+        "stop_reason_counts": dict(sorted(stop_reasons.items())),
+        "reset_reason_counts": dict(sorted(reset_reasons.items())),
+    }
 
 
 def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, Path, Path]:
@@ -1414,6 +2021,8 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
         guard_customer_timeline_output_path(step.config.journal_path, allowed_root)
         for source in step.config.sources:
             guard_customer_timeline_output_path(source.path, allowed_root)
+            if source.proof_manifest_path is not None:
+                guard_customer_timeline_output_path(source.proof_manifest_path, allowed_root)
     return timeline_db, allowed_root, out_root, publish_dir
 
 
@@ -1706,6 +2315,33 @@ def run_mango_processed_sweep(
         Path(str(config.get("inventory_out") or out_jsonl.with_suffix(".inventory.json"))),
         allowed_root,
     )
+    # Local import avoids the existing calls_two_processes -> nightly_service dependency.
+    from mango_mvp.customer_timeline.calls_two_processes import configured_calls_working_db
+
+    raw_service_config = str(config.get("source_service_config") or "").strip()
+    try:
+        configured_db = configured_calls_working_db(Path(raw_service_config)) if raw_service_config else None
+    except (FileNotFoundError, KeyError, OSError, ValueError, json.JSONDecodeError):
+        configured_db = None
+    explicit_package_dbs = {
+        Path(str(item)).expanduser().resolve(strict=False)
+        for item in config.get("package_dbs") or ()
+    }
+    if configured_db is None or explicit_package_dbs != {configured_db}:
+        return mango_sweep_manifest(
+            status="failed",
+            reason="calls_service_config_mismatch",
+            timeline_db=timeline_db,
+            out_jsonl=out_jsonl,
+            report_out=report_out,
+            manifest_path=manifest_path,
+            inventory_out=inventory_out,
+            cursor={},
+            inventory=[],
+            producer_report={},
+            command=(),
+            rc=78,
+        )
     producer_script = Path(str(config.get("producer_script") or Path.cwd() / "scripts" / "build_mango_call_timeline_increment.py"))
     if not producer_script.exists():
         return mango_sweep_manifest(
@@ -1723,9 +2359,9 @@ def run_mango_processed_sweep(
             rc=127,
         )
     cursor = mango_processed_cursor(timeline_db, tenant_id=tenant_id)
-    # ponytail: source timestamps cannot reveal a call analyzed after its old call date.
-    # Re-read analyzed rows and rely on stable event deduplication instead.
-    since = ""
+    cursor_at = parse_iso_datetime(str(cursor.get("max_source_ts") or cursor.get("last_cursor_ts") or ""))
+    overlap_seconds = max(0, int(config.get("safety_overlap_seconds") or 300))
+    since = (cursor_at - timedelta(seconds=overlap_seconds)).isoformat() if cursor_at else ""
     scan_roots = tuple(Path(str(item)).expanduser() for item in config.get("scan_roots") or ())
     package_globs = tuple(str(item) for item in config.get("package_globs") or ("mango_update_after_*",))
     inventory = discover_mango_processed_call_dbs(scan_roots, package_globs=package_globs, since=since)
@@ -1744,10 +2380,6 @@ def run_mango_processed_sweep(
     out_jsonl.parent.mkdir(parents=True, exist_ok=True)
     report_out.parent.mkdir(parents=True, exist_ok=True)
     inventory_out.write_text(json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    explicit_package_dbs = {
-        Path(str(item)).expanduser().resolve(strict=False)
-        for item in config.get("package_dbs") or ()
-    }
     unusable_explicit = [
         item
         for item in inventory
@@ -1951,52 +2583,53 @@ def inspect_mango_call_db(root: Path, db_path: Path, *, since_dt: datetime | Non
             date_col = next((col for col in ("started_at", "call_at", "event_at") if col in cols), None)
             if not date_col:
                 return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "missing_call_datetime"}
-            rows = con.execute(
+            if "updated_at" not in cols:
+                return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "missing_updated_at"}
+            done_predicate = "analysis_status = 'done' AND analysis_json IS NOT NULL AND TRIM(analysis_json) != ''"
+            invalid = con.execute(
                 f"""
-                SELECT {date_col} AS call_at, analysis_status, analysis_json
+                SELECT rowid
                 FROM call_records
-                WHERE {date_col} IS NOT NULL AND TRIM({date_col}) != ''
+                WHERE {done_predicate}
+                  AND (
+                    julianday({date_col}) IS NULL
+                    OR julianday(updated_at) IS NULL
+                    OR json_valid(analysis_json) = 0
+                    OR (json_valid(analysis_json) = 1 AND (json_type(analysis_json) != 'object' OR json(analysis_json) = '{{}}'))
+                  )
+                LIMIT 1
                 """
-            ).fetchall()
+            ).fetchone()
+            if invalid is not None:
+                return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "invalid_done_row"}
+            aggregate = con.execute(
+                f"""
+                SELECT
+                  COUNT(*) AS rows_total,
+                  SUM(CASE WHEN {done_predicate} THEN 1 ELSE 0 END) AS analysis_done,
+                  MIN(CASE WHEN {done_predicate} THEN {date_col} END) AS min_started_at,
+                  MAX(CASE WHEN {done_predicate} THEN {date_col} END) AS max_started_at,
+                  MIN(CASE WHEN {done_predicate} THEN updated_at END) AS min_updated_at,
+                  MAX(CASE WHEN {done_predicate} THEN updated_at END) AS max_updated_at,
+                  SUM(CASE WHEN {done_predicate} AND (? IS NULL OR updated_at >= ?) THEN 1 ELSE 0 END) AS selected
+                FROM call_records
+                """,
+                (since_dt.isoformat() if since_dt else None, since_dt.isoformat() if since_dt else None),
+            ).fetchone()
     except sqlite3.Error as exc:
         return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": f"sqlite_error:{type(exc).__name__}"}
-    total = len(rows)
-    done_rows = [
-        row
-        for row in rows
-        if str(row["analysis_status"] or "") == "done" and str(row["analysis_json"] or "").strip()
-    ]
-    for row in done_rows:
-        if parse_iso_datetime(str(row["call_at"] or "")) is None:
-            return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "invalid_done_call_datetime"}
-        try:
-            analysis = json.loads(str(row["analysis_json"] or ""))
-        except json.JSONDecodeError:
-            analysis = None
-        if not isinstance(analysis, Mapping):
-            return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "invalid_done_analysis_json"}
-    selected = 0
-    min_at = None
-    max_at = None
-    for row in done_rows:
-        raw = str(row["call_at"] or "")
-        parsed = parse_iso_datetime(raw)
-        if parsed is None:
-            continue
-        min_at = parsed if min_at is None else min(min_at, parsed)
-        max_at = parsed if max_at is None else max(max_at, parsed)
-        if since_dt is None or parsed >= since_dt:
-            selected += 1
     return {
         "root": str(root),
         "db_path": str(db_path),
         "usable": True,
-        "rows_total": total,
-        "analysis_done": len(done_rows),
-        "min_started_at": min_at.isoformat() if min_at else None,
-        "max_started_at": max_at.isoformat() if max_at else None,
-        "selected_after_cursor": selected,
-        "has_ra_final_summary": any(root.rglob("RA_FINAL_SUMMARY.json")),
+        "rows_total": int(aggregate["rows_total"] or 0),
+        "analysis_done": int(aggregate["analysis_done"] or 0),
+        "min_started_at": aggregate["min_started_at"],
+        "max_started_at": aggregate["max_started_at"],
+        "min_updated_at": aggregate["min_updated_at"],
+        "max_updated_at": aggregate["max_updated_at"],
+        "selected_after_cursor": int(aggregate["selected"] or 0),
+        "has_ra_final_summary": (root / "RA_FINAL_SUMMARY.json").is_file(),
     }
 
 
@@ -2250,7 +2883,10 @@ def atomic_publish_latest(source_path: Path, dest_path: Path) -> None:
 
 
 # B2: business-source label -> the step name(s) that must report status "ok"
-# in a given run for that source to count as fresh. A label mapped to a step
+# in a given run for that source to count as fresh. A proved Wappi checkpoint
+# or unchanged missing Mail input may remain explicitly degraded without
+# claiming freshness or blocking other sources.
+# A label mapped to a step
 # name that no current step config uses is reported missing instead of being
 # silently accepted.
 REQUIRED_MANIFEST_SOURCE_STEP_MAP: Mapping[str, tuple[str, ...]] = {
@@ -2267,8 +2903,71 @@ REQUIRED_MANIFEST_SOURCE_STEP_MAP: Mapping[str, tuple[str, ...]] = {
     "bot_safe_chunks_and_dossier": ("bot_safe_rebuild",),
 }
 
+
+def manifest_source_missing_is_degradable(
+    label: str,
+    steps_report: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Allow degraded freshness only after every canonical source stage ran.
+
+    An omitted, disabled, malformed, exception-raising or policy-failing step
+    remains blocking. A Wappi source may be degraded only when all mapped
+    stages produced an explicit ``ok``/proved ``degraded`` report.
+    """
+
+    if label not in DEGRADABLE_MANIFEST_SOURCE_LABELS:
+        return False
+    by_name = {
+        str(step.get("name") or ""): step
+        for step in steps_report
+        if isinstance(step, Mapping)
+    }
+    expected = REQUIRED_MANIFEST_SOURCE_STEP_MAP.get(label) or ()
+    if not expected or any(step_name not in by_name for step_name in expected):
+        return False
+    if label in {"wappi_telegram", "wappi_max"}:
+        step = by_name["wappi_history_incremental"]
+        summary = step.get("summary") if isinstance(step.get("summary"), Mapping) else {}
+        evidence = summary.get("degradation_evidence")
+        return step.get("status") == "degraded" and isinstance(evidence, Mapping) and all(
+            value is True for value in evidence.values()
+        )
+    if label == "email":
+        archive = by_name["mail_archive_incremental"]
+        link = by_name["mail_link_enrich"]
+        summary = (
+            archive.get("summary")
+            if isinstance(archive.get("summary"), Mapping)
+            else {}
+        )
+        evidence = summary.get("degradation_evidence")
+        checks = evidence.get("checks") if isinstance(evidence, Mapping) else None
+        return (
+            archive.get("status") == "degraded"
+            and link.get("status") == "ok"
+            and isinstance(checks, Mapping)
+            and all(value is True for value in checks.values())
+        )
+    return False
+
 REQUIRED_MUTATING_NIGHTLY_CHAIN = (
     ("wappi_history_incremental", "wappi_history"),
+    ("family_graph_refresh", "family_graph"),
+    ("derived_signals_refresh", "derived_signals"),
+    ("stage4b_bot_opening", "stage4b_bot_opening"),
+    ("bot_safe_rebuild", "bot_safe_rebuild"),
+)
+
+REQUIRED_CANONICAL_NIGHTLY_CHAIN = (
+    ("mango_processed_sweep", "mango_processed_sweep"),
+    ("calls_and_amo_incremental", "nightly_incremental"),
+    ("amo_incremental_shadow", "amo_incremental"),
+    ("tallanto_cards_sync", "tallanto_cards"),
+    ("tallanto_attendance_api_incremental", "tallanto_attendance_api"),
+    ("tallanto_money_api_incremental", "tallanto_money_api"),
+    ("wappi_history_incremental", "wappi_history"),
+    ("mail_archive_incremental", "nightly_incremental"),
+    ("mail_link_enrich", "mail_link_enrich"),
     ("family_graph_refresh", "family_graph"),
     ("derived_signals_refresh", "derived_signals"),
     ("stage4b_bot_opening", "stage4b_bot_opening"),
@@ -2280,6 +2979,28 @@ def validate_mutating_nightly_chain(payload: Mapping[str, Any]) -> str:
     raw_steps = payload.get("steps")
     if not isinstance(raw_steps, list):
         return "nightly config must contain a steps list"
+    names_by_owned_kind: dict[str, set[str]] = defaultdict(set)
+    for name, expected_kind in REQUIRED_CANONICAL_NIGHTLY_CHAIN:
+        names_by_owned_kind[expected_kind].add(name)
+        matches = [
+            step
+            for step in raw_steps
+            if isinstance(step, Mapping) and step.get("name") == name
+        ]
+        if len(matches) != 1:
+            return f"nightly config requires exactly one {name} step"
+        step = matches[0]
+        if step.get("enabled") is not True or step.get("required") is not True:
+            return f"nightly config {name} must be enabled and required"
+        if step.get("kind") != expected_kind:
+            return f"nightly config {name} kind must be {expected_kind}"
+    for step in raw_steps:
+        if not isinstance(step, Mapping):
+            continue
+        kind = str(step.get("kind") or "")
+        name = str(step.get("name") or "")
+        if kind in names_by_owned_kind and name not in names_by_owned_kind[kind]:
+            return f"nightly config has unexpected second owner for {kind}: {name}"
     declared_db = Path(str(payload.get("timeline_db") or "")).expanduser().resolve(strict=False)
     positions: list[int] = []
     for name, expected_kind in REQUIRED_MUTATING_NIGHTLY_CHAIN:
@@ -2288,14 +3009,8 @@ def validate_mutating_nightly_chain(payload: Mapping[str, Any]) -> str:
             for index, step in enumerate(raw_steps)
             if isinstance(step, Mapping) and step.get("name") == name
         ]
-        if len(matches) != 1:
-            return f"nightly config requires exactly one {name} step"
         position, step = matches[0]
         config = step.get("config")
-        if step.get("enabled") is not True or step.get("required") is not True:
-            return f"nightly config {name} must be enabled and required"
-        if step.get("kind") != expected_kind:
-            return f"nightly config {name} kind must be {expected_kind}"
         if not isinstance(config, Mapping):
             return f"nightly config {name} requires config"
         if config.get("apply") is not True:
@@ -2730,9 +3445,33 @@ def _proof_email(ctx: "_SourceProofContext") -> Mapping[str, Any]:
             cursor_or_max_event_at=cursor_ts,
             reason="current email step has no completed archive import",
         )
+    archive_step = ctx.steps_by_name.get("mail_archive_incremental") or {}
+    archive_summary = (
+        archive_step.get("summary")
+        if isinstance(archive_step.get("summary"), Mapping)
+        else {}
+    )
+    artifact_proofs = (
+        archive_summary.get("source_artifact_proofs")
+        if isinstance(archive_summary.get("source_artifact_proofs"), Mapping)
+        else {}
+    )
+    mail_artifact = artifact_proofs.get("mail_archive_stage2")
+    if not isinstance(mail_artifact, Mapping) or mail_artifact.get("status") != "ok":
+        return _proof(
+            label,
+            ctx,
+            status="unproven_current_run",
+            records=records,
+            cursor_or_max_event_at=cursor_ts,
+            reason="current email import has no fresh manifest+SHA artifact proof",
+        )
     return _proof(
         label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
-        reason="mail_archive_incremental and mail_link_enrich both ok; archive+link-enrich metrics present",
+        reason=(
+            "mail_archive_incremental and mail_link_enrich both ok; "
+            "fresh producer manifest and output SHA verified"
+        ),
     )
 
 

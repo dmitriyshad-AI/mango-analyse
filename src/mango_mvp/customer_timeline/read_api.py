@@ -3,19 +3,27 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, require_timezone
-from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
+from mango_mvp.customer_timeline.next_step_resolver import (
+    resolve_customer_manager_action,
+    resolve_customer_next_step,
+)
 from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     customer_timeline_sqlite_safety_contract,
     guard_customer_timeline_sqlite_path,
+)
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    FAMILY_LINK_SCOPE_OUT,
+    family_link_timeline_scope_state,
+    family_timeline_scope_decision,
 )
 
 
@@ -125,12 +133,21 @@ class CustomerTimelineReadApi:
         cursor: Optional[str] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
-        result = self.store.list_customers(
-            tenant,
-            q=q,
-            identity_status=identity_status,
-            updated_since=updated_since,
-            limit=bounded_limit(limit, default=50, max_limit=200),
+        page_limit = bounded_limit(limit, default=50, max_limit=200)
+        result = _operational_visible_page(
+            fetch_page=lambda page_cursor: self.store.list_customers(
+                tenant,
+                q=q,
+                identity_status=identity_status,
+                updated_since=updated_since,
+                limit=max(page_limit, 50),
+                cursor=page_cursor,
+            ),
+            customer_id_of=lambda item: str(item.get("customer_id") or ""),
+            out_of_scope_for_customer_ids=lambda customer_ids: (
+                self._operational_out_of_scope_customer_ids(tenant, customer_ids)
+            ),
+            limit=page_limit,
             cursor=cursor,
         )
         return {
@@ -221,7 +238,16 @@ class CustomerTimelineReadApi:
             readiness=readiness,
             conflicts=conflicts["items"],
             customer_id=customer["customer_id"],
-        ).to_json_dict()
+        ).to_informational_json_dict()
+        manager_action = asdict(
+            resolve_customer_manager_action(
+                self.store._con,  # noqa: SLF001 - the read facade owns this read-only connection.
+                tenant_id=tenant,
+                customer_id=customer["customer_id"],
+                as_of=as_of or self.store._clock(),  # noqa: SLF001 - one store clock owns the cutoff.
+            )
+        )
+        manager_action["readiness_reason_codes"] = list(manager_action["readiness_reason_codes"])
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "endpoint": "GET /customer",
@@ -240,6 +266,7 @@ class CustomerTimelineReadApi:
                 opportunities=opportunities,
                 events=events["items"],
                 next_step_resolution=next_step_resolution,
+                manager_action=manager_action,
             ),
             "timeline": {
                 **events,
@@ -329,6 +356,11 @@ class CustomerTimelineReadApi:
         normalized_customer_id = require_text(customer_id, "customer_id")
         evaluated_at = as_of or self.store._clock()  # noqa: SLF001 - one store clock owns the read cutoff.
         require_timezone(evaluated_at, "as_of")
+        out_of_scope = (
+            allowed_only
+            and normalized_customer_id
+            in self._operational_out_of_scope_customer_ids(tenant, (normalized_customer_id,))
+        )
         clauses = ["tenant_id = ?"]
         params: list[Any] = [tenant]
         if allowed_only:
@@ -346,7 +378,7 @@ class CustomerTimelineReadApi:
             params.append(normalized_customer_id)
         page_limit = bounded_limit(limit, default=50, max_limit=200)
         raw_limit = min(page_limit * 4, 500) if allowed_only else page_limit
-        raw_items = self._records(
+        raw_items = [] if out_of_scope else self._records(
             "bot_context_chunks",
             " AND ".join(clauses),
             tuple(params),
@@ -366,7 +398,9 @@ class CustomerTimelineReadApi:
             until=evaluated_at,
             allowed_for_bot=True,
         )
-        allowed_chunks = self._count("bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params))
+        allowed_chunks = 0 if out_of_scope else self._count(
+            "bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params)
+        )
         review_required_chunks = self._count(
             "bot_context_chunks",
             "tenant_id = ? AND customer_id = ? AND requires_manager_review = 1",
@@ -379,8 +413,10 @@ class CustomerTimelineReadApi:
             "customer_id": customer_id,
             "as_of": evaluated_at.isoformat(),
             "allowed_only": allowed_only,
+            "out_of_scope": out_of_scope,
             "items": [project_bot_context(item, audience="bot" if allowed_only else "ui") for item in visible_items],
             "summary": {
+                "out_of_scope": out_of_scope,
                 "visible_chunks": len(visible_items),
                 "total_chunks": total_chunks,
                 "allowed_chunks": allowed_chunks,
@@ -408,14 +444,23 @@ class CustomerTimelineReadApi:
         require_timezone(evaluated_at, "as_of")
         if allowed_for_bot is True:
             scopes = ("bot_context",)
-        result = self.store.search_timeline(
-            tenant,
-            query,
-            customer_id=customer_id,
-            scopes=scopes,
-            allowed_for_bot=allowed_for_bot,
-            until=evaluated_at if allowed_for_bot is True else None,
-            limit=bounded_limit(limit, default=25, max_limit=100),
+        page_limit = bounded_limit(limit, default=25, max_limit=100)
+        result = _operational_visible_page(
+            fetch_page=lambda page_cursor: self.store.search_timeline(
+                tenant,
+                query,
+                customer_id=customer_id,
+                scopes=scopes,
+                allowed_for_bot=allowed_for_bot,
+                until=evaluated_at if allowed_for_bot is True else None,
+                limit=max(page_limit, 50),
+                cursor=page_cursor,
+            ),
+            customer_id_of=search_hit_customer_id,
+            out_of_scope_for_customer_ids=lambda customer_ids: (
+                self._operational_out_of_scope_customer_ids(tenant, customer_ids)
+            ),
+            limit=page_limit,
             cursor=cursor,
         )
         return {
@@ -431,6 +476,86 @@ class CustomerTimelineReadApi:
             "redaction": redaction_summary(bot_safe=allowed_for_bot is True),
             "safety": customer_timeline_read_api_safety_contract(),
         }
+
+    def _operational_out_of_scope_customer_ids(
+        self,
+        tenant_id: str,
+        customer_ids: Sequence[str],
+    ) -> frozenset[str]:
+        """Resolve scope only for the requested page/profile, never the whole tenant."""
+        selected_customer_ids = tuple(
+            sorted({str(value) for value in customer_ids if str(value)})
+        )
+        if not selected_customer_ids:
+            return frozenset()
+        tables = {
+            str(row[0])
+            for row in self.store._con.execute(  # noqa: SLF001 - read-only facade schema check.
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('family_members_v1','family_links_v1')"
+            )
+        }
+        if tables != {"family_members_v1", "family_links_v1"}:
+            return frozenset()
+        families_by_customer: dict[str, set[str]] = {}
+        for row in self.store._con.execute(  # noqa: SLF001 - one local read boundary.
+            "SELECT family_id,customer_id FROM family_members_v1 WHERE tenant_id=? "
+            "AND customer_id IN (SELECT value FROM json_each(?))",
+            (tenant_id, json.dumps(selected_customer_ids, ensure_ascii=False)),
+        ):
+            families_by_customer.setdefault(str(row["customer_id"]), set()).add(str(row["family_id"]))
+        selected_family_ids = tuple(
+            sorted({family_id for values in families_by_customer.values() for family_id in values})
+        )
+        if not selected_family_ids:
+            return frozenset()
+        family_customer_ids = tuple(
+            sorted({
+                str(row["customer_id"])
+                for row in self.store._con.execute(  # noqa: SLF001 - indexed family boundary.
+                    "SELECT customer_id FROM family_members_v1 WHERE tenant_id=? "
+                    "AND family_id IN (SELECT value FROM json_each(?))",
+                    (tenant_id, json.dumps(selected_family_ids, ensure_ascii=False)),
+                )
+            })
+        )
+        if not family_customer_ids:
+            return frozenset()
+        states_by_family: dict[str, list[str]] = {}
+        for row in self.store._con.execute(  # noqa: SLF001 - one local read boundary.
+            "SELECT family_id,record_json,grades_json FROM family_links_v1 WHERE tenant_id=? "
+            "AND customer_id IN (SELECT value FROM json_each(?))",
+            (tenant_id, json.dumps(family_customer_ids, ensure_ascii=False)),
+        ):
+            family_id = str(row["family_id"])
+            if family_id not in selected_family_ids:
+                continue
+            try:
+                record = json.loads(str(row["record_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record = {}
+            if not isinstance(record, Mapping):
+                record = {}
+            if not isinstance(record.get("student_types"), list) and not isinstance(record.get("grades"), list):
+                try:
+                    grades = json.loads(str(row["grades_json"] or "[]"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    grades = None
+                if isinstance(grades, list):
+                    record = {**record, "grades": grades}
+            states_by_family.setdefault(family_id, []).append(
+                family_link_timeline_scope_state(record)
+            )
+        excluded: set[str] = set()
+        for customer_id, family_ids in families_by_customer.items():
+            states = [
+                state
+                for family_id in family_ids
+                for state in states_by_family.get(family_id, ())
+            ]
+            if states and family_timeline_scope_decision(states) == FAMILY_LINK_SCOPE_OUT:
+                excluded.add(customer_id)
+        return frozenset(excluded)
 
     def list_conflicts(
         self,
@@ -841,6 +966,7 @@ def project_manager_projection(
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
     next_step_resolution: Mapping[str, Any] | None = None,
+    manager_action: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     phone_values = sorted(
         {
@@ -878,7 +1004,7 @@ def project_manager_projection(
         if lead_id:
             amo_lead_ids.add(lead_id)
     return {
-        "schema_version": "customer_profile_manager_projection_v1",
+        "schema_version": "customer_profile_manager_projection_v2",
         "audience": "manager_internal",
         "primary_phone": str(customer.get("primary_phone") or ""),
         "primary_email": str(customer.get("primary_email") or ""),
@@ -892,6 +1018,7 @@ def project_manager_projection(
         ],
         "opportunities": [project_opportunity_manager(item) for item in opportunities if item.get("source_system") == "amocrm_snapshot"],
         "next_step_resolution": dict(next_step_resolution or {}),
+        "manager_action": dict(manager_action or {}),
     }
 
 
@@ -1123,6 +1250,46 @@ def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "record": projected,
         "highlight": item.get("highlight"),
     }
+
+
+def _operational_visible_page(
+    *,
+    fetch_page: Callable[[Optional[str]], Mapping[str, Any]],
+    customer_id_of: Callable[[Mapping[str, Any]], str],
+    out_of_scope_for_customer_ids: Callable[[Sequence[str]], frozenset[str]],
+    limit: int,
+    cursor: Optional[str],
+) -> Mapping[str, Any]:
+    """Apply the operational scope before the public page limit and cursor boundary."""
+    visible: list[Mapping[str, Any]] = []
+    page_cursor = cursor
+    while True:
+        page = fetch_page(page_cursor)
+        raw_items = list(page.get("items") or ())
+        out_of_scope = out_of_scope_for_customer_ids(
+            tuple(customer_id_of(item) for item in raw_items)
+        )
+        raw_offset = int(page_cursor or "0")  # fetch_page validates the cursor first.
+        for index, item in enumerate(raw_items):
+            if customer_id_of(item) in out_of_scope:
+                continue
+            visible.append(item)
+            if len(visible) == limit:
+                has_more = index + 1 < len(raw_items) or page.get("next_cursor") is not None
+                return {
+                    **page,
+                    "items": visible,
+                    "next_cursor": str(raw_offset + index + 1) if has_more else None,
+                }
+        next_cursor = page.get("next_cursor")
+        if next_cursor is None:
+            return {**page, "items": visible, "next_cursor": None}
+        page_cursor = str(next_cursor)
+
+
+def search_hit_customer_id(item: Mapping[str, Any]) -> str:
+    record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
+    return str(record.get("customer_id") or "")
 
 
 def first_text(item: Mapping[str, Any], keys: Sequence[str]) -> Optional[str]:

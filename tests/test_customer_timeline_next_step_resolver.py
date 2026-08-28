@@ -38,6 +38,14 @@ def test_structured_next_step_uses_action_instead_of_mapping_repr() -> None:
     assert result.status == "active"
     assert result.action == "Позвонить клиенту завтра"
     assert "{'" not in result.display_text
+    informational = result.to_informational_json_dict()
+    assert informational["resolution_kind"] == "historical_hint"
+    assert informational["status"] == "empty"
+    assert informational["historical_status"] == "active"
+    assert informational["reason_code"] == "historical_hint_only"
+    assert informational["action"] == ""
+    assert informational["display_text"] == ""
+    assert informational["historical_action"] == "Позвонить клиенту завтра"
 
 
 def test_structured_next_step_without_action_does_not_open_step() -> None:
@@ -478,7 +486,11 @@ def test_read_api_profile_blocks_closure_when_ambiguous_identity_is_open(tmp_pat
     assert profile["readiness"]["open_conflicts"] == 1
     assert profile["next_step_resolution"]["status"] == "needs_manager_review"
     assert profile["next_step_resolution"]["reason_code"] == "ambiguous_identity_open"
-    assert profile["next_step_resolution"]["display_text"] == "Уточнить у менеджера: открыт конфликт идентичности"
+    assert profile["next_step_resolution"]["display_text"] == ""
+    assert (
+        profile["next_step_resolution"]["historical_display_text"]
+        == "Уточнить у менеджера: открыт конфликт идентичности"
+    )
 
 
 def seed_next_step_db(tmp_path: Path, *, with_conflict: bool) -> tuple[Path, str]:

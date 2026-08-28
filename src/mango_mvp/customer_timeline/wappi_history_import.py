@@ -1410,7 +1410,14 @@ def _build_safe_amo_talk_client(env_file: Path) -> Any:
     return AmoMcpClient(config)
 
 
-def hydrate_wappi_widget_contacts(
+@dataclass(frozen=True)
+class WappiWidgetContactHydrationPlan:
+    records: tuple[TimelineSourceRecord, ...]
+    report: Mapping[str, Any]
+    idempotency_key: str
+
+
+def plan_wappi_widget_contact_hydration(
     *,
     timeline_db: Path,
     allowed_root: Path,
@@ -1419,12 +1426,11 @@ def hydrate_wappi_widget_contacts(
     tenant_id: str = "foton",
     workers: int = 4,
     amo_client: Any = None,
-) -> Mapping[str, Any]:
-    """Fetch widget-proven AMO contacts without a real contact snapshot."""
+) -> WappiWidgetContactHydrationPlan:
+    """Fetch and normalize widget-proven AMO contacts without writing Timeline."""
     from types import SimpleNamespace
 
     from mango_mvp.customer_timeline.amo_incremental import load_amo_link_index, normalize_cards_source
-    from mango_mvp.customer_timeline.ingestion import AmoSnapshotNormalizer
     from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, embedded_items, read_mcp_env
 
     db_path = guard_customer_timeline_output_path(timeline_db, Path(allowed_root))
@@ -1448,7 +1454,19 @@ def hydrate_wappi_widget_contacts(
             )
     missing = tuple(sorted(wanted - hydrated))
     if not missing:
-        return {"requested": 0, "fetched": 0, "normalized": 0, "fetch_errors": 0, "write_status_counts": {}}
+        return WappiWidgetContactHydrationPlan(
+            records=(),
+            idempotency_key=stable_digest([]),
+            report={
+                "requested": 0,
+                "fetched": 0,
+                "normalized": 0,
+                "fetch_errors": 0,
+                "write_status_counts": {},
+                "errors": 0,
+                "applied": False,
+            },
+        )
     if amo_client is None:
         if amo_mcp_env_file is None:
             raise ValueError("AMO MCP env file is required to hydrate Wappi contacts")
@@ -1523,27 +1541,51 @@ def hydrate_wappi_widget_contacts(
         )
         for row in rows
     )
-    with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
-        report = TimelineImportService(store).import_records(
-            records,
-            normalizer=AmoSnapshotNormalizer(tenant_id=tenant_id),
-            tenant_id=tenant_id,
-            source_ref="amocrm:contacts:wappi_widget_hydrate",
-            idempotency_key=stable_digest(sorted(missing)),
-            dry_run=False,
-            actor="wappi_widget_contact_hydrate",
-        )
+    return WappiWidgetContactHydrationPlan(
+        records=records,
+        idempotency_key=stable_digest(sorted(missing)),
+        report={
+            "requested": len(missing),
+            "batches": len(batches),
+            "fallback_requested": len(fallback_ids),
+            "fallback_fetched": sum(contact is not None for contact in fallback_contacts),
+            "fetched": len(fetched),
+            "normalized": len(rows),
+            "fetch_errors": len(missing) - len(fetched),
+            "normalization": {key: value for key, value in normalization.items() if not key.startswith("_")},
+            "write_status_counts": {},
+            "errors": 0,
+            "applied": False,
+        },
+    )
+
+
+def apply_wappi_widget_contact_hydration_plan(
+    store: CustomerTimelineSQLiteStore,
+    plan: WappiWidgetContactHydrationPlan,
+    *,
+    tenant_id: str = "foton",
+) -> Mapping[str, Any]:
+    """Apply a prepared hydration plan through the caller's canonical Store transaction."""
+
+    if not plan.records:
+        return dict(plan.report)
+    from mango_mvp.customer_timeline.ingestion import AmoSnapshotNormalizer
+
+    report = TimelineImportService(store).import_records(
+        plan.records,
+        normalizer=AmoSnapshotNormalizer(tenant_id=tenant_id),
+        tenant_id=tenant_id,
+        source_ref="amocrm:contacts:wappi_widget_hydrate",
+        idempotency_key=plan.idempotency_key,
+        dry_run=False,
+        actor="wappi_widget_contact_hydrate",
+    )
     return {
-        "requested": len(missing),
-        "batches": len(batches),
-        "fallback_requested": len(fallback_ids),
-        "fallback_fetched": sum(contact is not None for contact in fallback_contacts),
-        "fetched": len(fetched),
-        "normalized": len(rows),
-        "fetch_errors": len(missing) - len(fetched),
-        "normalization": {key: value for key, value in normalization.items() if not key.startswith("_")},
+        **plan.report,
         "write_status_counts": dict(report.write_status_counts),
         "errors": len(report.errors),
+        "applied": not report.errors,
     }
 
 
@@ -1961,6 +2003,7 @@ def run_wappi_history_import(
     widget_event_link_report: Mapping[str, Any] = {}
     widget_talk_link_report: Mapping[str, Any] = {}
     widget_contact_hydrate_report: Mapping[str, Any] = {}
+    widget_contact_hydration_plan: WappiWidgetContactHydrationPlan | None = None
     if config.widget_link_db is not None:
         if not config.refresh_widget_links and not config.widget_link_db.exists():
             widget_setup_errors.append("wappi_amo_widget:reuse_link_db_missing")
@@ -2060,15 +2103,14 @@ def run_wappi_history_import(
         ),
     )
     if config.apply and widget_links and not widget_setup_errors:
-        widget_contact_hydrate_report = hydrate_wappi_widget_contacts(
+        widget_contact_hydration_plan = plan_wappi_widget_contact_hydration(
             timeline_db=config.timeline_db,
             allowed_root=config.allowed_root,
             widget_links=widget_links,
             amo_mcp_env_file=config.amo_mcp_env_file,
             tenant_id=config.tenant_id,
         )
-        # The hydrate step is our own audited staging write; detect drift only after it.
-        db_identity_validation_base = timeline_db_identity(config.timeline_db)
+        widget_contact_hydrate_report = dict(widget_contact_hydration_plan.report)
     if not client_was_provided and config.widget_link_db is not None:
         client = build_readonly_wappi_client(
             config.env_file,
@@ -2463,10 +2505,20 @@ def run_wappi_history_import(
         write_status_counts.clear()
         normalized_counts.clear()
         errors.clear()
-        store = CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.allowed_root)
-        try:
+        with CustomerTimelineSQLiteStore(
+            config.timeline_db,
+            allowed_root=config.allowed_root,
+        ) as store:
             store_summary_before = store.summary()
             with store.bulk_write():
+                if widget_contact_hydration_plan is not None:
+                    widget_contact_hydrate_report = apply_wappi_widget_contact_hydration_plan(
+                        store,
+                        widget_contact_hydration_plan,
+                        tenant_id=config.tenant_id,
+                    )
+                    if int(widget_contact_hydrate_report.get("errors") or 0):
+                        raise RuntimeError("Wappi AMO contact hydration failed after validation")
                 for source_system, group in grouped.items():
                     report = TimelineImportService(store).import_records(
                         group,
@@ -2504,24 +2556,19 @@ def run_wappi_history_import(
                     actor=config.actor,
                 )
                 write_status_counts.update(quarantined)
-        finally:
-            store.close()
-        provisional_cleanup = remove_orphaned_provisional_customers(
-            config.timeline_db,
-            tenant_id=config.tenant_id,
-            customer_ids=tuple(provisional_upgrades),
-        )
-        stale_conflict_cleanup = close_resolved_wappi_pending_conflicts(
-            config.timeline_db,
-            tenant_id=config.tenant_id,
-            records=records,
-        )
-        with CustomerTimelineSQLiteStore(
-            config.timeline_db,
-            allowed_root=config.allowed_root,
-            read_only=True,
-        ) as store_ro:
-            store_summary_after = store_ro.summary()
+                provisional_cleanup = remove_orphaned_provisional_customers(
+                    store,
+                    tenant_id=config.tenant_id,
+                    customer_ids=tuple(provisional_upgrades),
+                    actor=config.actor,
+                )
+                stale_conflict_cleanup = close_resolved_wappi_pending_conflicts(
+                    store,
+                    tenant_id=config.tenant_id,
+                    records=records,
+                    actor=config.actor,
+                )
+            store_summary_after = store.summary()
     checkpoint_committed = False
     amo_read_active = bool(
         amo_auto_resolver is not None or widget_contact_hydrate_report.get("requested")
@@ -2796,8 +2843,8 @@ def run_wappi_history_import(
             "applied": apply_effective,
             "status_counts": dict(write_status_counts),
             "import_groups_single_transaction": True if apply_effective else None,
-            "post_import_cleanup_same_transaction": False if apply_effective else None,
-            "all_db_mutations_single_transaction": False if apply_effective else None,
+            "post_import_cleanup_same_transaction": True if apply_effective else None,
+            "all_db_mutations_single_transaction": True if apply_effective else None,
         },
         "stale_conflict_cleanup": stale_conflict_cleanup,
         "provisional_cleanup": provisional_cleanup,
@@ -5203,65 +5250,84 @@ def load_provisional_customer_ids(db_path: Path, *, tenant_id: str) -> set[str]:
 
 
 def remove_orphaned_provisional_customers(
-    db_path: Path,
+    store: CustomerTimelineSQLiteStore,
     *,
     tenant_id: str,
     customer_ids: Sequence[str],
+    actor: str = "wappi_history_cleanup",
 ) -> Mapping[str, int]:
     """Remove only provisional shells after their events and links moved to an exact family."""
     candidates = tuple(sorted({str(item) for item in customer_ids if str(item)}))
     if not candidates:
         return {"candidates": 0, "removed": 0, "retained_with_references": 0}
+    store._ensure_writable()  # noqa: SLF001 - cleanup shares the canonical Store transaction.
     tenant = normalize_key(tenant_id, "tenant_id")
     removed = 0
     retained = 0
-    with sqlite3.connect(db_path) as con:
-        con.row_factory = sqlite3.Row
-        con.execute("BEGIN IMMEDIATE")
-        tables_with_customer_id: list[str] = []
-        for table_row in con.execute("PRAGMA table_list"):
-            table_name = str(table_row[1])
-            if table_name.startswith("sqlite_") or table_name in {
-                "customer_identities",
-                "customer_id_mappings",
-            }:
-                continue
+    con = store._con  # noqa: SLF001 - cleanup shares the canonical Store transaction.
+    tables_with_customer_id: list[tuple[str, bool]] = []
+    for table_row in con.execute("PRAGMA table_list"):
+        table_name = str(table_row[1])
+        if table_name.startswith("sqlite_") or table_name in {
+            "customer_identities",
+            "customer_id_mappings",
+        }:
+            continue
+        quoted = table_name.replace('"', '""')
+        columns = {str(column[1]) for column in con.execute(f'PRAGMA table_info("{quoted}")')}
+        if "customer_id" in columns:
+            tables_with_customer_id.append((table_name, "tenant_id" in columns))
+    for customer_id in candidates:
+        row = con.execute(
+            """
+            SELECT record_hash, record_json
+            FROM customer_identities
+            WHERE tenant_id = ? AND customer_id = ?
+            """,
+            (tenant, customer_id),
+        ).fetchone()
+        if row is None:
+            continue
+        payload = json.loads(str(row["record_json"] or "{}"))
+        if not bool((payload.get("metadata") or {}).get("provisional_wappi_family")):
+            retained += 1
+            continue
+        if con.execute(
+            "SELECT 1 FROM customer_id_mappings WHERE tenant_id=? AND new_customer_id=? LIMIT 1",
+            (tenant, customer_id),
+        ).fetchone():
+            retained += 1
+            continue
+        has_reference = False
+        for table_name, has_tenant_id in tables_with_customer_id:
             quoted = table_name.replace('"', '""')
-            if any(str(column[1]) == "customer_id" for column in con.execute(f'PRAGMA table_info("{quoted}")')):
-                tables_with_customer_id.append(table_name)
-        for customer_id in candidates:
-            row = con.execute(
-                """
-                SELECT record_json
-                FROM customer_identities
-                WHERE tenant_id = ? AND customer_id = ?
-                """,
-                (tenant, customer_id),
-            ).fetchone()
-            if row is None:
-                continue
-            payload = json.loads(str(row["record_json"] or "{}"))
-            if not bool((payload.get("metadata") or {}).get("provisional_wappi_family")):
-                retained += 1
-                continue
-            has_reference = False
-            for table_name in tables_with_customer_id:
-                quoted = table_name.replace('"', '""')
-                if con.execute(
-                    f'SELECT 1 FROM "{quoted}" WHERE customer_id = ? LIMIT 1',
-                    (customer_id,),
-                ).fetchone():
-                    has_reference = True
-                    break
-            if has_reference:
-                retained += 1
-                continue
-            con.execute(
-                "DELETE FROM customer_identities WHERE tenant_id = ? AND customer_id = ?",
-                (tenant, customer_id),
-            )
-            removed += 1
-        con.commit()
+            owner_clause = "tenant_id = ? AND customer_id = ?" if has_tenant_id else "customer_id = ?"
+            params: tuple[str, ...] = (tenant, customer_id) if has_tenant_id else (customer_id,)
+            if con.execute(
+                f'SELECT 1 FROM "{quoted}" WHERE {owner_clause} LIMIT 1',
+                params,
+            ).fetchone():
+                has_reference = True
+                break
+        if has_reference:
+            retained += 1
+            continue
+        con.execute(
+            "DELETE FROM customer_identities WHERE tenant_id = ? AND customer_id = ?",
+            (tenant, customer_id),
+        )
+        store.append_audit_log(
+            tenant,
+            action="wappi_provisional_customer_removed",
+            entity_type="customer_identity",
+            entity_id=customer_id,
+            actor=actor,
+            before_hash=str(row["record_hash"]),
+            metadata={"reason": "exact_identity_upgrade_left_no_references"},
+        )
+        removed += 1
+    if removed:
+        store._commit()  # noqa: SLF001 - defer commit to the surrounding Store bulk_write.
     return {
         "candidates": len(candidates),
         "removed": removed,
@@ -5270,10 +5336,11 @@ def remove_orphaned_provisional_customers(
 
 
 def close_resolved_wappi_pending_conflicts(
-    db_path: Path,
+    store: CustomerTimelineSQLiteStore,
     *,
     tenant_id: str,
     records: Sequence[TimelineSourceRecord],
+    actor: str = "wappi_history_cleanup",
 ) -> dict[str, int]:
     resolved_source_ids = {
         (
@@ -5287,57 +5354,68 @@ def close_resolved_wappi_pending_conflicts(
         and str(record.payload.get("identity_authority") or "") != "wappi_provisional"
     }
     resolved_source_ids.discard(("", "", "", ""))
-    if not resolved_source_ids or not db_path.exists():
+    if not resolved_source_ids:
         return {"resolved_pending_conflicts_closed": 0}
 
-    now = datetime.now(timezone.utc).isoformat()
+    store._ensure_writable()  # noqa: SLF001 - cleanup shares the canonical Store transaction.
+    now = store._now().isoformat()  # noqa: SLF001 - preserve the Store clock contract.
     closed = 0
-    with sqlite3.connect(db_path) as con:
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA foreign_keys = ON")
-        rows = con.execute(
+    con = store._con  # noqa: SLF001 - cleanup shares the canonical Store transaction.
+    rows = con.execute(
+        """
+        SELECT conflict_id, record_hash, record_json
+        FROM timeline_conflicts
+        WHERE tenant_id = ?
+          AND conflict_type = 'pending_attribution'
+          AND status IN ('open','active')
+        """,
+        (normalize_key(tenant_id, "tenant_id"),),
+    ).fetchall()
+    for row in rows:
+        payload = json.loads(str(row["record_json"] or "{}"))
+        metadata = dict(payload.get("metadata") or {})
+        key = tuple(
+            str(metadata.get(name) or "")
+            for name in ("source_system", "profile_id", "chat_id", "message_id")
+        )
+        if key not in resolved_source_ids:
+            continue
+        metadata["superseded_by"] = "resolved_wappi_timeline_event"
+        metadata["resolved_by"] = "wappi_history_auto_resolver"
+        payload["metadata"] = metadata
+        payload["status"] = "resolved"
+        payload["resolved_at"] = now
+        safe_payload = scrub_timeline_persisted_json(payload)
+        after_hash = stable_digest(safe_payload)
+        con.execute(
             """
-            SELECT conflict_id, record_json
-            FROM timeline_conflicts
-            WHERE tenant_id = ?
-              AND conflict_type = 'pending_attribution'
-              AND status = 'open'
+            UPDATE timeline_conflicts
+            SET status = 'resolved',
+                resolved_at = ?,
+                record_json = ?,
+                record_hash = ?
+            WHERE conflict_id = ?
             """,
-            (tenant_id,),
-        ).fetchall()
-        for row in rows:
-            payload = json.loads(str(row["record_json"] or "{}"))
-            metadata = dict(payload.get("metadata") or {})
-            key = tuple(
-                str(metadata.get(name) or "")
-                for name in ("source_system", "profile_id", "chat_id", "message_id")
-            )
-            if key not in resolved_source_ids:
-                continue
-            metadata["superseded_by"] = "resolved_wappi_timeline_event"
-            metadata["resolved_by"] = "wappi_history_auto_resolver"
-            payload["metadata"] = metadata
-            payload["status"] = "resolved"
-            payload["resolved_at"] = now
-            safe_payload = scrub_timeline_persisted_json(payload)
-            con.execute(
-                """
-                UPDATE timeline_conflicts
-                SET status = 'resolved',
-                    resolved_at = ?,
-                    record_json = ?,
-                    record_hash = ?
-                WHERE conflict_id = ?
-                """,
-                (
-                    now,
-                    json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-                    stable_digest(safe_payload),
-                    row["conflict_id"],
-                ),
-            )
-            closed += 1
-        con.commit()
+            (
+                now,
+                json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                after_hash,
+                row["conflict_id"],
+            ),
+        )
+        store.append_audit_log(
+            normalize_key(tenant_id, "tenant_id"),
+            action="wappi_pending_conflict_resolved",
+            entity_type="timeline_conflict",
+            entity_id=str(row["conflict_id"]),
+            actor=actor,
+            before_hash=str(row["record_hash"]),
+            after_hash=after_hash,
+            metadata={"reason": "resolved_wappi_timeline_event"},
+        )
+        closed += 1
+    if closed:
+        store._commit()  # noqa: SLF001 - defer commit to the surrounding Store bulk_write.
     return {"resolved_pending_conflicts_closed": closed}
 
 

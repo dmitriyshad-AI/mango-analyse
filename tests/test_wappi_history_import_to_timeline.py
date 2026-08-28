@@ -33,12 +33,13 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     _is_exact_authority_override,
     assert_readonly_wappi_client,
     _build_safe_amo_talk_client,
+    WappiWidgetContactHydrationPlan,
+    apply_wappi_widget_contact_hydration_plan,
     collect_wappi_widget_links,
     close_resolved_wappi_pending_conflicts,
     confirm_wappi_widget_candidates_from_amo_talks,
     enrich_wappi_widget_links_from_timeline_amo_events,
     git_worktree_provenance,
-    hydrate_wappi_widget_contacts,
     is_personal_wappi_dialog,
     load_existing_wappi_event_customers,
     load_existing_wappi_source_ids,
@@ -46,6 +47,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     load_wappi_widget_links,
     open_readonly_sqlite,
     pending_attribution_truthy,
+    plan_wappi_widget_contact_hydration,
     remove_orphaned_provisional_customers,
     run_wappi_history_import,
     safe_wappi_exception,
@@ -60,6 +62,25 @@ from mango_mvp.integrations.amo_wappi_auto_resolver import AmoAutoResolver
 from mango_mvp.integrations.amo_wappi_phase1 import WappiClientConfig, WappiPhase1Client
 from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy
 from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopPair, WappiHistoryMessage
+
+
+def apply_widget_hydration_for_test(
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]],
+    amo_client: Any,
+) -> Mapping[str, Any]:
+    plan = plan_wappi_widget_contact_hydration(
+        timeline_db=timeline_db,
+        allowed_root=allowed_root,
+        widget_links=widget_links,
+        amo_mcp_env_file=None,
+        amo_client=amo_client,
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+        with store.bulk_write():
+            return apply_wappi_widget_contact_hydration_plan(store, plan)
 
 
 def test_git_worktree_provenance_ignores_parent_git_context(monkeypatch, tmp_path: Path) -> None:
@@ -127,15 +148,23 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
     )
     hydrate_calls: list[Mapping[str, Any]] = []
 
-    def fake_hydrate(**kwargs: Any) -> Mapping[str, Any]:
+    def fake_hydrate(**kwargs: Any) -> WappiWidgetContactHydrationPlan:
         hydrate_calls.append(kwargs)
-        if len(hydrate_calls) == 1:
-            with sqlite3.connect(kwargs["timeline_db"]) as con:
-                con.execute("CREATE TABLE internal_hydrate_marker (id INTEGER PRIMARY KEY)")
-        return {"requested": 1 if len(hydrate_calls) == 1 else 0, "fetched": 1, "fetch_errors": 0}
+        return WappiWidgetContactHydrationPlan(
+            records=(),
+            idempotency_key="test-hydration",
+            report={
+                "requested": 1 if len(hydrate_calls) == 1 else 0,
+                "fetched": 1,
+                "fetch_errors": 0,
+                "errors": 0,
+                "write_status_counts": {},
+                "applied": False,
+            },
+        )
 
     monkeypatch.setattr(
-        "mango_mvp.customer_timeline.wappi_history_import.hydrate_wappi_widget_contacts",
+        "mango_mvp.customer_timeline.wappi_history_import.plan_wappi_widget_contact_hydration",
         fake_hydrate,
     )
 
@@ -173,8 +202,8 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
     assert second["writes"]["status_counts"].get("updated", 0) == 0
     assert reused["writes"]["status_counts"].get("updated", 0) == 0
     assert first["writes"]["import_groups_single_transaction"] is True
-    assert first["writes"]["post_import_cleanup_same_transaction"] is False
-    assert first["writes"]["all_db_mutations_single_transaction"] is False
+    assert first["writes"]["post_import_cleanup_same_transaction"] is True
+    assert first["writes"]["all_db_mutations_single_transaction"] is True
 
     event = fetch_one_json(db_path, "timeline_events")
     chunk = fetch_one_json(db_path, "bot_context_chunks")
@@ -251,6 +280,7 @@ def test_close_resolved_wappi_conflicts_scans_once_and_leaves_neighbor_open(tmp_
             payload = {
                 **base,
                 "conflict_id": f"conflict:{message_id}",
+                "status": "active" if message_id == "message-1" else "open",
                 "metadata": {
                     "source_system": "wappi_telegram",
                     "profile_id": "p-tg",
@@ -293,12 +323,21 @@ def test_close_resolved_wappi_conflicts_scans_once_and_leaves_neighbor_open(tmp_
         ),
     )
 
-    report = close_resolved_wappi_pending_conflicts(db_path, tenant_id="foton", records=(record,))
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        report = close_resolved_wappi_pending_conflicts(
+            store,
+            tenant_id="foton",
+            records=(record,),
+        )
 
     assert report == {"resolved_pending_conflicts_closed": 1}
     with sqlite3.connect(db_path) as con:
         statuses = dict(con.execute("SELECT conflict_id, status FROM timeline_conflicts"))
+        audit_count = con.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='wappi_pending_conflict_resolved'"
+        ).fetchone()[0]
     assert statuses == {"conflict:message-1": "resolved", "conflict:message-2": "open"}
+    assert audit_count == 1
 
 
 def test_wappi_timeline_identity_preserves_evidence_and_is_not_manual() -> None:
@@ -422,6 +461,24 @@ def test_wappi_require_nonempty_profile_blocks_all_apply(
         {("telegram", "p-tg", "123456"): [{"id": "m-1", "chat_id": "123456", "type": "text", "body": "Тест", "time": 1_753_000_000}]},
         {("telegram", "123456"): {"contact": {"id": 2002}, "leads": [{"id": 1001}]}},
     )
+    plan_calls: list[bool] = []
+
+    def plan_without_write(**_kwargs: Any) -> WappiWidgetContactHydrationPlan:
+        plan_calls.append(True)
+        return WappiWidgetContactHydrationPlan(
+            records=(),
+            idempotency_key="blocked-hydration",
+            report={"requested": 1, "errors": 0, "write_status_counts": {}, "applied": False},
+        )
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.wappi_history_import.plan_wappi_widget_contact_hydration",
+        plan_without_write,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.wappi_history_import.apply_wappi_widget_contact_hydration_plan",
+        lambda *_args, **_kwargs: pytest.fail("blocked Wappi run must not apply hydration"),
+    )
     report = run_wappi_history_import(
         WappiHistoryImportConfig(
             timeline_db=db_path,
@@ -430,6 +487,7 @@ def test_wappi_require_nonempty_profile_blocks_all_apply(
             pairs_file=None,
             auto_pairs_file=None,
             apply=True,
+            widget_link_db=tmp_path / "wappi_amo_links.sqlite",
             require_nonempty_profiles=True,
             limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
         ),
@@ -439,6 +497,7 @@ def test_wappi_require_nonempty_profile_blocks_all_apply(
     assert report["summary"]["empty_profiles"] == ["p-max"]
     assert report["limit_hits"] == ["p-max:empty_profile"]
     assert report["writes"]["all_db_mutations_single_transaction"] is None
+    assert plan_calls == [True]
     with sqlite3.connect(db_path) as con:
         assert con.execute("SELECT COUNT(*) FROM timeline_events WHERE source_system LIKE 'wappi_%'").fetchone()[0] == 0
 
@@ -555,6 +614,30 @@ def test_wappi_history_apply_rolls_back_both_channels_on_second_source_error(
         return original_upsert_event(self, event, *args, **kwargs)
 
     monkeypatch.setattr(CustomerTimelineSQLiteStore, "upsert_event", fail_on_max)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.wappi_history_import.plan_wappi_widget_contact_hydration",
+        lambda **_kwargs: WappiWidgetContactHydrationPlan(
+            records=(),
+            idempotency_key="rollback-hydration",
+            report={"requested": 1, "errors": 0, "write_status_counts": {}, "applied": False},
+        ),
+    )
+
+    def write_hydration_marker(store, _plan, *, tenant_id):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id=tenant_id,
+                customer_id="customer:hydration-rollback-marker",
+                identity_status=IdentityStatus.PARTIAL,
+            ),
+            actor="test_hydration",
+        )
+        return {"requested": 1, "errors": 0, "write_status_counts": {"created": 1}, "applied": True}
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.wappi_history_import.apply_wappi_widget_contact_hydration_plan",
+        write_hydration_marker,
+    )
 
     with pytest.raises(RuntimeError, match="synthetic max write failure"):
         run_wappi_history_import(
@@ -565,6 +648,7 @@ def test_wappi_history_apply_rolls_back_both_channels_on_second_source_error(
                 pairs_file=None,
                 auto_pairs_file=None,
                 apply=True,
+                widget_link_db=tmp_path / "wappi_amo_links.sqlite",
                 limits=WappiFetchLimits(
                     chat_limit_per_profile=5,
                     messages_per_chat=5,
@@ -585,6 +669,9 @@ def test_wappi_history_apply_rolls_back_both_channels_on_second_source_error(
         ).fetchone()[0] == 0
         assert con.execute(
             "SELECT COUNT(*) FROM ingestion_runs WHERE source_system IN ('wappi_telegram', 'wappi_max')"
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM customer_identities WHERE customer_id='customer:hydration-rollback-marker'"
         ).fetchone()[0] == 0
 
 
@@ -3547,18 +3634,24 @@ def test_wappi_widget_contact_hydrate_reuses_known_lead_family(tmp_path: Path) -
         }
     }
     client = ContactClient()
-    first = hydrate_wappi_widget_contacts(
+    first_plan = plan_wappi_widget_contact_hydration(
         timeline_db=db_path,
         allowed_root=tmp_path,
         widget_links=links,
         amo_mcp_env_file=None,
         amo_client=client,
     )
-    second = hydrate_wappi_widget_contacts(
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM identity_links WHERE link_type='amo_contact_id' AND link_value='30'"
+        ).fetchone()[0] == 0
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        with store.bulk_write():
+            first = apply_wappi_widget_contact_hydration_plan(store, first_plan)
+    second = apply_widget_hydration_for_test(
         timeline_db=db_path,
         allowed_root=tmp_path,
         widget_links=links,
-        amo_mcp_env_file=None,
         amo_client=client,
     )
 
@@ -3618,11 +3711,10 @@ def test_wappi_widget_contact_hydrate_refetches_id_only_stub(tmp_path: Path) -> 
             }
 
     client = ContactClient()
-    report = hydrate_wappi_widget_contacts(
+    report = apply_widget_hydration_for_test(
         timeline_db=db_path,
         allowed_root=tmp_path,
         widget_links={("telegram", "p-tg", "chat"): {"status": "resolved", "contact_id": "30"}},
-        amo_mcp_env_file=None,
         amo_client=client,
     )
 
@@ -3673,11 +3765,10 @@ def test_wappi_widget_contact_hydrate_batches_exact_ids(tmp_path: Path) -> None:
         }
         for contact_id in range(1000, 1101)
     }
-    report = hydrate_wappi_widget_contacts(
+    report = apply_widget_hydration_for_test(
         timeline_db=db_path,
         allowed_root=tmp_path,
         widget_links=links,
-        amo_mcp_env_file=None,
         amo_client=client,
     )
 
@@ -3711,7 +3802,7 @@ def test_wappi_widget_contact_hydrate_falls_back_to_exact_contact_endpoint(tmp_p
             }
 
     client = ContactClient()
-    report = hydrate_wappi_widget_contacts(
+    report = apply_widget_hydration_for_test(
         timeline_db=db_path,
         allowed_root=tmp_path,
         widget_links={
@@ -3721,7 +3812,6 @@ def test_wappi_widget_contact_hydrate_falls_back_to_exact_contact_endpoint(tmp_p
                 "lead_ids": ("42",),
             }
         },
-        amo_mcp_env_file=None,
         amo_client=client,
     )
 
@@ -4702,7 +4792,7 @@ def test_wappi_exact_widget_link_overrides_older_non_widget_assignment(tmp_path:
 def test_wappi_provisional_cleanup_removes_only_orphan_shell(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
-        for customer_id in ("customer:orphan", "customer:referenced"):
+        for customer_id in ("customer:orphan", "customer:referenced", "customer:mapped"):
             store.upsert_customer(
                 CustomerIdentity(
                     tenant_id="foton",
@@ -4725,18 +4815,31 @@ def test_wappi_provisional_cleanup_removes_only_orphan_shell(tmp_path: Path) -> 
             ),
             actor="test",
         )
+        store.record_customer_id_mapping(
+            "foton",
+            old_customer_id="customer:legacy-mapped",
+            new_customer_id="customer:mapped",
+            reason="test_mapping_parent",
+            actor="test",
+        )
 
-    report = remove_orphaned_provisional_customers(
-        db_path,
-        tenant_id="foton",
-        customer_ids=("customer:orphan", "customer:referenced"),
-    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        report = remove_orphaned_provisional_customers(
+            store,
+            tenant_id="foton",
+            customer_ids=("customer:orphan", "customer:referenced", "customer:mapped"),
+        )
 
-    assert report == {"candidates": 2, "removed": 1, "retained_with_references": 1}
+    assert report == {"candidates": 3, "removed": 1, "retained_with_references": 2}
     with sqlite3.connect(db_path) as con:
         ids = {str(row[0]) for row in con.execute("SELECT customer_id FROM customer_identities")}
+        audit_count = con.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='wappi_provisional_customer_removed'"
+        ).fetchone()[0]
     assert "customer:orphan" not in ids
     assert "customer:referenced" in ids
+    assert "customer:mapped" in ids
+    assert audit_count == 1
 
 
 def test_wappi_required_widget_missing_profile_does_not_fall_back(tmp_path: Path) -> None:

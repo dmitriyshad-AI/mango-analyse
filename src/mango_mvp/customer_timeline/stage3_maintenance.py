@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from mango_mvp.customer_timeline.derived_signals import (
     backfill_sg_v1_signals_on_store,
@@ -18,7 +18,11 @@ from mango_mvp.customer_timeline.mail_stage2_visibility import (
     harden_mail_stage2_bot_visibility,
     harden_mail_stage2_bot_visibility_on_store,
 )
-from mango_mvp.customer_timeline.objections import backfill_customer_objections_v1_on_connection
+from mango_mvp.customer_timeline.objections import (
+    LoadedCallTexts,
+    backfill_customer_objections_v1_on_connection,
+    load_call_texts,
+)
 from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     guard_customer_timeline_writable_path,
@@ -85,6 +89,7 @@ def _run_stage3_maintenance_unlocked(
     db_path: Path,
 ) -> Mapping[str, Any]:
     started = time.monotonic()
+    preloaded_call_texts = load_call_texts(config.canonical_calls_db_path) if config.apply else None
     config.out_dir.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {
@@ -99,6 +104,11 @@ def _run_stage3_maintenance_unlocked(
             "llm_calls_total": 0,
             "none_customer_groups_actioned": 0,
         },
+        "call_text_source_preflight": (
+            dict(preloaded_call_texts.report)
+            if preloaded_call_texts is not None
+            else {"skipped": "dry_run_avoids_calls_scan"}
+        ),
     }
 
     store_context = (
@@ -162,7 +172,7 @@ def _run_stage3_maintenance_unlocked(
             objections_started = time.monotonic()
             objections = backfill_customer_objections_v1_on_connection(
                 con,
-                canonical_calls_db_path=config.canonical_calls_db_path,
+                canonical_calls=cast(LoadedCallTexts, preloaded_call_texts).texts,
                 tenant_id=config.tenant_id,
                 apply=True,
                 as_of=config.signal_as_of,

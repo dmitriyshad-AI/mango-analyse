@@ -5,12 +5,16 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline import CustomerIdentity, CustomerTimelineSQLiteStore, IdentityStatus
 from mango_mvp.customer_timeline.contracts import TimelineDirection, TimelineEvent, TimelineEventType
+from mango_mvp.customer_timeline.call_source_identity import stable_call_source_id
 from mango_mvp.customer_timeline.objections import (
     OBJECTION_EXTRACTOR_VERSION,
     backfill_customer_objections_v1,
     extract_objections_from_text,
+    load_call_texts,
 )
 
 
@@ -786,6 +790,589 @@ def test_backfill_customer_objections_migrates_old_table_and_removes_legacy_rows
     assert json.loads(summary[0]) == [["price", 1]]
 
 
+def test_backfill_customer_objections_reads_call_records_by_exact_provider_id_only(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(
+        calls_db,
+        [(99, "native-call-1", "Клиент: нам дорого, нужна скидка.", "outbound")],
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        for source_id in ("provider:native-call-1", "provider:99"):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer.customer_id,
+                    event_type="mango_call",
+                    event_at=NOW,
+                    source_system="mango_processed_summary",
+                    source_id=source_id,
+                    direction="outbound",
+                    summary="summary не является доказательством возражения",
+                    match_status="strong_unique",
+                    record=(
+                        _call_lineage(
+                            calls_db,
+                            row_id=99,
+                            source_call_id="native-call-1",
+                            source_id=source_id,
+                        )
+                        if source_id == "provider:native-call-1"
+                        else {}
+                    ),
+                    created_at=NOW,
+                )
+            )
+
+    result = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert result["call_events_total"] == 2
+    assert result["call_events_matched"] == 1
+    with sqlite3.connect(db) as con:
+        source_ids = {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT e.source_id
+                FROM customer_objections_v1 AS o
+                JOIN timeline_events AS e ON e.event_id = o.source_event_id
+                """
+            )
+        }
+    assert source_ids == {"provider:native-call-1"}
+
+
+def test_backfill_customer_objections_rejects_old_package_lineage_collision(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    calls_db = tmp_path / "current" / "calls.sqlite"
+    calls_db.parent.mkdir()
+    _seed_call_records(
+        calls_db,
+        [(7, "shared-provider-id", "Клиент: нам дорого.", "inbound")],
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        lineage = _call_lineage(
+            calls_db,
+            row_id=7,
+            source_call_id="shared-provider-id",
+            source_id="provider:shared-provider-id",
+        )
+        lineage["call"]["source_db"] = str((tmp_path / "old-package" / "calls.sqlite").resolve())
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                event_type="mango_call",
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id="provider:shared-provider-id",
+                direction="inbound",
+                match_status="strong_unique",
+                record=lineage,
+                created_at=NOW,
+            )
+        )
+
+    result = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert result["call_events_matched"] == 0
+    assert result["call_events_lineage_gap"] == 1
+    assert result["stored_objections_total"] == 0
+
+
+def test_backfill_customer_objections_removes_current_source_lineage_mismatch(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(calls_db, [(5, "current-call", "Клиент: нам дорого.", "inbound")])
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                event_type="mango_call",
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id="provider:current-call",
+                direction="inbound",
+                match_status="strong_unique",
+                record=_call_lineage(
+                    calls_db,
+                    row_id=5,
+                    source_call_id="current-call",
+                    source_id="provider:current-call",
+                ),
+                created_at=NOW,
+            )
+        )
+
+    first = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+    with sqlite3.connect(db) as con:
+        row = con.execute(
+            "SELECT event_id, record_json FROM timeline_events WHERE source_id = 'provider:current-call'"
+        ).fetchone()
+        payload = json.loads(row[1])
+        payload["record"]["call"]["source_filename"] = ""
+        con.execute(
+            "UPDATE timeline_events SET record_json = ? WHERE event_id = ?",
+            (json.dumps(payload, ensure_ascii=False, sort_keys=True), row[0]),
+        )
+
+    second = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert first["stored_objections_total"] == 1
+    assert second["call_events_lineage_gap"] == 1
+    assert second["legacy_preserve_source_events"] == 0
+    assert second["recomputed_objections_deleted"] == 1
+    assert second["stored_objections_total"] == 0
+
+
+def test_backfill_customer_objections_preserves_unavailable_active_legacy_calls(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    canonical_db = tmp_path / "canonical.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_canonical_calls(canonical_db, [(101, "Клиент: это дорого, нужна скидка.", "outbound")])
+    _seed_call_records(
+        calls_db,
+        [(1, "new-call", "Клиент: время не подходит для занятий.", "inbound")],
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        for source_id in ("101", "provider:new-call"):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer.customer_id,
+                    event_type="mango_call",
+                    event_at=NOW,
+                    source_system="mango_processed_summary",
+                    source_id=source_id,
+                    direction="outbound",
+                    summary="summary не используется",
+                    match_status="strong_unique",
+                    record=(
+                        _call_lineage(
+                            calls_db,
+                            row_id=1,
+                            source_call_id="new-call",
+                            source_id=source_id,
+                        )
+                        if source_id == "provider:new-call"
+                        else {}
+                    ),
+                    created_at=NOW,
+                )
+            )
+
+    first = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=canonical_db,
+        apply=True,
+        as_of=NOW,
+    )
+    second = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert first["stored_objections_total"] == 1
+    assert second["historical_call_objections_preserved"] == 1
+    assert second["stored_objections_total"] == 2
+    with sqlite3.connect(db) as con:
+        source_ids = {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT e.source_id
+                FROM customer_objections_v1 AS o
+                JOIN timeline_events AS e ON e.event_id = o.source_event_id
+                """
+            )
+        }
+    assert source_ids == {"101", "provider:new-call"}
+
+
+def test_backfill_customer_objections_preserves_provider_calls_when_current_source_is_canonical(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "timeline.sqlite"
+    canonical_db = tmp_path / "canonical.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_canonical_calls(canonical_db, [(101, "Клиент: всё устраивает.", "outbound")])
+    _seed_call_records(calls_db, [(1, "package-call", "Клиент: это дорого.", "inbound")])
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                event_type="mango_call",
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id="provider:package-call",
+                direction="inbound",
+                match_status="strong_unique",
+                record=_call_lineage(
+                    calls_db,
+                    row_id=1,
+                    source_call_id="package-call",
+                    source_id="provider:package-call",
+                ),
+                created_at=NOW,
+            )
+        )
+
+    first = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+    second = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=canonical_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert first["stored_objections_total"] == 1
+    assert second["historical_call_objections_preserved"] == 1
+    assert second["stored_objections_total"] == 1
+
+
+def test_backfill_customer_objections_matches_historical_base_id_after_duplicate_appears(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "timeline.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(calls_db, [(1, "later-duplicate", "Клиент: это дорого.", "inbound")])
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                event_type="mango_call",
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id="provider:later-duplicate",
+                direction="inbound",
+                match_status="strong_unique",
+                record=_call_lineage(
+                    calls_db,
+                    row_id=1,
+                    source_call_id="later-duplicate",
+                    source_id="provider:later-duplicate",
+                ),
+                created_at=NOW,
+            )
+        )
+
+    first = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+    with sqlite3.connect(calls_db) as con:
+        con.execute(
+            """
+            INSERT INTO call_records (
+              id, source_call_id, source_filename, started_at,
+              transcript_client, direction, analysis_status, analysis_json
+            ) VALUES (2, 'later-duplicate', 'call-2.wav', ?, 'Другой звонок.', 'outbound', 'done', '{"summary":"ok"}')
+            """,
+            (NOW.isoformat(),),
+        )
+    second = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert first["stored_objections_total"] == 1
+    assert second["call_events_matched"] == 1
+    assert second["call_events_lineage_gap"] == 0
+    assert second["historical_call_objections_preserved"] == 0
+    assert second["stored_objections_total"] == 1
+
+
+def test_backfill_customer_objections_removes_superseded_call_objection(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(calls_db, [(1, "superseded-call", "Клиент: это дорого.", "inbound")])
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                event_type="mango_call",
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id="provider:superseded-call",
+                direction="inbound",
+                match_status="strong_unique",
+                record=_call_lineage(
+                    calls_db,
+                    row_id=1,
+                    source_call_id="superseded-call",
+                    source_id="provider:superseded-call",
+                ),
+                created_at=NOW,
+            )
+        )
+
+    first = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE timeline_events SET superseded_by = 'replacement:event' WHERE source_id = 'provider:superseded-call'"
+        )
+    second = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert first["stored_objections_total"] == 1
+    assert second["stale_objections_deleted"] == 1
+    assert second["stored_objections_total"] == 0
+
+
+def test_load_call_texts_uses_producer_suffix_for_duplicate_provider_ids(tmp_path: Path) -> None:
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(
+        calls_db,
+        [
+            (1, "duplicate", "Первый текст.", "inbound"),
+            (2, "duplicate", "Второй текст.", "outbound"),
+        ],
+    )
+
+    loaded = load_call_texts(calls_db)
+
+    assert loaded.report["duplicate_source_ids"] == 1
+    assert len(loaded.texts) == 2
+    assert "provider:duplicate" not in loaded.texts
+    assert all(source_id.startswith("provider:duplicate:") for source_id in loaded.texts)
+
+
+def test_load_call_texts_accepts_global_duplicate_suffix_for_local_singleton(tmp_path: Path) -> None:
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(calls_db, [(1, "global-duplicate", "Клиент: дорого.", "inbound")])
+    forced_suffix = stable_call_source_id(
+        source_kind="call_records",
+        row_id="1",
+        source_call_id="global-duplicate",
+        source_filename="call-1.wav",
+        started_at=NOW.isoformat(),
+        duplicate_base_ids={"provider:global-duplicate"},
+    )
+
+    loaded = load_call_texts(calls_db)
+
+    assert loaded.report["rows_loaded"] == 1
+    assert loaded.report["lookup_aliases"] == 1
+    assert set(loaded.texts) == {"provider:global-duplicate", forced_suffix}
+
+
+def test_load_call_texts_rejects_forced_suffix_alias_collision(tmp_path: Path) -> None:
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(
+        calls_db,
+        [
+            (1, "base", "Первый текст.", "inbound"),
+            (2, "base:collision", "Второй текст.", "outbound"),
+        ],
+    )
+    forced_suffix = stable_call_source_id(
+        source_kind="call_records",
+        row_id="1",
+        source_call_id="base",
+        source_filename="call-1.wav",
+        started_at=NOW.isoformat(),
+        duplicate_base_ids={"provider:base"},
+    )
+    suffix = forced_suffix.removeprefix("provider:base:")
+    with sqlite3.connect(calls_db) as con:
+        con.execute("UPDATE call_records SET source_call_id = ? WHERE id = 2", (f"base:{suffix}",))
+
+    with pytest.raises(ValueError, match="duplicate exact call ids"):
+        load_call_texts(calls_db)
+
+
+def test_load_call_texts_rejects_final_stable_id_collision(tmp_path: Path) -> None:
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(
+        calls_db,
+        [
+            (1, "duplicate", "Первый текст.", "inbound"),
+            (2, "duplicate", "Второй текст.", "outbound"),
+        ],
+    )
+    with sqlite3.connect(calls_db) as con:
+        con.execute("UPDATE call_records SET source_filename = 'same.wav'")
+
+    with pytest.raises(ValueError, match="duplicate exact call ids"):
+        load_call_texts(calls_db)
+
+
+def test_backfill_call_records_allows_row_id_fallback_only_with_full_lineage_and_naive_utc(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "timeline.sqlite"
+    calls_db = tmp_path / "calls.sqlite"
+    _seed_call_records(calls_db, [(1, "", "Клиент: нам дорого.", "inbound")])
+    with sqlite3.connect(calls_db) as con:
+        con.execute(
+            "UPDATE call_records SET started_at = ? WHERE id = 1",
+            (NOW.replace(tzinfo=None).isoformat(sep=" "),),
+        )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG
+        )
+        store.upsert_customer(customer)
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                event_type="mango_call",
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id="provider:1",
+                direction="inbound",
+                match_status="strong_unique",
+                record=_call_lineage(
+                    calls_db,
+                    row_id=1,
+                    source_call_id="1",
+                    source_id="provider:1",
+                ),
+                created_at=NOW,
+            )
+        )
+
+    loaded = load_call_texts(calls_db)
+    result = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=calls_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert loaded.report["rows_using_row_id_fallback"] == 1
+    assert result["call_events_matched"] == 1
+    assert result["stored_objections_total"] == 1
+
+
+def test_load_call_texts_reads_committed_wal_rows(tmp_path: Path) -> None:
+    calls_db = tmp_path / "calls.sqlite"
+    writer = sqlite3.connect(calls_db)
+    try:
+        writer.execute("PRAGMA journal_mode = WAL")
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute(
+            """
+            CREATE TABLE call_records (
+              id INTEGER PRIMARY KEY,
+              source_call_id TEXT,
+              source_filename TEXT,
+              started_at TEXT,
+              transcript_client TEXT,
+              direction TEXT,
+              analysis_status TEXT,
+              analysis_json TEXT
+            )
+            """
+        )
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute(
+            """
+            INSERT INTO call_records VALUES (
+              1, 'wal-call', 'wal.wav', '2026-07-03T12:00:00+00:00',
+              'Клиент: дорого.', 'inbound', 'done', '{"summary":"ok"}'
+            )
+            """
+        )
+        writer.commit()
+
+        loaded = load_call_texts(calls_db)
+    finally:
+        writer.close()
+
+    assert loaded.report["source_schema"] == "call_records"
+    assert loaded.report["rows_loaded"] == 1
+    assert loaded.report["lookup_aliases"] == 1
+    assert "provider:wal-call" in loaded.texts
+
+
 def test_backfill_customer_objections_rejects_missing_db(tmp_path: Path) -> None:
     missing = tmp_path / "missing.sqlite"
 
@@ -811,6 +1398,59 @@ def _seed_canonical_calls(db_path: Path, rows: list[tuple[int, str, str]]) -> No
             """
         )
         con.executemany(
-            "INSERT INTO canonical_calls (canonical_call_id, transcript_client, direction) VALUES (?, ?, ?)",
+            """
+            INSERT INTO canonical_calls (canonical_call_id, transcript_client, direction)
+            VALUES (?, ?, ?)
+            """,
             rows,
         )
+
+
+def _seed_call_records(db_path: Path, rows: list[tuple[int, str, str, str]]) -> None:
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE call_records (
+              id INTEGER PRIMARY KEY,
+              source_call_id TEXT,
+              source_filename TEXT,
+              started_at TEXT,
+              transcript_client TEXT,
+              direction TEXT,
+              analysis_status TEXT,
+              analysis_json TEXT
+            )
+            """
+        )
+        con.executemany(
+            """
+            INSERT INTO call_records (
+              id, source_call_id, source_filename, started_at,
+              transcript_client, direction, analysis_status, analysis_json
+            ) VALUES (?, ?, ?, ?, ?, ?, 'done', '{"summary":"ok"}')
+            """,
+            [
+                (row_id, source_call_id, f"call-{row_id}.wav", NOW.isoformat(), transcript, direction)
+                for row_id, source_call_id, transcript, direction in rows
+            ],
+        )
+
+
+def _call_lineage(
+    db_path: Path,
+    *,
+    row_id: int,
+    source_call_id: str,
+    source_id: str,
+) -> dict[str, dict[str, str]]:
+    return {
+        "call": {
+            "call_id": source_id,
+            "provider_call_id": source_id,
+            "source_db": str(db_path.resolve()),
+            "source_row_id": str(row_id),
+            "original_call_id": source_call_id,
+            "source_filename": f"call-{row_id}.wav",
+            "call_at": NOW.isoformat(),
+        }
+    }

@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from mango_mvp.customer_timeline.contracts import IdentityMatchClass
-from mango_mvp.customer_timeline.ids import stable_digest
+from mango_mvp.customer_timeline.call_source_identity import (
+    build_call_lineage,
+    call_source_base_id,
+    normalize_call_started_at,
+    parse_call_started_at,
+    read_call_source_snapshot,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -86,18 +92,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows: list[SourceRow] = []
     for db in args.canonical_db:
         rows.extend(read_ready_call_rows(Path(db), table="canonical_calls", source_kind="canonical_calls"))
-    duplicate_base_ids: set[str] = set()
+    package_base_counts: Counter[str] = Counter()
     package_dbs = [Path(item) for item in args.package_db]
     for root in args.package_root:
         package_dbs.extend(discover_package_call_dbs(Path(root)))
     for db in package_dbs:
-        rows.extend(read_ready_call_rows(db, table="call_records", source_kind="call_records"))
-        duplicate_base_ids.update(
-            read_duplicate_source_ids(db, table="call_records", source_kind="call_records", since=since, until=until)
+        db_rows, db_base_counts = read_ready_call_rows_with_base_counts(
+            db,
+            table="call_records",
+            source_kind="call_records",
         )
+        rows.extend(db_rows)
+        package_base_counts.update(db_base_counts)
 
+    duplicate_base_ids = {
+        source_id for source_id, count in package_base_counts.items() if count > 1
+    }
     all_filtered = filter_rows(rows, since=since, until=until)
-    duplicate_base_ids.update(duplicate_source_ids(all_filtered))
     filtered = list(all_filtered)
     filtered.sort(key=lambda item: parse_source_datetime(item.started_at) or datetime.min.replace(tzinfo=timezone.utc))
     if args.limit is not None:
@@ -109,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     brand_evidence_counts: Counter[str] = Counter()
     brand_counts: Counter[str] = Counter()
     examples: list[Mapping[str, Any]] = []
+    emitted_source_ids: set[str] = set()
     with open_timeline_ro(Path(args.timeline_db)) as timeline:
         for row in filtered:
             analysis = parse_json_object(row.analysis_json)
@@ -129,6 +141,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 duplicate_base_ids=duplicate_base_ids,
                 call_type=call_type,
             )
+            source_id = str(event["call_id"])
+            if source_id in emitted_source_ids:
+                raise ValueError(f"duplicate final call id: {source_id}")
+            emitted_source_ids.add(source_id)
             events.append(event)
             if len(examples) < 10:
                 examples.append(
@@ -206,96 +222,98 @@ def discover_package_call_dbs(root: Path) -> list[Path]:
 
 
 def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[SourceRow]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    with sqlite3.connect(ro_uri(path), uri=True) as con:
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA query_only = ON")
-        if not table_exists(con, table):
-            raise ValueError(f"required call table missing in {path}: {table}")
-        cols = table_columns(con, table)
-        missing = {"analysis_status", "analysis_json"} - cols
-        if missing:
-            raise ValueError(f"required call columns missing in {path}: {sorted(missing)}")
-        query = f"SELECT * FROM {table} WHERE analysis_status = 'done' AND analysis_json IS NOT NULL AND analysis_json != ''"
-        result: list[SourceRow] = []
-        for raw in con.execute(query):
-            row = dict(raw)
-            row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
-            analysis = parse_json_object(str(row.get("analysis_json") or ""))
-            if not analysis:
-                raise ValueError(f"invalid done analysis_json in {path}: {row_id or 'unknown'}")
-            started_at = first_text(row, "started_at", "call_at", "event_at")
-            if not started_at:
-                raise ValueError(f"missing done call datetime in {path}: {row_id}")
-            if not row_id:
-                raise ValueError(f"missing done call id in {path}")
-            result.append(
-                SourceRow(
-                    source_kind=source_kind,
-                    source_db=str(path),
-                    row_id=row_id,
-                    source_call_id=first_text(row, "source_call_id"),
-                    source_filename=first_text(row, "source_filename"),
-                    source_file=first_text(row, "source_file"),
-                    started_at=started_at,
-                    phone=first_text(row, "phone", "client_phone", "normalized_phone", "Телефон клиента"),
-                    manager_name=first_text(row, "manager_name", "Менеджер"),
-                    direction=first_text(row, "direction", "Направление звонка"),
-                    duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
-                    analysis_json=str(row.get("analysis_json") or ""),
-                    **brand_evidence_fields(row),
-                    amocrm_contact_id=first_text(row, "amocrm_contact_id"),
-                    amocrm_lead_id=first_text(row, "amocrm_lead_id"),
-                )
-            )
-        return result
+    snapshot = read_call_source_snapshot(path, table=table)
+    return [_source_row_from_mapping(row, source_kind=source_kind, source_db=snapshot.path) for row in snapshot.ready_rows]
 
 
-def read_duplicate_source_ids(
+def read_ready_call_rows_with_duplicate_ids(
     path: Path,
     *,
     table: str,
     source_kind: str,
-    since: datetime | None,
-    until: datetime | None,
-) -> set[str]:
-    if source_kind == "canonical_calls" or not path.exists():
-        return set()
-    with sqlite3.connect(ro_uri(path), uri=True) as con:
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA query_only = ON")
-        if not table_exists(con, table):
-            return set()
-        rows: list[SourceRow] = []
-        for raw in con.execute(f"SELECT * FROM {table}"):
-            row = dict(raw)
-            started_at = first_text(row, "started_at", "call_at", "event_at")
-            if not started_at:
-                continue
-            row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
-            if not row_id:
-                continue
-            rows.append(
-                SourceRow(
-                    source_kind=source_kind,
-                    source_db=str(path),
-                    row_id=row_id,
-                    source_call_id=first_text(row, "source_call_id"),
-                    source_filename=first_text(row, "source_filename"),
-                    source_file=first_text(row, "source_file"),
-                    started_at=started_at,
-                    phone=first_text(row, "phone", "client_phone", "normalized_phone", "Телефон клиента"),
-                    manager_name=first_text(row, "manager_name", "Менеджер"),
-                    direction=first_text(row, "direction", "Направление звонка"),
-                    duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
-                    analysis_json=str(row.get("analysis_json") or ""),
-                    **brand_evidence_fields(row),
-                    amocrm_contact_id=first_text(row, "amocrm_contact_id"),
-                    amocrm_lead_id=first_text(row, "amocrm_lead_id"),
-                )
-            )
-    return duplicate_source_ids(filter_rows(rows, since=since, until=until))
+) -> tuple[list[SourceRow], set[str]]:
+    ready_rows, base_counts = read_ready_call_rows_with_base_counts(
+        path,
+        table=table,
+        source_kind=source_kind,
+    )
+    return ready_rows, {
+        source_id for source_id, count in base_counts.items() if count > 1
+    }
+
+
+def read_ready_call_rows_with_base_counts(
+    path: Path,
+    *,
+    table: str,
+    source_kind: str,
+) -> tuple[list[SourceRow], Counter[str]]:
+    identity_columns = (
+        "canonical_call_id",
+        "id",
+        "source_call_id",
+        "source_filename",
+        "started_at",
+        "call_at",
+        "event_at",
+    )
+    snapshot = read_call_source_snapshot(
+        path,
+        table=table,
+        include_all_rows=True,
+        all_columns=identity_columns,
+    )
+    ready_rows = [
+        _source_row_from_mapping(row, source_kind=source_kind, source_db=snapshot.path)
+        for row in snapshot.ready_rows
+    ]
+    duplicate_rows = _duplicate_candidate_rows(
+        snapshot.all_rows,
+        source_kind=source_kind,
+        source_db=snapshot.path,
+    )
+    return ready_rows, source_id_base_counts(duplicate_rows)
+
+
+def _duplicate_candidate_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    source_kind: str,
+    source_db: Path,
+) -> list[SourceRow]:
+    return [
+        _source_row_from_mapping(row, source_kind=source_kind, source_db=source_db)
+        for row in rows
+        if first_text(row, "started_at", "call_at", "event_at")
+        and first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
+    ]
+
+
+def _source_row_from_mapping(
+    row: Mapping[str, Any],
+    *,
+    source_kind: str,
+    source_db: Path,
+) -> SourceRow:
+    row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename") or ""
+    started_at = first_text(row, "started_at", "call_at", "event_at") or ""
+    return SourceRow(
+        source_kind=source_kind,
+        source_db=str(source_db),
+        row_id=row_id,
+        source_call_id=first_text(row, "source_call_id"),
+        source_filename=first_text(row, "source_filename"),
+        source_file=first_text(row, "source_file"),
+        started_at=started_at,
+        phone=first_text(row, "phone", "client_phone", "normalized_phone", "Телефон клиента"),
+        manager_name=first_text(row, "manager_name", "Менеджер"),
+        direction=first_text(row, "direction", "Направление звонка"),
+        duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
+        analysis_json=str(row.get("analysis_json") or ""),
+        **brand_evidence_fields(row),
+        amocrm_contact_id=first_text(row, "amocrm_contact_id"),
+        amocrm_lead_id=first_text(row, "amocrm_lead_id"),
+    )
 
 
 def build_event_payload(
@@ -307,27 +325,27 @@ def build_event_payload(
     duplicate_base_ids: set[str],
     call_type: str,
 ) -> Mapping[str, Any]:
-    source_id = stable_call_source_id(row, duplicate_base_ids=duplicate_base_ids)
+    lineage = build_call_lineage(
+        source_kind=row.source_kind,
+        source_db=row.source_db,
+        row_id=row.row_id,
+        source_call_id=row.source_call_id,
+        source_filename=row.source_filename,
+        started_at=row.started_at,
+        duplicate_base_ids=duplicate_base_ids,
+    )
+    source_id = str(lineage["call_id"])
     summary = "" if call_type == "non_conversation" else text_value(analysis.get("history_summary") or analysis.get("summary"))
     payload: dict[str, Any] = {
         "source_system": MANGO_SOURCE_SYSTEM,
         "event_type": MANGO_EVENT_TYPE,
         "tenant_id": tenant_id,
-        "call_id": source_id,
-        "provider_call_id": source_id,
-        "original_call_id": row.source_call_id or row.row_id,
-        "source_ref": f"mango:{source_id}",
-        "source_db": row.source_db,
-        "source_row_id": row.row_id,
-        "source_filename": row.source_filename,
+        **lineage,
         "source_file": row.source_file,
         # `mango_artifacts` reads `audio_path`; without it the timeline keeps no
         # pointer back to the recording and `event_artifacts` stays empty.
         "audio_path": row.source_file,
         "phone": normalize_phone(row.phone or ""),
-        "call_at": normalize_datetime_text(row.started_at),
-        "event_at": normalize_datetime_text(row.started_at),
-        "updated_at": normalize_datetime_text(row.started_at),
         "manager_name": row.manager_name,
         "direction": normalize_direction(row.direction),
         "duration_sec": row.duration_sec,
@@ -400,23 +418,27 @@ def resolve_phone_identity(con: sqlite3.Connection, tenant_id: str, phone: str |
     return IdentityResolution(IdentityMatchClass.AMBIGUOUS.value, None, reason, len(customer_ids))
 
 
-def stable_call_source_id(row: SourceRow, *, duplicate_base_ids: set[str]) -> str:
-    if row.source_kind == "canonical_calls":
-        return str(row.row_id)
-    base = f"provider:{row.source_call_id or row.row_id}"
-    if base not in duplicate_base_ids:
-        return base
-    suffix = stable_digest({"source_filename": row.source_filename, "started_at": row.started_at})[:12]
-    return f"{base}:{suffix}"
-
-
 def duplicate_source_ids(rows: Sequence[SourceRow]) -> set[str]:
+    return {
+        source_id
+        for source_id, count in source_id_base_counts(rows).items()
+        if count > 1
+    }
+
+
+def source_id_base_counts(rows: Sequence[SourceRow]) -> Counter[str]:
     counts: Counter[str] = Counter()
     for row in rows:
         if row.source_kind == "canonical_calls":
             continue
-        counts[f"provider:{row.source_call_id or row.row_id}"] += 1
-    return {source_id for source_id, count in counts.items() if count > 1}
+        counts[
+            call_source_base_id(
+                source_kind=row.source_kind,
+                row_id=row.row_id,
+                source_call_id=row.source_call_id,
+            )
+        ] += 1
+    return counts
 
 
 def filter_rows(rows: Iterable[SourceRow], *, since: datetime | None, until: datetime | None) -> list[SourceRow]:
@@ -467,15 +489,6 @@ def ro_uri(path: Path) -> str:
     return path.expanduser().resolve(strict=False).as_uri() + "?mode=ro"
 
 
-def table_exists(con: sqlite3.Connection, table: str) -> bool:
-    row = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
-    return row is not None
-
-
-def table_columns(con: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
-
-
 def first_text(row: Mapping[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = row.get(key)
@@ -509,25 +522,11 @@ def parse_optional_datetime(raw: str | None) -> datetime | None:
 
 
 def parse_source_datetime(raw: str | None) -> datetime | None:
-    text = text_value(raw)
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return parse_call_started_at(raw)
 
 
 def normalize_datetime_text(raw: str) -> str:
-    parsed = parse_source_datetime(raw)
-    if parsed is None:
-        return text_value(raw)
-    return parsed.isoformat()
+    return normalize_call_started_at(raw)
 
 
 def mask_phone(phone: str | None) -> str | None:

@@ -249,6 +249,13 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
     assert [event["event_type"] for event in events] == ["mango_call", "mango_call"]
     assert events[0]["customer_id"] == "customer:one"
     assert events[0]["match_class"] == "strong_unique"
+    assert events[0]["call_id"] == "provider:27100000001"
+    assert events[0]["provider_call_id"] == events[0]["call_id"]
+    assert events[0]["original_call_id"] == "27100000001"
+    assert events[0]["source_db"] == str(package_db.resolve())
+    assert events[0]["source_row_id"] == "1"
+    assert events[0]["source_filename"] == "call-one.wav"
+    assert events[0]["call_at"] == "2026-06-25T09:00:00+00:00"
     assert "customer_id" not in events[1]
     assert events[1]["match_class"] == "ambiguous"
     assert events[1]["identity_resolution_reason"] == "multiple_existing_customers"
@@ -443,3 +450,99 @@ def test_package_duplicate_source_call_id_is_stable_when_sibling_is_not_done(tmp
 
     assert report["events_written"] == 1
     assert events[0]["call_id"].startswith("provider:same-provider-id:")
+
+
+def test_package_duplicate_source_call_id_is_stable_across_databases_before_sibling_is_done(
+    tmp_path: Path,
+) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    done_db = tmp_path / "done.sqlite"
+    pending_db = tmp_path / "pending.sqlite"
+    common = {
+        "source_call_id": "same-provider-id",
+        "phone": "+7 916 111-22-33",
+        "manager_name": None,
+        "direction": None,
+        "duration_sec": None,
+        "amocrm_contact_id": None,
+        "amocrm_lead_id": None,
+    }
+    create_call_records_db(
+        done_db,
+        [
+            {
+                **common,
+                "id": 1,
+                "source_filename": "done.wav",
+                "source_file": "/ignored/done.wav",
+                "started_at": "2026-06-25T09:00:00+00:00",
+                "analysis_status": "done",
+                "analysis_json": analysis(),
+            }
+        ],
+    )
+    create_call_records_db(
+        pending_db,
+        [
+            {
+                **common,
+                "id": 2,
+                "source_filename": "pending.wav",
+                "source_file": "/ignored/pending.wav",
+                "started_at": "2026-06-25T09:05:00+00:00",
+                "analysis_status": "pending",
+                "analysis_json": "",
+            }
+        ],
+    )
+    out_jsonl = tmp_path / "mango_increment.jsonl"
+    report_out = tmp_path / "producer_report.json"
+
+    assert producer.main(
+        [
+            "--timeline-db",
+            str(timeline_db),
+            "--package-db",
+            str(done_db),
+            "--package-db",
+            str(pending_db),
+            "--out-jsonl",
+            str(out_jsonl),
+            "--report-out",
+            str(report_out),
+        ]
+    ) == 0
+
+    events = [json.loads(line) for line in out_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 1
+    assert events[0]["call_id"].startswith("provider:same-provider-id:")
+
+
+def test_producer_rejects_collision_of_final_duplicate_source_ids(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    package_db = tmp_path / "calls.sqlite"
+    common = {
+        "source_call_id": "same-provider-id",
+        "source_filename": "same.wav",
+        "started_at": "2026-06-25T09:00:00+00:00",
+        "phone": "+7 916 111-22-33",
+        "manager_name": None,
+        "direction": None,
+        "duration_sec": None,
+        "analysis_status": "done",
+        "analysis_json": analysis(),
+        "amocrm_contact_id": None,
+        "amocrm_lead_id": None,
+    }
+    create_call_records_db(
+        package_db,
+        [
+            {**common, "id": 1, "source_file": "/ignored/one.wav"},
+            {**common, "id": 2, "source_file": "/ignored/two.wav"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicate final call id"):
+        run_producer(tmp_path, timeline_db=timeline_db, package_db=package_db)

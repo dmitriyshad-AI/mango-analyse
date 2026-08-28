@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -490,3 +491,29 @@ def test_stage3_rejects_case_insensitive_prod_path_before_writing(tmp_path: Path
         )
 
     assert not db_path.exists()
+
+
+def test_stage3_calls_preflight_fails_before_any_timeline_write(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    calls_db = tmp_path / "unsupported_calls.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = _identity()
+        store.upsert_customer(customer)
+        store.upsert_event(_email_event(customer, source_id="1" * 64, preview="До preflight"))
+    with sqlite3.connect(calls_db) as con:
+        con.execute("CREATE TABLE unsupported_calls (id INTEGER PRIMARY KEY)")
+    before_sha = hashlib.sha256(db_path.read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError, match="exactly one supported source table"):
+        run_stage3_maintenance(
+            Stage3MaintenanceConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "out-preflight",
+                canonical_calls_db_path=calls_db,
+                apply=True,
+            )
+        )
+
+    assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_sha
+    assert not (tmp_path / "out-preflight").exists()

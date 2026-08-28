@@ -166,7 +166,12 @@ def _run_stage3_maintenance_unlocked(
         if config.apply:
             report["soft_delete"] = _apply_duplicate_plan(store, duplicate_plan["groups_detail"])
         else:
-            report["soft_delete"] = {"superseded_events": 0, "superseded_chunks": 0, "groups_actioned": 0}
+            report["soft_delete"] = {
+                "superseded_events": 0,
+                "superseded_signals": 0,
+                "superseded_chunks": 0,
+                "groups_actioned": 0,
+            }
 
         if config.apply:
             objections_started = time.monotonic()
@@ -524,6 +529,7 @@ def _apply_duplicate_plan(
             )
             totals["groups_actioned"] += 1
             totals["superseded_events"] += int(result["superseded_events"])
+            totals["superseded_signals"] += int(result["superseded_signals"])
             totals["superseded_chunks"] += int(result["superseded_chunks"])
     return dict(totals)
 

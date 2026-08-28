@@ -1608,9 +1608,13 @@ class CustomerTimelineSQLiteStore:
             raise TypeError("opportunity must be CustomerOpportunity")
         self._assert_customer_exists(opportunity.tenant_id, opportunity.customer_id)
         existing = self._fetch_one(
-            "SELECT customer_id,record_hash FROM customer_opportunities WHERE opportunity_id=?",
+            "SELECT tenant_id,customer_id,record_hash FROM customer_opportunities WHERE opportunity_id=?",
             (opportunity.opportunity_id,),
         )
+        if existing is not None and str(existing["tenant_id"]) != opportunity.tenant_id:
+            raise ValueError(
+                f"opportunity tenant does not match for opportunity_id: {opportunity.opportunity_id}"
+            )
         if existing is not None and str(existing["customer_id"]) != opportunity.customer_id:
             self._retire_dependencies(
                 opportunity.tenant_id,
@@ -1664,49 +1668,29 @@ class CustomerTimelineSQLiteStore:
         keep = optional_text(keep_customer_id)
         owner_clause = "" if keep is None else " AND (customer_id IS NULL OR customer_id!=?)"
         owner_params: tuple[str, ...] = () if keep is None else (keep,)
-        if reference_column == "event_id":
-            direct_rows = self._con.execute(
-                "SELECT signal_id,status,record_json FROM derived_signals "
-                f"WHERE tenant_id=? AND event_id=?{owner_clause}",
+        event_rows: Sequence[sqlite3.Row] = ()
+        if reference_column == "opportunity_id":
+            event_rows = self._con.execute(
+                "SELECT event_id,record_json FROM timeline_events "
+                f"WHERE tenant_id=? AND opportunity_id=?{owner_clause}",
                 (tenant, reference, *owner_params),
             ).fetchall()
-            secondary_rows = self._con.execute(
-                "SELECT signal_id,status,record_json FROM derived_signals "
-                "WHERE tenant_id=? AND (event_id IS NULL OR event_id!=?) "
-                "AND json_array_length(record_json,'$.source_event_ids')>1 "
-                "AND EXISTS (SELECT 1 FROM json_each(derived_signals.record_json,'$.source_event_ids') "
-                f"AS source_event WHERE CAST(source_event.value AS TEXT)=?){owner_clause}",
-                (tenant, reference, reference, *owner_params),
-            ).fetchall()
-            signal_rows = [*direct_rows, *secondary_rows]
-        else:
-            signal_rows = self._con.execute(
-                "SELECT signal_id,status,record_json FROM derived_signals "
-                f"WHERE tenant_id=? AND {reference_column}=?{owner_clause}",
-                (tenant, reference, *owner_params),
-            ).fetchall()
-        for row in signal_rows:
-            payload = json.loads(str(row["record_json"]))
-            if payload.get(reference_column) == reference:
-                payload[reference_column] = None
-            if reference_column == "event_id":
-                payload["source_event_ids"] = [
-                    value for value in payload.get("source_event_ids", ()) if str(value) != reference
-                ]
-            if str(row["status"]) == "active":
-                payload["status"] = "stale"
-            safe_payload = scrub_timeline_persisted_json(payload)
-            self._con.execute(
-                f"UPDATE derived_signals SET {reference_column}=?,status=?,record_json=?,record_hash=? "
-                "WHERE signal_id=?",
-                (
-                    payload.get(reference_column),
-                    payload.get("status") or row["status"],
-                    json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-                    stable_digest(safe_payload),
-                    row["signal_id"],
-                ),
-            )
+            for row in event_rows:
+                payload = json.loads(str(row["record_json"]))
+                payload["opportunity_id"] = None
+                safe_payload = scrub_timeline_persisted_json(payload)
+                self._con.execute(
+                    "UPDATE timeline_events SET opportunity_id=NULL,record_json=?,record_hash=? WHERE event_id=?",
+                    (json_dumps(safe_payload), stable_digest(safe_payload), row["event_id"]),
+                )
+                if not self._bulk_fts_rebuild:
+                    self._sync_event_fts(str(row["event_id"]))
+        signal_rows = self._retire_signal_dependencies(
+            tenant,
+            reference,
+            reference_column=reference_column,
+            keep_customer_id=keep,
+        )
         chunk_rows = self._con.execute(
             "SELECT chunk_id,record_json,superseded_by FROM bot_context_chunks "
             f"WHERE tenant_id=? AND {reference_column}=?{owner_clause}",
@@ -1729,7 +1713,7 @@ class CustomerTimelineSQLiteStore:
             )
         if chunk_rows:
             self._delete_bot_context_fts_for_chunk_ids(tuple(str(row["chunk_id"]) for row in chunk_rows))
-        if signal_rows or chunk_rows:
+        if event_rows or signal_rows or chunk_rows:
             entity_type = "customer_opportunity" if reference_column == "opportunity_id" else "timeline_event"
             entity_name = "opportunity" if reference_column == "opportunity_id" else "event"
             self._append_audit_log(
@@ -1744,11 +1728,73 @@ class CustomerTimelineSQLiteStore:
                 metadata={
                     "reason": reason,
                     "kept_customer_id": keep,
+                    "timeline_events": len(event_rows),
                     "signals": len(signal_rows),
                     "bot_context_chunks": len(chunk_rows),
                 },
                 now=self._now(),
             )
+
+    def _retire_signal_dependencies(
+        self,
+        tenant_id: str,
+        reference_id: str,
+        *,
+        reference_column: str,
+        keep_customer_id: Optional[str],
+    ) -> Sequence[sqlite3.Row]:
+        """Detach derived signals from a relationship that is no longer authoritative."""
+
+        tenant = normalize_key(tenant_id, "tenant_id")
+        if reference_column not in {"opportunity_id", "event_id"}:
+            raise ValueError(f"unsupported signal dependency reference: {reference_column}")
+        reference = require_text(reference_id, reference_column)
+        keep = optional_text(keep_customer_id)
+        owner_clause = "" if keep is None else " AND (customer_id IS NULL OR customer_id!=?)"
+        owner_params: tuple[str, ...] = () if keep is None else (keep,)
+        if reference_column == "event_id":
+            direct_rows = self._con.execute(
+                "SELECT signal_id,status,record_json FROM derived_signals "
+                f"WHERE tenant_id=? AND event_id=?{owner_clause}",
+                (tenant, reference, *owner_params),
+            ).fetchall()
+            secondary_rows = self._con.execute(
+                "SELECT signal_id,status,record_json FROM derived_signals "
+                "WHERE tenant_id=? AND (event_id IS NULL OR event_id!=?) "
+                "AND EXISTS (SELECT 1 FROM json_each(derived_signals.record_json,'$.source_event_ids') "
+                f"AS source_event WHERE CAST(source_event.value AS TEXT)=?){owner_clause}",
+                (tenant, reference, reference, *owner_params),
+            ).fetchall()
+            rows = [*direct_rows, *secondary_rows]
+        else:
+            rows = self._con.execute(
+                "SELECT signal_id,status,record_json FROM derived_signals "
+                f"WHERE tenant_id=? AND {reference_column}=?{owner_clause}",
+                (tenant, reference, *owner_params),
+            ).fetchall()
+        for row in rows:
+            payload = json.loads(str(row["record_json"]))
+            if payload.get(reference_column) == reference:
+                payload[reference_column] = None
+            if reference_column == "event_id":
+                payload["source_event_ids"] = [
+                    value for value in payload.get("source_event_ids", ()) if str(value) != reference
+                ]
+            if str(row["status"]) == "active":
+                payload["status"] = "stale"
+            safe_payload = scrub_timeline_persisted_json(payload)
+            self._con.execute(
+                f"UPDATE derived_signals SET {reference_column}=?,status=?,record_json=?,record_hash=? "
+                "WHERE signal_id=?",
+                (
+                    payload.get(reference_column),
+                    payload.get("status") or row["status"],
+                    json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    stable_digest(safe_payload),
+                    row["signal_id"],
+                ),
+            )
+        return rows
 
     def reconcile_event_dependency_owners(
         self,
@@ -1765,7 +1811,7 @@ class CustomerTimelineSQLiteStore:
             "SELECT tenant_id,customer_id,event_id FROM derived_signals WHERE tenant_id=? AND event_id IS NOT NULL "
             "UNION ALL SELECT d.tenant_id,d.customer_id,CAST(source_event.value AS TEXT) "
             "FROM derived_signals d,json_each(d.record_json,'$.source_event_ids') source_event "
-            "WHERE d.tenant_id=? AND json_array_length(d.record_json,'$.source_event_ids')>1), mismatched AS ("
+            "WHERE d.tenant_id=?), mismatched AS ("
             "SELECT e.event_id,e.customer_id,e.record_hash FROM signal_refs r JOIN timeline_events e "
             "ON e.tenant_id=r.tenant_id AND e.event_id=r.event_id "
             "WHERE e.customer_id IS NULL OR r.customer_id IS NULL OR r.customer_id!=e.customer_id "
@@ -1830,26 +1876,29 @@ class CustomerTimelineSQLiteStore:
             groups.setdefault((str(row["superseded_by"]), str(row["customer_id"])), []).append(row)
         for group in groups.values():
             row = group[0]
+            group_event_ids = tuple(str(item["event_id"]) for item in group)
+            group_placeholders = ",".join("?" for _ in group_event_ids)
             chunk_rows = self._con.execute(
-                "SELECT chunk_id FROM bot_context_chunks WHERE tenant_id=? AND event_id=? "
-                "AND customer_id IS ? AND superseded_by=?",
-                (tenant, row["event_id"], row["customer_id"], row["superseded_by"]),
+                f"SELECT chunk_id FROM bot_context_chunks WHERE tenant_id=? "
+                f"AND event_id IN ({group_placeholders}) AND customer_id IS ? AND superseded_by=?",
+                (tenant, *group_event_ids, row["customer_id"], row["superseded_by"]),
             ).fetchall()
             self._con.execute(
-                "UPDATE timeline_events SET superseded_by=NULL WHERE event_id=?",
-                (row["event_id"],),
+                f"UPDATE timeline_events SET superseded_by=NULL WHERE tenant_id=? "
+                f"AND event_id IN ({group_placeholders}) AND superseded_by=?",
+                (tenant, *group_event_ids, row["superseded_by"]),
             )
             self._con.execute(
-                "UPDATE bot_context_chunks SET superseded_by=NULL WHERE tenant_id=? AND event_id=? "
-                "AND customer_id IS ? AND superseded_by=?",
-                (tenant, row["event_id"], row["customer_id"], row["superseded_by"]),
+                f"UPDATE bot_context_chunks SET superseded_by=NULL WHERE tenant_id=? "
+                f"AND event_id IN ({group_placeholders}) AND customer_id IS ? AND superseded_by=?",
+                (tenant, *group_event_ids, row["customer_id"], row["superseded_by"]),
             )
             restored_chunks.extend(str(chunk["chunk_id"]) for chunk in chunk_rows)
             if len(group) > 1:
                 self.mark_timeline_events_superseded(
                     tenant,
                     canonical_event_id=str(row["event_id"]),
-                    duplicate_event_ids=tuple(str(item["event_id"]) for item in group[1:]),
+                    duplicate_event_ids=group_event_ids[1:],
                     actor=actor,
                     reason="canonical_owner_changed",
                     ingestion_run_id=ingestion_run_id,
@@ -1947,26 +1996,17 @@ class CustomerTimelineSQLiteStore:
         if event.customer_id:
             self._assert_customer_exists(event.tenant_id, event.customer_id)
         if event.opportunity_id:
-            self._assert_opportunity_exists(event.tenant_id, event.opportunity_id)
+            self._assert_opportunity_owner(event.tenant_id, event.opportunity_id, event.customer_id)
         existing_by_id = self._fetch_one(
-            "SELECT customer_id,record_hash FROM timeline_events WHERE event_id=?",
+            "SELECT tenant_id,customer_id,record_hash FROM timeline_events WHERE event_id=?",
             (event.event_id,),
         )
+        if existing_by_id is not None and str(existing_by_id["tenant_id"]) != event.tenant_id:
+            raise ValueError(f"event tenant does not match for event_id: {event.event_id}")
         owner_changed = (
             existing_by_id is not None
             and optional_text(existing_by_id["customer_id"]) != event.customer_id
         )
-        if owner_changed:
-            self._retire_dependencies(
-                event.tenant_id,
-                event.event_id,
-                reference_column="event_id",
-                keep_customer_id=event.customer_id,
-                reason="event_owner_changed",
-                actor=actor,
-                ingestion_run_id=ingestion_run_id,
-                source_record_hash=str(existing_by_id["record_hash"]),
-            )
         existing_by_dedupe = self._fetch_one(
             "SELECT event_id, record_hash FROM timeline_events WHERE dedupe_key = ?",
             (event.dedupe_key,),
@@ -2014,6 +2054,17 @@ class CustomerTimelineSQLiteStore:
                         record_hash=existing["record_hash"],
                         audit_id=None,
                     )
+        if owner_changed:
+            self._retire_dependencies(
+                event.tenant_id,
+                event.event_id,
+                reference_column="event_id",
+                keep_customer_id=event.customer_id,
+                reason="event_owner_changed",
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                source_record_hash=str(existing_by_id["record_hash"]),
+            )
         result = self._upsert_record(
             table="timeline_events",
             key_column="event_id",
@@ -2106,11 +2157,14 @@ class CustomerTimelineSQLiteStore:
         if signal.customer_id:
             self._assert_customer_exists(signal.tenant_id, signal.customer_id)
         if signal.opportunity_id:
-            self._assert_opportunity_exists(signal.tenant_id, signal.opportunity_id)
-        if signal.event_id:
-            self._assert_event_exists(signal.tenant_id, signal.event_id)
+            self._assert_opportunity_owner(signal.tenant_id, signal.opportunity_id, signal.customer_id)
+        event_guard = (
+            self._assert_active_event_owner
+            if signal.status.value == "active"
+            else self._assert_event_owner
+        )
         for source_event_id in signal.source_event_ids:
-            self._assert_event_exists(signal.tenant_id, source_event_id)
+            event_guard(signal.tenant_id, source_event_id, signal.customer_id)
         return self._upsert_record(
             table="derived_signals",
             key_column="signal_id",
@@ -2147,9 +2201,17 @@ class CustomerTimelineSQLiteStore:
             raise TypeError("chunk must be BotContextChunk")
         self._assert_customer_exists(chunk.tenant_id, chunk.customer_id)
         if chunk.opportunity_id:
-            self._assert_opportunity_exists(chunk.tenant_id, chunk.opportunity_id)
+            self._assert_opportunity_owner(chunk.tenant_id, chunk.opportunity_id, chunk.customer_id)
         if chunk.event_id:
-            self._assert_event_exists(chunk.tenant_id, chunk.event_id)
+            self._assert_active_event_owner(chunk.tenant_id, chunk.event_id, chunk.customer_id)
+        existing_chunk = self._fetch_one(
+            "SELECT tenant_id,customer_id FROM bot_context_chunks WHERE chunk_id=?",
+            (chunk.chunk_id,),
+        )
+        if existing_chunk is not None and str(existing_chunk["tenant_id"]) != chunk.tenant_id:
+            raise ValueError(f"chunk tenant does not match for chunk_id: {chunk.chunk_id}")
+        if existing_chunk is not None and str(existing_chunk["customer_id"]) != chunk.customer_id:
+            raise ValueError(f"chunk owner does not match for chunk_id: {chunk.chunk_id}")
         assert_bot_context_chunk_source_policy(
             source_system=chunk.source_system,
             allowed_for_bot=chunk.allowed_for_bot,
@@ -2414,14 +2476,19 @@ class CustomerTimelineSQLiteStore:
         canonical_id = require_text(canonical_event_id, "canonical_event_id")
         duplicate_ids = tuple(dict.fromkeys(require_text(item, "duplicate_event_id") for item in duplicate_event_ids))
         if not duplicate_ids:
-            return {"superseded_events": 0, "superseded_chunks": 0, "canonical_event_id": canonical_id}
+            return {
+                "superseded_events": 0,
+                "superseded_signals": 0,
+                "superseded_chunks": 0,
+                "canonical_event_id": canonical_id,
+            }
         if canonical_id in duplicate_ids:
             raise ValueError("canonical_event_id must not be in duplicate_event_ids")
         all_ids = (canonical_id, *duplicate_ids)
         placeholders = ", ".join("?" for _ in all_ids)
         rows = self._con.execute(
             f"""
-            SELECT event_id, customer_id
+            SELECT event_id, customer_id, superseded_by
             FROM timeline_events
             WHERE tenant_id = ? AND event_id IN ({placeholders})
             """,
@@ -2436,52 +2503,86 @@ class CustomerTimelineSQLiteStore:
             raise ValueError("cannot supersede timeline events with customer_id NULL/empty")
         if len(customer_ids) != 1:
             raise ValueError("cannot supersede timeline events across different customers")
-        duplicate_placeholders = ", ".join("?" for _ in duplicate_ids)
-        before_hash = stable_digest({"duplicate_event_ids": duplicate_ids})
-        event_cursor = self._con.execute(
-            f"""
-            UPDATE timeline_events
-            SET superseded_by = ?
-            WHERE tenant_id = ? AND event_id IN ({duplicate_placeholders})
-            """,
-            (canonical_id, tenant, *duplicate_ids),
+        if by_id[canonical_id]["superseded_by"] is not None:
+            raise ValueError("canonical timeline event must be active")
+        for duplicate_id in duplicate_ids:
+            superseded_by = optional_text(by_id[duplicate_id]["superseded_by"])
+            if superseded_by is not None and superseded_by != canonical_id:
+                raise ValueError(
+                    f"duplicate timeline event already has a different supersession: {duplicate_id}"
+                )
+        active_duplicate_ids = tuple(
+            duplicate_id
+            for duplicate_id in duplicate_ids
+            if by_id[duplicate_id]["superseded_by"] is None
         )
-        superseded_events = int(event_cursor.rowcount)
+        superseded_events = 0
+        if active_duplicate_ids:
+            active_placeholders = ", ".join("?" for _ in active_duplicate_ids)
+            event_cursor = self._con.execute(
+                f"""
+                UPDATE timeline_events
+                SET superseded_by = ?
+                WHERE tenant_id = ? AND event_id IN ({active_placeholders})
+                  AND superseded_by IS NULL
+                """,
+                (canonical_id, tenant, *active_duplicate_ids),
+            )
+            superseded_events = int(event_cursor.rowcount)
+        superseded_signal_ids: set[str] = set()
+        for duplicate_id in duplicate_ids:
+            superseded_signal_ids.update(
+                str(row["signal_id"])
+                for row in self._retire_signal_dependencies(
+                    tenant,
+                    duplicate_id,
+                    reference_column="event_id",
+                    keep_customer_id=None,
+                )
+            )
+        superseded_signals = len(superseded_signal_ids)
+        duplicate_placeholders = ", ".join("?" for _ in duplicate_ids)
         chunk_cursor = self._con.execute(
             f"""
             UPDATE bot_context_chunks
             SET superseded_by = ?
             WHERE tenant_id = ? AND event_id IN ({duplicate_placeholders})
+              AND superseded_by IS NULL
             """,
             (canonical_id, tenant, *duplicate_ids),
         )
         superseded_chunks = int(chunk_cursor.rowcount)
-        self._delete_superseded_from_fts(duplicate_ids)
-        audit = self._append_audit_log(
-            tenant_id=tenant,
-            action="timeline_events_superseded",
-            entity_type="timeline_event",
-            entity_id=canonical_id,
-            actor=actor,
-            ingestion_run_id=ingestion_run_id,
-            before_hash=before_hash,
-            after_hash=stable_digest({"canonical_event_id": canonical_id, "duplicate_event_ids": duplicate_ids}),
-            metadata={
-                "reason": normalize_key(reason, "reason"),
-                "duplicate_event_ids": duplicate_ids,
-                "superseded_events": superseded_events,
-                "superseded_chunks": superseded_chunks,
-            },
-            now=self._now(),
-        )
-        if commit:
+        audit_id = None
+        if superseded_events or superseded_signals or superseded_chunks:
+            self._delete_superseded_from_fts(duplicate_ids)
+            audit = self._append_audit_log(
+                tenant_id=tenant,
+                action="timeline_events_superseded",
+                entity_type="timeline_event",
+                entity_id=canonical_id,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                before_hash=stable_digest({"duplicate_event_ids": active_duplicate_ids}),
+                after_hash=stable_digest({"canonical_event_id": canonical_id, "duplicate_event_ids": duplicate_ids}),
+                metadata={
+                    "reason": normalize_key(reason, "reason"),
+                    "duplicate_event_ids": duplicate_ids,
+                    "superseded_events": superseded_events,
+                    "superseded_signals": superseded_signals,
+                    "superseded_chunks": superseded_chunks,
+                },
+                now=self._now(),
+            )
+            audit_id = audit.audit_id
+        if commit and (superseded_events or superseded_signals or superseded_chunks):
             self._commit()
         return {
             "canonical_event_id": canonical_id,
             "duplicate_event_ids": duplicate_ids,
             "superseded_events": superseded_events,
+            "superseded_signals": superseded_signals,
             "superseded_chunks": superseded_chunks,
-            "audit_id": audit.audit_id,
+            "audit_id": audit_id,
         }
 
     def revoke_bot_context_chunks_for_event(
@@ -3663,13 +3764,18 @@ class CustomerTimelineSQLiteStore:
         persistent_metadata_keys: Sequence[str] = (),
     ) -> CustomerTimelineStoreWriteResult:
         key = require_text(key_value, key_column)
+        tenant = normalize_key(tenant_id, "tenant_id")
         physical_columns = tuple(columns)
+        selected_columns = tuple(
+            dict.fromkeys(("tenant_id", "record_hash", "record_json", *physical_columns))
+        )
         existing = self._fetch_one(
-            f"SELECT record_hash, record_json"
-            f"{''.join(',' + column for column in physical_columns)} "
+            f"SELECT {', '.join(selected_columns)} "
             f"FROM {table} WHERE {key_column} = ?",
             (key,),
         )
+        if existing is not None and str(existing["tenant_id"]) != tenant:
+            raise ValueError(f"record tenant does not match for {record_type}: {key}")
         if existing is not None and persistent_metadata_keys:
             previous_metadata = json_loads(existing["record_json"]).get("metadata") or {}
             metadata = dict(payload.get("metadata") or {})
@@ -3707,7 +3813,7 @@ class CustomerTimelineSQLiteStore:
             tuple(all_columns.values()),
         )
         audit = self._append_audit_log(
-            tenant_id=tenant_id,
+            tenant_id=tenant,
             action=f"{record_type}_{action}",
             entity_type=record_type,
             entity_id=key,
@@ -3849,6 +3955,24 @@ class CustomerTimelineSQLiteStore:
         if self.get_customer(tenant_id, customer_id) is None:
             raise ValueError(f"customer does not exist for tenant {tenant_id}: {customer_id}")
 
+    def _assert_opportunity_owner(
+        self,
+        tenant_id: str,
+        opportunity_id: str,
+        customer_id: Optional[str],
+    ) -> None:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        opportunity = require_text(opportunity_id, "opportunity_id")
+        customer = optional_text(customer_id)
+        row = self._fetch_one(
+            "SELECT tenant_id,customer_id FROM customer_opportunities WHERE opportunity_id=?",
+            (opportunity,),
+        )
+        if row is None or str(row["tenant_id"]) != tenant:
+            raise ValueError(f"opportunity does not exist for tenant {tenant}: {opportunity}")
+        if optional_text(row["customer_id"]) != customer:
+            raise ValueError(f"opportunity owner does not match for opportunity_id: {opportunity}")
+
     def _assert_opportunity_exists(self, tenant_id: str, opportunity_id: str) -> None:
         row = self._fetch_one(
             "SELECT 1 FROM customer_opportunities WHERE tenant_id = ? AND opportunity_id = ?",
@@ -3860,6 +3984,33 @@ class CustomerTimelineSQLiteStore:
     def _assert_event_exists(self, tenant_id: str, event_id: str) -> None:
         if self.get_event(tenant_id, event_id) is None:
             raise ValueError(f"event does not exist for tenant {tenant_id}: {event_id}")
+
+    def _assert_event_owner(self, tenant_id: str, event_id: str, customer_id: Optional[str]) -> None:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        event = require_text(event_id, "event_id")
+        customer = optional_text(customer_id)
+        row = self._fetch_one(
+            "SELECT tenant_id,customer_id FROM timeline_events WHERE event_id=?",
+            (event,),
+        )
+        if row is None or str(row["tenant_id"]) != tenant:
+            raise ValueError(f"event does not exist for tenant {tenant}: {event}")
+        if optional_text(row["customer_id"]) != customer:
+            raise ValueError(f"event owner does not match for event_id: {event}")
+
+    def _assert_active_event_owner(
+        self,
+        tenant_id: str,
+        event_id: str,
+        customer_id: Optional[str],
+    ) -> None:
+        self._assert_event_owner(tenant_id, event_id, customer_id)
+        row = self._fetch_one(
+            "SELECT superseded_by FROM timeline_events WHERE event_id=?",
+            (require_text(event_id, "event_id"),),
+        )
+        if row is not None and row["superseded_by"] is not None:
+            raise ValueError(f"event is superseded for event_id: {event_id}")
 
     def _with_event_children(
         self,
@@ -4848,6 +4999,16 @@ def customer_timeline_integrity_report(con: sqlite3.Connection) -> Mapping[str, 
                     "SELECT COUNT(*) FROM bot_context_chunks c JOIN timeline_events e "
                     "ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
                     "WHERE c.superseded_by IS NULL AND e.superseded_by IS NOT NULL AND e.superseded_by!=''"
+                ).fetchone()[0]
+            )
+            counts["active_signal_linked_to_superseded_event"] = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM derived_signals s WHERE s.status='active' AND EXISTS ("
+                    "SELECT 1 FROM timeline_events e WHERE e.tenant_id=s.tenant_id "
+                    "AND e.superseded_by IS NOT NULL AND e.superseded_by!='' AND ("
+                    "e.event_id=s.event_id OR EXISTS (SELECT 1 FROM json_each("
+                    "CASE WHEN json_valid(s.record_json)=1 THEN s.record_json ELSE '{}' END,"
+                    "'$.source_event_ids') source WHERE CAST(source.value AS TEXT)=e.event_id)))"
                 ).fetchone()[0]
             )
             row = con.execute(

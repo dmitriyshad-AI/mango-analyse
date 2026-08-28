@@ -512,9 +512,9 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             if event is wrong_chunk_type_event:
                 store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or "", chunk_type="wrong_call_summary"))
             elif event is mismatch_event:
-                store.upsert_bot_context_chunk(
-                    _mango_call_chunk(event, text=event.summary or "", customer_id=mismatch_customer.customer_id)
-                )
+                # Public writer rejects this edge. Seed a valid row first, then
+                # inject the legacy poison below to test the read-side gate.
+                store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
             else:
                 store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
 
@@ -532,6 +532,20 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             "UPDATE bot_context_chunks SET allowed_for_bot=1,requires_manager_review=0,record_json=? "
             "WHERE event_id=?",
             (json.dumps(stale_payload, ensure_ascii=False), non_contentful_event.event_id),
+        )
+        mismatch_row = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE event_id=?",
+            (mismatch_event.event_id,),
+        ).fetchone()
+        mismatch_payload = json.loads(mismatch_row[0])
+        mismatch_payload["customer_id"] = mismatch_customer.customer_id
+        con.execute(
+            "UPDATE bot_context_chunks SET customer_id=?,record_json=? WHERE event_id=?",
+            (
+                mismatch_customer.customer_id,
+                json.dumps(mismatch_payload, ensure_ascii=False),
+                mismatch_event.event_id,
+            ),
         )
         con.commit()
 

@@ -56,6 +56,7 @@ _VALID_WAPPI_EVENT_RETIREMENT_SQL = (
     "NOT GLOB '*[^0-9a-f]*'"
 )
 MAIL_IDENTITY_SENTINEL_MAX = datetime(1970, 1, 2, tzinfo=timezone.utc)
+UNRESOLVED_CONFLICT_STATUSES = frozenset({"open", "active"})
 MAIL_IDENTITY_UNKNOWN_REASONS = frozenset(
     {
         "ambiguous_exact_evidence",
@@ -251,11 +252,29 @@ def _canonical_identity_conflict_ref(value: object) -> str:
         "tallanto:student:": "tallanto_student_id:",
         "amocrm:contact:": "amo_contact_id:",
         "amocrm:lead:": "amo_lead_id:",
+        "amo:contact:": "amo_contact_id:",
+        "amo:lead:": "amo_lead_id:",
     }
     for legacy, canonical in aliases.items():
         if text.startswith(legacy):
             return canonical + text[len(legacy) :]
     return text
+
+
+def _identity_conflict_source_ref_variants(value: object) -> frozenset[str]:
+    canonical = _canonical_identity_conflict_ref(value)
+    variants = {canonical}
+    aliases = {
+        "tallanto_student_id:": ("tallanto_student:", "tallanto:student:"),
+        "amo_contact_id:": ("amocrm:contact:", "amo:contact:"),
+        "amo_lead_id:": ("amocrm:lead:", "amo:lead:"),
+    }
+    for canonical_prefix, legacy_prefixes in aliases.items():
+        if canonical.startswith(canonical_prefix):
+            suffix = canonical[len(canonical_prefix) :]
+            variants.update(prefix + suffix for prefix in legacy_prefixes)
+            break
+    return frozenset(variants)
 
 
 def authoritative_exact_identity_rows(
@@ -3422,14 +3441,16 @@ class CustomerTimelineSQLiteStore:
             conflict_types,
             normalizer=lambda item: normalize_key(item, "conflict_type"),
         )
-        refs = customer_entity_ref_values(customer)
+        refs = self.conflict_entity_refs_for_customer(tenant, customer)
         clauses.append(
             "json_valid(record_json) AND EXISTS ("
-            "SELECT 1 FROM json_each(record_json, '$.entity_refs') ref "
-            f"WHERE CAST(ref.value AS TEXT) IN ({','.join('?' for _ in refs)})"
+            "SELECT 1 FROM json_each(record_json, '$.entity_refs') AS ref "
+            "JOIN json_each(?) AS expected "
+            "ON _mango_canonical_identity_ref(CAST(ref.value AS TEXT))="
+            "CAST(expected.value AS TEXT)"
             ")"
         )
-        params.extend(refs)
+        params.append(json.dumps(refs, ensure_ascii=False, separators=(",", ":")))
         rows = self._con.execute(
             f"""
             SELECT record_json FROM timeline_conflicts
@@ -3440,6 +3461,111 @@ class CustomerTimelineSQLiteStore:
             (*params, checked_limit(limit, "limit")),
         ).fetchall()
         return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def conflict_entity_refs_for_customer(
+        self,
+        tenant_id: str,
+        customer_id: str,
+    ) -> tuple[str, ...]:
+        """Exact conflict refs proven to belong to one known customer."""
+        tenant = normalize_key(tenant_id, "tenant_id")
+        customer = require_text(customer_id, "customer_id")
+        refs = set(customer_entity_ref_values(customer))
+        for row in self._con.execute(
+            "SELECT link_type,link_value,source_ref FROM identity_links "
+            "WHERE tenant_id=? AND customer_id=?",
+            (tenant, customer),
+        ):
+            refs.add(f"{row['link_type']}:{row['link_value']}")
+            if row["source_ref"]:
+                refs.add(str(row["source_ref"]))
+        for row in self._con.execute(
+            "SELECT family_id FROM family_members_v1 WHERE tenant_id=? AND customer_id=?",
+            (tenant, customer),
+        ):
+            refs.add(str(row["family_id"]))
+        return tuple(sorted({_canonical_identity_conflict_ref(value) for value in refs}))
+
+    def conflict_affected_customer_ids_by_status(
+        self,
+        tenant_id: str,
+        refs_by_status: Mapping[str, Sequence[str]],
+    ) -> Mapping[str, frozenset[str]]:
+        """Resolve exact conflict refs to affected customers without fuzzy identity."""
+        tenant = normalize_key(tenant_id, "tenant_id")
+        statuses_by_ref: dict[str, set[str]] = {}
+        for raw_status, raw_refs in refs_by_status.items():
+            status = normalize_key(raw_status, "conflict_status")
+            for raw_ref in raw_refs:
+                ref = _canonical_identity_conflict_ref(raw_ref)
+                if ref:
+                    statuses_by_ref.setdefault(ref, set()).add(status)
+        affected: dict[str, set[str]] = {status: set() for status in refs_by_status}
+        if not statuses_by_ref:
+            return {status: frozenset() for status in affected}
+
+        candidate_statuses: dict[str, set[str]] = {}
+        for ref, statuses in statuses_by_ref.items():
+            candidate_statuses.setdefault(ref, set()).update(statuses)
+            if ref.startswith("customer:"):
+                candidate_statuses.setdefault(ref.removeprefix("customer:"), set()).update(statuses)
+        candidate_ids_json = json.dumps(
+            sorted(candidate_statuses), ensure_ascii=False, separators=(",", ":")
+        )
+        for row in self._con.execute(
+            "SELECT customer_id FROM customer_identities WHERE tenant_id=? "
+            "AND customer_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))",
+            (tenant, candidate_ids_json),
+        ):
+            customer = str(row["customer_id"])
+            for status in candidate_statuses.get(customer, ()):
+                affected.setdefault(status, set()).add(customer)
+
+        identity_values: dict[str, dict[str, set[str]]] = {}
+        source_ref_statuses: dict[str, set[str]] = {}
+        for ref, statuses in statuses_by_ref.items():
+            prefix, separator, value = ref.partition(":")
+            if separator and prefix and value:
+                identity_values.setdefault(prefix, {}).setdefault(value, set()).update(statuses)
+            for source_ref in _identity_conflict_source_ref_variants(ref):
+                source_ref_statuses.setdefault(source_ref, set()).update(statuses)
+        for link_type, statuses_by_value in identity_values.items():
+            values_json = json.dumps(
+                sorted(statuses_by_value), ensure_ascii=False, separators=(",", ":")
+            )
+            for row in self._con.execute(
+                "SELECT customer_id,link_value FROM identity_links "
+                "WHERE tenant_id=? AND link_type=? AND customer_id IS NOT NULL AND customer_id!='' "
+                "AND link_value IN (SELECT CAST(value AS TEXT) FROM json_each(?))",
+                (tenant, link_type, values_json),
+            ):
+                for status in statuses_by_value.get(str(row["link_value"]), ()):
+                    affected.setdefault(status, set()).add(str(row["customer_id"]))
+
+        source_refs_json = json.dumps(
+            sorted(source_ref_statuses), ensure_ascii=False, separators=(",", ":")
+        )
+        for row in self._con.execute(
+            "SELECT customer_id,source_ref FROM identity_links "
+            "WHERE tenant_id=? AND customer_id IS NOT NULL AND customer_id!='' "
+            "AND source_ref IN (SELECT CAST(value AS TEXT) FROM json_each(?))",
+            (tenant, source_refs_json),
+        ):
+            for status in source_ref_statuses.get(str(row["source_ref"]), ()):
+                affected.setdefault(status, set()).add(str(row["customer_id"]))
+
+        family_refs_json = json.dumps(
+            sorted(statuses_by_ref), ensure_ascii=False, separators=(",", ":")
+        )
+        for row in self._con.execute(
+            "SELECT family_id,customer_id FROM family_members_v1 WHERE tenant_id=? "
+            "AND family_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))",
+            (tenant, family_refs_json),
+        ):
+            statuses = statuses_by_ref.get(str(row["family_id"]), ())
+            for status in statuses:
+                affected.setdefault(status, set()).add(str(row["customer_id"]))
+        return {status: frozenset(customer_ids) for status, customer_ids in affected.items()}
 
     def list_conflicts(
         self,
@@ -3711,6 +3837,12 @@ class CustomerTimelineSQLiteStore:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
         register_temporal_sql_functions(con)
+        con.create_function(
+            "_mango_canonical_identity_ref",
+            1,
+            _canonical_identity_conflict_ref,
+            deterministic=True,
+        )
         return con
 
     def _acquire_writer_lock(self) -> None:

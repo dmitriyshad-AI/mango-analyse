@@ -788,7 +788,185 @@ def test_read_api_summary_open_conflicts_is_global_not_recent_limit(tmp_path: Pa
         result = api.summary("foton", recent_limit=1)
 
     assert result["summary"]["open_conflicts"] == 4
-    assert result["recent_conflicts"]["summary"]["open_conflicts"] == 1
+    assert result["recent_conflicts"]["summary"]["open_conflicts"] == 4
+    assert result["recent_conflicts"]["summary"]["recent_window"]["returned"] == 1
+
+
+def test_read_api_conflict_owner_metrics_are_global_not_page_limited(tmp_path: Path) -> None:
+    db_path, first_customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        second_customer_id = str(con.execute(
+            "SELECT customer_id FROM customer_identities WHERE customer_id != ?",
+            (first_customer_id,),
+        ).fetchone()[0])
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index in range(205):
+            store.record_conflict(
+                "foton",
+                conflict_type="owner_metric_probe",
+                entity_refs=(
+                    first_customer_id if index % 2 == 0 else second_customer_id,
+                    f"probe:{index}",
+                ),
+                severity="high" if index % 2 == 0 else "low",
+                actor="test",
+            )
+        store.record_conflict(
+            "foton",
+            conflict_type="resolved_owner_metric_probe",
+            entity_refs=(f"customer:{first_customer_id}", "probe:resolved"),
+            severity="critical",
+            status="resolved",
+            actor="test",
+        )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        result = api.list_conflicts("foton", limit=1)
+
+    summary = result["summary"]
+    assert len(result["items"]) == 1
+    assert summary["total"] == 207
+    assert summary["open_conflicts"] == 206
+    assert summary["affected_customer_count"] == 2
+    assert summary["open_affected_customer_count"] == 2
+    assert summary["by_severity"] == {"critical": 1, "high": 103, "low": 102, "medium": 1}
+    assert summary["open_by_severity"] == {"high": 103, "low": 102, "medium": 1}
+    assert summary["recent_window"]["returned"] == 1
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        first_open = api.list_conflicts(
+            "foton",
+            customer_id=first_customer_id,
+            status="open",
+            conflict_type="owner_metric_probe",
+            limit=1,
+        )["summary"]
+        resolved = api.list_conflicts(
+            "foton",
+            customer_id=first_customer_id,
+            status="resolved",
+            conflict_type="resolved_owner_metric_probe",
+            limit=1,
+        )["summary"]
+
+    assert first_open["total"] == 103
+    assert first_open["affected_customer_count"] == 1
+    assert first_open["by_severity"] == {"high": 103}
+    assert resolved["total"] == 1
+    assert resolved["open_conflicts"] == 0
+    assert resolved["affected_customer_count"] == 1
+    assert resolved["open_affected_customer_count"] == 0
+    assert resolved["open_by_severity"] == {}
+
+
+def test_read_api_active_exact_link_conflict_blocks_customer_safety(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("DELETE FROM timeline_conflicts")
+        con.execute(
+            "UPDATE identity_links SET source_ref='amocrm:contact:contact-raw-1' "
+            "WHERE tenant_id='foton' AND link_type='amo_contact_id' AND link_value='contact-raw-1'"
+        )
+        con.execute(
+            "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton",
+                "family:active-conflict-probe",
+                customer_id,
+                "confident",
+                "high",
+                "test",
+                NOW.isoformat(),
+                NOW.isoformat(),
+                "hash:active-conflict-probe",
+                "{}",
+            ),
+        )
+        con.commit()
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="active_exact_link_probe",
+            entity_refs=("amo:contact:contact-raw-1",),
+            severity="high",
+            status="active",
+            actor="test",
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="active_family_ref_probe",
+            entity_refs=("family:active-conflict-probe",),
+            severity="medium",
+            status="active",
+            actor="test",
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="resolved_source_ref_probe",
+            entity_refs=("amo:contact:contact-raw-1",),
+            severity="low",
+            status="resolved",
+            actor="test",
+        )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        active = api.list_conflicts("foton", customer_id=customer_id, status="active")
+        global_active = api.list_conflicts("foton", status="active", limit=1)
+        global_resolved = api.list_conflicts("foton", status="resolved", limit=1)
+        owner_summary = api.summary("foton", recent_limit=1)
+        profile = api.customer_profile("foton", customer_id)
+
+    assert len(active["items"]) == 2
+    assert active["summary"]["open_conflicts"] == 2
+    assert active["summary"]["open_affected_customer_count"] == 1
+    assert global_active["summary"]["total"] == 2
+    assert global_active["summary"]["open_conflicts"] == 2
+    assert global_active["summary"]["affected_customer_count"] == 1
+    assert global_active["summary"]["open_by_severity"] == {"high": 1, "medium": 1}
+    assert global_resolved["summary"]["total"] == 1
+    assert global_resolved["summary"]["affected_customer_count"] == 1
+    assert global_resolved["summary"]["open_conflicts"] == 0
+    assert owner_summary["summary"]["open_conflicts"] == 2
+    assert profile["readiness"]["open_conflicts"] == 2
+    assert profile["readiness"]["safe_for_automatic_bot"] is False
+
+
+def test_read_api_reports_malformed_conflict_without_crashing(tmp_path: Path) -> None:
+    db_path, _ = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("DELETE FROM timeline_conflicts")
+        con.execute(
+            "INSERT INTO timeline_conflicts VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "timeline_conflict:malformed",
+                "foton",
+                "malformed_payload_probe",
+                "medium",
+                "open",
+                NOW.isoformat(),
+                None,
+                "hash:malformed",
+                "{bad json",
+            ),
+        )
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        result = api.list_conflicts("foton", limit=10)
+
+    assert result["items"] == []
+    assert result["summary"]["total"] == 1
+    assert result["summary"]["open_conflicts"] == 1
+    assert result["summary"]["malformed_conflict_payload_count"] == 1
+    assert result["summary"]["recent_window"]["returned"] == 0
 
 
 def test_read_api_routes_are_get_only_and_report_is_deterministic(tmp_path: Path) -> None:

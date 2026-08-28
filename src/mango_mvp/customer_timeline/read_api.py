@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.next_step_resolver import (
 from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    UNRESOLVED_CONFLICT_STATUSES,
     customer_timeline_sqlite_safety_contract,
     guard_customer_timeline_sqlite_path,
 )
@@ -111,8 +112,8 @@ class CustomerTimelineReadApi:
                 "bot_chunks_blocked_for_bot": store_summary.get("soft_integrity", {}).get("bot_chunks_blocked_for_bot", 0),
                 "open_conflicts": self._count(
                     "timeline_conflicts",
-                    "tenant_id = ? AND status = ?",
-                    (tenant, "open"),
+                    "tenant_id = ? AND status IN (?, ?)",
+                    (tenant, *sorted(UNRESOLVED_CONFLICT_STATUSES)),
                 ),
                 "recent_ingestion_runs": len(recent_runs["items"]),
             },
@@ -567,25 +568,28 @@ class CustomerTimelineReadApi:
         limit: int = 50,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
+        normalized_customer_id = require_text(customer_id, "customer_id") if customer_id else None
+        normalized_status = normalize_key(status, "status") if status else None
+        normalized_conflict_type = normalize_key(conflict_type, "conflict_type") if conflict_type else None
         if customer_id:
             items = list(
                 self.store.list_conflicts_by_customer(
                     tenant,
-                    require_text(customer_id, "customer_id"),
-                    statuses=(status,) if status else (),
-                    conflict_types=(conflict_type,) if conflict_type else (),
+                    normalized_customer_id,
+                    statuses=(normalized_status,) if normalized_status else (),
+                    conflict_types=(normalized_conflict_type,) if normalized_conflict_type else (),
                     limit=bounded_limit(limit, default=50, max_limit=200),
                 )
             )
         else:
-            clauses = ["tenant_id = ?"]
+            clauses = ["tenant_id = ?", "json_valid(record_json)"]
             params: list[Any] = [tenant]
-            if status:
+            if normalized_status:
                 clauses.append("status = ?")
-                params.append(normalize_key(status, "status"))
-            if conflict_type:
+                params.append(normalized_status)
+            if normalized_conflict_type:
                 clauses.append("conflict_type = ?")
-                params.append(normalize_key(conflict_type, "conflict_type"))
+                params.append(normalized_conflict_type)
             items = self._records(
                 "timeline_conflicts",
                 " AND ".join(clauses),
@@ -593,20 +597,119 @@ class CustomerTimelineReadApi:
                 order_by="created_at DESC, conflict_id",
                 limit=bounded_limit(limit, default=50, max_limit=200),
             )
+        summary = self._global_conflict_summary(
+            tenant,
+            customer_id=normalized_customer_id,
+            status=normalized_status,
+            conflict_type=normalized_conflict_type,
+        )
+        summary["recent_window"] = {
+            "returned": len(items),
+            "by_type": count_by(items, "conflict_type"),
+            "by_status": count_by(items, "status"),
+            "by_severity": count_by(items, "severity"),
+        }
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "endpoint": "GET /conflicts",
             "tenant_id": tenant,
             "customer_id": customer_id,
             "items": [project_conflict(item) for item in items],
-            "summary": {
-                "total": len(items),
-                "open_conflicts": sum(1 for item in items if item.get("status") == "open"),
-                "by_type": count_by(items, "conflict_type"),
-                "by_status": count_by(items, "status"),
-            },
+            "summary": summary,
             "redaction": redaction_summary(bot_safe=False),
             "safety": customer_timeline_read_api_safety_contract(),
+        }
+
+    def _global_conflict_summary(
+        self,
+        tenant_id: str,
+        *,
+        customer_id: Optional[str],
+        status: Optional[str],
+        conflict_type: Optional[str],
+    ) -> dict[str, Any]:
+        clauses = ["conflict.tenant_id = ?"]
+        params: list[Any] = [tenant_id]
+        if customer_id:
+            refs = self.store.conflict_entity_refs_for_customer(tenant_id, customer_id)
+            clauses.append(
+                "json_valid(conflict.record_json) AND EXISTS ("
+                "SELECT 1 FROM json_each(conflict.record_json, '$.entity_refs') AS ref "
+                "JOIN json_each(?) AS expected "
+                "ON _mango_canonical_identity_ref(CAST(ref.value AS TEXT))="
+                "CAST(expected.value AS TEXT)"
+                ")"
+            )
+            params.append(json.dumps(refs, ensure_ascii=False, separators=(",", ":")))
+        if status:
+            clauses.append("conflict.status = ?")
+            params.append(status)
+        if conflict_type:
+            clauses.append("conflict.conflict_type = ?")
+            params.append(conflict_type)
+        where_sql = " AND ".join(clauses)
+        grouped_rows = self.store._con.execute(  # noqa: SLF001 - one read-only aggregate boundary.
+            f"SELECT conflict.conflict_type, conflict.severity, conflict.status, COUNT(*) AS count, "
+            "SUM(CASE WHEN json_valid(conflict.record_json) THEN 0 ELSE 1 END) AS invalid_count "
+            f"FROM timeline_conflicts AS conflict WHERE {where_sql} "
+            "GROUP BY conflict.conflict_type, conflict.severity, conflict.status",
+            tuple(params),
+        ).fetchall()
+        total = 0
+        open_conflicts = 0
+        malformed_conflict_payload_count = 0
+        by_type: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        by_severity: dict[str, int] = {}
+        open_by_severity: dict[str, int] = {}
+        for item in grouped_rows:
+            count = int(item["count"])
+            conflict_type_key = str(item["conflict_type"] or "unknown")
+            severity_key = str(item["severity"] or "unknown")
+            status_key = str(item["status"] or "unknown")
+            total += count
+            malformed_conflict_payload_count += int(item["invalid_count"] or 0)
+            by_type[conflict_type_key] = by_type.get(conflict_type_key, 0) + count
+            by_status[status_key] = by_status.get(status_key, 0) + count
+            by_severity[severity_key] = by_severity.get(severity_key, 0) + count
+            if status_key in UNRESOLVED_CONFLICT_STATUSES:
+                open_conflicts += count
+                open_by_severity[severity_key] = open_by_severity.get(severity_key, 0) + count
+        if customer_id:
+            affected_customer_count = int(total > 0)
+            open_affected_customer_count = int(open_conflicts > 0)
+        else:
+            ref_rows = self.store._con.execute(  # noqa: SLF001 - exact read-only refs.
+                f"SELECT DISTINCT conflict.status, CAST(ref.value AS TEXT) AS entity_ref "
+                "FROM timeline_conflicts AS conflict "
+                "CROSS JOIN json_each(CASE WHEN json_valid(conflict.record_json) "
+                "THEN conflict.record_json ELSE '{\"entity_refs\":[]}' END, '$.entity_refs') AS ref "
+                f"WHERE {where_sql}",
+                tuple(params),
+            ).fetchall()
+            refs_by_status: dict[str, list[str]] = {}
+            for item in ref_rows:
+                refs_by_status.setdefault(str(item["status"]), []).append(str(item["entity_ref"]))
+            affected_by_status = self.store.conflict_affected_customer_ids_by_status(
+                tenant_id,
+                refs_by_status,
+            )
+            affected_customer_count = len(set().union(*affected_by_status.values())) if affected_by_status else 0
+            open_affected_customer_count = len(
+                set().union(
+                    *(affected_by_status.get(status, frozenset()) for status in UNRESOLVED_CONFLICT_STATUSES)
+                )
+            )
+        return {
+            "total": total,
+            "open_conflicts": open_conflicts,
+            "affected_customer_count": affected_customer_count,
+            "open_affected_customer_count": open_affected_customer_count,
+            "malformed_conflict_payload_count": malformed_conflict_payload_count,
+            "by_type": dict(sorted(by_type.items())),
+            "by_status": dict(sorted(by_status.items())),
+            "by_severity": dict(sorted(by_severity.items())),
+            "open_by_severity": dict(sorted(open_by_severity.items())),
         }
 
     def _tenant_counts(self, tenant_id: str) -> Mapping[str, int]:

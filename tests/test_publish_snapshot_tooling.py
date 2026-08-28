@@ -141,8 +141,13 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
     assert manifest["compaction"]["within_size_limit"] is True
     assert manifest["fallback_search"]["ok"] is True
     assert manifest["reader_smoke"]["status"] == "ok"
-    assert manifest["bot_visibility_stored"] == 1
+    assert manifest["bot_visible_stored"] == 1
     assert manifest["bot_visible_after_reader_policy"] == 1
+    assert "bot_visibility_stored" not in manifest
+    assert manifest["bot_visible_stored"] == manifest["reader_smoke"]["bot_visibility"]["bot_visible_stored"]
+    assert manifest["bot_visible_after_reader_policy"] == (
+        manifest["reader_smoke"]["bot_visibility"]["bot_visible_after_reader_policy"]
+    )
     assert manifest["writer_identity_stable"] is True
     assert not (snapshot_db.parent / ".customer_timeline.tmp.sqlite").exists()
     with sqlite3.connect(snapshot_db) as con:

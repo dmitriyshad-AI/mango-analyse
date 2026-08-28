@@ -468,7 +468,7 @@ def build_snapshot(
             "compaction": compaction,
             "fallback_search": fallback_search,
             "reader_smoke": reader_smoke_report,
-            "bot_visibility_stored": (
+            "bot_visible_stored": (
                 reader_smoke_report.get("bot_visibility", {}).get("bot_visible_stored")
             ),
             "bot_visible_after_reader_policy": (

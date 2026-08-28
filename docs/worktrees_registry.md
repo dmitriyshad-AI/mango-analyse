@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-08-23. Базовая сверка: 2026-08-13.
+Обновлено: 2026-08-28. Базовая сверка: 2026-08-13.
 Локальный источник факта: `git worktree list --porcelain`.
 Состояние M1 указано отдельно: главный Mac не видит его PID и рабочую папку.
 
@@ -16,6 +16,7 @@
 
 | Путь | HEAD / ветка | Назначение | Условие удаления |
 |---|---|---|---|
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_final_20260828` | `5e47b894`, `codex/m1-customer-timeline-final-20260828` | Чистый M1-worktree финализации Customer Timeline; только staging/read-only, без production flip. | После финальной приёмки ветки и пакета передачи M4. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `676cc772`, `claude/timeline-final-20260803` | Канонический путь данных и старого Customer Timeline. Ветку не использовать для нового кода. | Только после отдельного cutover на проверенный `main` и новой проверки PID/HEAD/env. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/context-reuse-gate-20260823` | `950eef0b`, `codex/context-reuse-gate-20260823` | Незавершённый грязный worktree отдельного context-reuse gate. Не использовать и не менять из Wappi-задачи. | После завершения, коммита и отдельной приёмки context-reuse gate. |
 | `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main`, `a3593d74` на момент сверки | Чистый канонический код. | После переноса канонического `main` в основной путь. |

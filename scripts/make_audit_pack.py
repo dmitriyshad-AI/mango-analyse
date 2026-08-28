@@ -613,7 +613,7 @@ def verify_claude_context(
             command_tail = [
                 "--safe-mode", "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
                 "--strict-mcp-config", "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
-                "--effort", "high", "--model", data.get("model"), "--session-id", data.get("session"),
+                "--effort", "xhigh", "--model", data.get("model"), "--session-id", data.get("session"),
                 "--output-format", "json", "-p", "<review_prompt.md>",
             ]
             if not isinstance(command, list) or len(command) < 2 or command[1:] != command_tail:
@@ -662,7 +662,7 @@ def run_claude_review(
     command = [
         str(binary), "--safe-mode", "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
         "--strict-mcp-config", "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
-        "--effort", "high", "--model", model, "--session-id", session,
+        "--effort", "xhigh", "--model", model, "--session-id", session,
         "--output-format", "json", "-p", (pack / "review_prompt.md").read_text(encoding="utf-8"),
     ]
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout)

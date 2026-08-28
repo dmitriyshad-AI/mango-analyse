@@ -257,6 +257,7 @@ def test_claude_context_receipt_comes_from_restricted_cli_and_deduplicates(tmp_p
     def fake_run(command, **_kwargs):
         assert command[command.index("--permission-mode") + 1] == "plan"
         assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+        assert command[command.index("--effort") + 1] == "xhigh"
         session = command[command.index("--session-id") + 1]
         assert f"PACK_DIR: {pack.relative_to(root)}" in command[-1]
         review = _valid_review(pack)

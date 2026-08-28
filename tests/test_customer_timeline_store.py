@@ -445,13 +445,6 @@ def test_integrity_report_ok_fails_closed(scope: str, key: str | None, value: ob
         ("bot_context_chunks", "opportunity_id", "customer_opportunities", "opportunity_id", "chunk_opportunity"),
         ("bot_context_chunks", "event_id", "timeline_events", "event_id", "chunk_event"),
         (
-            "bot_context_chunks",
-            "superseded_by",
-            "timeline_events",
-            "event_id",
-            "chunk_superseded_by_event",
-        ),
-        (
             "customer_id_mappings",
             "new_customer_id",
             "customer_identities",
@@ -490,6 +483,82 @@ def test_integrity_report_detects_missing_and_cross_tenant_links(
     with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
         mismatch = store_module.customer_timeline_integrity_report(store._con)
     assert mismatch["violations"][f"{code}_tenant_mismatch"] == 1
+
+
+def test_integrity_report_accepts_tagged_event_and_opaque_chunk_tombstones(tmp_path: Path) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE tenant_id='foton' LIMIT 1"
+        ).fetchone()[0]
+        chunk_id = con.execute(
+            "SELECT chunk_id FROM bot_context_chunks WHERE tenant_id='foton' LIMIT 1"
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE timeline_events SET source_system='wappi_telegram',"
+            "superseded_by='retired:wappi_expected_excluded:0123456789abcdef',"
+            "record_json=json_set(record_json,'$.source_system','wappi_telegram') WHERE event_id=?",
+            (event_id,),
+        )
+        con.execute(
+            "UPDATE bot_context_chunks SET superseded_by='opaque:test_lifecycle' WHERE chunk_id=?",
+            (chunk_id,),
+        )
+        con.commit()
+
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        report = store_module.customer_timeline_integrity_report(store._con)
+
+    assert report["violations"] == {}
+    assert report["validation_ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("source_system", "marker"),
+    (
+        ("wappi_telegram", "retired:test_lifecycle"),
+        ("wappi_max", "retired:wappi_expected_excluded:0123456789abcdeg"),
+        ("wappi_max", "retired:wappi_expected_excluded:0123456789abcde"),
+        ("wappi_max", "retired:wappi_expected_excluded:0123456789abcdef0"),
+        ("wappi_max", "retired:wappi_expected_excluded:0123456789ABCDEF"),
+        ("mango", "retired:wappi_expected_excluded:0123456789abcdef"),
+        ("", "retired:wappi_expected_excluded:0123456789abcdef"),
+    ),
+)
+def test_integrity_report_rejects_unproven_event_retirement_markers(
+    tmp_path: Path,
+    source_system: str,
+    marker: str,
+) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE tenant_id='foton' LIMIT 1"
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE timeline_events SET source_system=?,superseded_by=?,"
+            "record_json=json_set(record_json,'$.source_system',?) WHERE event_id=?",
+            (source_system, marker, source_system, event_id),
+        )
+        con.commit()
+
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        report = store_module.customer_timeline_integrity_report(store._con)
+
+    assert report["violations"]["event_superseded_by_missing"] == 1
+    assert report["validation_ok"] is False
+
+
+def test_wappi_event_retirement_predicate_fails_closed_for_null_source() -> None:
+    with sqlite3.connect(":memory:") as con:
+        accepted = con.execute(
+            "WITH c(source_system,superseded_by) AS (VALUES(NULL,?)) SELECT "
+            + store_module._VALID_WAPPI_EVENT_RETIREMENT_SQL  # noqa: SLF001 - SQL contract test.
+            + " FROM c",
+            ("retired:wappi_expected_excluded:0123456789abcdef",),
+        ).fetchone()[0]
+
+    assert accepted == 0
 
 
 def test_integrity_report_checks_all_signal_sources_and_confirmed_orphans(tmp_path: Path) -> None:

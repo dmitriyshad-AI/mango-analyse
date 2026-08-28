@@ -46,6 +46,15 @@ from mango_mvp.customer_timeline.temporal import parse_aware_utc, register_tempo
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
 CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260702_002_soft_delete_content_key_backfill"
 CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION = "customer_timeline_integrity_v1"
+_WAPPI_EVENT_RETIREMENT_PREFIX = "retired:wappi_expected_excluded:"
+_VALID_WAPPI_EVENT_RETIREMENT_SQL = (
+    "COALESCE(c.source_system,'') IN ('wappi_telegram','wappi_max') "
+    f"AND length(c.superseded_by)={len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 16} "
+    f"AND substr(c.superseded_by,1,{len(_WAPPI_EVENT_RETIREMENT_PREFIX)})="
+    f"'{_WAPPI_EVENT_RETIREMENT_PREFIX}' "
+    f"AND substr(c.superseded_by,{len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 1}) "
+    "NOT GLOB '*[^0-9a-f]*'"
+)
 MAIL_IDENTITY_SENTINEL_MAX = datetime(1970, 1, 2, tzinfo=timezone.utc)
 MAIL_IDENTITY_UNKNOWN_REASONS = frozenset(
     {
@@ -4733,15 +4742,6 @@ def customer_timeline_integrity_report(con: sqlite3.Connection) -> Mapping[str, 
         ("chunk_opportunity", "bot_context_chunks", "opportunity_id", "customer_opportunities", "opportunity_id", False, "exact"),
         ("chunk_event", "bot_context_chunks", "event_id", "timeline_events", "event_id", False, "exact"),
         (
-            "chunk_superseded_by_event",
-            "bot_context_chunks",
-            "superseded_by",
-            "timeline_events",
-            "event_id",
-            False,
-            "exact",
-        ),
-        (
             "mapping_new_customer",
             "customer_id_mappings",
             "new_customer_id",
@@ -4780,6 +4780,13 @@ def customer_timeline_integrity_report(con: sqlite3.Connection) -> Mapping[str, 
             )
             for code, child, foreign_key, parent, parent_key, required_link, owner_policy in relations:
                 present = f"c.{foreign_key} IS NOT NULL AND c.{foreign_key}!=''"
+                if code == "event_superseded_by":
+                    # Event supersession is a narrow tagged union: only the
+                    # proven Wappi exclusion marker is terminal; every other
+                    # value must resolve to a canonical event. Chunk
+                    # supersession is intentionally not in `relations`: there
+                    # it is only an opaque tombstone.
+                    present += f" AND NOT ({_VALID_WAPPI_EVENT_RETIREMENT_SQL})"
                 missing = f"NOT ({present}) OR " if required_link else f"{present} AND "
                 owner = "0"
                 if owner_policy != "none":

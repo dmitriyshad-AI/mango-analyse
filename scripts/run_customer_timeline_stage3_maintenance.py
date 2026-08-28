@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report_path = output_dir / REPORT_NAME
     report_path.write_text(json_dumps(report), encoding="utf-8")
     print(json_dumps(report))
-    return 0
+    return 0 if report.get("validation_ok") is True else 2
 
 
 def _table_counts(db_path: Path) -> dict[str, int]:

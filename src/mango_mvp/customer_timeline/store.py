@@ -40,11 +40,34 @@ from mango_mvp.customer_timeline.source_policy import (
     BOT_FORBIDDEN_SOURCE_SYSTEMS,
     assert_bot_context_chunk_source_policy,
 )
-from mango_mvp.customer_timeline.temporal import register_temporal_sql_functions
+from mango_mvp.customer_timeline.temporal import parse_aware_utc, register_temporal_sql_functions
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
 CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260702_002_soft_delete_content_key_backfill"
+CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION = "customer_timeline_integrity_v1"
+MAIL_IDENTITY_SENTINEL_MAX = datetime(1970, 1, 2, tzinfo=timezone.utc)
+MAIL_IDENTITY_UNKNOWN_REASONS = frozenset(
+    {
+        "ambiguous_exact_evidence",
+        "future_evidence_date",
+        "invalid_evidence_date",
+        "invalid_exact_repaired_range",
+        "legacy_evidence_date",
+        "missing_exact_evidence",
+    }
+)
+
+
+def is_mail_identity_sentinel_date(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parsed = parse_aware_utc(text)
+    return bool(
+        (parsed is not None and parsed <= MAIL_IDENTITY_SENTINEL_MAX)
+        or (len(text) >= 10 and text[:10] <= "1970-01-02")
+    )
 
 BRAND_AUTH_EVENT_SOURCES = (
     "channel_snapshot",
@@ -85,6 +108,39 @@ def customer_timeline_run_lock_path(path: Path | str) -> Path:
     return Path(str(resolved) + ".nightly_service.lock")
 
 
+def customer_timeline_writer_lock_path(path: Path | str) -> Path:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    return resolved.with_suffix(resolved.suffix + ".writer.lock")
+
+
+def _acquire_advisory_lock_handle(
+    lock_path: Path,
+    *,
+    timeout_seconds: float,
+    timeout_error: type[Exception],
+    timeout_message: str,
+) -> tuple[Any, float]:
+    if timeout_seconds < 0:
+        raise ValueError("lock timeout must not be negative")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    handle = lock_path.open("a+", encoding="utf-8")
+    lock_path.chmod(0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return handle, time.monotonic() - started
+            except BlockingIOError:
+                waited = time.monotonic() - started
+                if waited >= timeout_seconds:
+                    raise timeout_error(timeout_message)
+                time.sleep(min(0.2, max(0.0, timeout_seconds - waited)))
+    except Exception:
+        handle.close()
+        raise
+
+
 _RUN_LOCK_STATE = threading.local()
 
 
@@ -110,28 +166,43 @@ def customer_timeline_run_lock(
     if lock_key in held:
         yield {"path": lock_key, "waited_seconds": 0.0, "reentrant": True}
         return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    handle = lock_path.open("a+", encoding="utf-8")
-    lock_path.chmod(0o600)
+    handle, waited = _acquire_advisory_lock_handle(
+        lock_path,
+        timeout_seconds=timeout_seconds,
+        timeout_error=TimeoutError,
+        timeout_message=f"customer timeline run lock timeout: {lock_path}",
+    )
     try:
-        while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                waited = time.monotonic() - started
-                if waited >= timeout_seconds:
-                    raise TimeoutError(f"customer timeline run lock timeout: {lock_path}")
-                time.sleep(0.2)
         held[lock_key] = handle
         yield {
             "path": str(lock_path),
-            "waited_seconds": round(time.monotonic() - started, 3),
+            "waited_seconds": round(waited, 3),
             "reentrant": False,
         }
     finally:
         held.pop(lock_key, None)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+@contextmanager
+def customer_timeline_writer_lock(
+    path: Path | str,
+    *,
+    timeout_seconds: float = 30.0,
+) -> Iterator[Mapping[str, Any]]:
+    """Acquire the Store-compatible low-level writer lock for recovery tools."""
+
+    lock_path = customer_timeline_writer_lock_path(path)
+    handle, waited = _acquire_advisory_lock_handle(
+        lock_path,
+        timeout_seconds=timeout_seconds,
+        timeout_error=TimeoutError,
+        timeout_message=f"customer timeline writer lock timeout: {lock_path}",
+    )
+    try:
+        yield {"path": str(lock_path), "waited_seconds": round(waited, 3)}
+    finally:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 
@@ -1390,6 +1461,130 @@ class CustomerTimelineSQLiteStore:
             },
             actor=actor,
             ingestion_run_id=ingestion_run_id,
+        )
+
+    def repair_identity_link_seen_at(
+        self,
+        tenant_id: str,
+        *,
+        link_id: str,
+        as_of: datetime,
+        actor: str = "stage3_mail_identity_date_repair",
+        ingestion_run_id: Optional[str] = None,
+    ) -> CustomerTimelineStoreWriteResult:
+        """Repair only proven legacy sentinel dates without changing identity ownership."""
+
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        link = require_text(link_id, "link_id")
+        require_timezone(as_of, "as_of")
+        repair_cutoff = as_of.astimezone(timezone.utc)
+        row = self._fetch_one(
+            "SELECT tenant_id,customer_id,link_type,source_system,source_ref,"
+            "first_seen_at,last_seen_at,record_hash,record_json "
+            "FROM identity_links WHERE link_id=?",
+            (link,),
+        )
+        if row is None:
+            raise ValueError(f"identity link does not exist: {link}")
+        if str(row["tenant_id"]) != tenant:
+            raise ValueError("identity link tenant mismatch")
+        if str(row["source_system"]) != "mail_archive_stage2" or str(row["link_type"]) != "tallanto_student_id":
+            raise ValueError("identity link is outside the mail stage2 date-repair contract")
+        current_first = parse_aware_utc(row["first_seen_at"])
+        current_last = parse_aware_utc(row["last_seen_at"])
+        for field, raw, parsed in (
+            ("first_seen_at", row["first_seen_at"], current_first),
+            ("last_seen_at", row["last_seen_at"], current_last),
+        ):
+            if str(raw or "").strip() and parsed is None and not is_mail_identity_sentinel_date(raw):
+                raise ValueError(f"identity link {field} is invalid or timezone-naive")
+        first_corrupt = is_mail_identity_sentinel_date(row["first_seen_at"])
+        last_corrupt = is_mail_identity_sentinel_date(row["last_seen_at"])
+        if not first_corrupt and not last_corrupt:
+            raise ValueError("identity link has no legacy epoch sentinel date")
+        evidence_rows = self._con.execute(
+            "SELECT event_id,event_at FROM timeline_events "
+            "WHERE tenant_id=? AND customer_id=? AND source_system=? AND source_ref=? "
+            "AND superseded_by IS NULL ORDER BY event_at,event_id",
+            (tenant, row["customer_id"], row["source_system"], row["source_ref"]),
+        ).fetchall()
+        evidence: str | None = None
+        unresolved: str | None = None
+        evidence_at: datetime | None = None
+        if not evidence_rows:
+            unresolved = "missing_exact_evidence"
+        elif len(evidence_rows) != 1:
+            unresolved = "ambiguous_exact_evidence"
+        else:
+            evidence_row = evidence_rows[0]
+            evidence_at = parse_aware_utc(evidence_row["event_at"])
+            if evidence_at is None:
+                unresolved = "invalid_evidence_date"
+            elif evidence_at <= MAIL_IDENTITY_SENTINEL_MAX:
+                unresolved = "legacy_evidence_date"
+                evidence_at = None
+            elif evidence_at > repair_cutoff:
+                unresolved = "future_evidence_date"
+                evidence_at = None
+            else:
+                evidence = str(evidence_row["event_id"])
+        repaired_first = evidence_at if first_corrupt else current_first
+        repaired_last = evidence_at if last_corrupt else current_last
+        if repaired_first is not None and repaired_last is not None and repaired_first > repaired_last:
+            evidence = None
+            unresolved = "invalid_exact_repaired_range"
+            repaired_first = None if first_corrupt else current_first
+            repaired_last = None if last_corrupt else current_last
+        if unresolved not in MAIL_IDENTITY_UNKNOWN_REASONS and evidence is None:
+            raise ValueError("mail identity date repair could not classify evidence")
+        first_text = repaired_first.isoformat() if repaired_first else None
+        last_text = repaired_last.isoformat() if repaired_last else None
+        payload = dict(json_loads(str(row["record_json"])))
+        evidence_payload = dict(payload.get("evidence") or {})
+        evidence_payload["mail_stage2_date_repair"] = {
+            "reason": "legacy_epoch_sentinel",
+            "resolution": "exact_event_at" if evidence else "source_date_unknown",
+            **({"evidence_event_id": evidence} if evidence else {"unknown_reason": unresolved}),
+        }
+        payload.update(
+            {
+                "first_seen_at": first_text,
+                "last_seen_at": last_text,
+                "evidence": evidence_payload,
+            }
+        )
+        safe_payload = scrub_timeline_persisted_json(payload)
+        after_hash = stable_digest(safe_payload)
+        self._con.execute(
+            "UPDATE identity_links SET first_seen_at=?,last_seen_at=?,record_json=?,record_hash=? "
+            "WHERE tenant_id=? AND link_id=?",
+            (first_text, last_text, json_dumps(safe_payload), after_hash, tenant, link),
+        )
+        audit = self._append_audit_log(
+            tenant_id=tenant,
+            action="identity_link_seen_at_repaired",
+            entity_type="identity_link",
+            entity_id=link,
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+            before_hash=str(row["record_hash"]),
+            after_hash=after_hash,
+            metadata={
+                "reason": "legacy_epoch_sentinel",
+                "resolution": "exact_event_at" if evidence else "source_date_unknown",
+                **({"evidence_event_id": evidence} if evidence else {"unknown_reason": unresolved}),
+            },
+            now=self._now(),
+        )
+        self._commit()
+        return CustomerTimelineStoreWriteResult(
+            "identity_link",
+            link,
+            False,
+            "updated",
+            after_hash,
+            audit.audit_id,
         )
 
     def upsert_opportunity(
@@ -3410,14 +3605,13 @@ class CustomerTimelineSQLiteStore:
 
     def _acquire_writer_lock(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = self.db_path.with_suffix(self.db_path.suffix + ".writer.lock")
-        handle = lock_path.open("a+", encoding="utf-8")
-        lock_path.chmod(0o600)
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            handle.close()
-            raise RuntimeError(f"customer timeline writer lock is already held: {lock_path}") from exc
+        lock_path = customer_timeline_writer_lock_path(self.db_path)
+        handle, _waited = _acquire_advisory_lock_handle(
+            lock_path,
+            timeout_seconds=0.0,
+            timeout_error=RuntimeError,
+            timeout_message=f"customer timeline writer lock is already held: {lock_path}",
+        )
         self._writer_lock_path = lock_path
         self._writer_lock_handle = handle
 
@@ -3460,8 +3654,11 @@ class CustomerTimelineSQLiteStore:
         persistent_metadata_keys: Sequence[str] = (),
     ) -> CustomerTimelineStoreWriteResult:
         key = require_text(key_value, key_column)
+        physical_columns = tuple(columns)
         existing = self._fetch_one(
-            f"SELECT record_hash, record_json FROM {table} WHERE {key_column} = ?",
+            f"SELECT record_hash, record_json"
+            f"{''.join(',' + column for column in physical_columns)} "
+            f"FROM {table} WHERE {key_column} = ?",
             (key,),
         )
         if existing is not None and persistent_metadata_keys:
@@ -3472,7 +3669,17 @@ class CustomerTimelineSQLiteStore:
         safe_payload = scrub_timeline_persisted_json(payload)
         payload_json = json_dumps(safe_payload)
         record_hash = stable_digest(safe_payload)
-        if existing is not None and existing["record_hash"] == record_hash:
+        physical_columns_repaired = (
+            tuple(column for column, value in columns.items() if existing[column] != value)
+            if existing is not None
+            else ()
+        )
+        if (
+            existing is not None
+            and existing["record_hash"] == record_hash
+            and existing["record_json"] == payload_json
+            and not physical_columns_repaired
+        ):
             return CustomerTimelineStoreWriteResult(record_type, key, False, "duplicate", record_hash)
         before_hash = existing["record_hash"] if existing is not None else None
         action = "updated" if existing is not None else "created"
@@ -3499,7 +3706,19 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             before_hash=before_hash,
             after_hash=record_hash,
-            metadata={"table": table},
+            metadata={
+                "table": table,
+                **(
+                    {"physical_columns_repaired": list(physical_columns_repaired)}
+                    if physical_columns_repaired
+                    else {}
+                ),
+                **(
+                    {"record_json_repaired": True}
+                    if existing is not None and existing["record_json"] != payload_json
+                    else {}
+                ),
+            },
             now=self._now(),
         )
         if commit:
@@ -4354,6 +4573,345 @@ REQUIRED_TABLES = (
     "audit_log",
 )
 
+INTEGRITY_REQUIRED_TABLES = (*REQUIRED_TABLES, "family_members_v1")
+_INTEGRITY_REQUIRED_COLUMNS = {
+    "schema_migrations": "migration_id schema_version applied_at",
+    "customer_identities": "customer_id tenant_id identity_status display_name primary_phone primary_email first_seen_at last_seen_at touch_count created_at updated_at record_hash record_json",
+    "identity_links": "link_id tenant_id customer_id link_type link_value source_system source_ref match_class confidence first_seen_at last_seen_at record_hash record_json",
+    "customer_opportunities": "opportunity_id tenant_id customer_id opportunity_type source_system source_id title status opened_at closed_at confidence record_hash record_json",
+    "timeline_events": "event_id dedupe_key tenant_id customer_id opportunity_id event_type event_at source_system source_id source_ref direction match_status content_key superseded_by confidence importance subject text_preview summary created_at record_hash record_json",
+    "event_artifacts": "artifact_id tenant_id event_id artifact_type path sha256 size_bytes mime_type source_system source_ref extraction_status created_at record_hash record_json",
+    "derived_signals": "signal_id tenant_id customer_id opportunity_id event_id signal_type severity status expires_at confidence requires_manager_review created_at record_hash record_json",
+    "bot_context_chunks": "chunk_id tenant_id customer_id opportunity_id event_id source_system source_ref chunk_type event_at freshness_score allowed_for_bot requires_manager_review superseded_by ordinal created_at record_hash record_json",
+    "ingestion_runs": "run_id tenant_id source_system source_ref run_kind idempotency_key status started_at finished_at input_hash accepted_count rejected_count output_ref error record_hash record_json",
+    "ingestion_cursors": "tenant_id source_system last_cursor_ts updated_at metadata_json",
+    "timeline_conflicts": "conflict_id tenant_id conflict_type severity status created_at resolved_at record_hash record_json",
+    "customer_id_mappings": "mapping_id tenant_id old_customer_id new_customer_id mapping_kind resolution_status reason created_at updated_at record_hash record_json",
+    "family_members_v1": "tenant_id family_id customer_id membership_status confidence reason created_at updated_at record_hash record_json",
+    "audit_log": "seq audit_id tenant_id action entity_type entity_id actor created_at ingestion_run_id before_hash after_hash record_json",
+}
+
+_INTEGRITY_RECORD_JSON_PROJECTIONS = (
+    (
+        "customer",
+        "customer_identities",
+        ("customer_id", "tenant_id", "identity_status", "primary_phone", "primary_email"),
+        (),
+    ),
+    (
+        "identity_link",
+        "identity_links",
+        ("tenant_id", "customer_id", "link_type", "link_value", "source_system", "source_ref", "match_class"),
+        (),
+    ),
+    (
+        "opportunity",
+        "customer_opportunities",
+        (
+            "opportunity_id",
+            "tenant_id",
+            "customer_id",
+            "opportunity_type",
+            "source_system",
+            "source_id",
+            "status",
+        ),
+        (),
+    ),
+    (
+        "event",
+        "timeline_events",
+        (
+            "event_id",
+            "tenant_id",
+            "customer_id",
+            "opportunity_id",
+            "event_type",
+            "event_at",
+            "source_system",
+            "source_id",
+            "source_ref",
+            "direction",
+            "match_status",
+        ),
+        (),
+    ),
+    (
+        "artifact",
+        "event_artifacts",
+        ("artifact_id", "tenant_id", "event_id", "artifact_type", "source_system", "source_ref", "extraction_status"),
+        (),
+    ),
+    (
+        "signal",
+        "derived_signals",
+        ("signal_id", "tenant_id", "customer_id", "opportunity_id", "event_id", "signal_type", "severity", "status"),
+        ("requires_manager_review",),
+    ),
+    (
+        "chunk",
+        "bot_context_chunks",
+        ("tenant_id", "customer_id", "opportunity_id", "event_id", "source_system", "source_ref", "chunk_type"),
+        ("allowed_for_bot", "requires_manager_review"),
+    ),
+    (
+        "conflict",
+        "timeline_conflicts",
+        ("conflict_id", "tenant_id", "conflict_type", "severity", "status", "resolved_at"),
+        (),
+    ),
+    (
+        "mapping",
+        "customer_id_mappings",
+        (
+            "mapping_id",
+            "tenant_id",
+            "old_customer_id",
+            "new_customer_id",
+            "mapping_kind",
+            "resolution_status",
+            "reason",
+        ),
+        (),
+    ),
+    (
+        "family_member",
+        "family_members_v1",
+        ("tenant_id", "family_id", "customer_id", "membership_status", "confidence", "reason"),
+        (),
+    ),
+)
+_INTEGRITY_RECORD_JSON_VALID_ONLY_TABLES = (
+    "ingestion_runs",
+)
+
+
+def _record_json_consistency_counts(con: sqlite3.Connection) -> Mapping[str, int]:
+    counts: dict[str, int] = {}
+    for code, table, text_columns, boolean_columns in _INTEGRITY_RECORD_JSON_PROJECTIONS:
+        text_mismatch = " OR ".join(
+            f"json_extract(record_json,'$.{column}') IS NOT {column}" for column in text_columns
+        )
+        boolean_mismatch = " OR ".join(
+            "CASE json_type(record_json,'$.{column}') "
+            "WHEN 'true' THEN 1 WHEN 'false' THEN 0 ELSE NULL END IS NOT {column}".format(column=column)
+            for column in boolean_columns
+        ) or "0"
+        row = con.execute(
+            "SELECT "
+            "COALESCE(SUM(CASE WHEN json_valid(record_json)!=1 THEN 1 ELSE 0 END),0),"
+            f"COALESCE(SUM(CASE WHEN json_valid(record_json)=1 AND ({text_mismatch}) "
+            "THEN 1 ELSE 0 END),0),"
+            f"COALESCE(SUM(CASE WHEN json_valid(record_json)=1 AND ({boolean_mismatch}) "
+            f"THEN 1 ELSE 0 END),0) FROM {table}"
+        ).fetchone()
+        counts[f"{code}_record_json_invalid"] = int(row[0])
+        counts[f"{code}_record_identity_mismatch"] = int(row[1])
+        if boolean_columns:
+            counts[f"{code}_record_safety_mismatch"] = int(row[2])
+    for table in _INTEGRITY_RECORD_JSON_VALID_ONLY_TABLES:
+        counts[f"{table}_record_json_invalid"] = int(
+            con.execute(f"SELECT COUNT(*) FROM {table} WHERE json_valid(record_json)!=1").fetchone()[0]
+        )
+    return counts
+
+
+def customer_timeline_integrity_report(con: sqlite3.Connection) -> Mapping[str, Any]:
+    """Return the deterministic, read-only integrity contract for one Timeline DB."""
+
+    relations = (
+        ("identity_link_customer", "identity_links", "customer_id", "customer_identities", "customer_id", False, "none"),
+        ("opportunity_customer", "customer_opportunities", "customer_id", "customer_identities", "customer_id", True, "none"),
+        ("event_customer", "timeline_events", "customer_id", "customer_identities", "customer_id", False, "none"),
+        ("event_opportunity", "timeline_events", "opportunity_id", "customer_opportunities", "opportunity_id", False, "exact"),
+        ("event_superseded_by", "timeline_events", "superseded_by", "timeline_events", "event_id", False, "both_set"),
+        ("artifact_event", "event_artifacts", "event_id", "timeline_events", "event_id", True, "none"),
+        ("signal_customer", "derived_signals", "customer_id", "customer_identities", "customer_id", False, "none"),
+        ("signal_opportunity", "derived_signals", "opportunity_id", "customer_opportunities", "opportunity_id", False, "exact"),
+        ("signal_event", "derived_signals", "event_id", "timeline_events", "event_id", False, "exact"),
+        ("chunk_customer", "bot_context_chunks", "customer_id", "customer_identities", "customer_id", True, "none"),
+        ("chunk_opportunity", "bot_context_chunks", "opportunity_id", "customer_opportunities", "opportunity_id", False, "exact"),
+        ("chunk_event", "bot_context_chunks", "event_id", "timeline_events", "event_id", False, "exact"),
+        (
+            "chunk_superseded_by_event",
+            "bot_context_chunks",
+            "superseded_by",
+            "timeline_events",
+            "event_id",
+            False,
+            "exact",
+        ),
+        (
+            "mapping_new_customer",
+            "customer_id_mappings",
+            "new_customer_id",
+            "customer_identities",
+            "customer_id",
+            True,
+            "none",
+        ),
+        ("family_member_customer", "family_members_v1", "customer_id", "customer_identities", "customer_id", True, "none"),
+    )
+    schema: dict[str, Any] = {
+        "database_schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+        "missing_tables": [],
+        "missing_columns": {},
+        "inspection_error": False,
+        "checks_complete": False,
+    }
+    counts: dict[str, int] = {}
+    try:
+        tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        schema["missing_tables"] = sorted(set(INTEGRITY_REQUIRED_TABLES) - tables)
+        for table in sorted(set(INTEGRITY_REQUIRED_TABLES) & tables):
+            actual = {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
+            missing = sorted(set(_INTEGRITY_REQUIRED_COLUMNS[table].split()) - actual)
+            if missing:
+                schema["missing_columns"][table] = missing
+        counts["schema_missing_tables"] = len(schema["missing_tables"])
+        counts["schema_missing_columns"] = sum(map(len, schema["missing_columns"].values()))
+        if not counts["schema_missing_tables"] and not counts["schema_missing_columns"]:
+            counts["schema_version_missing"] = int(
+                con.execute(
+                    "SELECT 1 FROM schema_migrations WHERE migration_id=? AND schema_version=?",
+                    (CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID, CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION),
+                ).fetchone()
+                is None
+            )
+            for code, child, foreign_key, parent, parent_key, required_link, owner_policy in relations:
+                present = f"c.{foreign_key} IS NOT NULL AND c.{foreign_key}!=''"
+                missing = f"NOT ({present}) OR " if required_link else f"{present} AND "
+                owner = "0"
+                if owner_policy != "none":
+                    mismatch = "c.customer_id IS NOT p.customer_id"
+                    if owner_policy == "both_set":
+                        mismatch = (
+                            "c.customer_id IS NOT NULL AND c.customer_id!='' AND "
+                            "p.customer_id IS NOT NULL AND p.customer_id!='' AND c.customer_id!=p.customer_id"
+                        )
+                    owner = f"{present} AND p.{parent_key} IS NOT NULL AND p.tenant_id=c.tenant_id AND {mismatch}"
+                row = con.execute(
+                    f"SELECT COALESCE(SUM({missing}p.{parent_key} IS NULL),0),"
+                    f"COALESCE(SUM({present} AND p.{parent_key} IS NOT NULL AND p.tenant_id!=c.tenant_id),0),"
+                    f"COALESCE(SUM({owner}),0) FROM {child} c LEFT JOIN {parent} p "
+                    f"ON p.{parent_key}=c.{foreign_key}"
+                ).fetchone()
+                counts[f"{code}_missing"], counts[f"{code}_tenant_mismatch"] = map(int, row[:2])
+                if owner_policy != "none":
+                    counts[f"{code}_owner_mismatch"] = int(row[2])
+            counts.update(_record_json_consistency_counts(con))
+            counts["mail_identity_legacy_sentinel_dates"] = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM identity_links WHERE source_system='mail_archive_stage2' "
+                    "AND link_type='tallanto_student_id' AND ("
+                    "(COALESCE(first_seen_at,'')!='' AND substr(first_seen_at,1,10)<='1970-01-02') OR "
+                    "(COALESCE(last_seen_at,'')!='' AND substr(last_seen_at,1,10)<='1970-01-02'))"
+                ).fetchone()[0]
+            )
+            counts["event_superseded_self"] = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM timeline_events "
+                    "WHERE superseded_by IS NOT NULL AND superseded_by!='' AND superseded_by=event_id"
+                ).fetchone()[0]
+            )
+            counts["event_supersession_cycle"] = int(
+                con.execute(
+                    """
+                    WITH RECURSIVE walk(tenant_id,origin,current_id,path,cycle,depth) AS (
+                      SELECT tenant_id,event_id,superseded_by,','||event_id||',',
+                             CASE WHEN superseded_by=event_id THEN 1 ELSE 0 END,1
+                      FROM timeline_events
+                      WHERE superseded_by IS NOT NULL AND superseded_by!=''
+                      UNION ALL
+                      SELECT w.tenant_id,w.origin,e.superseded_by,w.path||w.current_id||',',
+                             CASE WHEN instr(w.path||w.current_id||',',','||e.superseded_by||',')>0
+                                  THEN 1 ELSE 0 END,
+                             w.depth+1
+                      FROM walk w
+                      JOIN timeline_events e
+                        ON e.tenant_id=w.tenant_id AND e.event_id=w.current_id
+                      WHERE w.cycle=0 AND w.current_id IS NOT NULL AND w.current_id!='' AND w.depth<1000
+                    )
+                    SELECT COUNT(DISTINCT tenant_id||':'||origin) FROM walk WHERE cycle=1
+                    """
+                ).fetchone()[0]
+            )
+            counts["active_chunk_linked_to_superseded_event"] = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM bot_context_chunks c JOIN timeline_events e "
+                    "ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
+                    "WHERE c.superseded_by IS NULL AND e.superseded_by IS NOT NULL AND e.superseded_by!=''"
+                ).fetchone()[0]
+            )
+            row = con.execute(
+                "SELECT COALESCE(SUM(source.value IS NULL OR CAST(source.value AS TEXT)='' "
+                "OR e.event_id IS NULL),0),"
+                "COALESCE(SUM(e.event_id IS NOT NULL AND e.tenant_id!=s.tenant_id),0),"
+                "COALESCE(SUM(e.event_id IS NOT NULL AND e.tenant_id=s.tenant_id "
+                "AND s.customer_id IS NOT e.customer_id),0) FROM derived_signals s "
+                "JOIN json_each(CASE WHEN json_valid(s.record_json)=1 THEN s.record_json ELSE '{}' END,"
+                "'$.source_event_ids') source "
+                "LEFT JOIN timeline_events e ON e.event_id=CAST(source.value AS TEXT)"
+            ).fetchone()
+            for key, value in zip(("missing", "tenant_mismatch", "owner_mismatch"), row):
+                counts[f"signal_source_event_{key}"] = int(value)
+            counts["event_linked_without_customer"] = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM timeline_events WHERE (customer_id IS NULL OR customer_id='') "
+                    "AND match_status IN ('strong_unique','manual','inferred')"
+                ).fetchone()[0]
+            )
+            quarantine_rows = con.execute(
+                "SELECT match_status,COUNT(*) FROM timeline_events "
+                "WHERE customer_id IS NULL OR customer_id='' GROUP BY match_status ORDER BY match_status"
+            ).fetchall()
+            schema["checks_complete"] = True
+    except Exception:
+        schema["inspection_error"] = True
+        counts["integrity_report_error"] = 1
+    violations = {key: value for key, value in counts.items() if value}
+    quarantine = {str(row[0]): int(row[1]) for row in quarantine_rows} if schema["checks_complete"] else {}
+    return {
+        "schema_version": CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION,
+        "schema": schema,
+        "violations": violations,
+        "violations_total": sum(violations.values()),
+        "quarantine": {
+            "events_without_customer_including_superseded": sum(quarantine.values()),
+            "by_match_status": quarantine,
+        },
+        "validation_ok": not violations,
+    }
+
+
+def customer_timeline_integrity_report_ok(report: object) -> bool:
+    """Return whether an integrity report strictly satisfies its contract."""
+
+    try:
+        if not isinstance(report, Mapping):
+            return False
+        schema = report.get("schema")
+        violations = report.get("violations")
+        violations_total = report.get("violations_total")
+        return bool(
+            report.get("schema_version") == CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION
+            and isinstance(schema, Mapping)
+            and schema.get("database_schema_version") == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
+            and isinstance(schema.get("missing_tables"), list)
+            and not schema.get("missing_tables")
+            and isinstance(schema.get("missing_columns"), Mapping)
+            and not schema.get("missing_columns")
+            and schema.get("inspection_error") is False
+            and schema.get("checks_complete") is True
+            and isinstance(violations, Mapping)
+            and not violations
+            and type(violations_total) is int
+            and violations_total == 0
+            and report.get("validation_ok") is True
+        )
+    except Exception:
+        return False
+
 
 def guard_customer_timeline_sqlite_path(db_path: Path | str) -> Path:
     candidate = Path(db_path).expanduser()
@@ -4538,15 +5096,23 @@ def search_hit_from_row(scope: str, row: sqlite3.Row) -> Mapping[str, Any]:
 
 
 __all__ = [
+    "CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION",
     "CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID",
     "CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION",
+    "MAIL_IDENTITY_SENTINEL_MAX",
     "CustomerTimelineAuditEntry",
     "CustomerTimelineIngestionRun",
     "CustomerTimelineSQLiteOpenResult",
     "CustomerTimelineSQLiteStore",
     "CustomerTimelineStoreWriteResult",
     "build_fts_query",
+    "customer_timeline_run_lock",
+    "customer_timeline_run_lock_path",
+    "customer_timeline_writer_lock",
+    "customer_timeline_writer_lock_path",
     "customer_timeline_readonly_uri",
+    "customer_timeline_integrity_report",
+    "customer_timeline_integrity_report_ok",
     "customer_timeline_sqlite_safety_contract",
     "existing_timeline_email_content_signatures",
     "guard_customer_timeline_sqlite_path",

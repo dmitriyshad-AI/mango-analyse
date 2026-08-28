@@ -48,7 +48,11 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     WappiHistoryImportConfig,
     run_wappi_history_import,
 )
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    customer_timeline_integrity_report,
+    customer_timeline_integrity_report_ok,
+)
 from mango_mvp.customer_timeline.temporal import normalize_aware_utc, parse_aware_utc
 
 GIT_CONTEXT_ENV_KEYS = (
@@ -961,6 +965,8 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         # self-reported status.
         if manifest.get("quick_check") != "ok":
             failed_required_steps.append("timeline_db_quick_check")
+        if not customer_timeline_integrity_report_ok(manifest.get("integrity_report")):
+            failed_required_steps.append("timeline_db_integrity")
         if manifest["identity_integrity"]["conflicting_unique_values"]:
             failed_required_steps.append("identity_unique_invariant")
         manifest["run_id"] = run_id
@@ -2008,6 +2014,12 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
         quick_check = str(con.execute("PRAGMA quick_check").fetchone()[0])
+        try:
+            integrity_report = customer_timeline_integrity_report(con)
+        except Exception:
+            # The publication gate validates the strict report contract. Keep
+            # source/runtime details out of the manifest while failing closed.
+            integrity_report = None
         counts = {
             "customer_identities": table_count(con, "customer_identities"),
             "timeline_events": table_count(con, "timeline_events"),
@@ -2063,9 +2075,10 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
         (str(row["link_type"]), str(row["link_value"])) for row in conflicting_unique_links
     }
     return {
-        "schema_version": "customer_timeline_snapshot_manifest_v1",
+        "schema_version": "customer_timeline_snapshot_manifest_v2",
         "timeline_db": str(db),
         "quick_check": quick_check,
+        "integrity_report": integrity_report,
         "files": files,
         "counts": counts,
         "source_counts": source_counts,

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_run_lock
 
 
 OBJECTION_EXTRACTOR_VERSION = "ob_v1"
@@ -253,76 +254,102 @@ def backfill_customer_objections_v1(
     tenant_id: str = "foton",
     apply: bool = True,
     as_of: datetime | None = None,
+    lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
     db = guard_customer_timeline_output_path(db_path, allowed_root)
     _require_existing_db(db)
-    computed_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
-    with _connect_existing_db(db, writable=apply) as con:
-        con.row_factory = sqlite3.Row
-        candidates = _load_objection_candidate_events(con, tenant_id=tenant_id)
-        canonical_calls = _load_canonical_call_texts(canonical_calls_db_path)
-        source_texts, metrics = _objection_source_texts(candidates, canonical_calls=canonical_calls)
-        rows = []
-        for source in source_texts:
-            for extraction in extract_objections_from_text(source.text):
-                if source.source_kind == "email_inbound" and not _email_objection_allowed(source.text, extraction):
-                    metrics["email_objections_skipped_non_client_price"] = (
-                        int(metrics.get("email_objections_skipped_non_client_price") or 0) + 1
-                    )
-                    continue
-                rows.append(
-                    {
-                        "tenant_id": str(source.event["tenant_id"]),
-                        "customer_id": str(source.event["customer_id"]),
-                        "source_event_id": str(source.event["event_id"]),
-                        "source_channel": _source_channel(source.event),
-                        "objection_type": extraction.objection_type,
-                        "quote_preview": extraction.quote_preview[:120],
-                        "budget_hint_rub": extraction.budget_hint_rub,
-                        "price_sensitivity": extraction.price_sensitivity,
-                        "speaker": source.speaker,
-                        "direction": source.direction,
-                        "confidence": source.confidence,
-                        "extracted_at": computed_at,
-                        "extractor_version": OBJECTION_EXTRACTOR_VERSION,
-                    }
+    if apply:
+        with customer_timeline_run_lock(db, timeout_seconds=lock_timeout_seconds):
+            with CustomerTimelineSQLiteStore(db, allowed_root=allowed_root) as store:
+                return backfill_customer_objections_v1_on_connection(
+                    store._con,  # noqa: SLF001 - canonical Store owns the only writer connection.
+                    canonical_calls_db_path=canonical_calls_db_path,
+                    tenant_id=tenant_id,
+                    apply=True,
+                    as_of=as_of,
                 )
-        coverage_gate_passed = bool(metrics["call_match_coverage"] >= CALL_MATCH_COVERAGE_GATE)
-        if apply:
-            _ensure_objection_tables(con)
-            versions = tuple(dict.fromkeys((OBJECTION_EXTRACTOR_VERSION, *LEGACY_OBJECTION_EXTRACTOR_VERSIONS)))
-            placeholders = ",".join("?" for _ in versions)
-            con.execute(
-                f"DELETE FROM customer_objections_v1 WHERE tenant_id = ? AND extractor_version IN ({placeholders})",
-                (tenant_id, *versions),
+    with _connect_existing_db(db, writable=False) as con:
+        con.row_factory = sqlite3.Row
+        return backfill_customer_objections_v1_on_connection(
+            con,
+            canonical_calls_db_path=canonical_calls_db_path,
+            tenant_id=tenant_id,
+            apply=False,
+            as_of=as_of,
+        )
+
+
+def backfill_customer_objections_v1_on_connection(
+    con: sqlite3.Connection,
+    *,
+    canonical_calls_db_path: Path | str | None = None,
+    tenant_id: str = "foton",
+    apply: bool = True,
+    as_of: datetime | None = None,
+) -> Mapping[str, Any]:
+    computed_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    con.row_factory = sqlite3.Row
+    candidates = _load_objection_candidate_events(con, tenant_id=tenant_id)
+    canonical_calls = _load_canonical_call_texts(canonical_calls_db_path)
+    source_texts, metrics = _objection_source_texts(candidates, canonical_calls=canonical_calls)
+    rows = []
+    for source in source_texts:
+        for extraction in extract_objections_from_text(source.text):
+            if source.source_kind == "email_inbound" and not _email_objection_allowed(source.text, extraction):
+                metrics["email_objections_skipped_non_client_price"] = (
+                    int(metrics.get("email_objections_skipped_non_client_price") or 0) + 1
+                )
+                continue
+            rows.append(
+                {
+                    "tenant_id": str(source.event["tenant_id"]),
+                    "customer_id": str(source.event["customer_id"]),
+                    "source_event_id": str(source.event["event_id"]),
+                    "source_channel": _source_channel(source.event),
+                    "objection_type": extraction.objection_type,
+                    "quote_preview": extraction.quote_preview[:120],
+                    "budget_hint_rub": extraction.budget_hint_rub,
+                    "price_sensitivity": extraction.price_sensitivity,
+                    "speaker": source.speaker,
+                    "direction": source.direction,
+                    "confidence": source.confidence,
+                    "extracted_at": computed_at,
+                    "extractor_version": OBJECTION_EXTRACTOR_VERSION,
+                }
             )
-            _upsert_objection_rows(con, rows)
-            con.execute(
-                "DELETE FROM customer_objection_summary_v1 WHERE tenant_id = ?",
-                (tenant_id,),
-            )
-            _refresh_objection_summary(con, tenant_id=tenant_id, extracted_at=computed_at)
-            _record_objection_run(
-                con,
-                tenant_id=tenant_id,
-                extracted_at=computed_at,
-                metrics=metrics,
-                crm_objections_enabled=coverage_gate_passed,
-            )
-            con.commit()
-        return {
-            "schema_version": OBJECTION_SCHEMA_VERSION,
-            "apply": bool(apply),
-            "candidate_events": len(candidates),
-            **metrics,
-            "coverage_gate_passed": coverage_gate_passed,
-            "objections": len(rows),
-            "objection_type_counts": dict(Counter(row["objection_type"] for row in rows)),
-            "price_sensitivity_counts": dict(Counter(row["price_sensitivity"] for row in rows)),
-            "speaker_counts": dict(Counter(row["speaker"] for row in rows)),
-            "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
-            "extractor_version": OBJECTION_EXTRACTOR_VERSION,
-        }
+    coverage_gate_passed = bool(metrics["call_match_coverage"] >= CALL_MATCH_COVERAGE_GATE)
+    if apply:
+        _ensure_objection_tables(con)
+        versions = tuple(dict.fromkeys((OBJECTION_EXTRACTOR_VERSION, *LEGACY_OBJECTION_EXTRACTOR_VERSIONS)))
+        placeholders = ",".join("?" for _ in versions)
+        con.execute(
+            f"DELETE FROM customer_objections_v1 WHERE tenant_id = ? AND extractor_version IN ({placeholders})",
+            (tenant_id, *versions),
+        )
+        _upsert_objection_rows(con, rows)
+        con.execute("DELETE FROM customer_objection_summary_v1 WHERE tenant_id = ?", (tenant_id,))
+        _refresh_objection_summary(con, tenant_id=tenant_id, extracted_at=computed_at)
+        _record_objection_run(
+            con,
+            tenant_id=tenant_id,
+            extracted_at=computed_at,
+            metrics=metrics,
+            crm_objections_enabled=coverage_gate_passed,
+        )
+        con.commit()
+    return {
+        "schema_version": OBJECTION_SCHEMA_VERSION,
+        "apply": bool(apply),
+        "candidate_events": len(candidates),
+        **metrics,
+        "coverage_gate_passed": coverage_gate_passed,
+        "objections": len(rows),
+        "objection_type_counts": dict(Counter(row["objection_type"] for row in rows)),
+        "price_sensitivity_counts": dict(Counter(row["price_sensitivity"] for row in rows)),
+        "speaker_counts": dict(Counter(row["speaker"] for row in rows)),
+        "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
+        "extractor_version": OBJECTION_EXTRACTOR_VERSION,
+    }
 
 
 def _ensure_objection_tables(con: sqlite3.Connection) -> None:

@@ -36,6 +36,28 @@ from mango_mvp.customer_timeline import (
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
 SHA = "a" * 64
+_MISSING = object()
+
+
+class _BrokenIntegrityMapping(dict):
+    def get(self, *_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("broken mapping")
+
+
+def _valid_integrity_report() -> dict[str, object]:
+    return {
+        "schema_version": store_module.CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION,
+        "schema": {
+            "database_schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+            "missing_tables": [],
+            "missing_columns": {},
+            "inspection_error": False,
+            "checks_complete": True,
+        },
+        "violations": {},
+        "violations_total": 0,
+        "validation_ok": True,
+    }
 
 
 def test_customer_timeline_readonly_uri_never_uses_immutable(tmp_path: Path) -> None:
@@ -213,6 +235,364 @@ def chunk(ev: TimelineEvent) -> BotContextChunk:
 
 def open_store(tmp_path: Path) -> CustomerTimelineSQLiteStore:
     return CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=StepClock())
+
+
+@pytest.mark.parametrize(
+    ("record_name", "table", "key_column", "physical_column", "damaged_value", "expected_value"),
+    (
+        ("customer", "customer_identities", "customer_id", "display_name", "Повреждено", "Иванова Мария"),
+        ("opportunity", "customer_opportunities", "opportunity_id", "status", "damaged", "open"),
+        (
+            "event",
+            "timeline_events",
+            "event_id",
+            "summary",
+            "Повреждено",
+            "Клиент спросил стоимость курса и попросил перезвонить.",
+        ),
+        ("signal", "derived_signals", "signal_id", "severity", "low", "high"),
+        ("chunk", "bot_context_chunks", "chunk_id", "allowed_for_bot", 0, 1),
+    ),
+)
+def test_public_upsert_repairs_json_and_materialized_column_drift(
+    tmp_path: Path,
+    record_name: str,
+    table: str,
+    key_column: str,
+    physical_column: str,
+    damaged_value: object,
+    expected_value: object,
+) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    opp = opportunity(customer)
+    timeline_event = event(customer, opp)
+    derived_signal = signal(timeline_event)
+    bot_chunk = chunk(timeline_event)
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opp)
+    store.upsert_event(timeline_event)
+    store.upsert_signal(derived_signal)
+    store.upsert_bot_context_chunk(bot_chunk)
+    records = {
+        "customer": (customer, store.upsert_customer, customer.customer_id),
+        "opportunity": (opp, store.upsert_opportunity, opp.opportunity_id),
+        "event": (timeline_event, store.upsert_event, timeline_event.event_id),
+        "signal": (derived_signal, store.upsert_signal, derived_signal.signal_id),
+        "chunk": (bot_chunk, store.upsert_bot_context_chunk, bot_chunk.chunk_id),
+    }
+    record, writer, record_id = records[record_name]
+    expected_json = store._con.execute(  # noqa: SLF001 - fixture damages one materialized row.
+        f"SELECT record_json FROM {table} WHERE {key_column}=?",
+        (record_id,),
+    ).fetchone()[0]
+    store._con.execute(  # noqa: SLF001
+        f"UPDATE {table} SET {physical_column}=?,record_json='{{\"damaged\":true}}' WHERE {key_column}=?",
+        (damaged_value, record_id),
+    )
+    store._con.commit()  # noqa: SLF001
+
+    repaired = writer(record, actor="physical_repair_test")
+    repeated = writer(record, actor="physical_repair_test")
+
+    assert repaired.status == "updated"
+    assert repeated.status == "duplicate"
+    row = store._con.execute(  # noqa: SLF001
+        f"SELECT {physical_column},record_json FROM {table} WHERE {key_column}=?",
+        (record_id,),
+    ).fetchone()
+    assert row[physical_column] == expected_value
+    assert row["record_json"] == expected_json
+    audit = store._con.execute(  # noqa: SLF001
+        "SELECT record_json FROM audit_log WHERE audit_id=?",
+        (repaired.audit_id,),
+    ).fetchone()[0]
+    metadata = json.loads(audit)["metadata"]
+    assert metadata["record_json_repaired"] is True
+    assert physical_column in metadata["physical_columns_repaired"]
+    store.close()
+
+
+def seed_integrity_graph(tmp_path: Path) -> Path:
+    store = open_store(tmp_path)
+    for tenant_id, phones in (
+        ("foton", ("+79000000101", "+79000000103")),
+        ("unpk", ("+79000000102", "+79000000104")),
+    ):
+        for index, phone in enumerate(phones, start=1):
+            customer = identity(tenant_id=tenant_id, phone=phone)
+            opp = opportunity(customer, source_id=f"{tenant_id}-lead-{index}")
+            ev = event(customer, opp, source_id=f"{tenant_id}-event-{index}")
+            store.upsert_customer(customer)
+            store.record_customer_id_mapping(
+                tenant_id,
+                old_customer_id=f"legacy:{tenant_id}:{index}",
+                new_customer_id=customer.customer_id,
+                mapping_kind="alias",
+                reason="integrity_fixture",
+            )
+            store.upsert_identity_link(identity_link(customer))
+            store.upsert_opportunity(opp)
+            store.upsert_event(ev)
+            store.upsert_artifact(artifact(ev))
+            store.upsert_signal(signal(ev))
+            store.upsert_bot_context_chunk(chunk(ev))
+            family_payload = {
+                "schema_version": "family_graph_v1",
+                "tenant_id": tenant_id,
+                "family_id": f"family-{index}",
+                "customer_id": customer.customer_id,
+                "membership_status": "active",
+                "confidence": "high",
+                "reason": "test",
+                "created_at": NOW.isoformat(),
+                "updated_at": NOW.isoformat(),
+            }
+            store._con.execute(  # noqa: SLF001 - fixture covers logical owner relations.
+                "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    tenant_id,
+                    f"family-{index}",
+                    customer.customer_id,
+                    "active",
+                    "high",
+                    "test",
+                    NOW.isoformat(),
+                    NOW.isoformat(),
+                    store_module.stable_digest(family_payload),
+                    store_module.json_dumps(family_payload),
+                ),
+            )
+            replacement = event(customer, opp, source_id=f"{tenant_id}-replacement-{index}")
+            store.upsert_event(replacement)
+            store._con.execute(  # noqa: SLF001 - fixture creates a valid supersession edge.
+                "UPDATE timeline_events SET superseded_by=? WHERE event_id=?",
+                (replacement.event_id, ev.event_id),
+            )
+            store._con.execute(  # noqa: SLF001 - active chunks may not point to superseded events.
+                "UPDATE bot_context_chunks SET superseded_by=? WHERE event_id=?",
+                (replacement.event_id, ev.event_id),
+            )
+    store._commit()  # noqa: SLF001
+    store.upsert_event(email_event(None, source_id="allowed-without-customer"))
+    db_path = store.db_path
+    store.close()
+    return db_path
+
+
+def test_integrity_report_valid_graph_is_deterministic_and_read_only(tmp_path: Path) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        first = store_module.customer_timeline_integrity_report(store._con)
+        second = store_module.customer_timeline_integrity_report(store._con)
+        query_only = store._con.execute("PRAGMA query_only").fetchone()[0]
+
+    assert first == second
+    assert first["violations"] == {}
+    assert first["quarantine"] == {
+        "events_without_customer_including_superseded": 1,
+        "by_match_status": {"unmatched": 1},
+    }
+    assert first["validation_ok"] is True
+    assert store_module.customer_timeline_integrity_report_ok(first) is True
+    assert query_only == 1
+
+
+@pytest.mark.parametrize(
+    ("scope", "key", "value"),
+    (
+        ("replace", None, None),
+        ("replace", None, []),
+        ("replace", None, _BrokenIntegrityMapping()),
+        ("report", "schema_version", "wrong"),
+        ("report", "violations", []),
+        ("report", "violations_total", False),
+        ("report", "validation_ok", 1),
+        ("schema", "missing_tables", ["timeline_events"]),
+        ("schema", "inspection_error", True),
+        ("schema", "checks_complete", False),
+    ),
+)
+def test_integrity_report_ok_fails_closed(scope: str, key: str | None, value: object) -> None:
+    report = _valid_integrity_report()
+    candidate: object = report
+    if scope == "replace":
+        candidate = value
+    elif key is not None:
+        target = report if scope == "report" else report["schema"]
+        assert isinstance(target, dict)
+        if value is _MISSING:
+            target.pop(key)
+        else:
+            target[key] = value
+
+    assert store_module.customer_timeline_integrity_report_ok(candidate) is False
+
+
+@pytest.mark.parametrize(
+    ("child", "foreign_key", "parent", "parent_key", "code"),
+    (
+        ("customer_opportunities", "customer_id", "customer_identities", "customer_id", "opportunity_customer"),
+        ("identity_links", "customer_id", "customer_identities", "customer_id", "identity_link_customer"),
+        ("timeline_events", "customer_id", "customer_identities", "customer_id", "event_customer"),
+        ("timeline_events", "opportunity_id", "customer_opportunities", "opportunity_id", "event_opportunity"),
+        ("timeline_events", "superseded_by", "timeline_events", "event_id", "event_superseded_by"),
+        ("event_artifacts", "event_id", "timeline_events", "event_id", "artifact_event"),
+        ("derived_signals", "customer_id", "customer_identities", "customer_id", "signal_customer"),
+        ("derived_signals", "opportunity_id", "customer_opportunities", "opportunity_id", "signal_opportunity"),
+        ("derived_signals", "event_id", "timeline_events", "event_id", "signal_event"),
+        ("bot_context_chunks", "customer_id", "customer_identities", "customer_id", "chunk_customer"),
+        ("bot_context_chunks", "opportunity_id", "customer_opportunities", "opportunity_id", "chunk_opportunity"),
+        ("bot_context_chunks", "event_id", "timeline_events", "event_id", "chunk_event"),
+        (
+            "bot_context_chunks",
+            "superseded_by",
+            "timeline_events",
+            "event_id",
+            "chunk_superseded_by_event",
+        ),
+        (
+            "customer_id_mappings",
+            "new_customer_id",
+            "customer_identities",
+            "customer_id",
+            "mapping_new_customer",
+        ),
+        ("family_members_v1", "customer_id", "customer_identities", "customer_id", "family_member_customer"),
+    ),
+)
+def test_integrity_report_detects_missing_and_cross_tenant_links(
+    tmp_path: Path,
+    child: str,
+    foreign_key: str,
+    parent: str,
+    parent_key: str,
+    code: str,
+) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        target_rowid = con.execute(
+            f"SELECT rowid FROM {child} WHERE tenant_id='foton' "
+            f"AND {foreign_key} IS NOT NULL AND {foreign_key}!='' LIMIT 1"
+        ).fetchone()[0]
+        con.execute(f"UPDATE {child} SET {foreign_key}='missing-id' WHERE rowid=?", (target_rowid,))
+        con.commit()
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        missing = store_module.customer_timeline_integrity_report(store._con)
+    assert missing["violations"][f"{code}_missing"] == 1
+
+    with sqlite3.connect(db_path) as con:
+        foreign_parent = con.execute(
+            f"SELECT {parent_key} FROM {parent} WHERE tenant_id='unpk' LIMIT 1"
+        ).fetchone()[0]
+        con.execute(f"UPDATE {child} SET {foreign_key}=? WHERE rowid=?", (foreign_parent, target_rowid))
+        con.commit()
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        mismatch = store_module.customer_timeline_integrity_report(store._con)
+    assert mismatch["violations"][f"{code}_tenant_mismatch"] == 1
+
+
+def test_integrity_report_checks_all_signal_sources_and_confirmed_orphans(tmp_path: Path) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        signal_rowid = con.execute(
+            "SELECT rowid FROM derived_signals WHERE tenant_id='foton' LIMIT 1"
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE derived_signals SET record_json=json_set(record_json,'$.source_event_ids[0]','missing-id') "
+            "WHERE rowid=?",
+            (signal_rowid,),
+        )
+        con.execute(
+            "UPDATE timeline_events SET match_status='strong_unique' WHERE source_id='allowed-without-customer'"
+        )
+        con.commit()
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        report = store_module.customer_timeline_integrity_report(store._con)
+
+    assert report["violations"]["signal_source_event_missing"] == 1
+    assert report["violations"]["event_linked_without_customer"] == 1
+    assert report["validation_ok"] is False
+
+
+def test_integrity_report_blocks_identity_link_materialized_owner_drift(tmp_path: Path) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        link_rowid, original_customer = con.execute(
+            "SELECT rowid,customer_id FROM identity_links WHERE tenant_id='foton' LIMIT 1"
+        ).fetchone()
+        foreign_customer = con.execute(
+            "SELECT customer_id FROM customer_identities "
+            "WHERE tenant_id='foton' AND customer_id!=? LIMIT 1",
+            (original_customer,),
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE identity_links SET customer_id=? WHERE rowid=?",
+            (foreign_customer, link_rowid),
+        )
+        con.commit()
+
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        report = store_module.customer_timeline_integrity_report(store._con)
+
+    assert report["violations"]["identity_link_record_identity_mismatch"] == 1
+    assert report["validation_ok"] is False
+
+
+@pytest.mark.parametrize("damage", ("physical_open_json_closed", "physical_closed_json_open"))
+def test_integrity_report_blocks_bot_chunk_materialized_safety_drift(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    db_path = seed_integrity_graph(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        chunk_id = con.execute("SELECT chunk_id FROM bot_context_chunks LIMIT 1").fetchone()[0]
+        if damage == "physical_open_json_closed":
+            con.execute(
+                "UPDATE bot_context_chunks SET record_json=json_set(record_json,"
+                "'$.allowed_for_bot',json('false'),'$.requires_manager_review',json('true')) "
+                "WHERE chunk_id=?",
+                (chunk_id,),
+            )
+        else:
+            con.execute(
+                "UPDATE bot_context_chunks SET allowed_for_bot=0,requires_manager_review=1 WHERE chunk_id=?",
+                (chunk_id,),
+            )
+        con.commit()
+
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        report = store_module.customer_timeline_integrity_report(store._con)
+
+    assert report["violations"]["chunk_record_safety_mismatch"] == 1
+    assert report["validation_ok"] is False
+
+
+@pytest.mark.parametrize("damage", ("missing_schema", "missing_table", "malformed_json", "closed_connection"))
+def test_integrity_report_schema_and_inspection_fail_closed(tmp_path: Path, damage: str) -> None:
+    if damage == "missing_schema":
+        db_path = tmp_path / "empty.sqlite"
+        sqlite3.connect(db_path).close()
+    else:
+        db_path = seed_integrity_graph(tmp_path)
+        with sqlite3.connect(db_path) as con:
+            if damage == "missing_table":
+                con.execute("DROP TABLE family_members_v1")
+            elif damage == "malformed_json":
+                con.execute("DROP INDEX ix_signals_multi_source")
+                con.execute("UPDATE derived_signals SET record_json='{' WHERE tenant_id='foton'")
+            con.commit()
+
+    store = CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path)
+    if damage == "closed_connection":
+        store.close()
+    report = store_module.customer_timeline_integrity_report(store._con)
+    if damage != "closed_connection":
+        store.close()
+
+    assert report["validation_ok"] is False
+    assert store_module.customer_timeline_integrity_report_ok(report) is False
+    assert report["violations_total"] > 0
 
 
 def test_store_restricts_writable_db_and_lock_permissions(tmp_path: Path) -> None:

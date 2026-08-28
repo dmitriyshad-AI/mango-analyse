@@ -3,7 +3,11 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from mango_mvp.customer_timeline.mail_stage2_ingest import (
     MailStage2IngestConfig,
@@ -15,7 +19,8 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     restore_timeline_backup,
 )
 from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityLink, IdentityStatus
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.safe_copy import file_sha256
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_run_lock
 from mango_mvp.productization.mail_archive import TallantoIdentityMapConfig, build_tallanto_identity_map
 from scripts.run_mail_stage2_timeline_ingest_procedure import main as ingest_cli_main
 
@@ -289,6 +294,31 @@ def test_mail_stage2_event_date_falls_back_to_date_last() -> None:
     assert parsed.isoformat() == "2026-03-17T06:04:45+00:00"
 
 
+def test_mail_stage2_event_date_accepts_explicit_unknown_local_zone() -> None:
+    parsed = _parse_event_at({"date": "Tue, 17 Mar 2026 06:04:45 -0000"})
+
+    assert parsed.isoformat() == "2026-03-17T06:04:45+00:00"
+
+
+def test_mail_stage2_invalid_priority_date_does_not_use_older_fallback() -> None:
+    with pytest.raises(ValueError, match="requires a valid timestamp"):
+        _parse_event_at({"date_iso": "invalid", "date_last": "2020-01-01T00:00:00+00:00"})
+
+
+@pytest.mark.parametrize("invalid_date", ("invalid", "2026-03-17T06:04:45"))
+def test_mail_stage2_event_without_valid_date_fails_before_writes(
+    tmp_path: Path,
+    invalid_date: str,
+) -> None:
+    config = _make_config(tmp_path)
+    _write_jsonl(config.event_jsonl_paths[0], [{"message_sha256": "c" * 64, "date_iso": invalid_date}])
+
+    with pytest.raises(ValueError, match="requires a valid timestamp"):
+        plan_stage2_mail_ingest(config)
+
+    assert _count_rows(config.timeline_db_path, "timeline_events") == 0
+
+
 def test_mail_stage2_procedure_requires_backup_and_is_idempotent_then_restores(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
 
@@ -343,6 +373,110 @@ def test_mail_stage2_procedure_requires_backup_and_is_idempotent_then_restores(t
     assert Path(str(restore["timeline_db_path"])) == config.timeline_db_path
     assert _count_rows(config.timeline_db_path, "timeline_events") == 0
     assert _count_rows(config.timeline_db_path, "bot_context_chunks") == 0
+
+
+@pytest.mark.parametrize("operation", ("apply", "restore"))
+def test_mail_stage2_writers_respect_common_run_lock(tmp_path: Path, operation: str) -> None:
+    config = _make_config(tmp_path)
+    backup = create_timeline_backup(config, label="lock")
+    manifest_path = Path(str(backup["manifest_path"]))
+
+    def invoke() -> None:
+        if operation == "apply":
+            apply_stage2_mail_ingest(
+                config,
+                backup_manifest_path=manifest_path,
+                lock_timeout_seconds=0.01,
+            )
+        else:
+            restore_timeline_backup(
+                config,
+                backup_manifest_path=manifest_path,
+                lock_timeout_seconds=0.01,
+            )
+
+    with customer_timeline_run_lock(config.timeline_db_path, timeout_seconds=0.01):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(invoke)
+            with pytest.raises(TimeoutError, match="run lock timeout"):
+                future.result()
+
+    assert _count_rows(config.timeline_db_path, "timeline_events") == 0
+
+
+def test_restore_rejects_corrupt_backup_before_touching_target(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    backup = create_timeline_backup(config, label="corrupt")
+    manifest_path = Path(str(backup["manifest_path"]))
+    backup_db = Path(str(backup["backup_db_path"]))
+    with sqlite3.connect(config.timeline_db_path) as con:
+        con.execute("CREATE TABLE newer_marker(value TEXT)")
+        con.execute("INSERT INTO newer_marker VALUES ('keep')")
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    target_sha_before = file_sha256(config.timeline_db_path)
+    with sqlite3.connect(backup_db) as con:
+        con.execute("PRAGMA writable_schema=ON")
+        con.execute(
+            "UPDATE sqlite_schema SET sql='CREATE TABLE broken(' WHERE type='table' AND name='timeline_events'"
+        )
+        con.commit()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["backup_sha256"] = file_sha256(backup_db)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        restore_timeline_backup(config, backup_manifest_path=manifest_path)
+
+    assert file_sha256(config.timeline_db_path) == target_sha_before
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT value FROM newer_marker").fetchone() == ("keep",)
+
+
+def test_restore_recovers_target_with_malformed_schema(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    backup = create_timeline_backup(config, label="recover")
+    manifest_path = Path(str(backup["manifest_path"]))
+    with sqlite3.connect(config.timeline_db_path) as con:
+        con.execute("PRAGMA writable_schema=ON")
+        con.execute(
+            "UPDATE sqlite_schema SET sql='CREATE TABLE broken(' WHERE type='table' AND name='timeline_events'"
+        )
+        con.commit()
+
+    restore_timeline_backup(config, backup_manifest_path=manifest_path)
+
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert con.execute("SELECT count(*) FROM timeline_events").fetchone()[0] == 0
+
+
+def test_backup_and_restore_refuse_sources_outside_allowed_root(tmp_path: Path) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    config = _make_config(allowed_root)
+    outside_root = tmp_path / "outside"
+
+    with pytest.raises(ValueError, match="stay under allowed root"):
+        create_timeline_backup(replace(config, backup_root=outside_root), label="outside")
+    assert not outside_root.exists()
+
+    backup = create_timeline_backup(config, label="inside")
+    manifest_path = Path(str(backup["manifest_path"]))
+    outside_db = tmp_path / "outside.sqlite"
+    with sqlite3.connect(outside_db) as con:
+        con.execute("CREATE TABLE marker(value TEXT)")
+        con.commit()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["backup_db_path"] = str(outside_db)
+    manifest["backup_sha256"] = file_sha256(outside_db)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    target_sha_before = file_sha256(config.timeline_db_path)
+
+    with pytest.raises(ValueError, match="stay under allowed root"):
+        restore_timeline_backup(config, backup_manifest_path=manifest_path)
+
+    assert file_sha256(config.timeline_db_path) == target_sha_before
 
 
 def test_mail_stage2_content_duplicate_skips_second_chunk(tmp_path: Path) -> None:

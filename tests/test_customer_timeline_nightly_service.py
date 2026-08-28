@@ -404,9 +404,34 @@ def test_nightly_service_publishes_manifest_and_second_run_has_no_changes(tmp_pa
     latest = tmp_path / "published" / "latest_customer_timeline_snapshot.json"
     assert latest.exists()
     manifest = json.loads(latest.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "customer_timeline_snapshot_manifest_v2"
     assert manifest["quick_check"] == "ok"
+    assert nightly_service_module.customer_timeline_integrity_report_ok(manifest["integrity_report"])
     assert manifest["files"]["sqlite"]["exists"] is True
     assert manifest["files"]["sqlite"]["sha256"]
+
+
+def test_snapshot_manifest_scans_integrity_once_on_query_only_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    real_integrity_report = nightly_service_module.customer_timeline_integrity_report
+    calls = 0
+
+    def observed_integrity_report(con):
+        nonlocal calls
+        calls += 1
+        assert int(con.execute("PRAGMA query_only").fetchone()[0]) == 1
+        return real_integrity_report(con)
+
+    monkeypatch.setattr(nightly_service_module, "customer_timeline_integrity_report", observed_integrity_report)
+    manifest = nightly_service_module.build_snapshot_manifest(db_path, tenant_id="foton")
+
+    assert calls == 1
+    assert manifest["schema_version"] == "customer_timeline_snapshot_manifest_v2"
+    assert nightly_service_module.customer_timeline_integrity_report_ok(manifest["integrity_report"])
 
 
 @pytest.mark.parametrize(
@@ -3070,8 +3095,66 @@ def test_nightly_service_blocks_latest_when_quick_check_fails(
 
     assert report["overall_status"] == "partial"
     assert "timeline_db_quick_check" in report["failed_required_steps"]
+    assert "timeline_db_integrity" not in report["failed_required_steps"]
     assert report["snapshot_manifest"]["latest_published"] is False
     assert latest_path.read_text(encoding="utf-8") == "OLD-LATEST-BYTES"
+
+
+def test_nightly_service_blocks_latest_on_integrity_violations_even_when_validation_is_spoofed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+    latest_path = tmp_path / "published" / "latest_customer_timeline_snapshot.json"
+    latest_path.parent.mkdir(parents=True)
+    latest_path.write_text("OLD-LATEST-BYTES", encoding="utf-8")
+    real_integrity_report = nightly_service_module.customer_timeline_integrity_report
+
+    def spoofed_integrity_report(con):
+        integrity = dict(real_integrity_report(con))
+        integrity["violations"] = {"event_superseded_by_owner_mismatch": 9}
+        integrity["violations_total"] = 9
+        integrity["validation_ok"] = True
+        return integrity
+
+    monkeypatch.setattr(nightly_service_module, "customer_timeline_integrity_report", spoofed_integrity_report)
+    report = run_nightly_service(config)
+
+    manifest = json.loads(Path(report["snapshot_manifest"]["path"]).read_text(encoding="utf-8"))
+    assert manifest["quick_check"] == "ok"
+    assert manifest["integrity_report"]["violations_total"] == 9
+    assert "timeline_db_integrity" in report["failed_required_steps"]
+    assert "timeline_db_quick_check" not in report["failed_required_steps"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+    assert latest_path.read_text(encoding="utf-8") == "OLD-LATEST-BYTES"
+
+
+@pytest.mark.parametrize("failure_mode", ("none", "exception"))
+def test_nightly_service_integrity_report_failure_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+
+    def failed_integrity_report(_con):
+        if failure_mode == "exception":
+            raise RuntimeError("sensitive failure detail")
+        return None
+
+    monkeypatch.setattr(nightly_service_module, "customer_timeline_integrity_report", failed_integrity_report)
+    report = run_nightly_service(config)
+
+    manifest = json.loads(Path(report["snapshot_manifest"]["path"]).read_text(encoding="utf-8"))
+    assert manifest["quick_check"] == "ok"
+    assert manifest["integrity_report"] is None
+    assert "timeline_db_integrity" in report["failed_required_steps"]
+    assert "sensitive failure detail" not in json.dumps(manifest)
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 def test_nightly_service_latest_publish_survives_interruption_before_replace(

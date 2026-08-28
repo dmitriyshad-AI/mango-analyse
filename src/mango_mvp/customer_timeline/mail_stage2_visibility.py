@@ -9,6 +9,7 @@ from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    customer_timeline_run_lock,
     json_dumps,
     json_loads,
     scrub_timeline_persisted_json,
@@ -40,61 +41,100 @@ def harden_mail_stage2_bot_visibility(
     source_system: str = MAIL_STAGE2_SOURCE_SYSTEM,
     apply: bool = False,
     allow_test_paths: bool = False,
+    lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
     _require_mail_stage2_source(source_system)
     db = _guard_staging_db(db_path, allowed_root=allowed_root, allow_test_paths=allow_test_paths)
-    before: Mapping[str, Any]
-    after: Mapping[str, Any]
-    updated = 0
-    diagnostic_candidates = 0
     if not apply:
         with sqlite3.connect(db) as con:
             con.row_factory = sqlite3.Row
             before = _visibility_counts(con, source_system=source_system)
             diagnostic_candidates = _diagnostic_candidates(con, source_system=source_system)
             after = before
-    else:
+        return _visibility_report(
+            db,
+            source_system=source_system,
+            apply=False,
+            before=before,
+            after=after,
+            updated=0,
+            diagnostic_candidates=diagnostic_candidates,
+        )
+    with customer_timeline_run_lock(db, timeout_seconds=lock_timeout_seconds):
         with CustomerTimelineSQLiteStore(db, allowed_root=Path(allowed_root).expanduser()) as store:
-            con = store._con  # noqa: SLF001 - staging hardening keeps table columns and JSON in sync.
-            before = _visibility_counts(con, source_system=source_system)
-            diagnostic_candidates = _diagnostic_candidates(con, source_system=source_system)
-            rows = con.execute(
-                """
-                SELECT chunk_id, record_json
-                FROM bot_context_chunks
-                WHERE source_system = ?
-                  AND COALESCE(superseded_by, '') = ''
-                  AND (allowed_for_bot != 0 OR requires_manager_review != 1)
-                ORDER BY event_at, chunk_id
-                """,
-                (source_system,),
-            ).fetchall()
-            for row in rows:
-                payload = json_loads(row["record_json"])
-                payload["allowed_for_bot"] = False
-                payload["requires_manager_review"] = True
-                record_hash = stable_digest(scrub_timeline_persisted_json(payload))
-                con.execute(
-                    """
-                    UPDATE bot_context_chunks
-                    SET allowed_for_bot = 0,
-                        requires_manager_review = 1,
-                        record_json = ?,
-                        record_hash = ?
-                    WHERE chunk_id = ?
-                    """,
-                    (json_dumps(payload), record_hash, row["chunk_id"]),
-                )
-                updated += 1
-            if updated:
-                store._rebuild_fts_indexes()  # noqa: SLF001 - record_hash participates in chunk FTS summary.
-            con.commit()
-            after = _visibility_counts(con, source_system=source_system)
+            return harden_mail_stage2_bot_visibility_on_store(store, source_system=source_system)
+
+
+def harden_mail_stage2_bot_visibility_on_store(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    source_system: str = MAIL_STAGE2_SOURCE_SYSTEM,
+    defer_fts_rebuild: bool = False,
+    commit: bool = True,
+) -> Mapping[str, Any]:
+    _require_mail_stage2_source(source_system)
+    store._ensure_writable()  # noqa: SLF001 - helper is intentionally Store-owned.
+    con = store._con  # noqa: SLF001
+    before = _visibility_counts(con, source_system=source_system)
+    diagnostic_candidates = _diagnostic_candidates(con, source_system=source_system)
+    rows = con.execute(
+        """
+        SELECT chunk_id, record_json
+        FROM bot_context_chunks
+        WHERE source_system = ?
+          AND COALESCE(superseded_by, '') = ''
+          AND (allowed_for_bot != 0 OR requires_manager_review != 1)
+        ORDER BY event_at, chunk_id
+        """,
+        (source_system,),
+    ).fetchall()
+    for row in rows:
+        payload = json_loads(row["record_json"])
+        payload["allowed_for_bot"] = False
+        payload["requires_manager_review"] = True
+        record_hash = stable_digest(scrub_timeline_persisted_json(payload))
+        con.execute(
+            """
+            UPDATE bot_context_chunks
+            SET allowed_for_bot = 0,
+                requires_manager_review = 1,
+                record_json = ?,
+                record_hash = ?
+            WHERE chunk_id = ?
+            """,
+            (json_dumps(payload), record_hash, row["chunk_id"]),
+        )
+    if rows and not defer_fts_rebuild:
+        store._rebuild_fts_indexes()  # noqa: SLF001
+    if commit:
+        con.commit()
+    after = _visibility_counts(con, source_system=source_system) if rows else before
+    return _visibility_report(
+        store.db_path,
+        source_system=source_system,
+        apply=True,
+        before=before,
+        after=after,
+        updated=len(rows),
+        diagnostic_candidates=diagnostic_candidates,
+    )
+
+
+def _visibility_report(
+    db: Path,
+    *,
+    source_system: str,
+    apply: bool,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    updated: int,
+    diagnostic_candidates: int,
+) -> Mapping[str, Any]:
     return {
         "schema_version": MAIL_STAGE2_VISIBILITY_HARDENING_SCHEMA_VERSION,
         "db_path": str(db),
         "source_system": source_system,
-        "apply": bool(apply),
+        "apply": apply,
         "before": before,
         "after": after,
         "updated_chunks": updated,

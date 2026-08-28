@@ -3,8 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import shutil
 import sqlite3
+from contextlib import closing
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,8 +28,15 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import normalize_key
 from mango_mvp.customer_timeline.ingestion import compact_text
 from mango_mvp.customer_timeline.safe_copy import file_sha256
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_output_path,
+    guard_customer_timeline_writable_path,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    customer_timeline_readonly_uri,
+    customer_timeline_run_lock,
+    customer_timeline_writer_lock,
     existing_timeline_email_content_signatures,
     timeline_email_content_signature,
 )
@@ -48,6 +55,12 @@ from mango_mvp.productization.mail_archive import (
 
 MAIL_STAGE2_TIMELINE_INGEST_SCHEMA_VERSION = "mail_stage2_timeline_ingest_v1"
 MAIL_STAGE2_INGEST_SOURCE_SYSTEM = "mail_archive_stage2"
+
+
+def _guard_mail_stage2_timeline_db(config: "MailStage2IngestConfig") -> Path:
+    return guard_customer_timeline_writable_path(
+        guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    )
 
 
 @dataclass(frozen=True)
@@ -141,16 +154,18 @@ def _now_stamp() -> str:
 
 
 def _parse_event_at(event: Mapping[str, Any]) -> datetime:
-    raw = clean_text(
-        event.get("date_iso")
-        or event.get("date_first")
-        or event.get("date_last")
-        or event.get("date")
-        or event.get("message_date_iso")
-        or event.get("first_ingested_at")
-        or event.get("updated_at")
-    )
-    if raw:
+    for field in (
+        "date_iso",
+        "date_first",
+        "date_last",
+        "date",
+        "message_date_iso",
+        "first_ingested_at",
+        "updated_at",
+    ):
+        raw = clean_text(event.get(field))
+        if not raw:
+            continue
         text = raw.replace("Z", "+00:00")
         try:
             parsed = datetime.fromisoformat(text)
@@ -159,11 +174,12 @@ def _parse_event_at(event: Mapping[str, Any]) -> datetime:
                 parsed = parsedate_to_datetime(raw)
             except (TypeError, ValueError, IndexError, OverflowError):
                 parsed = None
-        if parsed is not None:
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+        if parsed is not None and parsed.tzinfo is None and raw.rstrip().endswith("-0000"):
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        if parsed is not None and parsed.tzinfo is not None:
             return parsed.astimezone(timezone.utc)
-    return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        raise ValueError("mail stage2 event requires a valid timestamp")
+    raise ValueError("mail stage2 event requires a valid timestamp")
 
 
 def _event_direction(event: Mapping[str, Any]) -> TimelineDirection:
@@ -652,14 +668,17 @@ def input_fingerprint(config: MailStage2IngestConfig) -> str:
 
 
 def create_timeline_backup(config: MailStage2IngestConfig, *, label: Optional[str] = None) -> Mapping[str, Any]:
-    db_path = config.timeline_db_path
+    db_path = _guard_mail_stage2_timeline_db(config)
     if not db_path.exists():
         raise FileNotFoundError(f"timeline DB does not exist, cannot create backup: {db_path}")
-    backup_root = config.backup_root or (config.allowed_root / "backups")
+    backup_root = guard_customer_timeline_output_path(
+        config.backup_root or (config.allowed_root / "backups"),
+        config.allowed_root,
+    )
     backup_dir = backup_root / f"{label or 'mail_stage2'}_{_now_stamp()}"
     backup_dir.mkdir(parents=True, exist_ok=False)
     backup_db = backup_dir / db_path.name
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as source, sqlite3.connect(backup_db) as target:
+    with sqlite3.connect(customer_timeline_readonly_uri(db_path), uri=True) as source, sqlite3.connect(backup_db) as target:
         source.backup(target)
     manifest = {
         "schema_version": MAIL_STAGE2_TIMELINE_INGEST_SCHEMA_VERSION,
@@ -678,6 +697,7 @@ def create_timeline_backup(config: MailStage2IngestConfig, *, label: Optional[st
 
 
 def validate_backup_manifest(config: MailStage2IngestConfig, manifest_path: Path) -> Mapping[str, Any]:
+    _guard_mail_stage2_timeline_db(config)
     manifest = read_json(manifest_path)
     if manifest.get("kind") != "timeline_backup":
         raise ValueError("backup manifest has wrong kind")
@@ -685,7 +705,10 @@ def validate_backup_manifest(config: MailStage2IngestConfig, manifest_path: Path
     target_db = config.timeline_db_path.resolve(strict=False)
     if source_db != target_db:
         raise ValueError(f"backup source DB mismatch: {source_db} != {target_db}")
-    backup_db = Path(str(manifest.get("backup_db_path", ""))).expanduser()
+    backup_db = guard_customer_timeline_output_path(
+        Path(str(manifest.get("backup_db_path", ""))).expanduser(),
+        config.allowed_root,
+    )
     if not backup_db.exists():
         raise FileNotFoundError(f"backup DB not found: {backup_db}")
     expected_sha = clean_text(manifest.get("backup_sha256"))
@@ -763,7 +786,25 @@ def dry_run_stage2_mail_ingest(config: MailStage2IngestConfig) -> Mapping[str, A
     return report
 
 
-def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_path: Path) -> Mapping[str, Any]:
+def apply_stage2_mail_ingest(
+    config: MailStage2IngestConfig,
+    *,
+    backup_manifest_path: Path,
+    lock_timeout_seconds: float = 30.0,
+) -> Mapping[str, Any]:
+    db_path = _guard_mail_stage2_timeline_db(config)
+    with customer_timeline_run_lock(db_path, timeout_seconds=lock_timeout_seconds):
+        return _apply_stage2_mail_ingest_unlocked(
+            config,
+            backup_manifest_path=backup_manifest_path,
+        )
+
+
+def _apply_stage2_mail_ingest_unlocked(
+    config: MailStage2IngestConfig,
+    *,
+    backup_manifest_path: Path,
+) -> Mapping[str, Any]:
     backup_manifest = validate_backup_manifest(config, backup_manifest_path)
     plans, counters = plan_stage2_mail_ingest(config)
     existing = existing_event_dedupe_keys(config.timeline_db_path)
@@ -901,16 +942,33 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
     return run_report
 
 
-def restore_timeline_backup(config: MailStage2IngestConfig, *, backup_manifest_path: Path) -> Mapping[str, Any]:
+def restore_timeline_backup(
+    config: MailStage2IngestConfig,
+    *,
+    backup_manifest_path: Path,
+    lock_timeout_seconds: float = 30.0,
+) -> Mapping[str, Any]:
     manifest = validate_backup_manifest(config, backup_manifest_path)
     backup_db = Path(str(manifest["backup_db_path"]))
-    target = config.timeline_db_path
+    target = _guard_mail_stage2_timeline_db(config)
     target.parent.mkdir(parents=True, exist_ok=True)
-    for suffix in ("-wal", "-shm"):
-        sidecar = Path(str(target) + suffix)
-        if sidecar.exists():
-            sidecar.unlink()
-    shutil.copy2(backup_db, target)
+    # Validate the immutable source before touching the target, then restore
+    # under both the workflow lock and Store writer lock. SQLite's backup API
+    # coordinates safely with idle readers and does not unlink live WAL files.
+    with customer_timeline_run_lock(target, timeout_seconds=lock_timeout_seconds):
+        with closing(sqlite3.connect(customer_timeline_readonly_uri(backup_db), uri=True)) as source:
+            source_integrity = str(source.execute("PRAGMA integrity_check").fetchone()[0])
+            if source_integrity != "ok":
+                raise sqlite3.DatabaseError(f"backup timeline integrity check failed: {source_integrity}")
+            with customer_timeline_writer_lock(target, timeout_seconds=lock_timeout_seconds):
+                with closing(sqlite3.connect(target)) as destination:
+                    source.backup(destination)
+                    restored_integrity = str(destination.execute("PRAGMA integrity_check").fetchone()[0])
+                    if restored_integrity != "ok":
+                        raise sqlite3.DatabaseError(
+                            f"restored timeline integrity check failed: {restored_integrity}"
+                        )
+                    destination.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     report = {
         "schema_version": MAIL_STAGE2_TIMELINE_INGEST_SCHEMA_VERSION,
         "mode": "restore",

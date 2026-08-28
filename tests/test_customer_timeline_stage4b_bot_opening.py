@@ -57,7 +57,7 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
               tenant_id TEXT NOT NULL,
               customer_id TEXT,
               client_safe INTEGER NOT NULL,
-              client_safe_reason TEXT NOT NULL DEFAULT 'no_sensitive_signals',
+              client_safe_reason TEXT,
               sensitivity_tags_json TEXT NOT NULL DEFAULT '[]',
               bot_visible INTEGER NOT NULL DEFAULT 0
             );
@@ -71,7 +71,7 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("open", open_event.event_id, "foton", customer.customer_id, 1, "no_sensitive_signals", "[]", 1),
+            ("open", open_event.event_id, "foton", customer.customer_id, 1, None, "[]", 1),
         )
         store._con.execute(  # noqa: SLF001 - test fixture creates historical empty text.
             "UPDATE bot_context_chunks SET record_json = json_set(record_json, '$.text', '') WHERE event_id = ?",

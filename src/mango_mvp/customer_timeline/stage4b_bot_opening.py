@@ -937,7 +937,7 @@ def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: s
     con.execute(
         f"""
         INSERT OR IGNORE INTO {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id, client_safe_reason)
-        SELECT c.chunk_id, f.client_safe_reason
+        SELECT c.chunk_id, COALESCE(NULLIF(TRIM(f.client_safe_reason), ''), 'no_sensitive_signals')
         FROM bot_context_chunks c
         JOIN a2v3_mail_event_facts f
           ON f.event_id = c.event_id

@@ -1120,6 +1120,47 @@ def test_source_freshness_reads_attendance_increment_and_cursor() -> None:
     assert row["events"] == 1
 
 
+@pytest.mark.parametrize("include_tasks,expected_complete", [(False, False), (True, True)])
+def test_source_freshness_requires_fourth_amo_tasks_cursor(
+    include_tasks: bool,
+    expected_complete: bool,
+) -> None:
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE timeline_events (tenant_id TEXT, source_system TEXT, event_at TEXT);
+        CREATE TABLE ingestion_cursors (tenant_id TEXT, source_system TEXT, last_cursor_ts TEXT, updated_at TEXT);
+        CREATE TABLE ingestion_runs (tenant_id TEXT, source_system TEXT, source_ref TEXT, run_kind TEXT, status TEXT, finished_at TEXT);
+        INSERT INTO timeline_events VALUES ('foton','amocrm_snapshot','2026-07-21T12:00:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','amo_leads_updated_at','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','amo_contacts_updated_at','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','amo_events_created_at','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','amocrm_snapshot','amocrm:cards','timeline_import','completed','2026-07-22T00:02:00+00:00');
+        """
+    )
+    if include_tasks:
+        con.execute(
+            "INSERT INTO ingestion_cursors VALUES (?,?,?,?)",
+            (
+                "foton",
+                "amo_tasks_updated_at",
+                "2026-07-22T00:00:00+00:00",
+                "2026-07-22T00:01:00+00:00",
+            ),
+        )
+
+    row = next(
+        item
+        for item in source_freshness_rows(con, expected_sources=("amocrm_snapshot",))
+        if item["source_system"] == "amocrm_snapshot"
+    )
+
+    assert row["cursor_complete"] is expected_complete
+    assert ("amo_tasks_updated_at" in row["cursor_sources"]) is include_tasks
+    assert row["imported_at"] == "2026-07-22T00:02:00+00:00"
+
+
 def test_source_freshness_rejects_newer_partial_after_completed_import() -> None:
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row

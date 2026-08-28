@@ -1155,6 +1155,11 @@ def service_step_from_json(
             page_limit=int(raw_config.get("page_limit", 50)),
             max_pages=int(raw_config.get("max_pages", 20)),
             sleep_sec=float(raw_config.get("sleep_sec", 1.05)),
+            tasks_snapshot=(
+                Path(str(raw_config["tasks_snapshot"]))
+                if raw_config.get("tasks_snapshot")
+                else None
+            ),
             copy_db=False,
         )
     elif kind == "tallanto_attendance":
@@ -1448,13 +1453,22 @@ def amo_incremental_report_ok(report: Mapping[str, Any]) -> bool:
     if any(safety.get(key) is not False for key in ("amo_write", "tallanto_write", "crm_write")):
         return False
     fetch = report.get("fetch") if isinstance(report.get("fetch"), Mapping) else {}
-    if len(fetch) != 3 or any(
+    required_fetch = {
+        "amo_leads_updated_at",
+        "amo_contacts_updated_at",
+        "amo_events_created_at",
+        "amo_tasks_updated_at",
+    }
+    if set(fetch) != required_fetch or any(
         not isinstance(item, Mapping)
         or item.get("complete") is not True
         or item.get("page_cap_hit")
         or item.get("pagination_drift_detected")
         for item in fetch.values()
     ):
+        return False
+    tasks = fetch["amo_tasks_updated_at"]
+    if tasks.get("balance_ok") is not True:
         return False
     first = report.get("first_run") if isinstance(report.get("first_run"), Mapping) else {}
     reports = [first.get("contacts_bootstrap"), first.get("cards"), first.get("events")]

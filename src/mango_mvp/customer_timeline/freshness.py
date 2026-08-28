@@ -6,7 +6,11 @@ from typing import Any, Mapping
 
 
 _CURSOR_GROUPS = {
-    "amocrm_snapshot": ("amo_leads_updated_at", "amo_contacts_updated_at"),
+    "amocrm_snapshot": (
+        "amo_leads_updated_at",
+        "amo_contacts_updated_at",
+        "amo_tasks_updated_at",
+    ),
     "amocrm_event": ("amo_events_created_at",),
     "tallanto_snapshot": ("tallanto_cards_daily",),
     "tallanto_attendance_api": ("tallanto_attendance_api",),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import shutil
@@ -18,6 +19,7 @@ from mango_mvp.existing_clients.amo_step1_snapshot import (
     read_mcp_env,
 )
 from mango_mvp.customer_timeline.ids import normalize_email, stable_digest
+from mango_mvp.customer_timeline.canonical_readonly_import import upsert_amo_task_snapshot
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
@@ -25,6 +27,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     run_nightly_incremental,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
+from mango_mvp.customer_timeline.safe_copy import file_sha256
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.utils.phone import normalize_phone
 
@@ -59,6 +62,7 @@ class AmoIncrementalConfig:
     max_pages: int = 2
     sleep_sec: float = 1.05
     since: Optional[datetime] = None
+    tasks_snapshot: Optional[Path] = None
     copy_db: bool = True
 
 
@@ -304,6 +308,392 @@ def _dedupe_collection_items(
     return result, identical, conflicting
 
 
+def load_amo_task_seed_snapshot(path: Optional[Path]) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
+    if path is None:
+        return [], {"used": False, "rows": 0, "reason": "not_configured"}
+    source = Path(path).expanduser().resolve(strict=False)
+    if not source.is_file():
+        return [], {"used": False, "rows": 0, "reason": "source_unavailable", "path": str(source)}
+    manifest_path = source.parent / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"AMO Tasks snapshot manifest is missing: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"AMO Tasks snapshot manifest is unreadable: {manifest_path}") from exc
+    if not isinstance(manifest, Mapping) or manifest.get("schema_version") != "m1_timeline_amo_tasks_snapshot_v1":
+        raise ValueError("AMO Tasks snapshot manifest schema is not approved")
+    tasks_manifest = manifest.get("tasks")
+    checkpoint_manifest = manifest.get("checkpoint")
+    scope_manifest = manifest.get("scope")
+    if not isinstance(tasks_manifest, Mapping) or not isinstance(checkpoint_manifest, Mapping):
+        raise ValueError("AMO Tasks snapshot manifest misses tasks/checkpoint proof")
+    if not isinstance(scope_manifest, Mapping):
+        raise ValueError("AMO Tasks snapshot manifest misses scope proof")
+    manifest_source = Path(str(tasks_manifest.get("path") or "")).expanduser().resolve(strict=False)
+    if manifest_source != source:
+        raise ValueError("AMO Tasks snapshot path differs from its manifest")
+    if checkpoint_manifest.get("tasks_complete") is not True:
+        raise ValueError("AMO Tasks snapshot is not proven complete")
+    if (
+        str(scope_manifest.get("entity_type") or "").casefold() not in {"lead", "leads"}
+        or scope_manifest.get("includes_all_open_and_overdue") is not True
+        or scope_manifest.get("is_completed") is not False
+    ):
+        raise ValueError("AMO Tasks snapshot scope is not the approved complete open-task scope")
+    generated_at = parse_iso(str(manifest.get("generated_at_utc") or ""))
+    normalized_at = parse_iso(str(manifest.get("normalized_at_utc") or ""))
+    actual_sha256 = file_sha256(source)
+    if str(tasks_manifest.get("sha256") or "").lower() != actual_sha256:
+        raise ValueError("AMO Tasks snapshot SHA256 differs from its manifest")
+    with source.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = [canonical_amo_task_row(row) for row in csv.DictReader(handle)]
+    try:
+        manifest_rows = int(tasks_manifest["rows"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("AMO Tasks snapshot manifest has no valid row count") from exc
+    if manifest_rows != len(rows):
+        raise ValueError("AMO Tasks snapshot row count differs from its manifest")
+    task_ids = [str(row.get("task_id") or "") for row in rows]
+    if len(task_ids) != len(set(task_ids)) or any(not task_id for task_id in task_ids):
+        raise ValueError("AMO Tasks snapshot contains missing or duplicate task_id values")
+    last_event_at = max(
+        (
+            str(row.get("updated_at") or row.get("created_at") or "")
+            for row in rows
+        ),
+        default="",
+    )
+    return rows, {
+        "used": True,
+        "rows": len(rows),
+        "reason": "verified_local_seed",
+        "path": str(source),
+        "manifest_path": str(manifest_path),
+        "sha256": actual_sha256,
+        "file_mtime": datetime.fromtimestamp(source.stat().st_mtime, timezone.utc).isoformat(),
+        "read_completed_at": generated_at.isoformat(),
+        "normalized_at": normalized_at.isoformat(),
+        "last_event_at": last_event_at or None,
+    }
+
+
+def canonical_amo_task_row(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    result = item.get("result")
+    if isinstance(result, Mapping):
+        result = result.get("text")
+    return {
+        "task_id": clean_id(item.get("task_id") or item.get("id")),
+        "entity_id": clean_id(item.get("entity_id")),
+        "entity_type": str(item.get("entity_type") or "").strip(),
+        "text": str(item.get("text") or "").strip(),
+        "task_type_id": clean_id(item.get("task_type_id")),
+        "responsible_user_id": clean_id(item.get("responsible_user_id")),
+        "responsible_user_name": str(item.get("responsible_user_name") or "").strip(),
+        "complete_till": epoch_to_iso(item.get("complete_till")),
+        "created_at": epoch_to_iso(item.get("created_at")),
+        "updated_at": epoch_to_iso(item.get("updated_at")),
+        "is_completed": item.get("is_completed"),
+        "result": str(result or "").strip(),
+    }
+
+
+def merge_amo_task_cache(
+    cached_rows: Sequence[Mapping[str, Any]],
+    fetched_rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
+    selected: dict[str, tuple[tuple[str, int, str], Mapping[str, Any]]] = {}
+    missing: dict[str, Mapping[str, Any]] = {}
+    versions_seen = 0
+    for source_rank, rows in enumerate((cached_rows, fetched_rows)):
+        for item in rows:
+            row = canonical_amo_task_row(item)
+            versions_seen += 1
+            task_id = str(row.get("task_id") or "")
+            row_hash = stable_digest(row)
+            if not task_id:
+                missing[row_hash] = row
+                continue
+            updated_at = str(row.get("updated_at") or row.get("created_at") or row.get("complete_till") or "")
+            rank = (updated_at, source_rank, row_hash)
+            previous = selected.get(task_id)
+            if previous is None or rank > previous[0]:
+                if previous is not None and not row.get("responsible_user_name"):
+                    row = {**row, "responsible_user_name": previous[1].get("responsible_user_name") or ""}
+                selected[task_id] = (rank, row)
+    merged = [selected[key][1] for key in sorted(selected)] + [missing[key] for key in sorted(missing)]
+    return merged, {
+        "cache_rows_before": len(cached_rows),
+        "delta_rows_fetched": len(fetched_rows),
+        "versions_seen": versions_seen,
+        "current_task_rows": len(merged),
+        "superseded_versions": max(0, versions_seen - len(merged)),
+        "missing_task_id_rows": len(missing),
+    }
+
+
+def amo_task_link_retry_rows(
+    task_rows: Sequence[Mapping[str, Any]],
+    *,
+    current_lead_ids: set[str],
+    ambiguous_lead_ids: set[str],
+) -> list[Mapping[str, Any]]:
+    """Keep only exact task rows whose lead ownership can become resolvable later."""
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for item in task_rows:
+        row = canonical_amo_task_row(item)
+        task_id = str(row.get("task_id") or "")
+        if task_id:
+            grouped[task_id].append(row)
+    retry: list[Mapping[str, Any]] = []
+    for task_id in sorted(grouped):
+        rows = grouped[task_id]
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        if str(row.get("entity_type") or "").casefold() not in {"lead", "leads"}:
+            continue
+        lead_id = str(row.get("entity_id") or "")
+        if lead_id and (lead_id in ambiguous_lead_ids or lead_id not in current_lead_ids):
+            retry.append(row)
+    return retry
+
+
+def amo_task_lead_ownership(
+    *,
+    link_index: Mapping[tuple[str, str], tuple[str, ...]],
+    opportunity_index: Mapping[str, tuple[Mapping[str, str], ...]],
+) -> tuple[set[str], set[str]]:
+    """Return exact lead owners and every conflicting/ambiguous lead proof."""
+    current: set[str] = set()
+    ambiguous: set[str] = set()
+    lead_ids = set(opportunity_index) | {
+        value for link_type, value in link_index if link_type == "amo_lead_id"
+    }
+    for lead_id in lead_ids:
+        opportunities = opportunity_index.get(lead_id, ())
+        link_customers = link_index.get(("amo_lead_id", lead_id), ())
+        if len(opportunities) != 1 or len(link_customers) > 1:
+            ambiguous.add(lead_id)
+            continue
+        opportunity_id = str(opportunities[0].get("opportunity_id") or "")
+        opportunity_customer = str(opportunities[0].get("customer_id") or "")
+        if not opportunity_id or not opportunity_customer:
+            ambiguous.add(lead_id)
+            continue
+        if len(link_customers) == 1 and link_customers[0] != opportunity_customer:
+            ambiguous.add(lead_id)
+            continue
+        current.add(lead_id)
+    return current, ambiguous
+
+
+def load_amo_task_rows_for_leads(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    lead_ids: set[str],
+) -> list[Mapping[str, Any]]:
+    """Revalidate task ownership whenever its AMO lead changed in this delta."""
+    if not lead_ids:
+        return []
+    rows: list[Mapping[str, Any]] = []
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        for db_row in con.execute(
+            "SELECT source_id,record_json FROM timeline_events "
+            "WHERE tenant_id=? AND source_system='amocrm_snapshot' "
+            "AND event_type='amo_task' AND superseded_by IS NULL",
+            (tenant_id,),
+        ):
+            try:
+                payload = json.loads(str(db_row["record_json"]))
+            except json.JSONDecodeError:
+                continue
+            record = payload.get("record") if isinstance(payload, Mapping) else None
+            provenance = record.get("provenance") if isinstance(record, Mapping) else None
+            lead_id = str(provenance.get("entity_id") or "") if isinstance(provenance, Mapping) else ""
+            if lead_id not in lead_ids or not isinstance(record.get("completed"), bool):
+                continue
+            rows.append(
+                canonical_amo_task_row(
+                    {
+                        "task_id": db_row["source_id"],
+                        "entity_id": lead_id,
+                        "entity_type": provenance.get("entity_type") or "leads",
+                        "text": record.get("action_text"),
+                        "task_type_id": record.get("task_type_id"),
+                        "responsible_user_id": record.get("responsible_user_id"),
+                        "responsible_user_name": record.get("responsible_user_name"),
+                        "complete_till": record.get("complete_till"),
+                        "created_at": record.get("created_at"),
+                        "updated_at": record.get("updated_at"),
+                        "is_completed": record.get("completed"),
+                        "result": record.get("result"),
+                    }
+                )
+            )
+    return rows
+
+
+def latest_task_source_event_at(
+    task_rows: Sequence[Mapping[str, Any]],
+    *,
+    previous: Any = None,
+) -> Optional[str]:
+    candidates: list[datetime] = []
+    for value in (
+        previous,
+        *(
+            row.get("updated_at") or row.get("created_at")
+            for row in task_rows
+        ),
+    ):
+        if not value:
+            continue
+        try:
+            candidates.append(parse_iso(str(value)))
+        except ValueError:
+            continue
+    return max(candidates).isoformat() if candidates else None
+
+
+def import_amo_task_rows(
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    tenant_id: str,
+    task_rows: Sequence[Mapping[str, Any]],
+    link_index: Mapping[tuple[str, str], tuple[str, ...]],
+    opportunity_index: Mapping[str, tuple[Mapping[str, str], ...]],
+    fetch_upper_bound: datetime,
+    overlap_seconds: int,
+    bootstrap_complete: bool,
+    pending_link_gap_count: int,
+    seed_report: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    started = datetime.now(timezone.utc)
+    current_lead_ids, ambiguous_lead_ids = amo_task_lead_ownership(
+        link_index=link_index,
+        opportunity_index=opportunity_index,
+    )
+    input_hash = stable_digest(
+        {
+            "schema_version": AMO_INCREMENTAL_SCHEMA_VERSION,
+            "source": "amo_tasks_updated_at",
+            "fetch_upper_bound": fetch_upper_bound.isoformat(),
+            "tasks": list(task_rows),
+        }
+    )
+    write_status_counts: Counter[str] = Counter()
+    changed_event_ids: list[str] = []
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+        run = store.start_ingestion_run(
+            tenant_id=tenant_id,
+            source_system="amocrm_snapshot",
+            source_ref="amocrm:tasks:updated_at",
+            run_kind="amo_tasks_incremental",
+            idempotency_key=input_hash,
+            input_hash=input_hash,
+            started_at=started,
+            metadata={"cursor_source": "amo_tasks_updated_at", "read_only_source": True},
+            actor="customer_timeline_amo_incremental",
+        )
+        with store.bulk_write():
+            results, outcomes = upsert_amo_task_snapshot(
+                store,
+                tenant_id=tenant_id,
+                tasks=task_rows,
+                current_lead_ids=current_lead_ids,
+                ambiguous_lead_ids=ambiguous_lead_ids,
+                generated_at=started,
+                ingestion_run_id=run.run_id,
+                actor="customer_timeline_amo_incremental",
+                source_snapshot="amo_tasks_updated_at",
+            )
+            for result in results:
+                write_status_counts[result.status] += 1
+                if result.status != "duplicate":
+                    changed_event_ids.append(result.record_id)
+            balance_ok = sum(outcomes.values()) == len(task_rows)
+            finished = datetime.now(timezone.utc)
+            store.finish_ingestion_run(
+                run.run_id,
+                status="completed" if balance_ok else "failed",
+                accepted_count=int(outcomes.get("imported", 0)),
+                rejected_count=len(task_rows) - int(outcomes.get("imported", 0)),
+                output_ref=str(timeline_db),
+                finished_at=finished,
+                metadata={
+                    "outcome_counts": dict(outcomes),
+                    "write_status_counts": dict(write_status_counts),
+                    "balance_ok": balance_ok,
+                },
+                actor="customer_timeline_amo_incremental",
+            )
+            existing_cursor = store.get_ingestion_cursor(tenant_id, "amo_tasks_updated_at")
+            fetch_boundary = fetch_upper_bound - timedelta(seconds=overlap_seconds)
+            persisted_cursor = max(
+                fetch_boundary,
+                existing_cursor.last_cursor_ts if existing_cursor else fetch_boundary,
+            )
+            metadata = dict(existing_cursor.metadata if existing_cursor else {})
+            metadata.update(
+                {
+                    "last_status": "ok" if balance_ok else "blocked",
+                    "fetch_complete_upper_bound": fetch_upper_bound.isoformat(),
+                    "outcome_counts": dict(outcomes),
+                    "cache_rows": int(pending_link_gap_count),
+                    "bootstrap_complete": bool(bootstrap_complete),
+                    "pending_link_gap_count": int(pending_link_gap_count),
+                    "baseline_snapshot_sha256": seed_report.get("sha256") or metadata.get("baseline_snapshot_sha256"),
+                    "baseline_file_mtime": seed_report.get("file_mtime") or metadata.get("baseline_file_mtime"),
+                    "baseline_read_completed_at": seed_report.get("read_completed_at")
+                    or metadata.get("baseline_read_completed_at"),
+                    "baseline_normalized_at": seed_report.get("normalized_at")
+                    or metadata.get("baseline_normalized_at"),
+                    "last_source_event_at": latest_task_source_event_at(
+                        task_rows,
+                        previous=metadata.get("last_source_event_at"),
+                    ),
+                    "consecutive_failures": 0 if balance_ok else int(metadata.get("consecutive_failures") or 0) + 1,
+                }
+            )
+            if balance_ok:
+                store.upsert_ingestion_cursor(
+                    tenant_id,
+                    "amo_tasks_updated_at",
+                    last_cursor_ts=persisted_cursor,
+                    metadata=metadata,
+                    actor="customer_timeline_amo_incremental",
+                    ingestion_run_id=run.run_id,
+                )
+        changed_customers: list[str] = []
+        if changed_event_ids:
+            placeholders = ",".join("?" for _ in changed_event_ids)
+            changed_customers = [
+                str(row[0])
+                for row in store._con.execute(  # noqa: SLF001 - same-writer change accounting.
+                    f"SELECT DISTINCT customer_id FROM timeline_events WHERE event_id IN ({placeholders}) "
+                    "AND customer_id IS NOT NULL AND customer_id!='' ORDER BY customer_id",
+                    changed_event_ids,
+                ).fetchall()
+            ]
+    return {
+        "validation_ok": balance_ok,
+        "balance_ok": balance_ok,
+        "rows": len(task_rows),
+        "outcome_counts": dict(outcomes),
+        "write_status_counts": dict(write_status_counts),
+        "changed_customer_count": len(changed_customers),
+        "changed_customer_ids": changed_customers,
+        "run_id": run.run_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+    }
+
+
 def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     out_root = config.out_root.expanduser().resolve(strict=False)
@@ -332,7 +722,6 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     client = AmoMcpClient(mcp_config)
     link_index_before = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
     cursor_before = load_cursor_snapshot(timeline_db, config.tenant_id)
-    lower_bound = resolve_lower_bounds(cursor_before, config)
     source_dir = out_root / "amo_incremental_sources"
     source_dir.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -350,6 +739,62 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     ]
     if pending_leads:
         next_checkpoint["amo_leads_pending"] = {"items": pending_leads}
+    task_cache_entry = _checkpoint_entry(checkpoint, "amo_tasks_cache")
+    task_cache = [
+        item
+        for item in (task_cache_entry.get("items") or ())
+        if isinstance(item, Mapping)
+    ]
+    task_seed_loaded = bool(task_cache_entry.get("seed_loaded"))
+    task_bootstrap_complete = bool(task_cache_entry.get("bootstrap_complete"))
+    checkpoint_seed_report = task_cache_entry.get("seed_report")
+    task_seed_report: Mapping[str, Any] = (
+        dict(checkpoint_seed_report)
+        if isinstance(checkpoint_seed_report, Mapping)
+        else {
+        "used": False,
+        "rows": len(task_cache),
+        "reason": "checkpoint_cache_present",
+        }
+    )
+    task_cursor_metadata = load_cursor_metadata(
+        timeline_db,
+        config.tenant_id,
+        "amo_tasks_updated_at",
+    )
+    if cursor_before.get("amo_tasks_updated_at") is not None and task_cursor_metadata.get("bootstrap_complete") is not True:
+        raise ValueError(
+            "AMO Tasks cursor is missing its bootstrap proof; restore the verified local task state before reading a delta"
+        )
+    expected_task_cache_rows = int(task_cursor_metadata.get("cache_rows") or 0)
+    if cursor_before.get("amo_tasks_updated_at") is not None and expected_task_cache_rows != len(task_cache):
+        raise ValueError("AMO Tasks retry checkpoint differs from the DB cursor metadata")
+    if cursor_before.get("amo_tasks_updated_at") is None and task_bootstrap_complete:
+        raise ValueError("AMO Tasks checkpoint is ahead of the DB cursor; refusing an inconsistent bootstrap")
+    if cursor_before.get("amo_tasks_updated_at") is None and not task_seed_loaded:
+        task_cache, task_seed_report = load_amo_task_seed_snapshot(config.tasks_snapshot)
+        task_seed_loaded = bool(task_seed_report.get("used"))
+        if not task_seed_loaded:
+            raise ValueError(
+                "AMO Tasks first cursor requires an existing local snapshot; refusing an incomplete 24-hour bootstrap"
+            )
+    task_bootstrap_anchor = task_seed_report.get("last_event_at") or task_seed_report.get("read_completed_at")
+    task_bootstrap_from = (
+        parse_iso(str(task_bootstrap_anchor))
+        if task_bootstrap_anchor
+        else None
+    )
+    lower_bound = resolve_lower_bounds(
+        cursor_before,
+        config,
+        task_bootstrap_from=task_bootstrap_from,
+    )
+    next_checkpoint["amo_tasks_cache"] = {
+        "items": task_cache,
+        "seed_loaded": task_seed_loaded,
+        "bootstrap_complete": task_bootstrap_complete,
+        "seed_report": dict(task_seed_report),
+    }
     lead_items, lead_fetch_stats = fetch_endpoint_checkpointed(
         client,
         key="amo_leads_updated_at",
@@ -395,6 +840,21 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         checkpoint=checkpoint,
         next_checkpoint=next_checkpoint,
     )
+    task_items, task_fetch_stats = fetch_endpoint_checkpointed(
+        client,
+        key="amo_tasks_updated_at",
+        path="tasks",
+        embedded_key="tasks",
+        params={
+            "filter[updated_at][from]": int(lower_bound["amo_tasks_updated_at"].timestamp()),
+            "filter[entity_type]": "leads",
+            "order[id]": "asc",
+        },
+        lower_bound=lower_bound["amo_tasks_updated_at"],
+        config=config,
+        checkpoint=checkpoint,
+        next_checkpoint=next_checkpoint,
+    )
     lead_pages, lead_page_cap_hit = lead_fetch_stats["pages"], lead_fetch_stats["page_cap_hit"]
     contact_pages, contact_page_cap_hit = contact_fetch_stats["pages"], contact_fetch_stats["page_cap_hit"]
     event_pages, event_page_cap_hit = event_fetch_stats["pages"], event_fetch_stats["page_cap_hit"]
@@ -403,6 +863,11 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         "amo_leads_updated_at": {"endpoint": "/api/v4/leads", **lead_fetch_stats},
         "amo_contacts_updated_at": {"endpoint": "/api/v4/contacts", **contact_fetch_stats},
         "amo_events_created_at": {"endpoint": "/api/v4/events", **event_fetch_stats},
+        "amo_tasks_updated_at": {
+            "endpoint": "/api/v4/tasks",
+            **task_fetch_stats,
+            "seed_snapshot": dict(task_seed_report),
+        },
     }
     all_complete = all(stats.get("complete") for stats in fetch_report.values())
     # Keep both completed and incomplete endpoints until all DB imports have
@@ -502,6 +967,56 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     link_index_after_cards = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
     opportunity_index_after_cards = load_amo_opportunity_index(timeline_db, tenant_id=config.tenant_id)
 
+    task_revalidation_rows = load_amo_task_rows_for_leads(
+        timeline_db,
+        tenant_id=config.tenant_id,
+        lead_ids=lead_fetched_ids,
+    )
+    task_rows, task_cache_report = merge_amo_task_cache(
+        [*task_cache, *task_revalidation_rows],
+        task_items,
+    )
+    task_current_lead_ids, task_ambiguous_lead_ids = amo_task_lead_ownership(
+        link_index=link_index_after_cards,
+        opportunity_index=opportunity_index_after_cards,
+    )
+    task_retry_rows = amo_task_link_retry_rows(
+        task_rows,
+        current_lead_ids=task_current_lead_ids,
+        ambiguous_lead_ids=task_ambiguous_lead_ids,
+    )
+    tasks_first = import_amo_task_rows(
+        timeline_db=timeline_db,
+        allowed_root=allowed_root,
+        tenant_id=config.tenant_id,
+        task_rows=task_rows,
+        link_index=link_index_after_cards,
+        opportunity_index=opportunity_index_after_cards,
+        fetch_upper_bound=parse_iso(str(task_fetch_stats["upper_bound"])),
+        overlap_seconds=config.safety_overlap_seconds,
+        bootstrap_complete=True,
+        pending_link_gap_count=len(task_retry_rows),
+        seed_report=task_seed_report,
+    )
+    fetch_report["amo_tasks_updated_at"] = {
+        **fetch_report["amo_tasks_updated_at"],
+        **task_cache_report,
+        "outcome_counts": dict(tasks_first["outcome_counts"]),
+        "balance_ok": tasks_first["balance_ok"],
+        "retry_cache_rows": len(task_retry_rows),
+        "revalidated_open_rows": len(task_revalidation_rows),
+    }
+    next_checkpoint["amo_tasks_cache"] = {
+        "items": task_retry_rows,
+        "seed_loaded": True,
+        "bootstrap_complete": bool(tasks_first["validation_ok"]),
+        "seed_report": dict(task_seed_report),
+    }
+    # The Tasks endpoint has its own committed cursor. Persist its matching
+    # local retry state immediately so a later AMO Events failure cannot make
+    # the next run inconsistent or force a repeated task read.
+    save_amo_incremental_checkpoint(out_root, next_checkpoint)
+
     event_rows, event_stats = fetch_events_source(
         client,
         from_ts=lower_bound["amo_events_created_at"],
@@ -525,7 +1040,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         source_names=("amo_events_created_at",),
     )
     events_first = run_nightly_incremental(events_config)
-    validation_ok = all(
+    validation_ok = bool(tasks_first["validation_ok"]) and all(
         item.get("gate_passed") is True
         for item in (contacts_first, cards_first, events_first)
     )
@@ -553,10 +1068,17 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
                 metadata=metadata,
                 actor="customer_timeline_amo_incremental",
             )
-        save_amo_incremental_checkpoint(
-            out_root,
-            {"amo_leads_pending": {"items": pending_leads}} if pending_leads else {},
-        )
+        completed_checkpoint: dict[str, Any] = {
+            "amo_tasks_cache": {
+                "items": task_retry_rows,
+                "seed_loaded": True,
+                "bootstrap_complete": True,
+                "seed_report": dict(task_seed_report),
+            }
+        }
+        if pending_leads:
+            completed_checkpoint["amo_leads_pending"] = {"items": pending_leads}
+        save_amo_incremental_checkpoint(out_root, completed_checkpoint)
     cursor_after = load_cursor_snapshot(timeline_db, config.tenant_id)
     examples = sample_inserted_examples(timeline_db, config.tenant_id, limit=10)
     finished = datetime.now(timezone.utc)
@@ -565,6 +1087,8 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         for current in (contacts_first, cards_first, events_first)
         for source in completed_import_source_names(current.get("imports", ()))
     })
+    if validation_ok and tasks_first["validation_ok"]:
+        completed_import_sources = sorted({*completed_import_sources, "amocrm_snapshot"})
     report = {
         "schema_version": AMO_INCREMENTAL_SCHEMA_VERSION,
         "validation_ok": validation_ok,
@@ -579,6 +1103,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
             "leads": "/api/v4/leads filter[updated_at][from]",
             "contacts": "/api/v4/contacts filter[updated_at][from]",
             "events": "/api/v4/events filter[created_at][from]",
+            "tasks": "/api/v4/tasks filter[updated_at][from]",
             "notes": "not_used_whitelist_not_extended",
         },
         "cursor_before": cursor_before,
@@ -594,10 +1119,13 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
             "contacts_bootstrap": compact_nightly_report(contacts_first),
             "cards": compact_nightly_report(cards_first),
             "events": compact_nightly_report(events_first),
+            "tasks": dict(tasks_first),
             "affected_customer_count": int(cards_first.get("affected_customer_count") or 0)
-            + int(events_first.get("affected_customer_count") or 0),
+            + int(events_first.get("affected_customer_count") or 0)
+            + int(tasks_first.get("changed_customer_count") or 0),
             "changed_customer_count": int(cards_first.get("changed_customer_count") or 0)
-            + int(events_first.get("changed_customer_count") or 0),
+            + int(events_first.get("changed_customer_count") or 0)
+            + int(tasks_first.get("changed_customer_count") or 0),
         },
         "event_body_status": body_status_counts(event_rows),
         "examples": examples,
@@ -605,12 +1133,21 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
             "path": str(_checkpoint_path(out_root)),
             "pending_endpoints": [] if validation_ok else ["database_import"],
             "pending_lead_retries": len(pending_leads),
-            "cleared": validation_ok and not pending_leads,
+            "task_cache_rows": len(task_retry_rows),
+            "cleared": False,
         },
         "identity_resolution": {
-            "complete": not pending_leads,
+            "complete": not pending_leads and not task_retry_rows,
             "pending_lead_retries": len(pending_leads),
-            "pending_state": "private_checkpoint" if pending_leads else "none",
+            "pending_task_lead_gaps": sum(
+                int(tasks_first["outcome_counts"].get(reason, 0))
+                for reason in (
+                    "lead_not_in_current_snapshot",
+                    "ambiguous_lead",
+                    "opportunity_not_uniquely_owned",
+                )
+            ),
+            "pending_state": "private_checkpoint" if pending_leads or task_retry_rows else "none",
         },
         "safety": {
             "amo_write": False,
@@ -736,7 +1273,12 @@ def load_amo_opportunity_index(db_path: Path, *, tenant_id: str) -> Mapping[str,
 
 
 def load_cursor_snapshot(db_path: Path, tenant_id: str) -> Mapping[str, Optional[str]]:
-    wanted = ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
+    wanted = (
+        "amo_leads_updated_at",
+        "amo_contacts_updated_at",
+        "amo_events_created_at",
+        "amo_tasks_updated_at",
+    )
     result: dict[str, Optional[str]] = {key: None for key in wanted}
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
@@ -755,12 +1297,47 @@ def load_cursor_snapshot(db_path: Path, tenant_id: str) -> Mapping[str, Optional
     return result
 
 
-def resolve_lower_bounds(cursor_before: Mapping[str, Optional[str]], config: AmoIncrementalConfig) -> Mapping[str, datetime]:
+def load_cursor_metadata(db_path: Path, tenant_id: str, source_system: str) -> Mapping[str, Any]:
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        try:
+            row = con.execute(
+                "SELECT metadata_json FROM ingestion_cursors WHERE tenant_id=? AND source_system=?",
+                (tenant_id, source_system),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return {}
+    if row is None:
+        return {}
+    try:
+        payload = json.loads(str(row["metadata_json"]))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    metadata = payload.get("metadata")
+    return dict(metadata) if isinstance(metadata, Mapping) else dict(payload)
+
+
+def resolve_lower_bounds(
+    cursor_before: Mapping[str, Optional[str]],
+    config: AmoIncrementalConfig,
+    *,
+    task_bootstrap_from: Optional[datetime] = None,
+) -> Mapping[str, datetime]:
     fallback = config.since or (datetime.now(timezone.utc) - timedelta(hours=24))
     result: dict[str, datetime] = {}
     for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at"):
         raw = cursor_before.get(key)
         result[key] = parse_iso(raw) if raw else fallback
+    task_cursor = cursor_before.get("amo_tasks_updated_at")
+    if task_cursor:
+        result["amo_tasks_updated_at"] = parse_iso(task_cursor)
+    elif task_bootstrap_from is not None:
+        result["amo_tasks_updated_at"] = task_bootstrap_from - timedelta(seconds=config.safety_overlap_seconds)
+    else:
+        result["amo_tasks_updated_at"] = fallback
     return result
 
 

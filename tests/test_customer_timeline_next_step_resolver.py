@@ -21,6 +21,43 @@ TENANT = "foton"
 CUSTOMER = "customer:foton-next-step"
 
 
+def test_structured_next_step_uses_action_instead_of_mapping_repr() -> None:
+    result = resolve_customer_next_step(
+        [
+            event(
+                "amo-task-1",
+                "amo_task",
+                NOW,
+                record={"next_step": {"action": "Позвонить клиенту завтра", "due": "2026-06-22T09:00:00+00:00"}},
+            )
+        ],
+        readiness={"open_conflicts": 0},
+        customer_id=CUSTOMER,
+    )
+
+    assert result.status == "active"
+    assert result.action == "Позвонить клиенту завтра"
+    assert "{'" not in result.display_text
+
+
+def test_structured_next_step_without_action_does_not_open_step() -> None:
+    result = resolve_customer_next_step(
+        [
+            event(
+                "amo-task-due-only",
+                "amo_task",
+                NOW,
+                record={"next_step": {"action": "", "due": "2026-06-22T09:00:00+00:00"}},
+            )
+        ],
+        readiness={"open_conflicts": 0},
+        customer_id=CUSTOMER,
+    )
+
+    assert result.status == "empty"
+    assert result.action == ""
+
+
 def test_documents_step_closed_by_later_email_and_deterministic() -> None:
     events = [
         event(

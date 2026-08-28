@@ -70,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mail-cursor", default=DEFAULT_CURSOR)
     parser.add_argument("--base-service-config", default=str(DEFAULT_BASE_SERVICE_CONFIG))
     parser.add_argument("--service-config-out")
+    parser.add_argument(
+        "--amo-tasks-snapshot",
+        help="Existing local AMO Tasks CSV for the first incremental Tasks cursor.",
+    )
     parser.add_argument("--text-limit", type=int, default=1200)
     return parser
 
@@ -107,6 +111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         mango_manifest=mango_manifest,
         tallanto_manifest=tallanto_manifest,
         base_service_config=base_service_config,
+        amo_tasks_snapshot=(
+            Path(args.amo_tasks_snapshot).expanduser().resolve(strict=False)
+            if args.amo_tasks_snapshot
+            else None
+        ),
     )
     config_out = (
         Path(args.service_config_out).expanduser().resolve(strict=False)
@@ -439,6 +448,7 @@ def build_service_config(
     tallanto_manifest: Path,
     base_service_config: Path | None = None,
     mail_data_root: Path = DEFAULT_MAIL_DATA_ROOT,
+    amo_tasks_snapshot: Path | None = None,
 ) -> Mapping[str, Any]:
     allowed_root = timeline_db.parent.resolve(strict=False)
     mail_data_root = Path(mail_data_root).expanduser()
@@ -532,8 +542,7 @@ def build_service_config(
     if not mango_source_found:
         raise RuntimeError("calls_and_amo_incremental misses mango_processed_summary source")
     steps.append(normalized)
-    steps.append(
-        {
+    amo_step = {
             "name": "amo_incremental_shadow",
             "kind": "amo_incremental",
             "enabled": True,
@@ -550,7 +559,9 @@ def build_service_config(
                 "sleep_sec": 1.05,
             },
         }
-    )
+    if amo_tasks_snapshot is not None:
+        amo_step["config"]["tasks_snapshot"] = str(amo_tasks_snapshot)
+    steps.append(amo_step)
     steps.append(
         {
             "name": "wappi_history_incremental",

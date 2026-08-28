@@ -685,16 +685,21 @@ def test_nightly_service_wires_amo_import_proof_without_copying_db(
 
     def fake_run(config):
         captured["config"] = config
-        return {
+        report = {
             "validation_ok": True,
             "complete": True,
             "completed_import_sources": completed_sources,
             "cursor_before": {"amo_leads_updated_at": "2026-07-01T00:00:00+00:00"},
             "cursor_after": {"amo_leads_updated_at": "2026-07-02T00:00:00+00:00"},
-            "fetch": {
-                key: {"page_cap_hit": False, "complete": True, "pagination_drift_detected": False}
-                for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
-            },
+                "fetch": {
+                    key: {"page_cap_hit": False, "complete": True, "pagination_drift_detected": False}
+                    for key in (
+                        "amo_leads_updated_at",
+                        "amo_contacts_updated_at",
+                        "amo_events_created_at",
+                        "amo_tasks_updated_at",
+                    )
+                },
             "safety": {"amo_write": False, "tallanto_write": False, "crm_write": False},
             "first_run": {
                 "contacts_bootstrap": {"source_errors": []},
@@ -702,6 +707,8 @@ def test_nightly_service_wires_amo_import_proof_without_copying_db(
                 "events": {"source_errors": []},
             },
         }
+        report["fetch"]["amo_tasks_updated_at"]["balance_ok"] = True
+        return report
 
     monkeypatch.setattr(nightly_service_module, "run_amo_incremental", fake_run)
     config_path = tmp_path / "amo_service_config.json"
@@ -748,11 +755,17 @@ def test_amo_incremental_report_ok_rejects_partial_or_drifting_fetch() -> None:
         "safety": {"amo_write": False, "tallanto_write": False, "crm_write": False},
         "fetch": {
             key: {"complete": True, "page_cap_hit": False, "pagination_drift_detected": False}
-            for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
+            for key in (
+                "amo_leads_updated_at",
+                "amo_contacts_updated_at",
+                "amo_events_created_at",
+                "amo_tasks_updated_at",
+            )
         },
         "first_run": {"cards": {"source_errors": []}, "events": {"source_errors": []}},
         "second_run": {"source_errors": []},
     }
+    base["fetch"]["amo_tasks_updated_at"]["balance_ok"] = True
     assert nightly_service_module.amo_incremental_report_ok(base) is True
     assert nightly_service_module.amo_incremental_report_ok({**base, "validation_ok": False}) is False
     drift = json.loads(json.dumps(base))

@@ -367,10 +367,16 @@ def _extract_next_step(event: Mapping[str, Any]) -> str:
         event.get("next_step"),
         event.get("recommended_action"),
     ):
-        text = _compact(value)
+        text = _next_step_value(value)
         if text:
             return text
     return _extract_next_step_from_summary(event)
+
+
+def _next_step_value(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _compact(value.get("action"))
+    return _compact(value)
 
 
 def extract_next_step_action(event: Mapping[str, Any]) -> str:

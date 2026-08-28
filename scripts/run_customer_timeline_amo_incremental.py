@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-pages", type=int, default=2)
     parser.add_argument("--sleep-sec", type=float, default=1.05)
     parser.add_argument("--since", help="ISO datetime lower bound for first run. Defaults to now-24h.")
+    parser.add_argument(
+        "--tasks-snapshot",
+        help="Existing local AMO Tasks CSV used once to seed the fourth cursor; later runs use API deltas.",
+    )
     parser.add_argument("--use-existing-copy", action="store_true", help="Do not copy source DB if target already exists.")
     parser.add_argument("--summary-only", action="store_true")
     return parser
@@ -67,6 +71,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             max_pages=args.max_pages,
             sleep_sec=args.sleep_sec,
             since=parse_datetime(args.since) if args.since else None,
+            tasks_snapshot=Path(args.tasks_snapshot) if args.tasks_snapshot else None,
             copy_db=not args.use_existing_copy,
         )
     )

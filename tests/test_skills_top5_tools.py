@@ -543,6 +543,26 @@ def test_inventory_before_build_reuses_exact_current_owner_deterministically(tmp
     assert set(first.coverage) == {"graphify", "worktrees", "raw_rg", "git_refs", "tasks", "audits", "decisions"}
 
 
+def test_inventory_maps_every_symbol_and_keeps_later_definition_in_same_file(tmp_path: Path) -> None:
+    repo, graph = _git_test_repo(tmp_path / "repo", {
+        "src/one.py": "REFERENCE = 'first_owner'\n\ndef first_owner():\n    return 1\n",
+        "src/two.py": "def second_owner():\n    return 2\n",
+    })
+
+    result = _real_inventory(repo, graph, symbols=["first_owner", "second_owner"], keywords=[])
+
+    assert result.decision == "reuse"
+    assert result.owner_map == {
+        "first_owner": {"path": "src/one.py", "symbol": "first_owner", "sha": result.repo_head},
+        "second_owner": {"path": "src/two.py", "symbol": "second_owner", "sha": result.repo_head},
+    }
+    assert any(
+        item.symbol == "first_owner" and item.path == "src/one.py" and item.line == 3
+        and item.classification == "ACTIVE_REUSE"
+        for item in result.candidates
+    )
+
+
 def test_inventory_before_build_stops_on_modified_or_untracked_other_worktree(tmp_path: Path, monkeypatch) -> None:
     other = tmp_path / "other"
     other.mkdir()

@@ -365,6 +365,24 @@ def test_inventory_refresh_rejects_tool_error_even_with_json_stdout(tmp_path, mo
     assert "завершился с ошибкой" in (error or "")
 
 
+def test_inventory_refresh_reuses_explicit_graph_path(tmp_path, monkeypatch):
+    header = preflight.parse_tz_header(_code_tz(tmp_path).read_text(encoding="utf-8"))
+    seen: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        seen.extend(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(_inventory_payload()), "")
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_run)
+    graph = tmp_path / "graph.json"
+
+    payload, error = preflight._refresh_inventory(tmp_path, header, graph_path=graph)
+
+    assert error is None
+    assert payload is not None
+    assert seen[seen.index("--graph") + 1] == str(graph)
+
+
 def test_required_roles_are_computed_from_task_risk(tmp_path):
     text = _code_tz(tmp_path).read_text(encoding="utf-8")
     header = preflight.parse_tz_header(text)

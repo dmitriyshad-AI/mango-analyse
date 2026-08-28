@@ -273,6 +273,44 @@ def _branch_diff(root: Path, base: str = "main") -> tuple[str, tuple[str, ...], 
     return _sha(raw.encode()), tuple(sorted(set(safe))), tuple(sorted(numstat, key=lambda item: item["path"]))
 
 
+def _git_relation_context(root: Path, head: str, base: str, task_text: str) -> str:
+    base_head = _git_required(root, "rev-parse", base).strip()
+    merge_base = _git_required(root, "merge-base", base, head).strip()
+    ahead_behind = _git_required(root, "rev-list", "--left-right", "--count", f"{base}...{head}").strip()
+    worktree_rows: list[str] = []
+    current_head = ""
+    for line in _git_required(root, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("HEAD "):
+            current_head = line.removeprefix("HEAD ").strip()
+        elif line.startswith("branch "):
+            worktree_rows.append(f"{current_head} {line.removeprefix('branch ').strip()}")
+        elif line == "detached" and current_head:
+            worktree_rows.append(f"{current_head} detached")
+
+    declared_rows: list[str] = []
+    for commit in dict.fromkeys(re.findall(r"\b[0-9a-f]{40}\b", task_text)):
+        exists = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=root,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        ).returncode == 0
+        if not exists:
+            declared_rows.append(f"{commit} missing")
+            continue
+        relation = _git_required(root, "rev-list", "--left-right", "--count", f"{commit}...{head}").strip()
+        common = _git_required(root, "merge-base", commit, head).strip()
+        declared_rows.append(f"{commit} ahead_behind={relation} merge_base={common}")
+
+    return (
+        f"base_ref: {base}\nbase_head: {base_head}\nmerge_base: {merge_base}\n"
+        f"base_ahead_behind_head: {ahead_behind}\n"
+        "worktree_heads:\n" + "\n".join(worktree_rows) + "\n"
+        "task_declared_commits:\n" + "\n".join(declared_rows) + "\n"
+    )
+
+
 def _review_prompt(head: str, pack_rel: str, nonce: str) -> bytes:
     manifest_rel = f"{pack_rel}/manifest.json"
     return (
@@ -412,6 +450,7 @@ def create_audit_pack(
 def create_claude_context_pack(
     root: Path, slug: str, task_path: Path, inventory_path: Path, *,
     context_files: tuple[Path, ...] = (), out_root: Path | None = None,
+    base: str = "main",
 ) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", slug):
         raise ValueError("unsafe slug")
@@ -427,7 +466,7 @@ def create_claude_context_pack(
     head = _git_required(root, "rev-parse", "HEAD").strip()
     branch = _git_required(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
     surface_hash, safe_status, dirty_context = _code_surface(root, head)
-    branch_diff_hash, branch_changed, branch_numstat = _branch_diff(root)
+    branch_diff_hash, branch_changed, branch_numstat = _branch_diff(root, base)
     defaults = [Path(name) for name in CONTEXT_EXACT if (root / name).is_file()]
     task_context = _task_context_paths(root, task_raw.decode("utf-8", errors="ignore"))
     requested = [*defaults, *context_files, *task_context, *dirty_context]
@@ -461,10 +500,11 @@ def create_claude_context_pack(
         },
         ensure_ascii=False, indent=2,
     ).encode() + b"\n"
+    task_text = task_raw.decode(encoding="utf-8", errors="ignore")
     git_context = mask_pii(
         f"head: {head}\nbranch: {branch}\nworktree_label: {root.name}\n"
         f"worktree_path_sha256: {_sha(str(root).encode())}\nstatus:\n"
-        + safe_status
+        + safe_status + "\n" + _git_relation_context(root, head, base, task_text)
     ).encode()
     task_copy = _safe_pack_copy(task_raw, root)
     inventory_copy = _safe_pack_copy(inventory_raw, root)
@@ -496,7 +536,7 @@ def create_claude_context_pack(
         "prompt_sha256": prompt_hash, "prompt_template_sha256": prompt_template_hash,
         "files_hash": files_hash,
         "code_surface_sha256": surface_hash,
-        "branch_diff_base": "main", "branch_diff_sha256": branch_diff_hash,
+        "branch_diff_base": base, "branch_diff_sha256": branch_diff_hash,
         "dedupe_key": _sha(f"{head}\n{prompt_template_hash}\n{files_hash}".encode()),
         "pii_redaction": ["phone", "email"],
         "input_copy_policy": "source SHA-256 + deterministic PII/local-path redaction; verifier recomputes",
@@ -763,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("context mode requires slug and --inventory")
         print(create_claude_context_pack(
             args.root, args.slug, args.claude_task, args.inventory,
-            context_files=tuple(args.context_file), out_root=args.out_root,
+            context_files=tuple(args.context_file), out_root=args.out_root, base=args.base,
         ))
         return 0
     if not args.slug:

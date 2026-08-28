@@ -32,12 +32,9 @@ from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     REQUIRED_MUTATING_NIGHTLY_CHAIN,
     validate_mutating_nightly_chain,
 )
+from mango_mvp.customer_timeline.calls_two_processes import configured_calls_working_db  # noqa: E402
 
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
-MANGO_READY_PACKAGE_DB = Path(
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/"
-    "mango_calls_two_processes/drop/mango_calls_ready.sqlite"
-)
 NIGHTLY_HOME = Path(
     os.getenv("CUSTOMER_TIMELINE_NIGHTLY_HOME", "~/.mango_local/customer_timeline_nightly")
 ).expanduser()
@@ -288,19 +285,27 @@ def validate_nightly_config(path: Path | None = None) -> str:
         Path(str(item)).expanduser().resolve(strict=False)
         for item in steps["mango_processed_sweep"].get("config", {}).get("package_dbs") or ()
     }
-    ready_package_db = MANGO_READY_PACKAGE_DB.resolve(strict=False)
-    if ready_package_db not in package_dbs:
-        return "mango_processed_sweep misses required mango_calls_ready.sqlite package DB"
-    if not ready_package_db.is_file():
-        return f"required mango_calls_ready.sqlite package DB is missing: {ready_package_db}"
+    source_service_config = Path(
+        str(steps["mango_processed_sweep"].get("config", {}).get("source_service_config") or "")
+    ).expanduser().resolve(strict=False)
+    if not str(steps["mango_processed_sweep"].get("config", {}).get("source_service_config") or "").strip():
+        return "mango_processed_sweep misses source_service_config proof"
     try:
-        with sqlite3.connect(f"file:{ready_package_db}?mode=ro", uri=True, timeout=5) as con:
+        processed_calls_db = configured_calls_working_db(source_service_config)
+    except (FileNotFoundError, KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        return f"Mango Calls service config is unavailable or invalid: {type(exc).__name__}"
+    if package_dbs != {processed_calls_db}:
+        return "mango_processed_sweep must use only the configured Mango Calls working DB"
+    if not processed_calls_db.is_file():
+        return f"configured Mango Calls working DB is missing: {processed_calls_db}"
+    try:
+        with sqlite3.connect(f"file:{processed_calls_db}?mode=ro", uri=True, timeout=5) as con:
             columns = {str(row[1]) for row in con.execute("PRAGMA table_info(call_records)")}
     except sqlite3.Error as exc:
-        return f"required mango_calls_ready.sqlite package DB is unreadable: {type(exc).__name__}"
+        return f"configured Mango Calls working DB is unreadable: {type(exc).__name__}"
     required_columns = {"analysis_status", "analysis_json"}
     if not required_columns <= columns:
-        return "required mango_calls_ready.sqlite package DB misses analyzed call columns"
+        return "configured Mango Calls working DB misses analyzed call columns"
     return ""
 
 

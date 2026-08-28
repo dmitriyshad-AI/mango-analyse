@@ -69,6 +69,21 @@ SECRET_RE = re.compile(
 )
 
 
+def configured_calls_working_db(config_path: Path) -> Path:
+    """Resolve the canonical live Calls DB from the service configuration."""
+
+    path = Path(config_path).expanduser().resolve(strict=False)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("Mango Calls service config must be a JSON object")
+    raw_root = str(payload.get("pipeline_root") or "").strip()
+    if not raw_root:
+        raise ValueError("Mango Calls service config misses pipeline_root")
+    return (Path(raw_root).expanduser() / "working" / "mango_calls_pipeline.sqlite").resolve(
+        strict=False
+    )
+
+
 @dataclass(frozen=True)
 class CallsTwoProcessesConfig:
     pipeline_root: Path

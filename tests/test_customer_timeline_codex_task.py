@@ -34,6 +34,23 @@ sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
 
 
+@pytest.fixture(autouse=True)
+def _configured_calls_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline_root = tmp_path / "mango-calls-runtime"
+    working_db = pipeline_root / "working" / "mango_calls_pipeline.sqlite"
+    working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(working_db) as con:
+        con.execute(
+            "CREATE TABLE call_records (id TEXT PRIMARY KEY, analysis_status TEXT, analysis_json TEXT)"
+        )
+    service_config = tmp_path / "mango-calls-config.json"
+    service_config.write_text(
+        json.dumps({"pipeline_root": str(pipeline_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(builder, "DEFAULT_MANGO_CALLS_SERVICE_CONFIG", service_config)
+
+
 def test_lightweight_wrapper_matches_canonical_required_sources() -> None:
     canonical = set(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
 
@@ -116,7 +133,10 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 "required": True,
                 "config": {
                     "producer_script": str(module.ROOT / "scripts/build_mango_call_timeline_increment.py"),
-                    "package_dbs": [str(module.MANGO_READY_PACKAGE_DB)],
+                    "source_service_config": str(builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG),
+                    "package_dbs": [
+                        str(module.configured_calls_working_db(builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG))
+                    ],
                 },
             },
             {
@@ -504,7 +524,7 @@ def test_nightly_config_rejects_tallanto_money_before_cards(tmp_path, monkeypatc
     assert "cards -> attendance -> money" in module.validate_nightly_config(config)
 
 
-def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeypatch) -> None:
+def test_nightly_config_rejects_sweep_without_configured_calls_db(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
@@ -516,15 +536,36 @@ def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeyp
 
     reason = module.validate_nightly_config(config)
 
-    assert "mango_calls_ready.sqlite" in reason
+    assert "configured Mango Calls working DB" in reason
 
 
-def test_nightly_config_rejects_missing_ready_package_db(tmp_path, monkeypatch) -> None:
+def test_nightly_config_resolves_calls_db_from_its_own_service_config(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
-    missing_ready = tmp_path / "drop/mango_calls_ready.sqlite"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
-    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", missing_ready)
+    payload = valid_nightly_payload(staging_root)
+    sweep = next(step for step in payload["steps"] if step["name"] == "mango_processed_sweep")
+    override = tmp_path / "override-calls-config.json"
+    override.write_text(
+        json.dumps({"pipeline_root": str(tmp_path / "other-calls-runtime")}),
+        encoding="utf-8",
+    )
+    sweep["config"]["source_service_config"] = str(override)
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert "only the configured Mango Calls working DB" in module.validate_nightly_config(config)
+
+
+def test_nightly_config_rejects_missing_configured_calls_db(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    missing_root = tmp_path / "missing-mango-calls-runtime"
+    builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG.write_text(
+        json.dumps({"pipeline_root": str(missing_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
     payload = valid_nightly_payload(staging_root)
     config = tmp_path / "nightly.json"
     config.write_text(json.dumps(payload), encoding="utf-8")
@@ -768,22 +809,10 @@ def test_nightly_config_rejects_incomplete_required_manifest_sources(tmp_path, m
     assert "wappi_max" in reason
 
 
-def _write_ready_package_db(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as con:
-        con.execute(
-            "CREATE TABLE call_records (id TEXT PRIMARY KEY, analysis_status TEXT, analysis_json TEXT)"
-        )
-        con.commit()
-
-
 def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
-    ready_package_db = tmp_path / "drop/mango_calls_ready.sqlite"
-    _write_ready_package_db(ready_package_db)
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
-    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", ready_package_db)
     base = valid_nightly_payload(staging_root)
     config = tmp_path / "nightly.json"
 
@@ -814,9 +843,6 @@ def test_nightly_self_heal_rebuilds_stale_on_disk_config(tmp_path, monkeypatch) 
     staging_root.mkdir(parents=True)
     timeline_db = staging_root / "customer_timeline_staging.sqlite"
     timeline_db.write_bytes(b"sqlite")
-    ready_package_db = tmp_path / "drop" / "mango_calls_ready.sqlite"
-    _write_ready_package_db(ready_package_db)
-    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", ready_package_db)
     dv2_config = staging_root / "nightly_service/dv2.json"
     dv2_config.parent.mkdir(parents=True)
     stale_payload = valid_nightly_payload(staging_root)
@@ -1046,8 +1072,9 @@ def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
     assert {"mango_processed_sweep", "calls_and_amo_incremental", "mail_archive_incremental"} <= steps.keys()
     assert all(steps[name]["required"] is True for name in module.REQUIRED_NIGHTLY_STEPS)
     assert steps["mango_processed_sweep"]["config"]["package_dbs"] == [
-        str(builder.MANGO_READY_PACKAGE_DB)
+        str(builder.configured_calls_working_db(builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG))
     ]
+    assert steps["mango_processed_sweep"]["config"]["scan_roots"] == []
     mango_source = steps["calls_and_amo_incremental"]["config"]["sources"][0]
     assert mango_source["path"].endswith("nightly_dv2_sources/mango_processed_sweep.jsonl")
 

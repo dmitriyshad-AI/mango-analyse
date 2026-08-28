@@ -32,6 +32,7 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
 )
 from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
+from mango_mvp.customer_timeline.calls_two_processes import configured_calls_working_db  # noqa: E402
 from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     DEFAULT_TALLANTO_CARDS_MAX_PAGES,
     NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
@@ -39,9 +40,12 @@ from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
 )
 
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
-MANGO_READY_PACKAGE_DB = (
-    DEFAULT_SOURCE_ROOT / "product_data" / "mango_calls_two_processes" / "drop" / "mango_calls_ready.sqlite"
-)
+DEFAULT_MANGO_CALLS_SERVICE_CONFIG = Path(
+    os.getenv(
+        "MANGO_CALLS_SERVICE_CONFIG",
+        "~/.mango_local/mango_calls_service_config/config.json",
+    )
+).expanduser()
 DEFAULT_NIGHTLY_HOME = Path(
     os.getenv("CUSTOMER_TIMELINE_NIGHTLY_HOME", "~/.mango_local/customer_timeline_nightly")
 ).expanduser()
@@ -69,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeline-db", default=str(DEFAULT_TIMELINE_DB))
     parser.add_argument("--mail-cursor", default=DEFAULT_CURSOR)
     parser.add_argument("--base-service-config", default=str(DEFAULT_BASE_SERVICE_CONFIG))
+    parser.add_argument(
+        "--mango-calls-service-config",
+        default=str(DEFAULT_MANGO_CALLS_SERVICE_CONFIG),
+        help="Configuration used by the running Mango Calls service; its working DB is read only.",
+    )
     parser.add_argument("--service-config-out")
     parser.add_argument(
         "--amo-tasks-snapshot",
@@ -85,6 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_root = Path(args.out_root).expanduser().resolve(strict=False)
     timeline_db = Path(args.timeline_db).expanduser().resolve(strict=False)
     base_service_config = Path(args.base_service_config).expanduser().resolve(strict=False)
+    mango_calls_service_config = Path(args.mango_calls_service_config).expanduser().resolve(strict=False)
     out_root.mkdir(parents=True, exist_ok=True)
     mail_cursor = parse_dt(args.mail_cursor)
 
@@ -111,6 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mango_manifest=mango_manifest,
         tallanto_manifest=tallanto_manifest,
         base_service_config=base_service_config,
+        mango_calls_service_config=mango_calls_service_config,
         amo_tasks_snapshot=(
             Path(args.amo_tasks_snapshot).expanduser().resolve(strict=False)
             if args.amo_tasks_snapshot
@@ -447,6 +458,7 @@ def build_service_config(
     mango_manifest: Path,
     tallanto_manifest: Path,
     base_service_config: Path | None = None,
+    mango_calls_service_config: Path | None = None,
     mail_data_root: Path = DEFAULT_MAIL_DATA_ROOT,
     amo_tasks_snapshot: Path | None = None,
 ) -> Mapping[str, Any]:
@@ -454,6 +466,12 @@ def build_service_config(
     mail_data_root = Path(mail_data_root).expanduser()
     steps: list[Mapping[str, Any]] = []
     mango_sweep_jsonl = out_root / "mango_processed_sweep.jsonl"
+    calls_config_path = Path(mango_calls_service_config or DEFAULT_MANGO_CALLS_SERVICE_CONFIG)
+    mango_processed_calls_db = configured_calls_working_db(calls_config_path)
+    if not mango_processed_calls_db.is_file():
+        raise FileNotFoundError(
+            f"configured Mango Calls working DB is missing: {mango_processed_calls_db}"
+        )
     tallanto_identity_dbs = existing_tallanto_identity_dbs(mail_data_root)
     steps.append(
         {
@@ -463,9 +481,13 @@ def build_service_config(
             "required": True,
             "config": {
                 "producer_script": str(ROOT / "scripts" / "build_mango_call_timeline_increment.py"),
-                "scan_roots": [str(Path("/Users/dmitrijfabarisov/Projects/Mango analyse/product_data"))],
-                "package_globs": ["mango_update_after_*"],
-                "package_dbs": [str(MANGO_READY_PACKAGE_DB)],
+                # The current service DB is the sole calls source. Historical
+                # package trees are already represented in Timeline and must
+                # not be rescanned on every incremental cycle.
+                "scan_roots": [],
+                "package_globs": [],
+                "package_dbs": [str(mango_processed_calls_db)],
+                "source_service_config": str(calls_config_path.resolve(strict=False)),
                 "out_jsonl": str(mango_sweep_jsonl),
                 "report_out": str(out_root / "mango_processed_sweep_producer_report.json"),
                 "manifest_path": str(out_root / "mango_processed_sweep_manifest.json"),

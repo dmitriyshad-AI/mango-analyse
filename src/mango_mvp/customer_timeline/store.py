@@ -4679,6 +4679,10 @@ class CustomerTimelineSQLiteStore:
             )
             params.append(cutoff.isoformat())
             clauses.append(f"{prefix}requires_manager_review = 0")
+            clauses.append(
+                f"json_valid({prefix}record_json) = 1 "
+                f"AND json_type({prefix}record_json, '$.metadata.client_safe') = 'true'"
+            )
             forbidden_sources = tuple(sorted(BOT_FORBIDDEN_SOURCE_SYSTEMS))
             forbidden_placeholders = ",".join("?" for _ in forbidden_sources)
             clauses.append(

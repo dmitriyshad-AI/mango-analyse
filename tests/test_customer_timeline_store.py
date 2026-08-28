@@ -229,6 +229,7 @@ def chunk(ev: TimelineEvent) -> BotContextChunk:
         relevance_tags=("sales", "price"),
         allowed_for_bot=True,
         requires_manager_review=False,
+        metadata={"client_safe": True},
         created_at=NOW,
     )
 

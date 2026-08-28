@@ -151,6 +151,14 @@ def _run_stage5_money_ingest_unlocked(config: Stage5MoneyIngestConfig) -> Mappin
                     tenant_id=config.tenant_id,
                     as_of=run_as_of,
                 )
+                purchases_result = {
+                    **purchases_result,
+                    "purchase_history_reconciliation": _reconcile_purchase_history_chunks_on_store(
+                        store,
+                        tenant_id=config.tenant_id,
+                        as_of=run_as_of,
+                    ),
+                }
                 store._commit()  # noqa: SLF001 - include direct projection SQL in the same Store transaction.
             report["apply"] = {**write_result, "customer_purchases_v1": purchases_result}
         else:
@@ -192,12 +200,21 @@ def refresh_customer_purchases_v1(
         raise ValueError("lock_timeout_seconds must not be negative")
     with customer_timeline_run_lock(db_path, timeout_seconds=lock_timeout_seconds):
         with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
-            result = _refresh_customer_purchases_v1(
-                store._con,
-                tenant_id=tenant_id,
-                as_of=cutoff,
-            )
-            store._con.commit()
+            with store.bulk_write():
+                result = _refresh_customer_purchases_v1(
+                    store._con,
+                    tenant_id=tenant_id,
+                    as_of=cutoff,
+                )
+                result = {
+                    **result,
+                    "purchase_history_reconciliation": _reconcile_purchase_history_chunks_on_store(
+                        store,
+                        tenant_id=tenant_id,
+                        as_of=cutoff,
+                    ),
+                }
+                store._commit()  # noqa: SLF001 - defer projection SQL to the outer atomic bulk write.
             return result
 
 
@@ -276,6 +293,102 @@ def _apply_plan(
         result = store.upsert_event(_event_from_plan(plan), actor="stage5_money_ingest")
         status_counts[result.status] += 1
     return {"events_written": len(plans), "write_status_counts": dict(status_counts)}
+
+
+def _reconcile_purchase_history_chunks_on_store(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    tenant_id: str,
+    as_of: datetime,
+) -> Mapping[str, Any]:
+    """Retire stale legacy purchase summaries that disagree with canonical facts."""
+
+    cutoff = normalize_aware_utc(as_of)
+    con = store._con  # noqa: SLF001 - projection repair shares the Stage5 transaction.
+    facts = {
+        str(row["customer_id"]): row
+        for row in con.execute(
+            """
+            SELECT customer_id,total_in,total_out,deals_cnt,last_purchase_at,computability
+            FROM customer_purchases_v1
+            WHERE tenant_id=? AND period='all_time' AND money_kind=?
+            """,
+            (tenant_id, PURCHASE_MONEY_KIND_FACT),
+        )
+    }
+    chunks = con.execute(
+        """
+        SELECT chunk_id,customer_id,event_at,record_json
+        FROM bot_context_chunks
+        WHERE tenant_id=? AND source_system='customer_purchases_v1'
+          AND chunk_type='purchase_history' AND superseded_by IS NULL
+        ORDER BY chunk_id
+        """,
+        (tenant_id,),
+    ).fetchall()
+    reasons: Counter[str] = Counter()
+    mismatched = 0
+    retired = 0
+    for chunk in chunks:
+        mismatch_reasons: set[str] = set()
+        fact = facts.get(str(chunk["customer_id"]))
+        payload: Mapping[str, Any] = {}
+        try:
+            loaded = json.loads(str(chunk["record_json"] or ""))
+            if isinstance(loaded, Mapping):
+                payload = loaded
+            else:
+                mismatch_reasons.add("invalid_chunk_payload")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            mismatch_reasons.add("invalid_chunk_payload")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        if fact is None:
+            mismatch_reasons.add("canonical_fact_missing")
+        else:
+            fact_at = parse_aware_utc(fact["last_purchase_at"])
+            if (
+                str(fact["computability"] or "") != "computed"
+                or int(fact["deals_cnt"] or 0) <= 0
+                or fact_at is None
+                or fact_at > cutoff
+            ):
+                mismatch_reasons.add("canonical_fact_not_eligible")
+            else:
+                event_at = parse_aware_utc(chunk["event_at"])
+                metadata_at = parse_aware_utc(metadata.get("last_purchase_at"))
+                if event_at is None or abs((event_at - fact_at).total_seconds()) > 1:
+                    mismatch_reasons.add("event_at_mismatch")
+                if metadata_at is None or abs((metadata_at - fact_at).total_seconds()) > 1:
+                    mismatch_reasons.add("metadata_date_mismatch")
+                for key in ("total_in", "total_out"):
+                    projected = _money_value(metadata.get(key))
+                    canonical = _money_value(fact[key])
+                    if projected is None or canonical is None or round(projected, 2) != round(canonical, 2):
+                        mismatch_reasons.add(f"{key}_mismatch")
+                try:
+                    projected_deals = int(metadata.get("deals_cnt"))
+                except (TypeError, ValueError):
+                    projected_deals = -1
+                if projected_deals != int(fact["deals_cnt"] or 0):
+                    mismatch_reasons.add("deals_cnt_mismatch")
+        if not mismatch_reasons:
+            continue
+        mismatched += 1
+        reasons.update(mismatch_reasons)
+        result = store.retire_bot_context_chunk(
+            str(chunk["chunk_id"]),
+            reason="purchase_projection_mismatch",
+            actor="stage5_money_ingest",
+        )
+        retired += int(result.status == "updated")
+    return {
+        "active_chunks_seen": len(chunks),
+        "canonical_fact_rows": len(facts),
+        "mismatched_chunks": mismatched,
+        "retired_chunks": retired,
+        "reason_counts": dict(sorted(reasons.items())),
+        "active_mismatches_after": max(0, mismatched - retired),
+    }
 
 
 def _event_from_plan(plan: PlannedMoneyEvent) -> TimelineEvent:

@@ -12,6 +12,7 @@ import pytest
 import mango_mvp.customer_timeline.stage5_money_ingest as stage5_module
 
 from mango_mvp.customer_timeline.contracts import (
+    BotContextChunk,
     CustomerIdentity,
     CustomerOpportunity,
     IdentityStatus,
@@ -27,6 +28,7 @@ from mango_mvp.customer_timeline.stage5_money_ingest import (
     refresh_customer_purchases_v1,
     run_stage5_money_ingest,
 )
+from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_run_lock
 
 
@@ -527,6 +529,100 @@ def test_stage5_missing_amo_event_time_uses_run_as_of_boundary(tmp_path: Path) -
         ).fetchone()
     assert event_at == NOW.isoformat()
     assert plan == (12000.0, 1)
+
+
+def test_stage5_retires_stale_future_purchase_history_without_touching_payment_event(tmp_path: Path) -> None:
+    db_path, _source_path, _out_dir = _fixture(tmp_path)
+    payment_at = NOW - timedelta(days=30)
+    false_future_at = NOW + timedelta(days=180)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        payment = TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer-1",
+            event_type=TimelineEventType.TALLANTO_PAYMENT,
+            event_at=payment_at,
+            source_system="tallanto_crm_call",
+            source_id="confirmed-payment",
+            source_ref="tallanto:most_finances:confirmed-payment",
+            direction=TimelineDirection.SYSTEM,
+            match_status="strong_unique",
+            record={"amount": 5000, "payment_direction": "in"},
+            created_at=payment_at,
+        )
+        store.upsert_event(payment)
+        for chunk_id, projected_at in (
+            ("legacy-future-purchase", false_future_at),
+            ("canonical-purchase", payment_at),
+        ):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id="customer-1",
+                    chunk_id=chunk_id,
+                    source_system="customer_purchases_v1",
+                    source_ref=f"customer_purchases_v1:customer-1:all_time:fact:{chunk_id}",
+                    chunk_type="purchase_history",
+                    text="Подтверждённая оплата.",
+                    summary="Подтверждённая оплата.",
+                    event_at=projected_at,
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata={
+                        "client_safe": True,
+                        "last_purchase_at": projected_at.isoformat(),
+                        "total_in": 5000,
+                        "total_out": 0,
+                        "deals_cnt": 1,
+                    },
+                    created_at=NOW,
+                )
+            )
+
+    first = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    repeat = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        bot_context = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        chunk = con.execute(
+            "SELECT allowed_for_bot,requires_manager_review,superseded_by FROM bot_context_chunks "
+            "WHERE chunk_id='legacy-future-purchase'"
+        ).fetchone()
+        canonical_chunk = con.execute(
+            "SELECT allowed_for_bot,requires_manager_review,superseded_by FROM bot_context_chunks "
+            "WHERE chunk_id='canonical-purchase'"
+        ).fetchone()
+        payment = con.execute(
+            "SELECT superseded_by FROM timeline_events WHERE source_id='confirmed-payment'"
+        ).fetchone()
+        fact = con.execute(
+            "SELECT last_purchase_at FROM customer_purchases_v1 "
+            "WHERE customer_id='customer-1' AND money_kind='fact'"
+        ).fetchone()
+
+    assert first["purchase_history_reconciliation"]["retired_chunks"] == 1
+    assert first["purchase_history_reconciliation"]["active_mismatches_after"] == 0
+    assert repeat["purchase_history_reconciliation"]["mismatched_chunks"] == 0
+    assert repeat["purchase_history_reconciliation"]["retired_chunks"] == 0
+    assert tuple(chunk) == (1, 0, "retired:purchase_projection_mismatch")
+    assert tuple(canonical_chunk) == (1, 0, None)
+    assert bot_context["summary"]["review_required_chunks"] == 0
+    assert {item["chunk_id"] for item in bot_context["items"]} == {"canonical-purchase"}
+    assert payment["superseded_by"] is None
+    assert fact["last_purchase_at"] == payment_at.isoformat()
 
 
 def test_stage5_is_sole_plan_owner_and_preserves_other_tenant(tmp_path: Path) -> None:

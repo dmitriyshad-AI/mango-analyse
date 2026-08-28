@@ -275,7 +275,7 @@ def test_operational_list_and_search_hide_graduate_only_but_keep_mixed_family_hi
                     text=f"scope-poison bot context {index}",
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"brand_context_authorized": True},
+                    metadata={"brand_context_authorized": True, "client_safe": True},
                     created_at=NOW + timedelta(minutes=index),
                 )
             )
@@ -443,7 +443,7 @@ def test_bot_safe_boundary_rejects_malformed_protected_json(
             source_id=f"malformed-{source_system}-{corrupt_event}",
             direction="inbound",
             match_status="strong_unique",
-            metadata={"brand_context_authorized": True},
+            metadata={"brand_context_authorized": True, "client_safe": True},
             created_at=NOW + timedelta(minutes=2),
         )
         store.upsert_event(event)
@@ -518,6 +518,7 @@ def test_read_api_bot_context_blocks_raw_mail_even_when_stored_open(tmp_path: Pa
                     metadata={
                         "message_sha256": "bab8a94ccfc211a7e15956076b3d7d00519bde54efc3fdc3e5a855fba546b093",
                         "brand_context_authorized": True,
+                        "client_safe": True,
                     },
                     created_at=NOW + timedelta(minutes=3),
                 )
@@ -547,7 +548,9 @@ def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chu
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         for suffix, event_auth, chunk_auth in cases:
             event_metadata = {} if event_auth is None else {"brand_context_authorized": event_auth}
-            chunk_metadata = {} if chunk_auth is None else {"brand_context_authorized": chunk_auth}
+            chunk_metadata = {"client_safe": True}
+            if chunk_auth is not None:
+                chunk_metadata["brand_context_authorized"] = chunk_auth
             event = TimelineEvent(
                 tenant_id="foton",
                 customer_id=customer_id,
@@ -588,12 +591,14 @@ def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chu
                 text="brandgateprobe orphan",
                 allowed_for_bot=True,
                 requires_manager_review=False,
-                metadata={"brand_context_authorized": True},
+                metadata={"brand_context_authorized": True, "client_safe": True},
                 created_at=NOW + timedelta(minutes=4),
             )
         )
         for suffix, authorized in (("summary-good", True), ("summary-missing", None)):
-            metadata = {} if authorized is None else {"brand_context_authorized": authorized}
+            metadata = {"client_safe": True}
+            if authorized is not None:
+                metadata["brand_context_authorized"] = authorized
             store.upsert_bot_context_chunk(
                 BotContextChunk(
                     tenant_id="foton",
@@ -673,7 +678,7 @@ def test_bot_safe_reader_rejects_poisoned_raw_sources_even_with_all_env_bypasses
                     text=f"readboundarypoison {source_system}",
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"brand_context_authorized": True},
+                    metadata={"brand_context_authorized": True, "client_safe": True},
                     created_at=NOW + timedelta(minutes=10 + index),
                 )
             )
@@ -730,7 +735,7 @@ def test_bot_safe_reader_uses_one_strict_as_of_cutoff_before_limit_and_search(tm
                     event_at=event_at,
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"brand_context_authorized": True},
+                    metadata={"brand_context_authorized": True, "client_safe": True},
                     created_at=event_at,
                 )
             )
@@ -769,6 +774,64 @@ def test_bot_safe_reader_uses_one_strict_as_of_cutoff_before_limit_and_search(tm
         "safe-past",
         "safe-future-purchase",
     }
+
+
+def test_bot_safe_reader_fails_closed_on_client_safe_metadata(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for chunk_id, metadata in (
+            ("client-safe-true", {"client_safe": True}),
+            ("client-safe-false", {"client_safe": False}),
+            ("client-safe-missing", {}),
+            ("client-safe-string", {"client_safe": "true"}),
+            ("client-safe-malformed", {}),
+        ):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=chunk_id,
+                    source_system="trusted_summary",
+                    source_ref=f"client-safe:{chunk_id}",
+                    chunk_type="bot_safe_summary",
+                    text=f"clientsafeprobe {chunk_id}",
+                    event_at=NOW - timedelta(minutes=1),
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata=metadata,
+                    created_at=NOW - timedelta(minutes=1),
+                )
+            )
+        store._con.execute(  # noqa: SLF001 - malformed legacy poison bypasses the writer contract.
+            "UPDATE bot_context_chunks SET record_json='not-json' WHERE chunk_id='client-safe-malformed'"
+        )
+        store._con.commit()  # noqa: SLF001
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True, limit=50)
+        fts = api.search(
+            "foton",
+            "clientsafeprobe",
+            customer_id=customer_id,
+            allowed_for_bot=True,
+            limit=50,
+        )
+        api.store._fts_enabled = False  # noqa: SLF001 - exercise the same SQL fallback gate.
+        fallback = api.search(
+            "foton",
+            "clientsafeprobe",
+            customer_id=customer_id,
+            allowed_for_bot=True,
+            limit=50,
+        )
+
+    assert {item["chunk_id"] for item in context["items"] if item["chunk_id"].startswith("client-safe-")} == {
+        "client-safe-true"
+    }
+    assert {item["id"] for item in fts["result"]["items"]} == {"client-safe-true"}
+    assert {item["id"] for item in fallback["result"]["items"]} == {"client-safe-true"}
 
 
 def test_read_api_summary_open_conflicts_is_global_not_recent_limit(tmp_path: Path) -> None:
@@ -1241,7 +1304,11 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
             relevance_tags=("sales", "price"),
             allowed_for_bot=True,
             requires_manager_review=False,
-            metadata={"raw_file": "hidden", "next_step": {"status": "needs_manager_review", "display_text": "Спорный текст шага"}},
+            metadata={
+                "client_safe": True,
+                "raw_file": "hidden",
+                "next_step": {"status": "needs_manager_review", "display_text": "Спорный текст шага"},
+            },
             created_at=NOW + timedelta(minutes=1),
         )
     )

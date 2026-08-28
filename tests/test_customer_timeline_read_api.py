@@ -211,7 +211,7 @@ def test_bot_safe_boundary_rejects_malformed_protected_json(
     assert all(item.get("chunk_id") != chunk.chunk_id for item in result["items"])
 
 
-def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_path: Path, monkeypatch) -> None:
+def test_read_api_bot_context_blocks_raw_mail_even_when_stored_open(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE", "1")
     monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
     db_path, customer_id = seed_timeline_db(tmp_path)
@@ -260,8 +260,9 @@ def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_pat
         context = api.bot_context("foton", customer_id, allowed_only=True, limit=20)
 
     mail_items = [item for item in context["items"] if item.get("source_system") == "mail_archive_stage2"]
-    assert len(mail_items) == 1
-    assert context["summary"]["allowed_chunks"] > context["summary"]["visible_chunks"]
+    assert mail_items == []
+    assert context["summary"]["total_chunks"] > context["summary"]["allowed_chunks"]
+    assert "Первый вариант письма" not in json.dumps(context, ensure_ascii=False)
     assert "Дубль того же письма" not in json.dumps(context, ensure_ascii=False)
 
 
@@ -354,9 +355,173 @@ def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chu
         )
 
     visible = {item["chunk_id"] for item in context["items"] if str(item.get("chunk_id") or "").startswith(("auth-", "summary-"))}
-    assert visible == {"auth-good", "summary-good"}
+    assert visible == {"summary-good"}
     assert {item["scope"] for item in search["result"]["items"]} == {"bot_context"}
-    assert {item["id"] for item in search["result"]["items"]} == {"auth-good", "summary-good"}
+    assert {item["id"] for item in search["result"]["items"]} == {"summary-good"}
+
+
+def test_bot_safe_reader_rejects_poisoned_raw_sources_even_with_all_env_bypasses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE", "1")
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE", "1")
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    forbidden_sources = (
+        "mail_archive_stage2",
+        "wappi_telegram",
+        "wappi_max",
+        "mango_processed_summary",
+        "amocrm_event",
+    )
+    chunk_ids: list[str] = []
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index, source_system in enumerate((*forbidden_sources, "customer_timeline_bot_safe_summary")):
+            event = TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                event_type="system_note",
+                event_at=NOW + timedelta(minutes=10 + index),
+                source_system="customer_timeline_bot_safe_summary",
+                source_id=f"read-boundary-{index}",
+                direction="system",
+                match_status="strong_unique",
+                metadata={"brand_context_authorized": True},
+                created_at=NOW + timedelta(minutes=10 + index),
+            )
+            store.upsert_event(event)
+            chunk_id = f"read-boundary-{index}"
+            chunk_ids.append(chunk_id)
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=chunk_id,
+                    event_id=event.event_id,
+                    source_system="customer_timeline_bot_safe_summary",
+                    source_ref=f"read-boundary:{index}",
+                    chunk_type="bot_safe_summary",
+                    text=f"readboundarypoison {source_system}",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata={"brand_context_authorized": True},
+                    created_at=NOW + timedelta(minutes=10 + index),
+                )
+            )
+        store._con.executemany(  # noqa: SLF001 - poison fixture bypasses the writer gate intentionally.
+            "UPDATE bot_context_chunks SET source_system=? WHERE chunk_id=?",
+            zip(forbidden_sources, chunk_ids[:-1]),
+        )
+        store._con.commit()  # noqa: SLF001
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True, limit=50)
+        fts = api.search(
+            "foton",
+            "readboundarypoison",
+            customer_id=customer_id,
+            allowed_for_bot=True,
+            limit=50,
+        )
+        api.store._fts_enabled = False  # noqa: SLF001 - exercise the SQL fallback boundary too.
+        fallback = api.search(
+            "foton",
+            "readboundarypoison",
+            customer_id=customer_id,
+            allowed_for_bot=True,
+            limit=50,
+        )
+
+    expected = {chunk_ids[-1]}
+    assert {item["chunk_id"] for item in context["items"] if item["chunk_id"] in chunk_ids} == expected
+    assert {item["id"] for item in fts["result"]["items"]} == expected
+    assert {item["id"] for item in fallback["result"]["items"]} == expected
+
+
+def test_bot_safe_reader_uses_one_strict_as_of_cutoff_before_limit_and_search(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    future_at = NOW + timedelta(days=30)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for chunk_id, chunk_type, event_at in (
+            ("safe-past", "bot_safe_summary", NOW - timedelta(minutes=1)),
+            ("safe-future-purchase", "purchase_history", future_at),
+            ("safe-malformed", "bot_safe_summary", NOW - timedelta(minutes=2)),
+        ):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=chunk_id,
+                    source_system="customer_timeline_bot_safe_summary",
+                    source_ref=f"temporal:{chunk_id}",
+                    chunk_type=chunk_type,
+                    text=f"temporalprobe {chunk_id}",
+                    event_at=event_at,
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata={"brand_context_authorized": True},
+                    created_at=event_at,
+                )
+            )
+        store._con.execute(  # noqa: SLF001 - malformed legacy fixture bypasses contracts intentionally.
+            "UPDATE bot_context_chunks SET event_at='not-a-time',created_at='not-a-time' WHERE chunk_id='safe-malformed'"
+        )
+        store._con.commit()  # noqa: SLF001
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        current = api.bot_context("foton", customer_id, allowed_only=True, as_of=NOW, limit=50)
+        current_search = api.search(
+            "foton", "temporalprobe", customer_id=customer_id, allowed_for_bot=True, as_of=NOW, limit=50
+        )
+        later = api.bot_context(
+            "foton", customer_id, allowed_only=True, as_of=future_at + timedelta(seconds=1), limit=50
+        )
+        api.store._fts_enabled = False  # noqa: SLF001 - prove the fallback uses the same cutoff.
+        later_fallback = api.search(
+            "foton",
+            "temporalprobe",
+            customer_id=customer_id,
+            allowed_for_bot=True,
+            as_of=future_at + timedelta(seconds=1),
+            limit=50,
+        )
+
+    assert {item["chunk_id"] for item in current["items"] if item["chunk_id"].startswith("safe-")} == {"safe-past"}
+    assert {item["id"] for item in current_search["result"]["items"]} == {"safe-past"}
+    assert {item["chunk_id"] for item in later["items"] if item["chunk_id"].startswith("safe-")} == {
+        "safe-past",
+        "safe-future-purchase",
+    }
+    assert {item["id"] for item in later_fallback["result"]["items"]} == {
+        "safe-past",
+        "safe-future-purchase",
+    }
+
+
+def test_read_api_summary_open_conflicts_is_global_not_recent_limit(tmp_path: Path) -> None:
+    db_path, _ = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index in range(3):
+            store.record_conflict(
+                "foton",
+                conflict_type="audit_probe",
+                entity_refs=(f"probe:{index}",),
+                actor="test",
+            )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        result = api.summary("foton", recent_limit=1)
+
+    assert result["summary"]["open_conflicts"] == 4
+    assert result["recent_conflicts"]["summary"]["open_conflicts"] == 1
 
 
 def test_read_api_routes_are_get_only_and_report_is_deterministic(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import plistlib
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,9 +34,11 @@ from mango_mvp.customer_timeline.nightly_service import (
     _proof_family_child_graph,
     run_nightly_service,
     run_tallanto_money_api_step,
+    service_lock,
     service_config_from_json,
     stage4b_report_ok,
 )
+from mango_mvp.customer_timeline.nightly_incremental import single_run_lock
 
 
 NOW = datetime(2026, 7, 3, 3, 20, tzinfo=timezone.utc)
@@ -495,6 +498,32 @@ def test_nightly_service_keeps_service_lock_through_manifest_publish(tmp_path: P
 
     assert report["snapshot_manifest"]["counts"]["timeline_events"] == 1
     assert state["locked"] is False
+
+
+def test_service_and_standalone_incremental_share_one_run_lock(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+
+    with service_lock(db_path, timeout_seconds=1) as service_info:
+        errors: list[BaseException] = []
+
+        def competing_writer() -> None:
+            try:
+                with single_run_lock(db_path, timeout_seconds=0.01):
+                    pass
+            except BaseException as exc:  # noqa: BLE001 - assertion captures thread failure.
+                errors.append(exc)
+
+        thread = threading.Thread(target=competing_writer)
+        thread.start()
+        thread.join(timeout=1)
+        assert len(errors) == 1
+        assert isinstance(errors[0], TimeoutError)
+        assert "run lock timeout" in str(errors[0])
+
+        with single_run_lock(db_path, timeout_seconds=0.01) as nested_info:
+            assert nested_info["path"] == service_info["path"]
+            assert nested_info["reentrant"] is True
 
 
 def test_nightly_service_rejects_paths_outside_allowed_root(tmp_path: Path) -> None:
@@ -1363,6 +1392,7 @@ def test_nightly_service_refreshes_existing_purchase_view_after_tallanto_money(
     report = run_nightly_service(service_config_from_json(config_path))
 
     assert captured["path"] == db_path
+    assert captured["kwargs"]["as_of"].isoformat() == report["as_of"]
     assert report["steps"][0]["status"] == "ok"
     assert report["steps"][0]["summary"]["customer_purchases_v1"]["rows_upserted"] == 1
 
@@ -2616,8 +2646,9 @@ def test_nightly_service_resumes_from_last_completed_step(
     (prior_run_dir / "progress.json").write_text(
         json.dumps(
             {
-                "schema_version": "customer_timeline_nightly_service_progress_v2",
+                "schema_version": "customer_timeline_nightly_service_progress_v3",
                 "run_id": prior_run_id,
+                "as_of": "2026-01-01T00:00:00+00:00",
                 "total_steps": 2,
                 "completed_steps": 1,
                 "config_fingerprint": config_fingerprint,
@@ -2640,6 +2671,7 @@ def test_nightly_service_resumes_from_last_completed_step(
 
     assert report["run_id"] == prior_run_id
     assert report["resumed_from_run_id"] == prior_run_id
+    assert report["as_of"] == "2026-01-01T00:00:00+00:00"
     assert report["steps"][0] == prior_step_report
     assert report["steps"][1]["name"] == "local_jsonl"
     assert report["steps"][1]["status"] == "ok"

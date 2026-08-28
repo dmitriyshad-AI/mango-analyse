@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -10,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +21,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     NightlyIncrementalConfig,
     completed_import_source_names,
     run_nightly_incremental,
+    single_run_lock,
     summarize_report,
 )
 from mango_mvp.customer_timeline.mail_link_enrich import MailLinkEnrichConfig, run_mail_link_enrich
@@ -50,6 +49,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     run_wappi_history_import,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.temporal import normalize_aware_utc, parse_aware_utc
 
 GIT_CONTEXT_ENV_KEYS = (
     "GIT_DIR",
@@ -189,20 +189,24 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         # and is no longer resumable). See find_resumable_run for the full
         # eligibility rules (fingerprint match, leading "ok" prefix, DB
         # checkpoint + quick_check match).
-        resumed_run_id, resumed_run_dir, resumed_steps = find_resumable_run(
+        resumed_run_id, resumed_run_dir, resumed_steps, resumed_as_of = find_resumable_run(
             out_root, config_fingerprint, timeline_db=timeline_db
         )
         if resumed_run_id is not None and resumed_run_dir is not None:
+            assert resumed_as_of is not None
             run_id = resumed_run_id
             run_dir = resumed_run_dir
+            run_as_of = resumed_as_of
         else:
             run_dir = out_root / f"run_{run_id}"
+            run_as_of = started
         run_dir.mkdir(parents=True, exist_ok=True)
         run_dir.chmod(0o700)
         report: dict[str, Any] = {
             "schema_version": NIGHTLY_SERVICE_SCHEMA_VERSION,
             "run_id": run_id,
             "started_at": started.isoformat(),
+            "as_of": run_as_of.isoformat(),
             "timeline_db": str(timeline_db),
             "allowed_root": str(allowed_root),
             "out_root": str(out_root),
@@ -237,6 +241,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 completed_steps=report["steps"],
                 config_fingerprint=config_fingerprint,
                 timeline_db=timeline_db,
+                run_as_of=run_as_of,
             )
             step_started = time.monotonic()
             if not step.enabled:
@@ -527,6 +532,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                                 timeline_db,
                                 allowed_root=allowed_root,
                                 tenant_id=config.tenant_id,
+                                as_of=run_as_of,
                             ),
                         }
                 except Exception as exc:
@@ -757,7 +763,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         Path(str(raw.get("timeline_db") or timeline_db)),
                         allowed_root=Path(str(raw.get("allowed_root") or allowed_root)),
                         tenant_id=str(raw.get("tenant_id") or config.tenant_id),
-                        as_of=datetime.now(timezone.utc),
+                        as_of=run_as_of,
                         apply=bool(raw.get("apply", True)),
                     )
                 except Exception as exc:
@@ -918,6 +924,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
             completed_steps=report["steps"],
             config_fingerprint=config_fingerprint,
             timeline_db=timeline_db,
+            run_as_of=run_as_of,
         )
         # B5: PRAGMA quick_check runs exactly once here, right before the
         # publish decision (the only other place it runs is find_resumable_run,
@@ -2163,26 +2170,7 @@ def file_fingerprint(path: Path) -> Mapping[str, Any]:
     }
 
 
-@contextmanager
-def service_lock(db_path: Path, *, timeout_seconds: float) -> Iterator[Mapping[str, Any]]:
-    lock_path = Path(str(db_path) + ".nightly_service.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    handle = lock_path.open("a+", encoding="utf-8")
-    try:
-        while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                waited = time.monotonic() - started
-                if waited >= timeout_seconds:
-                    raise TimeoutError(f"nightly service lock timeout: {lock_path}")
-                time.sleep(0.2)
-        yield {"path": str(lock_path), "waited_seconds": round(time.monotonic() - started, 3)}
-    finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+service_lock = single_run_lock
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -2843,7 +2831,7 @@ def find_resumable_run(
     config_fingerprint: str,
     *,
     timeline_db: Path,
-) -> tuple[Optional[str], Optional[Path], list[Mapping[str, Any]]]:
+) -> tuple[Optional[str], Optional[Path], list[Mapping[str, Any]], Optional[datetime]]:
     """Find the newest interrupted run_dir under out_root that can be resumed.
 
     Must be called only while holding the service lock (see
@@ -2870,7 +2858,7 @@ def find_resumable_run(
       idempotent run instead of resuming on top of an unknown DB state.
     """
     if not out_root.is_dir():
-        return None, None, []
+        return None, None, [], None
     for candidate in sorted((path for path in out_root.glob("run_*") if path.is_dir()), reverse=True):
         if (candidate / "service_report.json").exists():
             continue
@@ -2887,6 +2875,9 @@ def find_resumable_run(
         completed = progress.get("steps")
         if not run_id or not isinstance(completed, list):
             continue
+        run_as_of = parse_aware_utc(progress.get("as_of"))
+        if run_as_of is None:
+            continue
         resumable_prefix: list[Mapping[str, Any]] = []
         for item in completed:
             if isinstance(item, Mapping) and item.get("status") == "ok":
@@ -2902,8 +2893,8 @@ def find_resumable_run(
             continue
         if not db_quick_check_ok(timeline_db):
             continue
-        return run_id, candidate, resumable_prefix
-    return None, None, []
+        return run_id, candidate, resumable_prefix, run_as_of
+    return None, None, [], None
 
 
 def write_progress(
@@ -2914,11 +2905,14 @@ def write_progress(
     completed_steps: Sequence[Mapping[str, Any]],
     config_fingerprint: str,
     timeline_db: Path,
+    run_as_of: datetime,
 ) -> None:
     completed_count = len(completed_steps)
+    cutoff = normalize_aware_utc(run_as_of, field_name="run_as_of")
     payload = {
-        "schema_version": "customer_timeline_nightly_service_progress_v2",
+        "schema_version": "customer_timeline_nightly_service_progress_v3",
         "run_id": run_id,
+        "as_of": cutoff.isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_steps": total_steps,
         "completed_steps": completed_count,

@@ -24,7 +24,17 @@ from mango_mvp.customer_timeline.purchases import (
     upsert_customer_purchase_rows,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, json_dumps, json_loads
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    customer_timeline_run_lock,
+    json_dumps,
+    json_loads,
+)
+from mango_mvp.customer_timeline.temporal import (
+    normalize_aware_utc,
+    parse_aware_utc,
+    register_temporal_sql_functions,
+)
 
 
 STAGE5_MONEY_INGEST_SCHEMA_VERSION = "stage5_money_ingest_v1"
@@ -42,12 +52,18 @@ class Stage5MoneyIngestConfig:
     tenant_id: str = "foton"
     apply: bool = False
     allow_test_paths: bool = False
+    as_of: datetime | None = None
+    lock_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timeline_db_path", Path(self.timeline_db_path).expanduser())
         object.__setattr__(self, "allowed_root", Path(self.allowed_root).expanduser())
         object.__setattr__(self, "source_path", Path(self.source_path).expanduser())
         object.__setattr__(self, "out_dir", Path(self.out_dir).expanduser())
+        if self.as_of is not None:
+            object.__setattr__(self, "as_of", normalize_aware_utc(self.as_of))
+        if self.lock_timeout_seconds < 0:
+            raise ValueError("lock_timeout_seconds must not be negative")
 
 
 @dataclass(frozen=True)
@@ -68,7 +84,17 @@ class PlannedMoneyEvent:
 
 
 def run_stage5_money_ingest(config: Stage5MoneyIngestConfig) -> Mapping[str, Any]:
+    db_path = guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    if not config.apply:
+        return _run_stage5_money_ingest_unlocked(config)
+    with customer_timeline_run_lock(db_path, timeout_seconds=config.lock_timeout_seconds):
+        return _run_stage5_money_ingest_unlocked(config)
+
+
+def _run_stage5_money_ingest_unlocked(config: Stage5MoneyIngestConfig) -> Mapping[str, Any]:
     started = time.monotonic()
+    generated_at = datetime.now(timezone.utc)
+    run_as_of = normalize_aware_utc(config.as_of or generated_at)
     db_path = guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
     source_path = guard_customer_timeline_output_path(config.source_path, config.allowed_root)
     out_dir = guard_customer_timeline_output_path(config.out_dir, config.allowed_root)
@@ -80,18 +106,31 @@ def run_stage5_money_ingest(config: Stage5MoneyIngestConfig) -> Mapping[str, Any
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source = _load_source(source_path)
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
+    store = (
+        CustomerTimelineSQLiteStore(db_path, allowed_root=config.allowed_root)
+        if config.apply
+        else CustomerTimelineSQLiteStore.open_read_only(
+            db_path,
+            allowed_root=config.allowed_root,
+        )
+    )
+    con = store._con
     try:
         before = _metrics(con)
-        plans, skipped = _build_money_event_plan(con, source, tenant_id=config.tenant_id)
+        plans, skipped = _build_money_event_plan(
+            con,
+            source,
+            tenant_id=config.tenant_id,
+            as_of=run_as_of,
+        )
         report: dict[str, Any] = {
             "schema_version": STAGE5_MONEY_INGEST_SCHEMA_VERSION,
             "mode": "apply" if config.apply else "dry_run",
             "timeline_db_path": str(db_path),
             "source_path": str(source_path),
             "tenant_id": config.tenant_id,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": generated_at.isoformat(),
+            "as_of": run_as_of.isoformat(),
             "safety": {
                 "prod_write": False,
                 "crm_write": False,
@@ -105,12 +144,14 @@ def run_stage5_money_ingest(config: Stage5MoneyIngestConfig) -> Mapping[str, Any
             "plan": _plan_summary(plans, skipped),
         }
         if config.apply:
-            write_result = _apply_plan(db_path, config.allowed_root, plans)
-            purchases_result = refresh_customer_purchases_v1(
-                db_path,
-                allowed_root=config.allowed_root,
-                tenant_id=config.tenant_id,
-            )
+            with store.bulk_write():
+                write_result = _apply_plan(store, plans)
+                purchases_result = _refresh_customer_purchases_v1(
+                    con,
+                    tenant_id=config.tenant_id,
+                    as_of=run_as_of,
+                )
+                store._commit()  # noqa: SLF001 - include direct projection SQL in the same Store transaction.
             report["apply"] = {**write_result, "customer_purchases_v1": purchases_result}
         else:
             report["apply"] = {"events_written": 0, "customer_purchases_v1": {"rows_upserted": 0}, "dry_run": True}
@@ -133,7 +174,7 @@ def run_stage5_money_ingest(config: Stage5MoneyIngestConfig) -> Mapping[str, Any
         (out_dir / "stage5_money_ingest_report.json").write_text(json_dumps(report), encoding="utf-8")
         return report
     finally:
-        con.close()
+        store.close()
 
 
 def refresh_customer_purchases_v1(
@@ -141,58 +182,99 @@ def refresh_customer_purchases_v1(
     *,
     allowed_root: Path,
     tenant_id: str,
+    as_of: datetime | None = None,
+    lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
     db_path = guard_customer_timeline_output_path(db_path, allowed_root)
     _assert_stage5_staging_path(db_path, allowed_root, allow_test_paths=False)
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    try:
-        ensure_customer_purchases_v1_table(con)
-        aggregates = _purchase_aggregates(con, tenant_id=tenant_id)
-        rows = [_purchase_row(row) for row in aggregates.values()]
-        desired_fact_keys = {
-            (str(row["customer_id"]), str(row["period"]))
-            for row in rows
-            if row["money_kind"] == PURCHASE_MONEY_KIND_FACT
-        }
-        existing_fact_keys = {
-            (str(row[0]), str(row[1]))
-            for row in con.execute(
-                "SELECT customer_id,period FROM customer_purchases_v1 WHERE tenant_id=? AND money_kind=?",
-                (tenant_id, PURCHASE_MONEY_KIND_FACT),
+    cutoff = normalize_aware_utc(as_of or datetime.now(timezone.utc))
+    if lock_timeout_seconds < 0:
+        raise ValueError("lock_timeout_seconds must not be negative")
+    with customer_timeline_run_lock(db_path, timeout_seconds=lock_timeout_seconds):
+        with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
+            result = _refresh_customer_purchases_v1(
+                store._con,
+                tenant_id=tenant_id,
+                as_of=cutoff,
             )
-        }
-        stale_fact_keys = existing_fact_keys - desired_fact_keys
-        con.executemany(
-            "DELETE FROM customer_purchases_v1 "
-            "WHERE tenant_id=? AND customer_id=? AND period=? AND money_kind=?",
-            (
-                (tenant_id, customer_id, period, PURCHASE_MONEY_KIND_FACT)
-                for customer_id, period in stale_fact_keys
-            ),
+            store._con.commit()
+            return result
+
+
+def _refresh_customer_purchases_v1(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    as_of: datetime,
+) -> Mapping[str, Any]:
+    cutoff = normalize_aware_utc(as_of)
+    register_temporal_sql_functions(con)
+    ensure_customer_purchases_v1_table(con)
+    aggregates = _purchase_aggregates(con, tenant_id=tenant_id, as_of=cutoff)
+    rows = [_purchase_row(row) for row in aggregates.values()]
+    desired_fact_keys = {
+        (str(row["customer_id"]), str(row["period"]))
+        for row in rows
+        if row["money_kind"] == PURCHASE_MONEY_KIND_FACT
+    }
+    existing_fact_keys = {
+        (str(row[0]), str(row[1]))
+        for row in con.execute(
+            "SELECT customer_id,period FROM customer_purchases_v1 WHERE tenant_id=? AND money_kind=?",
+            (tenant_id, PURCHASE_MONEY_KIND_FACT),
         )
-        upsert_customer_purchase_rows(con, rows)
-        con.commit()
-        return {
-            "rows_upserted": len(rows),
-            "stale_fact_rows_deleted": len(stale_fact_keys),
-            "customers_with_money": sum(1 for row in rows if (row["total_in"] or 0) or (row["total_out"] or 0)),
-            "total_in": round(sum(float(row["total_in"] or 0) for row in rows), 2),
-            "total_out": round(sum(float(row["total_out"] or 0) for row in rows), 2),
-            "computability": dict(Counter(str(row["computability"]) for row in rows)),
-            "money_kind": dict(Counter(str(row["money_kind"]) for row in rows)),
-        }
-    finally:
-        con.close()
+    }
+    stale_fact_keys = existing_fact_keys - desired_fact_keys
+    desired_plan_keys = {
+        (str(row["customer_id"]), str(row["period"]))
+        for row in rows
+        if row["money_kind"] == PURCHASE_MONEY_KIND_PLAN
+    }
+    existing_plan_keys = {
+        (str(row[0]), str(row[1]))
+        for row in con.execute(
+            "SELECT customer_id,period FROM customer_purchases_v1 "
+            "WHERE tenant_id=? AND money_kind=?",
+            (tenant_id, PURCHASE_MONEY_KIND_PLAN),
+        )
+    }
+    stale_plan_keys = existing_plan_keys - desired_plan_keys
+    con.executemany(
+        "DELETE FROM customer_purchases_v1 "
+        "WHERE tenant_id=? AND customer_id=? AND period=? AND money_kind=?",
+        (
+            (tenant_id, customer_id, period, money_kind)
+            for money_kind, stale_keys in (
+                (PURCHASE_MONEY_KIND_PLAN, stale_plan_keys),
+                (PURCHASE_MONEY_KIND_FACT, stale_fact_keys),
+            )
+            for customer_id, period in stale_keys
+        ),
+    )
+    upsert_customer_purchase_rows(con, rows)
+    return {
+        "as_of": cutoff.isoformat(),
+        "rows_upserted": len(rows),
+        "stale_fact_rows_deleted": len(stale_fact_keys),
+        "stale_plan_rows_deleted": len(stale_plan_keys),
+        "customers_with_money": sum(
+            1 for row in rows if (row["total_in"] or 0) or (row["total_out"] or 0)
+        ),
+        "total_in": round(sum(float(row["total_in"] or 0) for row in rows), 2),
+        "total_out": round(sum(float(row["total_out"] or 0) for row in rows), 2),
+        "computability": dict(Counter(str(row["computability"]) for row in rows)),
+        "money_kind": dict(Counter(str(row["money_kind"]) for row in rows)),
+    }
 
 
-def _apply_plan(db_path: Path, allowed_root: Path, plans: Sequence[PlannedMoneyEvent]) -> Mapping[str, Any]:
+def _apply_plan(
+    store: CustomerTimelineSQLiteStore,
+    plans: Sequence[PlannedMoneyEvent],
+) -> Mapping[str, Any]:
     status_counts: Counter[str] = Counter()
-    with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
-        with store.bulk_write():
-            for plan in plans:
-                result = store.upsert_event(_event_from_plan(plan), actor="stage5_money_ingest")
-                status_counts[result.status] += 1
+    for plan in plans:
+        result = store.upsert_event(_event_from_plan(plan), actor="stage5_money_ingest")
+        status_counts[result.status] += 1
     return {"events_written": len(plans), "write_status_counts": dict(status_counts)}
 
 
@@ -215,6 +297,7 @@ def _event_from_plan(plan: PlannedMoneyEvent) -> TimelineEvent:
         record=plan.record,
         metadata={
             "source_kind": "stage5_primary_money",
+            "plan_active": plan.amount_rub > 0,
             "raw_payload_persisted": False,
             "bot_context_chunk_created": False,
         },
@@ -227,12 +310,21 @@ def _build_money_event_plan(
     source: Mapping[str, Any],
     *,
     tenant_id: str,
+    as_of: datetime,
 ) -> tuple[tuple[PlannedMoneyEvent, ...], Mapping[str, int]]:
     skipped: Counter[str] = Counter()
     amo_by_id = _amo_leads_by_id(source)
+    existing_price_events = {
+        str(row["source_id"]): parse_aware_utc(row["event_at"])
+        for row in con.execute(
+            "SELECT source_id,event_at FROM timeline_events "
+            "WHERE tenant_id=? AND source_system=? AND superseded_by IS NULL",
+            (tenant_id, STAGE5_AMO_PRICE_SOURCE_SYSTEM),
+        ).fetchall()
+    }
     rows = con.execute(
         """
-        SELECT opportunity_id, customer_id, source_id, status, title, opened_at, closed_at, record_json
+        SELECT tenant_id, opportunity_id, customer_id, source_id, status, title, opened_at, closed_at, record_json
         FROM customer_opportunities
         WHERE tenant_id = ?
           AND source_system = 'amocrm_snapshot'
@@ -243,58 +335,141 @@ def _build_money_event_plan(
     ).fetchall()
     plans: list[PlannedMoneyEvent] = []
     for row in rows:
+        lead_id = str(row["source_id"])
+        price_source_id = f"lead:{lead_id}:price"
+        existing_event_at = existing_price_events.get(price_source_id)
         status = str(row["status"] or "")
         if not _is_paid_status(status):
             skipped["amo_not_paid_status"] += 1
+            if existing_event_at is not None:
+                plans.append(
+                    _money_event_plan(
+                        row,
+                        amo_by_id.get(lead_id) or {},
+                        amount=0.0,
+                        event_at=existing_event_at,
+                        inactive_reason="amo_not_paid_status",
+                    )
+                )
+                skipped["amo_projection_reconciled_inactive"] += 1
             continue
-        lead_id = str(row["source_id"])
         lead = amo_by_id.get(lead_id)
         if not lead:
             skipped["amo_missing_from_source"] += 1
             continue
+        source_status = str(lead.get("status_name") or lead.get("status") or "").strip()
+        if source_status and not _is_paid_status(source_status):
+            skipped["amo_source_not_paid_status"] += 1
+            if existing_event_at is not None:
+                plans.append(
+                    _money_event_plan(
+                        row,
+                        lead,
+                        amount=0.0,
+                        event_at=existing_event_at,
+                        inactive_reason="amo_source_not_paid_status",
+                    )
+                )
+                skipped["amo_projection_reconciled_inactive"] += 1
+            continue
         amount = _money_value(lead.get("price"))
         if amount is None or amount <= 0:
             skipped["amo_empty_price"] += 1
+            if existing_event_at is not None:
+                plans.append(
+                    _money_event_plan(
+                        row,
+                        lead,
+                        amount=0.0,
+                        event_at=existing_event_at,
+                        inactive_reason="amo_empty_price",
+                    )
+                )
+                skipped["amo_projection_reconciled_inactive"] += 1
             continue
-        event_at = _event_datetime(lead.get("closed_at") or row["closed_at"] or lead.get("updated_at") or row["opened_at"])
-        record = {
-            "source": "amo_get_lead_or_amo_api_get",
-            "source_payload": "safe_projection",
-            "raw_payload_persisted": False,
-            "lead_id": lead_id,
-            "amount_rub": amount,
-            "direction": "in",
-            "currency": "RUB",
-            "status": status,
-            "amo_status_id": lead.get("status_id"),
-            "amo_status_name": lead.get("status_name"),
-            "pipeline_id": lead.get("pipeline_id"),
-            "pipeline_name": lead.get("pipeline_name"),
-            "opportunity_title_hash": stable_digest({"title": row["title"] or ""}),
-            "money_source": "amo_lead_price",
-        }
+        raw_event_at = lead.get("closed_at") or row["closed_at"] or lead.get("updated_at") or row["opened_at"]
+        event_at = _event_datetime(raw_event_at, default=existing_event_at or as_of)
+        if event_at is None:
+            skipped["amo_invalid_event_at"] += 1
+            if existing_event_at is not None:
+                plans.append(
+                    _money_event_plan(
+                        row,
+                        lead,
+                        amount=0.0,
+                        event_at=existing_event_at,
+                        inactive_reason="amo_invalid_event_at",
+                    )
+                )
+                skipped["amo_projection_reconciled_inactive"] += 1
+            continue
         plans.append(
-            PlannedMoneyEvent(
-                tenant_id=tenant_id,
-                customer_id=str(row["customer_id"]),
-                opportunity_id=str(row["opportunity_id"]),
-                source_system=STAGE5_AMO_PRICE_SOURCE_SYSTEM,
-                source_id=f"lead:{lead_id}:price",
-                source_ref=f"amocrm:lead:{lead_id}",
-                event_type=TimelineEventType.AMO_DEAL_STAGE.value,
+            _money_event_plan(
+                row,
+                lead,
+                amount=amount,
                 event_at=event_at,
-                amount_rub=amount,
-                direction="in",
-                subject="AMO deal price",
-                summary="AMO deal price imported from read-only price field",
-                record=record,
             )
         )
     skipped.update(_tallanto_snapshot_skips(source))
     return tuple(plans), dict(skipped)
 
 
-def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tuple[str, str], dict[str, Any]]:
+def _money_event_plan(
+    row: sqlite3.Row,
+    lead: Mapping[str, Any],
+    *,
+    amount: float,
+    event_at: datetime,
+    inactive_reason: str | None = None,
+) -> PlannedMoneyEvent:
+    lead_id = str(row["source_id"])
+    active = amount > 0
+    record = {
+        "source": "amo_get_lead_or_amo_api_get",
+        "source_payload": "safe_projection",
+        "raw_payload_persisted": False,
+        "lead_id": lead_id,
+        "amount_rub": amount,
+        "direction": "in",
+        "currency": "RUB",
+        "status": str(row["status"] or ""),
+        "amo_status_id": lead.get("status_id"),
+        "amo_status_name": lead.get("status_name"),
+        "pipeline_id": lead.get("pipeline_id"),
+        "pipeline_name": lead.get("pipeline_name"),
+        "opportunity_title_hash": stable_digest({"title": row["title"] or ""}),
+        "money_source": "amo_lead_price",
+        "plan_active": active,
+        "inactive_reason": inactive_reason,
+    }
+    return PlannedMoneyEvent(
+        tenant_id=str(row["tenant_id"]),
+        customer_id=str(row["customer_id"]),
+        opportunity_id=str(row["opportunity_id"]),
+        source_system=STAGE5_AMO_PRICE_SOURCE_SYSTEM,
+        source_id=f"lead:{lead_id}:price",
+        source_ref=f"amocrm:lead:{lead_id}",
+        event_type=TimelineEventType.AMO_DEAL_STAGE.value,
+        event_at=event_at,
+        amount_rub=amount,
+        direction="in",
+        subject="AMO deal price",
+        summary=(
+            "AMO deal price imported from read-only price field"
+            if active
+            else "AMO deal price projection reconciled inactive"
+        ),
+        record=record,
+    )
+
+
+def _purchase_aggregates(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    as_of: datetime,
+) -> dict[tuple[str, str], dict[str, Any]]:
     aggregates: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "tenant_id": tenant_id,
@@ -305,24 +480,26 @@ def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tup
             "total_out": 0.0,
             "deals": set(),
             "last_purchase_at": None,
+            "last_purchase_key": None,
             "sources": Counter(),
         }
     )
     for row in con.execute(
         """
-        SELECT customer_id, opportunity_id, event_at, source_system, source_id, record_json
+        SELECT event_id, customer_id, opportunity_id, event_at, source_system, source_id, record_json
         FROM timeline_events
         WHERE tenant_id = ?
           AND customer_id IS NOT NULL
           AND customer_id != ''
           AND superseded_by IS NULL
+          AND mango_tz_at_or_before(event_at, ?) = 1
           AND (
             source_system = ?
             OR (source_system = 'tallanto_crm_call' AND event_type = 'tallanto_payment'
                 AND match_status IN ('strong_unique', 'manual'))
           )
         """,
-        (tenant_id, STAGE5_AMO_PRICE_SOURCE_SYSTEM),
+        (tenant_id, as_of.isoformat(), STAGE5_AMO_PRICE_SOURCE_SYSTEM),
     ):
         payload = json_loads(row["record_json"])
         record = payload.get("record") or {}
@@ -347,9 +524,13 @@ def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tup
             )
             if deal_or_payment_key:
                 item["deals"].add(str(deal_or_payment_key))
-            current_at = str(row["event_at"] or "")
-            if current_at and (item["last_purchase_at"] is None or current_at > item["last_purchase_at"]):
-                item["last_purchase_at"] = current_at
+            current_at = parse_aware_utc(row["event_at"])
+            if current_at is None:
+                raise ValueError("temporal predicate admitted invalid event_at")
+            current_key = (current_at.timestamp(), str(row["event_id"]))
+            if item["last_purchase_key"] is None or current_key > item["last_purchase_key"]:
+                item["last_purchase_at"] = current_at.isoformat()
+                item["last_purchase_key"] = current_key
         item["sources"][str(row["source_system"])] += 1
     return aggregates
 
@@ -414,12 +595,14 @@ def _source_summary(source: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _plan_summary(plans: Sequence[PlannedMoneyEvent], skipped: Mapping[str, int]) -> Mapping[str, Any]:
-    by_source = Counter(plan.source_system for plan in plans)
-    total_in = sum(plan.amount_rub for plan in plans if plan.direction == "in")
-    total_out = sum(plan.amount_rub for plan in plans if plan.direction == "out")
+    active_plans = tuple(plan for plan in plans if plan.amount_rub > 0)
+    by_source = Counter(plan.source_system for plan in active_plans)
+    total_in = sum(plan.amount_rub for plan in active_plans if plan.direction == "in")
+    total_out = sum(plan.amount_rub for plan in active_plans if plan.direction == "out")
     return {
-        "events_planned": len(plans),
-        "customers": len({plan.customer_id for plan in plans}),
+        "events_planned": len(active_plans),
+        "events_reconciled_inactive": len(plans) - len(active_plans),
+        "customers": len({plan.customer_id for plan in active_plans}),
         "source_system_counts": dict(by_source),
         "total_in": round(total_in, 2),
         "total_out": round(total_out, 2),
@@ -490,16 +673,12 @@ def _money_value(value: Any) -> float | None:
     return float(number)
 
 
-def _event_datetime(value: Any) -> datetime:
+def _event_datetime(value: Any, *, default: datetime) -> datetime | None:
     if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
         return datetime.fromtimestamp(int(value), tz=timezone.utc)
-    if isinstance(value, str) and value.strip():
-        text = value.strip()
-        if text.endswith("Z"):
-            text = f"{text[:-1]}+00:00"
-        parsed = datetime.fromisoformat(text)
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc)
+    if value not in (None, ""):
+        return parse_aware_utc(value)
+    return normalize_aware_utc(default, field_name="default_event_at")
 
 
 def _is_paid_status(value: str) -> bool:

@@ -29,23 +29,12 @@ def ensure_customer_purchases_v1_table(con: sqlite3.Connection) -> None:
 def upsert_customer_purchase_rows(
     con: sqlite3.Connection,
     rows: Sequence[Mapping[str, Any]],
-    *,
-    protect_computed_plan: bool = False,
 ) -> None:
     if not rows:
         return
     ensure_customer_purchases_v1_table(con)
-    where_clause = ""
-    if protect_computed_plan:
-        where_clause = """
-                WHERE NOT (
-                  customer_purchases_v1.money_kind = 'plan'
-                  AND customer_purchases_v1.computability = 'computed'
-                  AND excluded.computability <> 'computed'
-                )
-        """
     con.executemany(
-        f"""
+        """
         INSERT INTO customer_purchases_v1 (
           tenant_id, customer_id, period, money_kind, total_in, total_out, deals_cnt,
           last_purchase_at, sources_json, computability, code_version
@@ -62,7 +51,6 @@ def upsert_customer_purchase_rows(
           sources_json = excluded.sources_json,
           computability = excluded.computability,
           code_version = excluded.code_version
-        {where_clause}
         """,
         [normalize_customer_purchase_row(row) for row in rows],
     )
@@ -88,7 +76,7 @@ def normalize_customer_purchase_row(row: Mapping[str, Any]) -> Mapping[str, Any]
 
 
 def _create_customer_purchases_v1_table(con: sqlite3.Connection) -> None:
-    con.executescript(
+    con.execute(
         """
         CREATE TABLE IF NOT EXISTS customer_purchases_v1 (
           tenant_id TEXT NOT NULL,
@@ -104,28 +92,32 @@ def _create_customer_purchases_v1_table(con: sqlite3.Connection) -> None:
           computability TEXT NOT NULL,
           code_version TEXT NOT NULL,
           PRIMARY KEY (tenant_id, customer_id, period, money_kind)
-        );
+        )
         """
     )
     _create_customer_purchases_v1_indexes(con)
 
 
 def _create_customer_purchases_v1_indexes(con: sqlite3.Connection) -> None:
-    con.executescript(
+    con.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_customer_purchases_v1_customer
-          ON customer_purchases_v1(tenant_id, customer_id, money_kind, deals_cnt);
+          ON customer_purchases_v1(tenant_id, customer_id, money_kind, deals_cnt)
+        """
+    )
+    con.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_customer_purchases_v1_computability
-          ON customer_purchases_v1(tenant_id, money_kind, computability, last_purchase_at);
+          ON customer_purchases_v1(tenant_id, money_kind, computability, last_purchase_at)
         """
     )
 
 
 def _rebuild_customer_purchases_v1_table(con: sqlite3.Connection, *, columns: set[str]) -> None:
     money_kind_expr = "money_kind" if "money_kind" in columns else "'plan'"
-    con.executescript(
+    con.execute("DROP TABLE IF EXISTS customer_purchases_v1__v2")
+    con.execute(
         """
-        DROP TABLE IF EXISTS customer_purchases_v1__v2;
         CREATE TABLE customer_purchases_v1__v2 (
           tenant_id TEXT NOT NULL,
           customer_id TEXT NOT NULL,
@@ -140,7 +132,7 @@ def _rebuild_customer_purchases_v1_table(con: sqlite3.Connection, *, columns: se
           computability TEXT NOT NULL,
           code_version TEXT NOT NULL,
           PRIMARY KEY (tenant_id, customer_id, period, money_kind)
-        );
+        )
         """
     )
     con.execute(
@@ -164,12 +156,8 @@ def _rebuild_customer_purchases_v1_table(con: sqlite3.Connection, *, columns: se
         FROM customer_purchases_v1
         """
     )
-    con.executescript(
-        """
-        DROP TABLE customer_purchases_v1;
-        ALTER TABLE customer_purchases_v1__v2 RENAME TO customer_purchases_v1;
-        """
-    )
+    con.execute("DROP TABLE customer_purchases_v1")
+    con.execute("ALTER TABLE customer_purchases_v1__v2 RENAME TO customer_purchases_v1")
     _create_customer_purchases_v1_indexes(con)
 
 

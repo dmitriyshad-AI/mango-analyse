@@ -101,7 +101,11 @@ class CustomerTimelineReadApi:
                 "events_without_customer": store_summary.get("soft_integrity", {}).get("events_without_customer", 0),
                 "event_customer_missing": store_summary.get("soft_integrity", {}).get("event_customer_missing", 0),
                 "bot_chunks_blocked_for_bot": store_summary.get("soft_integrity", {}).get("bot_chunks_blocked_for_bot", 0),
-                "open_conflicts": recent_conflicts["summary"]["open_conflicts"],
+                "open_conflicts": self._count(
+                    "timeline_conflicts",
+                    "tenant_id = ? AND status = ?",
+                    (tenant, "open"),
+                ),
                 "recent_ingestion_runs": len(recent_runs["items"]),
             },
             "store": store_summary,
@@ -147,6 +151,7 @@ class CustomerTimelineReadApi:
         event_limit: int = 25,
         bot_context_limit: int = 25,
         include_children: bool = True,
+        as_of: Optional[datetime] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
         customer = self.store.get_customer(tenant, customer_id)
@@ -181,6 +186,7 @@ class CustomerTimelineReadApi:
             tenant,
             customer["customer_id"],
             allowed_only=False,
+            as_of=as_of,
             limit=bounded_limit(bot_context_limit, default=25, max_limit=200),
         )
         conflicts = self.list_conflicts(tenant, customer_id=customer["customer_id"], limit=100)
@@ -316,10 +322,13 @@ class CustomerTimelineReadApi:
         customer_id: str,
         *,
         allowed_only: bool = True,
+        as_of: Optional[datetime] = None,
         limit: int = 50,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
         normalized_customer_id = require_text(customer_id, "customer_id")
+        evaluated_at = as_of or self.store._clock()  # noqa: SLF001 - one store clock owns the read cutoff.
+        require_timezone(evaluated_at, "as_of")
         clauses = ["tenant_id = ?"]
         params: list[Any] = [tenant]
         if allowed_only:
@@ -329,7 +338,7 @@ class CustomerTimelineReadApi:
                 customer_id=normalized_customer_id,
                 opportunity_id=None,
                 since=None,
-                until=None,
+                until=evaluated_at,
                 allowed_for_bot=True,
             )
         else:
@@ -354,7 +363,7 @@ class CustomerTimelineReadApi:
             customer_id=normalized_customer_id,
             opportunity_id=None,
             since=None,
-            until=None,
+            until=evaluated_at,
             allowed_for_bot=True,
         )
         allowed_chunks = self._count("bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params))
@@ -368,6 +377,7 @@ class CustomerTimelineReadApi:
             "endpoint": "GET /customer/bot-context",
             "tenant_id": tenant,
             "customer_id": customer_id,
+            "as_of": evaluated_at.isoformat(),
             "allowed_only": allowed_only,
             "items": [project_bot_context(item, audience="bot" if allowed_only else "ui") for item in visible_items],
             "summary": {
@@ -389,10 +399,13 @@ class CustomerTimelineReadApi:
         customer_id: Optional[str] = None,
         scopes: Sequence[str] = ("events", "bot_context", "signals"),
         allowed_for_bot: Optional[bool] = None,
+        as_of: Optional[datetime] = None,
         limit: int = 25,
         cursor: Optional[str] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
+        evaluated_at = as_of or self.store._clock()  # noqa: SLF001 - one store clock owns the read cutoff.
+        require_timezone(evaluated_at, "as_of")
         if allowed_for_bot is True:
             scopes = ("bot_context",)
         result = self.store.search_timeline(
@@ -401,6 +414,7 @@ class CustomerTimelineReadApi:
             customer_id=customer_id,
             scopes=scopes,
             allowed_for_bot=allowed_for_bot,
+            until=evaluated_at if allowed_for_bot is True else None,
             limit=bounded_limit(limit, default=25, max_limit=100),
             cursor=cursor,
         )
@@ -409,6 +423,7 @@ class CustomerTimelineReadApi:
             "endpoint": "GET /search",
             "tenant_id": tenant,
             "customer_id": customer_id,
+            "as_of": evaluated_at.isoformat(),
             "result": {
                 **result,
                 "items": [project_search_hit(item) for item in result["items"]],
@@ -582,6 +597,7 @@ def route_customer_timeline_request(api: CustomerTimelineReadApi, method: str, r
                 required_query(query, "customer_id"),
                 event_limit=query_int(query, "event_limit", 25),
                 bot_context_limit=query_int(query, "bot_context_limit", 25),
+                as_of=parse_datetime(query_scalar(query, "as_of")),
             )
         if route == "/customer/timeline":
             return 200, api.customer_timeline(
@@ -602,6 +618,7 @@ def route_customer_timeline_request(api: CustomerTimelineReadApi, method: str, r
                 required_query(query, "tenant_id"),
                 required_query(query, "customer_id"),
                 allowed_only=query_bool(query, "allowed_only", True),
+                as_of=parse_datetime(query_scalar(query, "as_of")),
                 limit=query_int(query, "limit", 50),
             )
         if route == "/search":
@@ -611,6 +628,7 @@ def route_customer_timeline_request(api: CustomerTimelineReadApi, method: str, r
                 customer_id=query_scalar(query, "customer_id"),
                 scopes=tuple(query_list(query, "scope")) or ("events", "bot_context", "signals"),
                 allowed_for_bot=query_bool_or_none(query, "allowed_for_bot"),
+                as_of=parse_datetime(query_scalar(query, "as_of")),
                 limit=query_int(query, "limit", 25),
             )
         if route == "/conflicts":
@@ -649,15 +667,24 @@ def build_customer_timeline_read_report(
     generated_at: Optional[datetime] = None,
 ) -> Mapping[str, Any]:
     out = guard_customer_timeline_output_path(out_path, config.allowed_root) if out_path else None
+    report_as_of = generated_at or datetime.now(timezone.utc)
     with CustomerTimelineReadApi.open(config) as api:
         report: dict[str, Any] = {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "report_kind": "customer_timeline_read_report",
-            "generated_at": (generated_at or datetime.now(timezone.utc)).isoformat(),
+            "generated_at": report_as_of.isoformat(),
             "health": api.health(),
             "summary": api.summary(tenant_id, recent_limit=limit),
-            "customer_profile": api.customer_profile(tenant_id, customer_id, event_limit=limit) if customer_id else None,
-            "search": api.search(tenant_id, query, customer_id=customer_id, limit=limit) if query else None,
+            "customer_profile": (
+                api.customer_profile(tenant_id, customer_id, event_limit=limit, as_of=report_as_of)
+                if customer_id
+                else None
+            ),
+            "search": (
+                api.search(tenant_id, query, customer_id=customer_id, limit=limit, as_of=report_as_of)
+                if query
+                else None
+            ),
             "safety": customer_timeline_read_api_safety_contract(),
         }
     report["validation_ok"] = bool(report["health"].get("validation_ok")) and bool(report["summary"]["summary"].get("validation_ok"))

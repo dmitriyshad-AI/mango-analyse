@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import time
 from collections import Counter
@@ -29,7 +28,10 @@ from mango_mvp.customer_timeline.ingestion import (
     TimelineNormalizer,
     TimelineSourceRecord,
 )
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    customer_timeline_run_lock,
+)
 
 
 NIGHTLY_INCREMENTAL_SCHEMA_VERSION = "customer_timeline_nightly_incremental_v1"
@@ -409,7 +411,9 @@ def direction_for_amo_event_type(event_type: str) -> TimelineDirection:
     return TimelineDirection.SYSTEM
 
 
-def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, Any]:
+def run_nightly_incremental(
+    config: NightlyIncrementalConfig,
+) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     phase_started = time.monotonic()
     report: dict[str, Any] = {
@@ -429,7 +433,10 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
         },
     }
     config.journal_path.parent.mkdir(parents=True, exist_ok=True)
-    with single_run_lock(config.timeline_db, timeout_seconds=config.lock_timeout_seconds) as lock_info:
+    with single_run_lock(
+        config.timeline_db,
+        timeout_seconds=config.lock_timeout_seconds,
+    ) as lock_info:
         report["lock"] = lock_info
         with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.allowed_root) as store:
             affected: set[str] = set()
@@ -760,27 +767,18 @@ def rebuild_affected_outputs(config: NightlyIncrementalConfig, *, customer_ids: 
 
 
 @contextmanager
-def single_run_lock(db_path: Path, *, timeout_seconds: float) -> Iterator[Mapping[str, Any]]:
-    lock_path = db_path.with_suffix(db_path.suffix + ".nightly.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    waited = 0.0
-    handle = lock_path.open("a+", encoding="utf-8")
-    try:
-        while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                waited = time.monotonic() - started
-                break
-            except BlockingIOError:
-                waited = time.monotonic() - started
-                if waited >= timeout_seconds:
-                    raise TimeoutError(f"nightly incremental lock timeout: {lock_path}")
-                time.sleep(DEFAULT_LOCK_POLL_SECONDS)
-        yield {"path": str(lock_path), "waited_seconds": round(waited, 3)}
-    finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+def single_run_lock(
+    db_path: Path,
+    *,
+    timeout_seconds: float,
+) -> Iterator[Mapping[str, Any]]:
+    """Compatibility name for the one shared Customer Timeline run lock."""
+
+    with customer_timeline_run_lock(
+        db_path,
+        timeout_seconds=timeout_seconds,
+    ) as info:
+        yield info
 
 
 def read_jsonl(path: Path) -> tuple[Mapping[str, Any], ...]:

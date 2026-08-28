@@ -1702,6 +1702,44 @@ def test_bot_safe_summary_confirms_single_child_class(tmp_path: Path) -> None:
     assert payload["metadata"]["safe_slots"]["child_class"] == "8"
 
 
+def test_bot_safe_summary_maps_finished_eighth_to_next_ninth_class(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="finished-eighth-class-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Ребёнок закончил 8 класс, нужна физика онлайн.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+
+    assert "Ребёнок: 9 класс" in payload["text"]
+    assert "Ребёнок: 8 класс" not in payload["text"]
+    assert payload["metadata"]["safe_slots"]["child_class"] == "9"
+    assert bot_safe_summary_module._confirmed_child_class(("Ребёнок не закончил 8 класс.",)) == ""
+
+
 def test_bot_safe_summary_scrubs_single_person_name_from_interest_title(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()

@@ -4,6 +4,8 @@ import fcntl
 import json
 import re
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -34,7 +36,11 @@ from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     guard_customer_timeline_writable_path,
 )
-from mango_mvp.customer_timeline.source_policy import assert_bot_context_chunk_source_policy
+from mango_mvp.customer_timeline.source_policy import (
+    BOT_FORBIDDEN_SOURCE_SYSTEMS,
+    assert_bot_context_chunk_source_policy,
+)
+from mango_mvp.customer_timeline.temporal import register_temporal_sql_functions
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
@@ -72,6 +78,62 @@ RUNTIME_DB_FILENAMES = {
 def customer_timeline_readonly_uri(path: Path | str) -> str:
     resolved = Path(path).expanduser().resolve(strict=False)
     return resolved.as_uri() + "?mode=ro"
+
+
+def customer_timeline_run_lock_path(path: Path | str) -> Path:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    return Path(str(resolved) + ".nightly_service.lock")
+
+
+_RUN_LOCK_STATE = threading.local()
+
+
+def _held_customer_timeline_run_locks() -> dict[str, Any]:
+    held = getattr(_RUN_LOCK_STATE, "held", None)
+    if held is None:
+        held = {}
+        _RUN_LOCK_STATE.held = held
+    return held
+
+
+@contextmanager
+def customer_timeline_run_lock(
+    path: Path | str,
+    *,
+    timeout_seconds: float,
+) -> Iterator[Mapping[str, Any]]:
+    """Mutually exclude supported high-level writers for one staging database."""
+
+    lock_path = customer_timeline_run_lock_path(path)
+    held = _held_customer_timeline_run_locks()
+    lock_key = str(lock_path)
+    if lock_key in held:
+        yield {"path": lock_key, "waited_seconds": 0.0, "reentrant": True}
+        return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    handle = lock_path.open("a+", encoding="utf-8")
+    lock_path.chmod(0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                waited = time.monotonic() - started
+                if waited >= timeout_seconds:
+                    raise TimeoutError(f"customer timeline run lock timeout: {lock_path}")
+                time.sleep(0.2)
+        held[lock_key] = handle
+        yield {
+            "path": str(lock_path),
+            "waited_seconds": round(time.monotonic() - started, 3),
+            "reentrant": False,
+        }
+    finally:
+        held.pop(lock_key, None)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
@@ -3343,6 +3405,7 @@ class CustomerTimelineSQLiteStore:
             con.execute("PRAGMA busy_timeout = 30000")
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
+        register_temporal_sql_functions(con)
         return con
 
     def _acquire_writer_lock(self) -> None:
@@ -4090,7 +4153,7 @@ class CustomerTimelineSQLiteStore:
             require_timezone(since, "since")
             clauses.append(f"COALESCE({prefix}event_at, {prefix}created_at) >= ?")
             params.append(since.isoformat())
-        if until is not None:
+        if until is not None and allowed_for_bot is not True:
             require_timezone(until, "until")
             clauses.append(f"COALESCE({prefix}event_at, {prefix}created_at) <= ?")
             params.append(until.isoformat())
@@ -4098,7 +4161,19 @@ class CustomerTimelineSQLiteStore:
             clauses.append(f"{prefix}allowed_for_bot = ?")
             params.append(int(bool(allowed_for_bot)))
         if allowed_for_bot is True:
+            cutoff = until or self._clock()
+            require_timezone(cutoff, "until")
+            clauses.append(
+                f"mango_tz_at_or_before(COALESCE({prefix}event_at, {prefix}created_at), ?) = 1"
+            )
+            params.append(cutoff.isoformat())
             clauses.append(f"{prefix}requires_manager_review = 0")
+            forbidden_sources = tuple(sorted(BOT_FORBIDDEN_SOURCE_SYSTEMS))
+            forbidden_placeholders = ",".join("?" for _ in forbidden_sources)
+            clauses.append(
+                f"COALESCE({prefix}source_system, '') NOT IN ({forbidden_placeholders})"
+            )
+            params.extend(forbidden_sources)
             protected = (*BRAND_AUTH_EVENT_SOURCES, *BRAND_AUTH_SELF_SOURCES)
             protected_placeholders = ",".join("?" for _ in protected)
             event_placeholders = ",".join("?" for _ in BRAND_AUTH_EVENT_SOURCES)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from mango_mvp.customer_timeline.stage4b_bot_opening import (
     Stage4BBotOpeningConfig,
     run_stage4b_bot_opening,
 )
+from mango_mvp.customer_timeline.store import customer_timeline_run_lock
 
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
@@ -109,7 +112,9 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
     assert opened["allowed_for_bot"] == 1
     assert opened["requires_manager_review"] == 0
     assert payload["metadata"]["memory_status"] == "usable_memory"
-    assert payload["metadata"]["client_safe"] is False
+    assert payload["metadata"]["client_safe"] is True
+    assert payload["metadata"]["client_safe_reason"] == "no_sensitive_signals"
+    assert payload["metadata"]["client_safe_provenance"] == "a2v3_mail_event_facts"
     assert payload["metadata"]["bot_memory_allowed"] is True
     assert payload["metadata"]["bot_memory_policy_version"] == STAGE4B_OPENING_POLICY_VERSION
     assert "foton" in payload["metadata"]["sensitivity_tags"]
@@ -786,10 +791,10 @@ def test_stage4b_keeps_a2_client_unsafe_mail_manager_only(tmp_path: Path) -> Non
     )
 
     assert report["client_unsafe_mail_chunks_indexed"] == 2
-    assert report["client_safe_mail_chunks_indexed"] == 3
+    assert report["client_safe_mail_chunks_indexed"] == 1
     assert report["plan"]["skipped"]["client_unsafe_mail_chunks"] == 2
-    assert report["plan"]["skipped"]["mail_chunks_not_allowed_by_output_gate"] == 1
-    assert report["apply"]["chunks_updated"] == 2
+    assert report["plan"]["skipped"]["mail_chunks_not_allowed_by_output_gate"] == 3
+    assert report["apply"]["chunks_updated"] == 1
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {
@@ -802,10 +807,91 @@ def test_stage4b_keeps_a2_client_unsafe_mail_manager_only(tmp_path: Path) -> Non
     assert rows[unsafe_event.event_id]["requires_manager_review"] == 1
     assert rows[safe_event.event_id]["allowed_for_bot"] == 1
     assert rows[safe_event.event_id]["requires_manager_review"] == 0
-    assert rows[money_event.event_id]["allowed_for_bot"] == 1
-    assert rows[money_event.event_id]["requires_manager_review"] == 0
+    assert rows[money_event.event_id]["allowed_for_bot"] == 0
+    assert rows[money_event.event_id]["requires_manager_review"] == 1
     assert rows[medical_event.event_id]["allowed_for_bot"] == 0
     assert rows[medical_event.event_id]["requires_manager_review"] == 1
+
+
+def test_stage4b_apply_respects_store_writer_lock_but_dry_run_remains_read_only(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    apply_config = Stage4BBotOpeningConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        out_dir=tmp_path / "apply-out",
+        apply=True,
+        allow_test_paths=True,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path):
+        with pytest.raises(RuntimeError, match="writer lock"):
+            run_stage4b_bot_opening(apply_config)
+        dry_run = run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "dry-out",
+                apply=False,
+                allow_test_paths=True,
+            )
+        )
+
+    assert dry_run["mode"] == "dry_run"
+    assert dry_run["apply"] == {"chunks_updated": 0, "dry_run": True}
+
+
+def test_stage4b_apply_shares_nightly_run_lock_but_dry_run_does_not(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    ready = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with customer_timeline_run_lock(db_path, timeout_seconds=1):
+            ready.set()
+            assert release.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(hold_lock)
+        assert ready.wait(timeout=2)
+        with pytest.raises(TimeoutError, match="run lock timeout"):
+            run_stage4b_bot_opening(
+                Stage4BBotOpeningConfig(
+                    timeline_db_path=db_path,
+                    allowed_root=tmp_path,
+                    out_dir=tmp_path / "apply-run-lock",
+                    apply=True,
+                    allow_test_paths=True,
+                    lock_timeout_seconds=0.01,
+                )
+            )
+        dry_run = run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "dry-run-lock",
+                apply=False,
+                allow_test_paths=True,
+            )
+        )
+        release.set()
+        future.result(timeout=2)
+
+    assert dry_run["mode"] == "dry_run"
+    with customer_timeline_run_lock(db_path, timeout_seconds=1):
+        nested = run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "nested-run-lock",
+                apply=True,
+                allow_test_paths=True,
+                lock_timeout_seconds=0.01,
+            )
+        )
+    assert nested["mode"] == "apply"
 
 
 def test_stage4b_does_not_open_mail_without_a2_bot_visible_flag(tmp_path: Path) -> None:

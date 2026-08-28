@@ -126,6 +126,13 @@ DIRECT_DIGIT_COORDINATED_CLASS_RE = re.compile(
     r"(?:класс\w*|кл\.?)\b",
     re.IGNORECASE,
 )
+FINISHED_DIGIT_CLASS_RE = re.compile(
+    r"\b(?:закончил(?:а|и)?|окончил(?:а|и)?|завершил(?:а|и)?)\w*\s+"
+    r"(?P<class>1[01]|[1-9])\s*"
+    r"(?:[-–—]?\s*(?:й|ый|ой|го|ого|му|ому|м|ом|е|х|ых))?\s*"
+    r"(?:класс\w*|кл\.?)\b",
+    re.IGNORECASE,
+)
 M_CLASS_RE = re.compile(r"\bм\s*(?P<class>9|11)\b", re.IGNORECASE)
 WORD_CLASS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("5", re.compile(r"\bпят\w+\s+класс\w*", re.IGNORECASE)),
@@ -774,7 +781,8 @@ def _confirmed_child_class(
 
 def _child_class_candidates(text_sources: Sequence[str]) -> frozenset[str]:
     values: set[str] = set()
-    values.update(_direct_digit_child_class_candidates(text_sources))
+    values.update(_direct_digit_child_class_candidates(text_sources, exclude_finished=True))
+    values.update(_next_class_after_finished_candidates(text_sources))
     for text in text_sources:
         for match in M_CLASS_RE.finditer(text):
             values.add(match.group("class"))
@@ -794,6 +802,7 @@ def _direct_digit_child_class_candidates(
     text_sources: Sequence[str],
     *,
     include_lower_grades: bool = False,
+    exclude_finished: bool = False,
 ) -> frozenset[str]:
     values: set[str] = set()
     range_re = DIRECT_DIGIT_CLASS_RANGE_RE if include_lower_grades else CLASS_RANGE_RE
@@ -801,6 +810,7 @@ def _direct_digit_child_class_candidates(
     class_re = DIRECT_DIGIT_CLASS_RE if include_lower_grades else CLASS_RE
     minimum_class = 1 if include_lower_grades else 5
     for text in text_sources:
+        finished_spans = tuple(match.span() for match in FINISHED_DIGIT_CLASS_RE.finditer(text)) if exclude_finished else ()
         for match in range_re.finditer(text):
             start = int(match.group("start"))
             end = int(match.group("end"))
@@ -810,8 +820,29 @@ def _direct_digit_child_class_candidates(
             values.add(match.group("first"))
             values.add(match.group("second"))
         for match in class_re.finditer(text):
+            if any(match.start() < end and match.end() > start for start, end in finished_spans):
+                continue
             values.add(match.group("class"))
     return frozenset(values)
+
+
+def _next_class_after_finished_candidates(text_sources: Sequence[str]) -> frozenset[str]:
+    return frozenset(
+        str(int(match.group("class")) + 1)
+        for text in text_sources
+        for match in _finished_class_matches(text)
+        if int(match.group("class")) < 11
+    )
+
+
+def _finished_class_matches(text: str) -> tuple[re.Match[str], ...]:
+    matches: list[re.Match[str]] = []
+    for match in FINISHED_DIGIT_CLASS_RE.finditer(text):
+        prefix = text[max(0, match.start() - 4) : match.start()].casefold().replace("ё", "е")
+        if re.search(r"\bне\s*$", prefix):
+            continue
+        matches.append(match)
+    return tuple(matches)
 
 
 def _has_multi_child_context(text_sources: Sequence[str]) -> bool:

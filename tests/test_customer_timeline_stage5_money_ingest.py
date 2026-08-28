@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import importlib.util
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import mango_mvp.customer_timeline.stage5_money_ingest as stage5_module
 
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
@@ -19,11 +22,12 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.stage5_money_ingest import (
     STAGE5_AMO_PRICE_SOURCE_SYSTEM,
+    STAGE5_MONEY_CODE_VERSION,
     Stage5MoneyIngestConfig,
     refresh_customer_purchases_v1,
     run_stage5_money_ingest,
 )
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_run_lock
 
 
 NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
@@ -83,6 +87,184 @@ def test_stage5_money_ingest_apply_is_idempotent_and_keeps_money_out_of_bot_cont
         assert sources["email_amounts_used"] is False
         assert sources["source_event_system_counts"] == {STAGE5_AMO_PRICE_SOURCE_SYSTEM: 1}
         assert con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0] == 0
+
+
+def test_stage5_reconciles_invalid_plan_in_place_and_preserves_partial_snapshot(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    config = Stage5MoneyIngestConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        source_path=source_path,
+        out_dir=out_dir,
+        apply=True,
+        as_of=NOW + timedelta(days=2),
+    )
+    run_stage5_money_ingest(config)
+
+    def source_payload() -> dict:
+        return json.loads(source_path.read_text(encoding="utf-8"))
+
+    def write_source(payload: dict) -> None:
+        source_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with sqlite3.connect(db_path) as con:
+        stable_event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE source_system=?",
+            (STAGE5_AMO_PRICE_SOURCE_SYSTEM,),
+        ).fetchone()[0]
+
+    empty_price = source_payload()
+    empty_price["amo_leads"][0]["price"] = None
+    write_source(empty_price)
+    retired = run_stage5_money_ingest(config)
+    repeated = run_stage5_money_ingest(config)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        event = con.execute(
+            "SELECT event_id,record_json FROM timeline_events WHERE source_system=?",
+            (STAGE5_AMO_PRICE_SOURCE_SYSTEM,),
+        ).fetchone()
+        assert con.execute(
+            "SELECT count(*) FROM customer_purchases_v1 WHERE tenant_id='foton' AND money_kind='plan'"
+        ).fetchone()[0] == 0
+    assert retired["plan"]["events_reconciled_inactive"] == 1
+    assert repeated["apply"]["write_status_counts"] == {"duplicate": 1}
+    assert event["event_id"] == stable_event_id
+    assert json.loads(event["record_json"])["record"]["amount_rub"] == 0
+
+    valid = source_payload()
+    valid["amo_leads"][0]["price"] = 12000
+    write_source(valid)
+    run_stage5_money_ingest(config)
+    partial = source_payload()
+    partial["amo_leads"] = [lead for lead in partial["amo_leads"] if lead["id"] != 101]
+    write_source(partial)
+    missing = run_stage5_money_ingest(config)
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT total_in FROM customer_purchases_v1 WHERE tenant_id='foton' AND money_kind='plan'"
+        ).fetchone()[0] == 12000
+    assert missing["plan"]["skipped"]["amo_missing_from_source"] == 1
+
+    write_source(valid)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_opportunity(
+            CustomerOpportunity(
+                tenant_id="foton",
+                customer_id="customer-1",
+                opportunity_type=OpportunityType.AMO_DEAL,
+                source_system="amocrm_snapshot",
+                source_id="101",
+                title="Paid deal",
+                status="В работе",
+                opened_at=NOW,
+                confidence=0.99,
+                product_context={"brand": "foton"},
+            )
+        )
+    non_paid = run_stage5_money_ingest(config)
+    assert non_paid["plan"]["events_reconciled_inactive"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT count(*) FROM customer_purchases_v1 WHERE tenant_id='foton' AND money_kind='plan'"
+        ).fetchone()[0] == 0
+
+
+def test_stage5_event_and_purchase_projection_roll_back_together(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    config = Stage5MoneyIngestConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        source_path=source_path,
+        out_dir=out_dir,
+        apply=True,
+        as_of=NOW,
+    )
+    run_stage5_money_ingest(config)
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["amo_leads"][0]["price"] = 15000
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+
+    def rows() -> tuple[list[tuple], list[tuple]]:
+        with sqlite3.connect(db_path) as con:
+            events = con.execute(
+                "SELECT event_id,event_at,record_hash,record_json FROM timeline_events "
+                "WHERE source_system=? ORDER BY event_id",
+                (STAGE5_AMO_PRICE_SOURCE_SYSTEM,),
+            ).fetchall()
+            purchases = con.execute(
+                "SELECT * FROM customer_purchases_v1 ORDER BY tenant_id,customer_id,period,money_kind"
+            ).fetchall()
+        return events, purchases
+
+    before = rows()
+    real_refresh = stage5_module._refresh_customer_purchases_v1
+
+    def fail_after_refresh(*args, **kwargs):
+        real_refresh(*args, **kwargs)
+        raise RuntimeError("fault after purchase refresh")
+
+    monkeypatch.setattr(stage5_module, "_refresh_customer_purchases_v1", fail_after_refresh)
+    with pytest.raises(RuntimeError, match="fault after purchase refresh"):
+        run_stage5_money_ingest(config)
+
+    assert rows() == before
+
+
+def test_stage5_apply_entrypoints_share_the_nightly_run_lock(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    ready = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with customer_timeline_run_lock(db_path, timeout_seconds=1):
+            ready.set()
+            assert release.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(hold_lock)
+        assert ready.wait(timeout=2)
+        with pytest.raises(TimeoutError, match="run lock timeout"):
+            run_stage5_money_ingest(
+                Stage5MoneyIngestConfig(
+                    timeline_db_path=db_path,
+                    allowed_root=tmp_path,
+                    source_path=source_path,
+                    out_dir=out_dir,
+                    apply=True,
+                    lock_timeout_seconds=0.01,
+                )
+            )
+        with pytest.raises(TimeoutError, match="run lock timeout"):
+            refresh_customer_purchases_v1(
+                db_path,
+                allowed_root=tmp_path,
+                tenant_id="foton",
+                lock_timeout_seconds=0.01,
+            )
+        dry_run = run_stage5_money_ingest(
+            Stage5MoneyIngestConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                source_path=source_path,
+                out_dir=out_dir,
+                apply=False,
+            )
+        )
+        release.set()
+        future.result(timeout=2)
+
+    assert dry_run["mode"] == "dry_run"
+    with customer_timeline_run_lock(db_path, timeout_seconds=1):
+        refresh_customer_purchases_v1(
+            db_path,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            lock_timeout_seconds=0.01,
+        )
 
 
 @pytest.mark.parametrize("match_status", ["strong_unique", "manual"])
@@ -231,7 +413,215 @@ def test_stage5_tallanto_balance_charge_does_not_become_refund_or_new_purchase(t
     assert fact["last_purchase_at"] == NOW.isoformat()
 
 
-def test_stage5_migrates_legacy_customer_purchases_to_plan(tmp_path: Path) -> None:
+def test_purchase_refresh_uses_one_as_of_and_fails_closed(tmp_path: Path) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with pytest.raises(ValueError, match="as_of"):
+        refresh_customer_purchases_v1(
+            db_path,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            as_of=NOW.replace(tzinfo=None),
+        )
+    mixed_earlier = datetime(2026, 7, 2, 13, 30, tzinfo=timezone(timedelta(hours=3)))
+    mixed_later = datetime(2026, 7, 2, 11, 45, tzinfo=timezone.utc)
+    events = (
+        ("past", NOW - timedelta(days=1), 1000, "in"),
+        ("mixed-earlier", mixed_earlier, 500, "in"),
+        ("mixed-later", mixed_later, 700, "in"),
+        ("boundary-utc", NOW, 2000, "in"),
+        ("future-in", NOW + timedelta(days=1), 4000, "in"),
+        ("future-out", NOW + timedelta(days=1, seconds=1), 5000, "school_out"),
+        ("naive", NOW - timedelta(days=2), 6000, "in"),
+        ("invalid", NOW - timedelta(days=3), 7000, "in"),
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for source_id, event_at, amount, direction in events:
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer-1",
+                    event_type=TimelineEventType.TALLANTO_PAYMENT,
+                    event_at=event_at,
+                    source_system="tallanto_crm_call",
+                    source_id=source_id,
+                    source_ref=f"tallanto:most_finances:{source_id}",
+                    direction=TimelineDirection.SYSTEM,
+                    match_status="strong_unique",
+                    record={"amount": amount, "payment_direction": direction},
+                    created_at=event_at,
+                )
+            )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE timeline_events SET event_at=? WHERE source_id=?",
+            ("2026-06-30T12:00:00", "naive"),
+        )
+        con.execute(
+            "UPDATE timeline_events SET event_at=? WHERE source_id=?",
+            ("not-a-timestamp", "invalid"),
+        )
+
+    first = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    repeat = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT total_in,total_out,deals_cnt,last_purchase_at "
+            "FROM customer_purchases_v1 WHERE customer_id='customer-1' AND money_kind='fact'"
+        ).fetchone()
+    assert first == repeat
+    assert first["as_of"] == NOW.isoformat()
+    assert row[:3] == (4200.0, 0.0, 4)
+    assert datetime.fromisoformat(row[3]).astimezone(timezone.utc) == NOW
+
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW + timedelta(days=2),
+    )
+    with sqlite3.connect(db_path) as con:
+        later = con.execute(
+            "SELECT total_in,total_out,deals_cnt,last_purchase_at "
+            "FROM customer_purchases_v1 WHERE customer_id='customer-1' AND money_kind='fact'"
+        ).fetchone()
+    assert later == (8200.0, 5000.0, 5, (NOW + timedelta(days=1)).isoformat())
+
+
+def test_stage5_missing_amo_event_time_uses_run_as_of_boundary(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["amo_leads"][0]["updated_at"] = None
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE customer_opportunities SET opened_at=NULL, closed_at=NULL WHERE source_id='101'"
+        )
+
+    report = run_stage5_money_ingest(
+        Stage5MoneyIngestConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            source_path=source_path,
+            out_dir=out_dir,
+            apply=True,
+            as_of=NOW,
+        )
+    )
+    with sqlite3.connect(db_path) as con:
+        event_at = con.execute(
+            "SELECT event_at FROM timeline_events WHERE source_system=?",
+            (STAGE5_AMO_PRICE_SOURCE_SYSTEM,),
+        ).fetchone()[0]
+        plan = con.execute(
+            "SELECT total_in,deals_cnt FROM customer_purchases_v1 WHERE money_kind='plan'"
+        ).fetchone()
+    assert event_at == NOW.isoformat()
+    assert plan == (12000.0, 1)
+
+
+def test_stage5_is_sole_plan_owner_and_preserves_other_tenant(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    run_stage5_money_ingest(
+        Stage5MoneyIngestConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            source_path=source_path,
+            out_dir=out_dir,
+            apply=True,
+            as_of=NOW + timedelta(days=1),
+        )
+    )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE customer_purchases_v1 SET total_in=1, code_version='legacy-owner' "
+            "WHERE tenant_id='foton' AND customer_id='customer-1' AND money_kind='plan'"
+        )
+        con.executemany(
+            """
+            INSERT INTO customer_purchases_v1 (
+              tenant_id, customer_id, period, money_kind, total_in, total_out, deals_cnt,
+              last_purchase_at, sources_json, computability, code_version
+            ) VALUES (?, ?, 'all_time', 'plan', ?, 0, 0, NULL, '{}', ?, ?)
+            """,
+            (
+                (
+                    "foton",
+                    "stale-a2",
+                    None,
+                    "not_computable_missing_primary_amounts",
+                    "customer_purchases_v1_not_computable",
+                ),
+                ("foton", "stale-legacy", 5000, "computed", "legacy-v1"),
+                ("unpk", "other-tenant", 7000, "computed", "legacy-v1"),
+            ),
+        )
+
+    result = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW + timedelta(days=1),
+    )
+    repeat = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW + timedelta(days=1),
+    )
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT tenant_id,customer_id,total_in,code_version FROM customer_purchases_v1 "
+            "WHERE money_kind='plan' ORDER BY tenant_id,customer_id"
+        ).fetchall()
+    assert result["stale_plan_rows_deleted"] == 2
+    assert repeat["stale_plan_rows_deleted"] == 0
+    assert rows == [
+        ("foton", "customer-1", 12000.0, STAGE5_MONEY_CODE_VERSION),
+        ("unpk", "other-tenant", 7000.0, "legacy-v1"),
+    ]
+
+
+def test_stage5_apply_and_refresh_respect_store_writer_lock(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    config = Stage5MoneyIngestConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        source_path=source_path,
+        out_dir=out_dir,
+        apply=True,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path):
+        with pytest.raises(RuntimeError, match="writer lock"):
+            run_stage5_money_ingest(config)
+        with pytest.raises(RuntimeError, match="writer lock"):
+            refresh_customer_purchases_v1(
+                db_path,
+                allowed_root=tmp_path,
+                tenant_id="foton",
+            )
+        dry_run = run_stage5_money_ingest(
+            Stage5MoneyIngestConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                source_path=source_path,
+                out_dir=out_dir,
+                apply=False,
+            )
+        )
+    assert dry_run["mode"] == "dry_run"
+
+
+def test_stage5_migrates_legacy_schema_and_removes_noncanonical_plan(tmp_path: Path) -> None:
     db_path, source_path, out_dir = _fixture(tmp_path)
     with sqlite3.connect(db_path) as con:
         con.executescript(
@@ -268,15 +658,16 @@ def test_stage5_migrates_legacy_customer_purchases_to_plan(tmp_path: Path) -> No
 
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
-        row = con.execute(
+        rows = con.execute(
             """
-            SELECT money_kind, total_in
+            SELECT customer_id, money_kind, total_in, code_version
             FROM customer_purchases_v1
-            WHERE customer_id = 'legacy-customer'
+            ORDER BY customer_id, money_kind
             """
-        ).fetchone()
-    assert row["money_kind"] == "plan"
-    assert row["total_in"] == 5000
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("customer-1", "plan", 12000.0, STAGE5_MONEY_CODE_VERSION),
+    ]
 
 
 def test_stage5_money_ingest_refuses_prod_and_non_staging_paths(tmp_path: Path) -> None:

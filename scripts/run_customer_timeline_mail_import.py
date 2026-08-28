@@ -27,10 +27,17 @@ from scripts.run_customer_timeline_mail_download import (  # noqa: E402
     utc_now,
 )
 from scripts.run_customer_timeline_mail_process import staging_root_for  # noqa: E402
+from scripts.run_customer_timeline_nightly_incremental import config_from_json  # noqa: E402
 from mango_mvp.customer_timeline.mail_link_enrich import (  # noqa: E402
     MailLinkEnrichConfig,
     run_mail_link_enrich,
 )
+from mango_mvp.customer_timeline.nightly_incremental import (  # noqa: E402
+    run_nightly_incremental,
+    single_run_lock,
+    summarize_report,
+)
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore  # noqa: E402
 from mango_mvp.productization.mail_archive import (  # noqa: E402
     DEFAULT_MAIL_DATA_ROOT,
     existing_tallanto_identity_dbs,
@@ -70,8 +77,14 @@ def read_mail_cursor(timeline_db: Path) -> str | None:
     return str(state["last_cursor_ts"]) if state and state.get("last_cursor_ts") else None
 
 
-def restore_mail_cursor(timeline_db: Path, previous: Mapping[str, Any] | None) -> None:
-    with sqlite3.connect(timeline_db) as con:
+def restore_mail_cursor(
+    timeline_db: Path,
+    previous: Mapping[str, Any] | None,
+    *,
+    allowed_root: Path,
+) -> None:
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+        con = store._con
         if previous is None:
             con.execute(
                 "DELETE FROM ingestion_cursors WHERE tenant_id=? AND source_system=?",
@@ -96,6 +109,7 @@ def restore_mail_cursor(timeline_db: Path, previous: Mapping[str, Any] | None) -
                     previous["metadata_json"],
                 ),
             )
+        con.commit()
 
 
 def load_inputs(
@@ -147,18 +161,25 @@ def load_inputs(
 
 
 def run_incremental(code_root: Path, config_path: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(code_root / "scripts/run_customer_timeline_nightly_incremental.py"),
-            "--config",
-            str(config_path),
-            "--summary-only",
-        ],
-        cwd=code_root,
-        capture_output=True,
-        text=True,
-        check=False,
+    args = ("in-process-nightly-incremental", str(config_path))
+    try:
+        if code_root.resolve() != ROOT.resolve():
+            raise RuntimeError("mail_import_code_root_mismatch")
+        report = run_nightly_incremental(config_from_json(config_path))
+        summary = summarize_report(report)
+        failed_required = report.get("failed_required_sources") or []
+    except Exception as exc:  # noqa: BLE001 - preserve the former subprocess failure contract.
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="",
+            stderr=type(exc).__name__,
+        )
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=0 if report.get("gate_passed") is not False and not failed_required else 1,
+        stdout=json.dumps(summary, ensure_ascii=False),
+        stderr="",
     )
 
 
@@ -187,101 +208,119 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             max_age_hours=args.max_process_age_hours,
         )
         timeline_db = Path(str(config["timeline_db"])).resolve()
-        cursor_before_state = read_mail_cursor_state(timeline_db)
-        cursor_before = (
-            str(cursor_before_state["last_cursor_ts"])
-            if cursor_before_state and cursor_before_state.get("last_cursor_ts")
-            else None
-        )
-        backfill_missing_only = bool(process_manifest.get("backfill_missing_only"))
-        skip_link_enrich = backfill_missing_only or bool(args.skip_link_enrich)
-        completed = run_incremental(code_root, config_path)
-        try:
-            result = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            result = {"overall_status": "failed", "gate_passed": False}
-        gate_passed = result.get("gate_passed") is True
-        failed_required = result.get("failed_required_sources") or []
-        incremental_ok = (
-            completed.returncode == 0
-            and gate_passed
-            and not failed_required
-            and result.get("overall_status") != "partial"
-        )
-        cursor_preserved = read_mail_cursor_state(timeline_db) == cursor_before_state
-        if backfill_missing_only and not cursor_preserved:
-            restore_mail_cursor(timeline_db, cursor_before_state)
-            incremental_ok = False
-            failed_required = [*failed_required, "mail_archive_stage2:cursor_changed"]
-        enrich_report: Mapping[str, Any] = {}
-        enrich_error = ""
-        if incremental_ok and not skip_link_enrich:
+        allowed_root = Path(str(config["allowed_root"])).resolve()
+        lock_timeout = float(config.get("lock_timeout_seconds", 30.0))
+        with single_run_lock(timeline_db, timeout_seconds=lock_timeout) as run_lock:
+            cursor_before_state = read_mail_cursor_state(timeline_db)
+            cursor_before = (
+                str(cursor_before_state["last_cursor_ts"])
+                if cursor_before_state and cursor_before_state.get("last_cursor_ts")
+                else None
+            )
+            backfill_missing_only = bool(process_manifest.get("backfill_missing_only"))
+            skip_link_enrich = backfill_missing_only or bool(args.skip_link_enrich)
+            completed = run_incremental(code_root, config_path)
             try:
-                enrich_report = enrich_mail_links(
-                    timeline_db=timeline_db,
-                    allowed_root=Path(str(config["allowed_root"])).resolve(),
-                    out_dir=state_dir / "mail_link_enrich",
+                result = json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                result = {"overall_status": "failed", "gate_passed": False}
+            gate_passed = result.get("gate_passed") is True
+            failed_required = result.get("failed_required_sources") or []
+            incremental_ok = (
+                completed.returncode == 0
+                and gate_passed
+                and not failed_required
+                and result.get("overall_status") != "partial"
+            )
+            cursor_preserved = read_mail_cursor_state(timeline_db) == cursor_before_state
+            if backfill_missing_only and not cursor_preserved:
+                restore_mail_cursor(
+                    timeline_db,
+                    cursor_before_state,
+                    allowed_root=allowed_root,
                 )
-            except Exception as exc:  # noqa: BLE001
-                enrich_error = type(exc).__name__
-        enrich_safety = enrich_report.get("safety") if isinstance(enrich_report, Mapping) else {}
-        if not isinstance(enrich_safety, Mapping):
-            enrich_safety = {}
-        visibility_changed = bool(
-            enrich_safety.get("allowed_for_bot_changed")
-            or enrich_safety.get("mail_stage2_allowed_for_bot_changed")
-        )
-        enrich_ok = incremental_ok and (
-            skip_link_enrich or (not enrich_error and not visibility_changed)
-        )
-        counts = enrich_report.get("counts") if isinstance(enrich_report, Mapping) else {}
-        apply_counts = enrich_report.get("apply") if isinstance(enrich_report, Mapping) else {}
-        if not isinstance(counts, Mapping):
-            counts = {}
-        if not isinstance(apply_counts, Mapping):
-            apply_counts = {}
-        applied = apply_counts.get("counts") if isinstance(apply_counts.get("counts"), Mapping) else {}
-        status = "ok" if enrich_ok else "failed"
-        if incremental_ok and not enrich_ok:
-            restore_mail_cursor(timeline_db, cursor_before_state)
-        report = {
-            "schema_version": "mail_import_manifest_v1",
-            "status": status,
-            "started_at": started_at,
-            "finished_at": utc_now(),
-            "runtime": runtime,
-            "process_manifest": str(state_dir / "mail_process_manifest.json"),
-            "process_manifest_sha256": sha256_file(state_dir / "mail_process_manifest.json"),
-            "config": str(config_path),
-            "command_rc": completed.returncode,
-            "overall_status": result.get("overall_status"),
-            "gate_passed": result.get("gate_passed"),
-            "failed_required_sources": failed_required,
-            "mail_link_enrich": {
-                "status": "skipped" if skip_link_enrich and incremental_ok else ("ok" if enrich_ok else "failed"),
-                "error": enrich_error or None,
-                "target_events": int(enrich_report.get("target_events") or 0),
-                "planned": {
-                    "strong": int(counts.get("planned.strong") or 0),
-                    "weak_email": int(counts.get("planned.weak_email") or 0),
-                    "unmatched": int(counts.get("planned.unmatched") or 0),
-                    "blocked": int(counts.get("planned.blocked") or 0),
+                incremental_ok = False
+                failed_required = [*failed_required, "mail_archive_stage2:cursor_changed"]
+            enrich_report: Mapping[str, Any] = {}
+            enrich_error = ""
+            if incremental_ok and not skip_link_enrich:
+                try:
+                    enrich_report = enrich_mail_links(
+                        timeline_db=timeline_db,
+                        allowed_root=allowed_root,
+                        out_dir=state_dir / "mail_link_enrich",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    enrich_error = type(exc).__name__
+            enrich_safety = enrich_report.get("safety") if isinstance(enrich_report, Mapping) else {}
+            if not isinstance(enrich_safety, Mapping):
+                enrich_safety = {}
+            visibility_changed = bool(
+                enrich_safety.get("allowed_for_bot_changed")
+                or enrich_safety.get("mail_stage2_allowed_for_bot_changed")
+            )
+            enrich_ok = incremental_ok and (
+                skip_link_enrich or (not enrich_error and not visibility_changed)
+            )
+            counts = enrich_report.get("counts") if isinstance(enrich_report, Mapping) else {}
+            apply_counts = enrich_report.get("apply") if isinstance(enrich_report, Mapping) else {}
+            if not isinstance(counts, Mapping):
+                counts = {}
+            if not isinstance(apply_counts, Mapping):
+                apply_counts = {}
+            applied = (
+                apply_counts.get("counts")
+                if isinstance(apply_counts.get("counts"), Mapping)
+                else {}
+            )
+            status = "ok" if enrich_ok else "failed"
+            if incremental_ok and not enrich_ok:
+                restore_mail_cursor(
+                    timeline_db,
+                    cursor_before_state,
+                    allowed_root=allowed_root,
+                )
+            report = {
+                "schema_version": "mail_import_manifest_v1",
+                "status": status,
+                "started_at": started_at,
+                "finished_at": utc_now(),
+                "runtime": runtime,
+                "run_lock": dict(run_lock),
+                "process_manifest": str(state_dir / "mail_process_manifest.json"),
+                "process_manifest_sha256": sha256_file(state_dir / "mail_process_manifest.json"),
+                "config": str(config_path),
+                "command_rc": completed.returncode,
+                "overall_status": result.get("overall_status"),
+                "gate_passed": result.get("gate_passed"),
+                "failed_required_sources": failed_required,
+                "mail_link_enrich": {
+                    "status": "skipped"
+                    if skip_link_enrich and incremental_ok
+                    else ("ok" if enrich_ok else "failed"),
+                    "error": enrich_error or None,
+                    "target_events": int(enrich_report.get("target_events") or 0),
+                    "planned": {
+                        "strong": int(counts.get("planned.strong") or 0),
+                        "weak_email": int(counts.get("planned.weak_email") or 0),
+                        "unmatched": int(counts.get("planned.unmatched") or 0),
+                        "blocked": int(counts.get("planned.blocked") or 0),
+                    },
+                    "updated_events": int(applied.get("updated_events") or 0),
+                    "created_chunks": int(applied.get("created_chunks") or 0),
+                    "visibility_changed": visibility_changed,
                 },
-                "updated_events": int(applied.get("updated_events") or 0),
-                "created_chunks": int(applied.get("created_chunks") or 0),
-                "visibility_changed": visibility_changed,
-            },
-            "cursor_before": cursor_before,
-            "cursor_after": read_mail_cursor(timeline_db),
-            "cursor_preserved": read_mail_cursor_state(timeline_db) == cursor_before_state,
-            "backfill_missing_only": backfill_missing_only,
-            "writes_prod_db": False,
-            "write_external_systems": False,
-            "timeline_db": str(timeline_db),
-            "input_rows": process_manifest.get("rows_written"),
-        }
-        atomic_write_json(state_dir / "mail_import_manifest.json", report)
-        return report
+                "cursor_before": cursor_before,
+                "cursor_after": read_mail_cursor(timeline_db),
+                "cursor_preserved": read_mail_cursor_state(timeline_db) == cursor_before_state,
+                "backfill_missing_only": backfill_missing_only,
+                "writes_prod_db": False,
+                "write_external_systems": False,
+                "timeline_db": str(timeline_db),
+                "input_rows": process_manifest.get("rows_written"),
+            }
+            atomic_write_json(state_dir / "mail_import_manifest.json", report)
+            return report
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

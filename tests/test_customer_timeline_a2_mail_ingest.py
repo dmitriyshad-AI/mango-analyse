@@ -687,7 +687,7 @@ def test_a2v3_customer_brand_history_ignores_email_domains(tmp_path: Path) -> No
     assert report["counts"]["bot_gate.customer_brand_unknown"] == 1
 
 
-def test_customer_purchases_v1_scaffold_does_not_use_email_amounts(tmp_path: Path) -> None:
+def test_a2_mail_ingest_does_not_create_customer_purchases(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
         [_row("q" * 64, email="parent@example.com", event_type="payment", amount_kind="actual", amount_rub=77777)],
@@ -715,18 +715,12 @@ def test_customer_purchases_v1_scaffold_does_not_use_email_amounts(tmp_path: Pat
     apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
 
     with sqlite3.connect(config.timeline_db_path) as con:
-        row = con.execute(
-            """
-            SELECT money_kind, total_in, total_out, deals_cnt, computability, sources_json
-            FROM customer_purchases_v1
-            WHERE customer_id = 'customer:known'
-            """
-        ).fetchone()
-        assert row[:5] == ("plan", None, None, 1, "not_computable_missing_primary_amounts")
-        assert json.loads(row[5])["email_amounts_used"] is False
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer_purchases_v1'"
+        ).fetchone() is None
 
 
-def test_customer_purchases_v1_scaffold_does_not_overwrite_computed_plan(tmp_path: Path) -> None:
+def test_a2_mail_ingest_does_not_modify_stage5_customer_purchases(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
         [_row("r" * 64, email="parent@example.com", event_type="payment", amount_kind="actual", amount_rub=77777)],

@@ -192,7 +192,7 @@ def test_bot_safe_family_projection_rejects_invalid_payment_totals_and_legacy_sc
     assert "история оплат: unknown" in legacy_context["summary"]
 
 
-def test_ambiguous_child_keeps_only_active_brand_channel_history(tmp_path: Path, monkeypatch) -> None:
+def test_ambiguous_child_blocks_raw_channel_history_even_for_exact_chat(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -237,13 +237,13 @@ def test_ambiguous_child_keeps_only_active_brand_channel_history(tmp_path: Path,
     )
     memory = build_customer_memory_for_prompt(context, active_brand="foton")
 
-    assert "семья ранее спрашивала про онлайн-формат" in memory.prompt_text
+    assert "семья ранее спрашивала про онлайн-формат" not in memory.prompt_text
     assert "другой чат этой семьи" not in memory.prompt_text
     assert "Не приписывай историю конкретному ребёнку" in memory.prompt_text
     assert "клиент уже спрашивал про онлайн-курс" not in memory.prompt_text
 
 
-def test_exact_current_chat_is_not_crowded_out_by_calls_at_small_limit(tmp_path: Path, monkeypatch) -> None:
+def test_raw_current_chat_and_calls_do_not_bypass_reader_at_small_limit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -286,9 +286,9 @@ def test_exact_current_chat_is_not_crowded_out_by_calls_at_small_limit(tmp_path:
     )
 
     items = context["timeline_context"]["bot_context"]["items"]
-    assert len(items) == 3
-    assert sum("текущий чат" in item["text"] for item in items) == 1
-    assert sum(item["chunk_type"] == "mango_call_summary" for item in items) == 1
+    assert len(items) == 2
+    assert all("текущий чат" not in item["text"] for item in items)
+    assert all(item["chunk_type"] != "mango_call_summary" for item in items)
 
 
 def test_ambiguous_child_rejects_unverified_channel_history_payload() -> None:
@@ -481,7 +481,7 @@ def test_bot_safe_family_projection_rejects_unknown_brand_and_hides_old_chunks(t
     assert "онлайн-курс" not in context["summary"]
 
 
-def test_single_unknown_brand_child_keeps_only_brand_neutral_call_memory(tmp_path: Path) -> None:
+def test_single_unknown_brand_child_blocks_raw_call_memory(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)
     with sqlite3.connect(db_path) as con:
@@ -502,7 +502,7 @@ def test_single_unknown_brand_child_keeps_only_brand_neutral_call_memory(tmp_pat
 
     assert context["timeline_context"]["family_dossier"]["needs_clarification"] is True
     assert context["timeline_context"]["bot_context"]["channel_scope"] == "brand_neutral_call"
-    assert "обсуждал подготовку к экзамену" in prompt
+    assert "обсуждал подготовку к экзамену" not in prompt
     assert "физика" not in prompt
     assert "онлайн-курс" not in prompt
 
@@ -1096,7 +1096,7 @@ def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(
     assert "Фотон: клиент уже спрашивал про онлайн-курс" not in raw
 
 
-def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_blocks_stored_open_mail_stage2_chunks(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -1129,18 +1129,14 @@ def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path
 
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
-    assert "Письмо Фотон: клиент уточнял группу по субботам" in raw
-    assert "mail_archive_stage2" in raw
-    item = next(
-        item
+    assert "Письмо Фотон: клиент уточнял группу по субботам" not in raw
+    assert all(
+        item.get("source_system") != "mail_archive_stage2"
         for item in context["timeline_context"]["bot_context"]["items"]
-        if item.get("chunk_type") == "email_message"
     )
-    assert item["source_system"] == "mail_archive_stage2"
-    assert item["chunk_type"] == "email_message"
 
 
-def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_never_reads_raw_mail_contacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -1191,10 +1187,10 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
     assert "https://pay.example.invalid" not in raw
     assert "7381440901" not in raw
     assert "0009513397027963" not in raw
-    assert "[контактные данные у менеджера]" in raw
-    assert "[ссылка скрыта]" in raw
-    assert "[персона у менеджера]" in raw
-    assert "[адрес у менеджера]" in raw
+    assert "[контактные данные у менеджера]" not in raw
+    assert "[ссылка скрыта]" not in raw
+    assert "[персона у менеджера]" not in raw
+    assert "[адрес у менеджера]" not in raw
     assert scan_bot_safe_context_pii(raw) == ()
 
 
@@ -1233,7 +1229,7 @@ def test_bot_safe_crm_context_blocks_e4b_mail_foreign_brand(tmp_path: Path, monk
     assert "УНПК: клиент просил программу" not in raw
 
 
-def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_blocks_stored_open_telegram_history_chunks(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -1266,8 +1262,11 @@ def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path:
 
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
-    assert "клиент в Telegram уточнял" in raw
-    assert "telegram_history" in raw
+    assert "клиент в Telegram уточнял" not in raw
+    assert all(
+        item.get("source_system") != "telegram_history"
+        for item in context["timeline_context"]["bot_context"]["items"]
+    )
 
 
 def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, monkeypatch) -> None:
@@ -1305,7 +1304,7 @@ def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, m
     assert "УНПК: клиент в Wappi" not in raw
 
 
-def test_bot_safe_crm_context_reads_opened_mango_calls_as_brand_neutral_input(tmp_path: Path) -> None:
+def test_bot_safe_crm_context_blocks_stored_open_mango_calls(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         _upsert_mango_call(store, customer_id=customer_id, source_id="mango-call-runtime")
@@ -1325,15 +1324,9 @@ def test_bot_safe_crm_context_reads_opened_mango_calls_as_brand_neutral_input(tm
     prompt_context = dict(context)
     prompt_context[BOT_SAFE_CRM_CONTEXT_ENV] = True
     prompt = _build_direct_path_prompt("Что дальше?", context=prompt_context)
-    assert "клиент обсуждал подготовку к экзамену" in raw
-    assert "клиент обсуждал подготовку к экзамену" in prompt
-    item = next(
-        item
-        for item in context["timeline_context"]["bot_context"]["items"]
-        if item.get("chunk_type") == "mango_call_summary"
-    )
-    assert item["brand_scope"] == "brand_agnostic_call_input"
-    assert set(item["relevance_tags"]) == {"call", "bot_visible", "mango_processed_summary"}
+    assert context["found"] is False
+    assert "клиент обсуждал подготовку к экзамену" not in raw
+    assert "клиент обсуждал подготовку к экзамену" not in prompt
 
 
 def test_bot_safe_crm_context_rechecks_legacy_non_contentful_call_before_prompt(
@@ -1381,11 +1374,11 @@ def test_bot_safe_crm_context_rechecks_legacy_non_contentful_call_before_prompt(
         return build_customer_memory_for_prompt(context, active_brand="foton").prompt_text
 
     guarded = prompt_text()
-    assert useful_text in guarded
+    assert useful_text not in guarded
     assert empty_text not in guarded
 
     monkeypatch.setattr(runtime_context_module, "is_non_contentful_call_record", lambda _event: False)
-    assert empty_text in prompt_text()
+    assert empty_text not in prompt_text()
 
 
 def test_bot_safe_crm_context_rechecks_mango_event_after_chunk_source_and_type_change(
@@ -1555,7 +1548,7 @@ def test_bot_safe_crm_context_treats_foreign_call_tag_as_brand_neutral_input(tmp
     )
 
 
-def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_never_reads_raw_channel_contacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
@@ -1590,12 +1583,12 @@ def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, mon
     )
 
     raw = json.dumps(context, ensure_ascii=False)
-    assert context["found"] is True
+    assert context["found"] is False
     assert "8 (800) 550 25 88" not in raw
     assert "synthetic@example.invalid" not in raw
     assert "https://pay.example.invalid" not in raw
-    assert "[контактные данные у менеджера]" in raw
-    assert "[ссылка скрыта]" in raw
+    assert "[контактные данные у менеджера]" not in raw
+    assert "[ссылка скрыта]" not in raw
 
 
 def test_customer_memory_for_prompt_shadow_uses_only_safe_context_and_scrubs() -> None:

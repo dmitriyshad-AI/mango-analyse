@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import plistlib
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 import pytest
 
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.mail_archive import MAIL_ARCHIVE_SCHEMA_VERSION
 from scripts import run_customer_timeline_mail_download as download
 from scripts import run_customer_timeline_mail_process as process
@@ -238,28 +240,8 @@ def _write_archive(path: Path, *, sha: str, event_at: str | None) -> None:
 
 def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as con:
-        con.executescript(
-            """
-            CREATE TABLE ingestion_cursors (
-              tenant_id TEXT,
-              source_system TEXT,
-              last_cursor_ts TEXT,
-              updated_at TEXT,
-              metadata_json TEXT,
-              PRIMARY KEY (tenant_id, source_system)
-            );
-            CREATE TABLE timeline_events (
-              tenant_id TEXT,
-              source_id TEXT,
-              customer_id TEXT,
-              match_status TEXT,
-              confidence REAL,
-              record_json TEXT,
-              source_system TEXT
-            );
-            """
-        )
+    with CustomerTimelineSQLiteStore(path, allowed_root=path.parent) as store:
+        con = store._con
         con.execute(
             "INSERT INTO ingestion_cursors VALUES (?, ?, ?, ?, ?)",
             (
@@ -274,6 +256,46 @@ def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
                         }
                     }
                 ),
+            ),
+        )
+        con.commit()
+
+
+def _insert_mail_timeline_event(
+    path: Path,
+    *,
+    source_id: str,
+    customer_id: str | None,
+    match_status: str,
+    confidence: float,
+    record_json: str,
+) -> None:
+    event_id = f"fixture:{source_id}"
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """
+            INSERT INTO timeline_events(
+              event_id, dedupe_key, tenant_id, customer_id, event_type, event_at,
+              source_system, source_id, direction, match_status, confidence,
+              importance, created_at, record_hash, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                event_id,
+                "foton",
+                customer_id,
+                "email_message",
+                "2026-07-12T10:02:00+00:00",
+                "mail_archive_stage2",
+                source_id,
+                "inbound",
+                match_status,
+                confidence,
+                1,
+                "2026-07-12T10:02:00+00:00",
+                source_id,
+                record_json,
             ),
         )
 
@@ -333,11 +355,14 @@ def test_mail_process_overlap_preserves_existing_strong_link_without_enrich_meta
     _write_archive(canonical, sha=sha, event_at="2026-07-12T10:02:00+00:00")
     timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
     _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
-    with sqlite3.connect(timeline) as con:
-        con.execute(
-            "INSERT INTO timeline_events VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("foton", sha, "customer:existing", "strong_unique", 0.97, json.dumps({"metadata": {}}), "mail_archive_stage2"),
-        )
+    _insert_mail_timeline_event(
+        timeline,
+        source_id=sha,
+        customer_id="customer:existing",
+        match_status="strong_unique",
+        confidence=0.97,
+        record_json=json.dumps({"metadata": {}}),
+    )
     state.mkdir(parents=True)
     download.atomic_write_json(
         state / "mail_download_manifest.json",
@@ -382,11 +407,14 @@ def test_mail_process_missing_only_selects_absent_sha_with_fallback_date(tmp_pat
         )
     timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
     _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
-    with sqlite3.connect(timeline) as con:
-        con.execute(
-            "INSERT INTO timeline_events VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("foton", "a" * 64, None, "unmatched", 0.0, "{}", "mail_archive_stage2"),
-        )
+    _insert_mail_timeline_event(
+        timeline,
+        source_id="a" * 64,
+        customer_id=None,
+        match_status="unmatched",
+        confidence=0.0,
+        record_json="{}",
+    )
     state.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)
     download.atomic_write_json(
@@ -584,6 +612,52 @@ def test_mail_import_is_fail_loud_when_incremental_gate_fails(
     assert report["cursor_before"] == report["cursor_after"]
 
 
+def test_mail_import_run_incremental_preserves_completed_process_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed_config = object()
+    monkeypatch.setattr(mail_import, "config_from_json", lambda _path: parsed_config)
+    monkeypatch.setattr(
+        mail_import,
+        "run_nightly_incremental",
+        lambda config: {
+            "schema_version": "fixture",
+            "overall_status": "ok",
+            "gate_passed": True,
+            "failed_required_sources": [],
+            "sources": [],
+            "imports": [],
+        }
+        if config is parsed_config
+        else pytest.fail("parsed config was not reused"),
+    )
+
+    completed = mail_import.run_incremental(download.ROOT, tmp_path / "config.json")
+
+    assert completed.returncode == 0
+    assert completed.args[0] == "in-process-nightly-incremental"
+    assert json.loads(completed.stdout)["gate_passed"] is True
+    assert completed.stderr == ""
+
+
+def test_mail_import_run_incremental_converts_exception_to_failed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mail_import,
+        "config_from_json",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("fixture failure")),
+    )
+
+    completed = mail_import.run_incremental(download.ROOT, tmp_path / "config.json")
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr == "RuntimeError"
+
+
 def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -634,10 +708,20 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
         )
 
     monkeypatch.setattr(mail_import, "run_incremental", lambda *_args, **_kwargs: Result())
-    monkeypatch.setattr(
-        mail_import,
-        "enrich_mail_links",
-        lambda **_kwargs: {
+    competing_errors: list[BaseException] = []
+
+    def enrich_under_shared_lock(**_kwargs: object) -> dict[str, object]:
+        def competing_writer() -> None:
+            try:
+                with mail_import.single_run_lock(timeline, timeout_seconds=0.01):
+                    pass
+            except BaseException as exc:  # noqa: BLE001 - assertion captures thread failure.
+                competing_errors.append(exc)
+
+        thread = threading.Thread(target=competing_writer)
+        thread.start()
+        thread.join(timeout=1)
+        return {
             "target_events": 1,
             "counts": {"planned.strong": 1},
             "apply": {"counts": {"updated_events": 1, "created_chunks": 1}},
@@ -645,8 +729,9 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
                 "allowed_for_bot_changed": False,
                 "mail_stage2_allowed_for_bot_changed": False,
             },
-        },
-    )
+        }
+
+    monkeypatch.setattr(mail_import, "enrich_mail_links", enrich_under_shared_lock)
 
     report = mail_import.execute(
         mail_import.parse_args(
@@ -655,6 +740,10 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
     )
 
     assert report["status"] == "ok"
+    assert report["run_lock"]["reentrant"] is False
+    assert report["run_lock"]["path"].endswith(".nightly_service.lock")
+    assert len(competing_errors) == 1
+    assert isinstance(competing_errors[0], TimeoutError)
     assert report["mail_link_enrich"] == {
         "status": "ok",
         "error": None,

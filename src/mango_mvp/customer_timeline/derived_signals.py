@@ -117,6 +117,7 @@ CALLBACK_PROMISE_MARKERS = (
 )
 CALLBACK_CONDITIONAL_MARKERS = ("если появ", "если будет", "при появлен")
 ACTIVE_DEAL_STATUSES = ("актив", "observed", "open", "new", "в работе", "первичный контакт", "переговор")
+AMO_TERMINAL_STATUS_IDS = frozenset({"142", "143"})
 PAYMENT_IN_MARKERS = ("in", "поступ", "оплат", "приход", "зачисл")
 PAYMENT_OUT_MARKERS = ("out", "refund", "возврат", "отмен", "cancel")
 ACTIVE_ABONEMENT_MARKERS = ("active", "актив", "действ", "открыт")
@@ -495,12 +496,40 @@ def _callback_promise_text(event: Mapping[str, Any]) -> str:
 def _is_active_deal(opportunity: Mapping[str, Any]) -> bool:
     if str(opportunity.get("opportunity_type") or "") != "amo_deal":
         return False
-    status = _joined_lower(opportunity.get("status"))
+    if opportunity.get("closed_at"):
+        return False
+    status = _joined_lower(opportunity.get("status")).strip()
     if not status:
         return True
+    if status in AMO_TERMINAL_STATUS_IDS:
+        return False
     if any(marker in status for marker in ("закры", "lost", "won", "успеш", "оплата получена")):
         return False
     return any(marker in status for marker in ACTIVE_DEAL_STATUSES) or status not in {"closed", "lost", "won"}
+
+
+def _is_active_deal_at(opportunity: Mapping[str, Any], *, as_of: datetime) -> bool:
+    """Return deal activity at a fixed cutoff, including later closures."""
+    require_timezone(as_of, "as_of")
+    opened_raw = str(opportunity.get("opened_at") or "").strip()
+    if opened_raw:
+        try:
+            opened_at = _parse_datetime(opened_raw, "opened_at")
+        except (TypeError, ValueError):
+            return False
+        if opened_at > as_of:
+            return False
+    closed_raw = str(opportunity.get("closed_at") or "").strip()
+    if not closed_raw:
+        return _is_active_deal(opportunity)
+    try:
+        closed_at = datetime.fromisoformat(closed_raw.replace("Z", "+00:00"))
+        require_timezone(closed_at, "closed_at")
+    except (TypeError, ValueError):
+        return False
+    if closed_at <= as_of:
+        return False
+    return str(opportunity.get("opportunity_type") or "") == "amo_deal"
 
 
 def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, Mapping[str, Any]]:
@@ -681,7 +710,7 @@ def _derive_deal_stalling(
     opportunities: Sequence[Mapping[str, Any]],
     as_of: datetime,
 ) -> Optional[DerivedSignal]:
-    if not events or not any(_is_active_deal(item) for item in opportunities):
+    if not events or not any(_is_active_deal_at(item, as_of=as_of) for item in opportunities):
         return None
     latest = events[-1]
     latest_at = _event_at(latest)

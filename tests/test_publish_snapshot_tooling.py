@@ -577,6 +577,20 @@ def test_reader_smoke_blocks_mango_processed_non_strong_and_unknown_brand(tmp_pa
     assert gate["violations"]["allowed_mango_processed_unknown_brand_metric"] == 1
     assert gate["counts"]["allowed_mango_processed_unknown_brand_metric"] == 1
 
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE bot_context_chunks SET superseded_by='retired:test' WHERE chunk_id='mango-ambiguous'"
+        )
+        con.commit()
+
+    retired_report, retired_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert retired_ok is True
+    retired_gate = retired_report["mango_processed_allowed_safety_gate"]
+    assert retired_gate["ok"] is True
+    assert retired_gate["counts"]["allowed_mango_processed_chunks"] == 0
+    assert retired_gate["violations"] == {}
+
 
 def test_reader_smoke_blocks_mango_processed_corrupted_identity_contract(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"

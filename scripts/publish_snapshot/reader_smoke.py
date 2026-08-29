@@ -206,6 +206,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE source_system = 'mango_processed_summary'
                       AND allowed_for_bot = 1
                       AND requires_manager_review = 0
+                      AND COALESCE(superseded_by, '') = ''
                     """
                 ).fetchone()[0]
             ),
@@ -218,6 +219,8 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND COALESCE(b.superseded_by, '') = ''
+                      AND COALESCE(e.superseded_by, '') = ''
                       AND COALESCE(e.match_status, '') != 'strong_unique'
                     """
                 ).fetchone()[0]
@@ -230,6 +233,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND COALESCE(b.superseded_by, '') = ''
                       AND COALESCE(b.chunk_type, '') != 'mango_call_summary'
                     """
                 ).fetchone()[0]
@@ -243,6 +247,8 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND COALESCE(b.superseded_by, '') = ''
+                      AND COALESCE(e.superseded_by, '') = ''
                       AND COALESCE(b.customer_id, '') != COALESCE(e.customer_id, '')
                     """
                 ).fetchone()[0]
@@ -258,6 +264,8 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND COALESCE(b.superseded_by, '') = ''
+                      AND COALESCE(e.superseded_by, '') = ''
                       AND (
                         b.customer_id IS NULL OR b.customer_id = ''
                         OR e.customer_id IS NULL OR e.customer_id = ''
@@ -276,6 +284,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND COALESCE(b.superseded_by, '') = ''
                       AND LOWER(COALESCE(json_extract(b.record_json, '$.metadata.content_brand'), '')) NOT IN ('foton', 'unpk')
                     """
                 ).fetchone()[0]
@@ -292,7 +301,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
         "counts": counts,
         "violations": violations,
         "policy": (
-            "opened mango_processed_summary chunks require strong_unique event match, "
+            "active opened mango_processed_summary chunks require strong_unique event match, "
             "resolved customer identity, and an explicit foton/unpk content_brand"
         ),
     }

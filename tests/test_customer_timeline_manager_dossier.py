@@ -132,9 +132,10 @@ def test_manager_dossier_names_tallanto_attendance_without_overclaiming_presence
     assert not any("Физика 8 класс" in row.text for row in dossier.chronology)
 
 
-def test_open_identity_conflict_suppresses_deals_and_attendance(tmp_path: Path) -> None:
+def test_open_identity_conflict_suppresses_all_business_sections(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
     with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
         store.upsert_event(TimelineEvent(
             tenant_id="foton",
@@ -158,8 +159,13 @@ def test_open_identity_conflict_suppresses_deals_and_attendance(tmp_path: Path) 
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
     assert "identity_conflict_open" in dossier.manager_action.readiness_reason_codes
-    assert dossier.active_deals == ()
-    assert dossier.attendance == ()
+    assert dossier.brand == ""
+    assert dossier.next_step == ""
+    for section in (
+        "family", "money", "active_deals", "attendance", "signals", "objections",
+        "chronology", "interests", "pains",
+    ):
+        assert getattr(dossier, section) == ()
 
 
 def test_manager_dossier_reuses_normalized_event_brand_when_identity_has_none(tmp_path: Path) -> None:
@@ -398,7 +404,6 @@ def test_manager_chronology_excludes_ambiguous_client_messages(tmp_path: Path) -
             customer_id="customer:1",
             as_of=NOW + timedelta(minutes=5),
         )
-
     chronology = "\n".join(row.text for row in dossier.chronology)
     assert "Чужая неоднозначная история" not in chronology
     assert "Ручная подтверждённая история" in chronology
@@ -830,6 +835,18 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
     _seed_full_dossier_tables(db)
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+    assert dossier.family[0].source == 'family_links_v1:["customer:1","child:1"]'
+    assert {row.source for row in dossier.money} == {
+        'customer_purchases_v1:["customer:1","all_time","fact"]',
+        'customer_purchases_v1:["customer:1","all_time","plan"]',
+    }
+    assert dossier.signals[0].source == 'derived_signals:["signal:1"]'
+    assert dossier.objections[0].source == (
+        'customer_objections_v1:["customer:1","event:email","price"]'
+    )
+    assert all(row.source.startswith("timeline_events:[") for row in dossier.chronology)
     reconcile = tmp_path / ".codex_local" / "reconcile.json"
     reconcile.parent.mkdir(parents=True)
     reconcile.write_text(
@@ -1122,12 +1139,15 @@ def test_dossier_projects_only_exact_active_deals_and_past_attendance(tmp_path: 
             customer_id="customer:1",
             as_of=NOW + timedelta(minutes=5),
         )
+        attendance_event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE source_id='attendance-past'"
+        ).fetchone()[0]
 
     assert len(dossier.active_deals) == 1
     assert dossier.active_deals[0].source.startswith("customer_opportunities:")
     assert "Летняя школа" in dossier.active_deals[0].text
     assert len(dossier.attendance) == 1
-    assert dossier.attendance[0].source.startswith("tallanto_attendance_api:")
+    assert dossier.attendance[0].source == f'timeline_events:["{attendance_event_id}"]'
     assert "Запись Tallanto о занятии: Математика" in dossier.attendance[0].text
     assert "Чужое неоднозначное" not in dossier.attendance[0].text
     assert all("2026-07-04" not in row.text for row in dossier.chronology)
@@ -1259,8 +1279,15 @@ def test_direct_contact_opt_out_blocks_ready_action_only_after_cutoff(tmp_path: 
         ("Мы сейчас не занимаемся, не пишите нам больше.", True),
         ("Сегодня уехали, больше не звоните нам никогда.", True),
         ("Сейчас не звоните. Вообще больше не звоните.", True),
+        ("Менеджер сказал, что скидок нет, больше не звоните.", True),
+        ("Оператор просил уточнить, удалите меня из рассылки.", True),
+        ("Сотрудник написал вам вчера, я не хочу больше получать рассылку.", True),
+        ("Не звоните, я сейчас на работе.", False),
+        ("Сегодня не звоните, вообще неудобно говорить.", False),
+        ("Не звоните сейчас, я вообще занят до вечера.", False),
         ("Не звоните сегодня, я сама напишу завтра.", False),
         ("Пока не пишите, я вернусь через неделю.", False),
+        ("Не звоните до 15 сентября, я напишу сама.", False),
         ("Менеджер сказал: «больше не звоните», но я хочу продолжить.", False),
     ),
 )
@@ -1484,6 +1511,44 @@ def test_manager_action_uses_exact_task_and_deal_cutoff(tmp_path: Path) -> None:
     assert before_close.manager_action.readiness_state == "ready"
     assert after_close.manager_action.readiness_state == "review"
     assert "task_opportunity_not_active" in after_close.manager_action.readiness_reason_codes
+
+
+def test_manager_action_accepts_exact_lead_link_without_first_seen_at(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET first_seen_at=NULL "
+            "WHERE tenant_id='foton' AND link_type='amo_lead_id' AND link_value='lead-1'"
+        )
+        con.commit()
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.active_deals
+    assert dossier.manager_action.readiness_state == "ready"
+    assert dossier.manager_action.action == "Позвонить и согласовать расписание"
+
+
+def test_manager_action_rejects_lead_link_with_invalid_first_seen_at(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET first_seen_at='not-a-date' "
+            "WHERE tenant_id='foton' AND link_type='amo_lead_id' AND link_value='lead-1'"
+        )
+        con.commit()
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.active_deals == ()
+    assert dossier.manager_action.reason == "task_lead_owner_missing"
+    assert dossier.manager_action.action == ""
 
 
 @pytest.mark.parametrize("action", ("Сделать что-нибудь сегодня", "Уточнить интерес к"))
@@ -2574,13 +2639,16 @@ def test_manager_dossier_reads_family_chronology_without_merging_customer_record
                 "2026-05-01", "[]", "computed", "test",
             ),
         )
+        family_event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE source_id='family-mail'"
+        ).fetchone()[0]
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
     chronology = "\n".join(row.text for row in dossier.chronology)
     assert dossier.customer_id == "customer:1"
     assert "второго ребёнка" in chronology
     assert "карточка: Второй ученик" in chronology
-    assert any(row.source.endswith(":customer:2") for row in dossier.chronology)
+    assert f'timeline_events:["{family_event_id}"]' in {row.source for row in dossier.chronology}
     assert any("Второй ученик" in row.text for row in dossier.family)
     assert any("22 222" in row.text and "карточка: Второй ученик" in row.text for row in dossier.money)
     assert any(

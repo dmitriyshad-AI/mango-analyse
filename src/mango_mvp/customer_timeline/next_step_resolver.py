@@ -45,7 +45,14 @@ _DIRECT_CONTACT_OPTOUT_RE = re.compile(
 )
 
 _TEMPORARY_CONTACT_PAUSE_RE = re.compile(
-    r"\b(?:пока|сейчас|сегодня|до\s+[а-яё0-9]|в\s+течение)\b",
+    r"\b(?:пока|сейчас|сегодня|до\s+[а-яё0-9][а-яё0-9./-]*|в\s+течение)\b",
+    re.IGNORECASE,
+)
+
+_PERMANENT_CONTACT_OPTOUT_RE = re.compile(
+    r"\b(?:больше|никогда|навсегда|перестаньте|удалите|уберите|исключите|"
+    r"отпишите|отписаться)\b|\bне\s+хочу\s+(?:больше\s+)?(?:получать\s+)?"
+    r"(?:рассылку|сообщения|звонки|письма)\b",
     re.IGNORECASE,
 )
 
@@ -350,14 +357,18 @@ def event_has_explicit_contact_opt_out(event: Mapping[str, Any]) -> bool:
     ):
         text = re.sub(r"\s+", " ", _compact(value)).strip()
         for match in _DIRECT_CONTACT_OPTOUT_RE.finditer(text):
+            sentence_start = max(text.rfind(mark, 0, match.start()) for mark in ".!?;\n") + 1
+            sentence_ends = [text.find(mark, match.end()) for mark in ".!?;\n"]
+            sentence_end = min((pos for pos in sentence_ends if pos >= 0), default=len(text))
+            sentence = text[sentence_start:sentence_end]
             clause_start = max(text.rfind(mark, 0, match.start()) for mark in ".!?;,\n") + 1
-            clause_ends = [text.find(mark, match.end()) for mark in ".!?;,\n"]
-            clause_end = min((pos for pos in clause_ends if pos >= 0), default=len(text))
-            clause = text[clause_start:clause_end]
             prefix = text[clause_start:match.start()]
             if (
                 not _REPORTED_CONTACT_OPTOUT_RE.search(prefix)
-                and not _TEMPORARY_CONTACT_PAUSE_RE.search(clause)
+                and (
+                    _PERMANENT_CONTACT_OPTOUT_RE.search(sentence)
+                    or not _TEMPORARY_CONTACT_PAUSE_RE.search(sentence)
+                )
             ):
                 return True
     return False
@@ -727,7 +738,7 @@ def load_manager_action_read_snapshot(
             WHERE tenant_id=? AND link_type='amo_lead_id'
               AND match_class IN ('strong_unique','manual')
               AND customer_id IS NOT NULL AND customer_id!=''
-              AND julianday(first_seen_at)<=julianday(?)
+              AND (first_seen_at IS NULL OR julianday(first_seen_at)<=julianday(?))
               AND link_value IN (SELECT value FROM json_each(?))
             """,
             (

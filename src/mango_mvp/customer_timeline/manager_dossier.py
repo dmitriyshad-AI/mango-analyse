@@ -921,6 +921,10 @@ class DossierRow:
     source: str
 
 
+def _record_source(table: str, *parts: Any) -> str:
+    return f"{table}:{json.dumps([str(value) for value in parts], ensure_ascii=False, separators=(',', ':'))}"
+
+
 @dataclass(frozen=True)
 class CustomerDossier:
     tenant_id: str
@@ -980,6 +984,26 @@ def build_customer_dossier(
         manager_action_read_snapshot.family_customer_ids_by_customer.get(customer_id)
         or (customer_id,)
     )
+    manager_action = resolve_customer_manager_action(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=evaluation_at,
+        read_snapshot=manager_action_read_snapshot,
+    )
+    if "identity_conflict_open" in manager_action.readiness_reason_codes:
+        return CustomerDossier(
+            tenant_id=str(customer["tenant_id"]),
+            customer_id=str(customer["customer_id"]),
+            display_name=_clean_text(customer["display_name"]),
+            brand="",
+            phone=_clean_text(customer["primary_phone"]),
+            email=_clean_text(customer["primary_email"]),
+            actuality_header=actuality_header,
+            action_status=manager_action.status,
+            no_action_reason_code=manager_action.reason,
+            manager_action=manager_action,
+        )
     customer_record = _safe_json(customer["record_json"])
     identity_brands = [
         str(item).strip().casefold()
@@ -1062,14 +1086,6 @@ def build_customer_dossier(
         customer_id=customer_id,
         as_of=evaluation_at,
     )
-    manager_action = resolve_customer_manager_action(
-        con,
-        tenant_id=tenant_id,
-        customer_id=customer_id,
-        as_of=evaluation_at,
-        read_snapshot=manager_action_read_snapshot,
-    )
-    identity_conflict_open = "identity_conflict_open" in manager_action.readiness_reason_codes
     action_ready = manager_action.readiness_state == "ready"
     next_step = manager_action.action if action_ready else ""
     next_step_source = (
@@ -1101,7 +1117,7 @@ def build_customer_dossier(
             customer_ids=family_customer_ids,
             as_of=evaluation_at,
         )),
-        active_deals=() if identity_conflict_open else tuple(_active_deal_rows(
+        active_deals=tuple(_active_deal_rows(
             con,
             tenant_id=tenant_id,
             customer_id=customer_id,
@@ -1109,7 +1125,7 @@ def build_customer_dossier(
             opportunities=opportunities,
             as_of=evaluation_at,
         )),
-        attendance=() if identity_conflict_open else tuple(_attendance_rows(
+        attendance=tuple(_attendance_rows(
             con,
             tenant_id=tenant_id,
             customer_id=customer_id,
@@ -3298,7 +3314,8 @@ def _family_rows(
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
-        SELECT canonical_name, name_variants_json, grades_json, subjects_json, brand, status, confidence, reason
+        SELECT customer_id, child_key, canonical_name, name_variants_json, grades_json,
+               subjects_json, brand, status, confidence
         FROM family_links_v1
         WHERE tenant_id = ? AND customer_id IN ({placeholders})
         ORDER BY status, confidence DESC, canonical_name
@@ -3310,7 +3327,6 @@ def _family_rows(
         variants = _join_list_json(row["name_variants_json"])
         grades = _join_list_json(row["grades_json"])
         subjects = _join_list_json(row["subjects_json"])
-        quality = f"{row['status']}/{row['confidence']}"
         text = f"{_clean_text(row['canonical_name'])}"
         details = []
         if variants and variants != text:
@@ -3327,7 +3343,9 @@ def _family_rows(
             details.append("уточнить семейную связь")
         if details:
             text += " (" + "; ".join(details) + ")"
-        result.append(DossierRow("Семья", text, f"family_links_v1:{quality}:{row['reason']}"))
+        result.append(DossierRow(
+            "Семья", text, _record_source("family_links_v1", row["customer_id"], row["child_key"]),
+        ))
     return result
 
 
@@ -3373,7 +3391,10 @@ def _money_rows(
         if len(customer_ids) > 1:
             member = _clean_text(row["display_name"]) or str(row["customer_id"])
             text += f" [карточка: {member}]"
-        result.append(DossierRow("Деньги", text, "customer_purchases_v1"))
+        result.append(DossierRow(
+            "Деньги", text,
+            _record_source("customer_purchases_v1", row["customer_id"], row["period"], row["money_kind"]),
+        ))
     return result
 
 
@@ -3388,7 +3409,7 @@ def _signal_rows(
         return []
     rows = con.execute(
         """
-        SELECT signal_type, severity, created_at, expires_at, confidence,
+        SELECT signal_id, signal_type, severity, created_at, expires_at, confidence,
                requires_manager_review, record_json
         FROM derived_signals
         WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
@@ -3417,7 +3438,9 @@ def _signal_rows(
             parts.append(f"рекомендация: {action}")
         if evidence:
             parts.append(f"основание: {evidence}")
-        result.append(DossierRow("Сигналы", "; ".join(parts), f"derived_signals:{row['signal_type']}"))
+        result.append(DossierRow(
+            "Сигналы", "; ".join(parts), _record_source("derived_signals", row["signal_id"]),
+        ))
     return result
 
 
@@ -3432,7 +3455,8 @@ def _objection_rows(
         return []
     rows = con.execute(
         """
-        SELECT source_channel, objection_type, quote_preview, budget_hint_rub, price_sensitivity, confidence, speaker
+        SELECT customer_id, source_event_id, source_channel, objection_type, quote_preview,
+               budget_hint_rub, price_sensitivity, confidence, speaker
         FROM customer_objections_v1
         WHERE tenant_id = ?
           AND customer_id = ?
@@ -3451,7 +3475,12 @@ def _objection_rows(
             text += f"; бюджет: {_format_money(row['budget_hint_rub'])}"
         if row["price_sensitivity"]:
             text += f"; чувствительность к цене: {row['price_sensitivity']}"
-        result.append(DossierRow("Возражения", text, f"customer_objections_v1:{row['source_channel']}:{row['confidence']}"))
+        result.append(DossierRow(
+            "Возражения", text,
+            _record_source(
+                "customer_objections_v1", row["customer_id"], row["source_event_id"], row["objection_type"],
+            ),
+        ))
     return result
 
 
@@ -3547,7 +3576,7 @@ def _attendance_rows(
         result.append(DossierRow(
             "Занятия",
             text,
-            f"{row['source_system']}:{row['event_id']}",
+            _record_source("timeline_events", row["event_id"]),
         ))
     return result
 
@@ -3570,7 +3599,7 @@ def _chronology_rows(
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
-        SELECT event.event_at, event.event_type, event.source_system, event.subject,
+        SELECT event.event_id, event.event_at, event.event_type, event.source_system, event.subject,
                event.summary, event.text_preview, event.customer_id,
                identity.display_name AS source_customer_name
         FROM timeline_events AS event
@@ -3602,7 +3631,7 @@ def _chronology_rows(
             DossierRow(
                 "Хронология",
                 text,
-                f"{row['source_system']}:{row['customer_id']}",
+                _record_source("timeline_events", row["event_id"]),
             )
         )
     return result

@@ -153,6 +153,14 @@ def _run_stage4b_bot_opening_unlocked(config: Stage4BBotOpeningConfig) -> Mappin
         if config.apply and opened_non_contentful != 0:
             con.rollback()
             raise RuntimeError("stage4b refused to leave non-contentful Mango calls open for bot memory")
+        opened_unknown_brand_calls = _opened_unknown_brand_count(
+            con,
+            tenant_id=config.tenant_id,
+            only_mango_processed=True,
+        )
+        if config.apply and opened_unknown_brand_calls != 0:
+            con.rollback()
+            raise RuntimeError("stage4b refused to leave unknown-brand Mango calls open for bot memory")
         if config.apply:
             con.commit()
         after = _metrics(con, tenant_id=config.tenant_id)
@@ -174,11 +182,7 @@ def _run_stage4b_bot_opening_unlocked(config: Stage4BBotOpeningConfig) -> Mappin
                 tenant_id=config.tenant_id,
                 include_mango_processed=False,
             ),
-            "opened_mango_processed_unknown_brand_after": _opened_unknown_brand_count(
-                con,
-                tenant_id=config.tenant_id,
-                only_mango_processed=True,
-            ),
+            "opened_mango_processed_unknown_brand_after": opened_unknown_brand_calls,
         }
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
         (config.out_dir / "stage4b_bot_opening_report.json").write_text(
@@ -318,7 +322,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             continue
         brand = _content_brand(payload, event_payload)
         brand_counts[brand] += 1
-        if source_system != MANGO_PROCESSED_SOURCE_SYSTEM and brand not in {"foton", "unpk"}:
+        if brand not in {"foton", "unpk"}:
             unknown_brand_chunks += 1
             continue
         rows.append(row)

@@ -198,6 +198,41 @@ def test_stage3_chunk_label_backfill_is_conservative_for_raw_mail(tmp_path: Path
     assert payload["metadata"]["memory_status"] == "manager_review_required"
 
 
+def test_stage3_never_infers_client_safe_from_bot_visibility(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = _identity()
+        store.upsert_customer(customer)
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                source_system="trusted_summary",
+                source_ref="legacy:visible-without-owner-proof",
+                chunk_type="bot_safe_summary",
+                text="Старая видимая карточка без доказательства владельца проекции.",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                created_at=NOW,
+            )
+        )
+
+    run_stage3_maintenance(
+        Stage3MaintenanceConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        payload = json.loads(con.execute("SELECT record_json FROM bot_context_chunks").fetchone()[0])
+    assert payload["metadata"]["client_safe"] is False
+    assert payload["metadata"]["client_safe_reason"] == "source_owner_client_safe_missing"
+    assert payload["metadata"]["memory_status"] == "manager_review_required"
+
+
 def test_stage3_hardens_legacy_mail_chunk_columns_and_json(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:

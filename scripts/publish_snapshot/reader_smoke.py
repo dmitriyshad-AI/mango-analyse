@@ -284,8 +284,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     violations = {
         key: value
         for key, value in counts.items()
-        if key not in {"allowed_mango_processed_chunks", "allowed_mango_processed_unknown_brand_metric"}
-        and int(value) > 0
+        if key != "allowed_mango_processed_chunks" and int(value) > 0
     }
     return {
         "ok": not violations,
@@ -294,7 +293,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
         "violations": violations,
         "policy": (
             "opened mango_processed_summary chunks require strong_unique event match, "
-            "resolved customer identity; content_brand may be unknown because calls are brand-agnostic input context"
+            "resolved customer identity, and an explicit foton/unpk content_brand"
         ),
     }
 
@@ -359,6 +358,7 @@ def bot_visibility_counts(
         store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
             clauses,
             params,
+            tenant_id=tenant_id,
             customer_id=None,
             opportunity_id=None,
             since=None,

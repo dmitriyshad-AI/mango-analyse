@@ -25,10 +25,28 @@ from mango_mvp.customer_timeline import (
     route_customer_timeline_request,
 )
 from mango_mvp.customer_timeline.read_api import main
+from mango_mvp.customer_timeline.source_policy import (
+    BOT_SAFE_SUMMARY_ACTOR,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+)
 
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
 SHA = "d" * 64
+
+
+def _canonical_summary_metadata(*, brand: str = "foton", **extra: object) -> dict[str, object]:
+    return {
+        "brand_context_authorized": True,
+        "client_safe": True,
+        "client_safe_provenance": BOT_SAFE_SUMMARY_ACTOR,
+        "projection_owner": BOT_SAFE_SUMMARY_ACTOR,
+        "projection_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+        "raw_text_used": False,
+        "content_brand": brand,
+        "brand_source": "test_fixture",
+        **extra,
+    }
 
 
 def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> None:
@@ -51,7 +69,7 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert profile["manager_projection"]["amo_lead_ids"] == ["lead-1", "lead-raw-1"]
         assert profile["manager_projection"]["schema_version"] == "customer_profile_manager_projection_v2"
         assert profile["manager_projection"]["manager_action"]["readiness_state"] == "review"
-        assert "identity_conflict_open" in profile["manager_projection"]["manager_action"]["readiness_reason_codes"]
+        assert "amo_tasks_cursor_missing" in profile["manager_projection"]["manager_action"]["readiness_reason_codes"]
         assert {item["link_value"] for item in profile["manager_projection"]["identity_links"]} == {"contact-raw-1", "lead-raw-1"}
         assert profile["customer_id_mappings"] == [
             {
@@ -270,14 +288,17 @@ def test_operational_list_and_search_hide_graduate_only_but_keep_mixed_family_hi
                     customer_id=customer_id,
                     chunk_id=f"scope-bot-{index}",
                     source_system="customer_timeline_bot_safe_summary",
-                    source_ref=f"botsafe:scope-{index}",
+                    source_ref=f"botsafe:{customer_id}:foton",
                     chunk_type="bot_safe_summary",
-                    text=f"scope-poison bot context {index}",
+                    text=f"Бренд: Фотон. scope-poison bot context {index}",
+                    summary=f"Бренд: Фотон. scope-poison bot context {index}",
+                    relevance_tags=("bot_safe", "structured", "foton"),
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"brand_context_authorized": True, "client_safe": True},
+                    metadata=_canonical_summary_metadata(),
                     created_at=NOW + timedelta(minutes=index),
-                )
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
             )
     with sqlite3.connect(db_path) as con:
         con.execute(
@@ -414,6 +435,281 @@ def test_read_api_skips_malformed_record_without_crashing_customer_memory(tmp_pa
         result = api.bot_context("foton", customer_id, allowed_only=True)
 
     assert result["items"] == []
+
+
+@pytest.mark.parametrize("legacy_purchase_table", (False, True))
+def test_bot_safe_summary_survives_missing_or_legacy_purchase_table(
+    tmp_path: Path,
+    legacy_purchase_table: bool,
+) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    if legacy_purchase_table:
+        with sqlite3.connect(db_path) as con:
+            con.execute(
+                "CREATE TABLE customer_purchases_v1 (tenant_id TEXT, customer_id TEXT)"
+            )
+            con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True)
+
+    assert any(item["source_system"] == "customer_timeline_bot_safe_summary" for item in context["items"])
+    assert all(item["source_system"] != "customer_purchases_v1" for item in context["items"])
+
+
+def test_bot_safe_reader_uses_positive_projection_allowlist(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for chunk_id, source_system, chunk_type, source_ref in (
+            ("arbitrary-trusted", "trusted_summary", "bot_safe_summary", "trusted:arbitrary"),
+            (
+                "canonical-wrong-type",
+                "customer_timeline_bot_safe_summary",
+                "trusted_summary",
+                f"botsafe:{customer_id}:foton",
+            ),
+        ):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=chunk_id,
+                    source_system=source_system,
+                    source_ref=source_ref,
+                    chunk_type=chunk_type,
+                    text=f"allowlistpoison {chunk_id}",
+                    event_at=NOW + timedelta(minutes=10),
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata=_canonical_summary_metadata(),
+                    created_at=NOW + timedelta(minutes=10),
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
+            )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True)
+        search = api.search(
+            "foton", "allowlistpoison", customer_id=customer_id, allowed_for_bot=True
+        )
+
+    blocked_ids = {"arbitrary-trusted", "canonical-wrong-type"}
+    assert not blocked_ids.intersection(item["chunk_id"] for item in context["items"])
+    assert not blocked_ids.intersection(item["id"] for item in search["result"]["items"])
+
+
+def test_canonical_summary_writer_requires_projection_owner_actor(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    chunk = BotContextChunk(
+        tenant_id="foton",
+        customer_id=customer_id,
+        chunk_id="writer-owner-probe",
+        source_system="customer_timeline_bot_safe_summary",
+        source_ref=f"botsafe:{customer_id}:foton",
+        chunk_type="bot_safe_summary",
+        text="Бренд: Фотон. writerownerprobe",
+        summary="Бренд: Фотон. writerownerprobe",
+        relevance_tags=("bot_safe", "structured", "foton"),
+        allowed_for_bot=True,
+        requires_manager_review=False,
+        metadata=_canonical_summary_metadata(),
+        created_at=NOW,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        with pytest.raises(ValueError, match="projection owner actor"):
+            store.upsert_bot_context_chunk(chunk)
+        assert store.upsert_bot_context_chunk(
+            chunk,
+            actor=BOT_SAFE_SUMMARY_ACTOR,
+        ).status == "created"
+
+
+@pytest.mark.parametrize(
+    ("chunk_id", "brand", "tags", "text", "summary"),
+    (
+        (
+            "brand-mismatch",
+            "foton",
+            ("bot_safe", "structured", "unpk"),
+            "Бренд: Фотон. brandcontractprobe mismatch",
+            "Бренд: Фотон. brandcontractprobe mismatch",
+        ),
+        (
+            "brand-dual",
+            "foton",
+            ("bot_safe", "structured", "foton", "unpk"),
+            "Бренд: Фотон. brandcontractprobe dual",
+            "Бренд: Фотон. brandcontractprobe dual",
+        ),
+        (
+            "brand-prefix",
+            "foton",
+            ("bot_safe", "structured", "foton"),
+            "Фотон: brandcontractprobe prefix",
+            "Фотон: brandcontractprobe prefix",
+        ),
+        (
+            "brand-summary",
+            "foton",
+            ("bot_safe", "structured", "foton"),
+            "Бренд: Фотон. brandcontractprobe text",
+            "Бренд: Фотон. brandcontractprobe other",
+        ),
+    ),
+)
+def test_bot_safe_reader_rejects_incoherent_brand_projection(
+    tmp_path: Path,
+    chunk_id: str,
+    brand: str,
+    tags: tuple[str, ...],
+    text: str,
+    summary: str,
+) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_id=chunk_id,
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref=f"botsafe:{customer_id}:{brand}",
+                chunk_type="bot_safe_summary",
+                text=text,
+                summary=summary,
+                relevance_tags=tags,
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata=_canonical_summary_metadata(brand=brand),
+                created_at=NOW,
+            ),
+            actor=BOT_SAFE_SUMMARY_ACTOR,
+        )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True)
+        search = api.search(
+            "foton", "brandcontractprobe", customer_id=customer_id, allowed_for_bot=True
+        )
+
+    assert all(item["chunk_id"] != chunk_id for item in context["items"])
+    assert all(item["id"] != chunk_id for item in search["result"]["items"])
+
+
+def test_store_forces_bot_search_to_safe_fallback(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore.open_read_only(
+        db_path,
+        allowed_root=tmp_path,
+    ) as store:
+        result = store.search_timeline(
+            "foton",
+            "стоимость",
+            customer_id=customer_id,
+            scopes=("events", "signals"),
+            allowed_for_bot=True,
+            mode="fts",
+            include_highlights=True,
+        )
+
+    assert result["backend"] == "fallback_like"
+    assert {item["scope"] for item in result["items"]} == {"bot_context"}
+    assert all(item["highlight"] is None for item in result["items"])
+
+
+def test_bot_safe_summary_partial_identity_requires_exact_link_proof(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE customer_identities SET identity_status='partial' WHERE customer_id=?",
+            (customer_id,),
+        )
+        con.commit()
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        proven = api.bot_context("foton", customer_id, allowed_only=True)
+    assert any(item["source_system"] == "customer_timeline_bot_safe_summary" for item in proven["items"])
+
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE identity_links SET match_class='ambiguous' WHERE customer_id=?",
+            (customer_id,),
+        )
+        con.commit()
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        unproven = api.bot_context("foton", customer_id, allowed_only=True)
+    assert unproven["items"] == []
+
+
+def test_bot_safe_reader_blocks_open_identity_conflict(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=(customer_id, "customer:other"),
+            actor="test",
+        )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True)
+    assert context["items"] == []
+
+
+@pytest.mark.parametrize("mutation", ("record_only", "physical_only", "duplicate_key"))
+def test_bot_safe_reader_rejects_record_parity_and_digest_poison(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT chunk_id,record_json FROM bot_context_chunks "
+            "WHERE source_system='customer_timeline_bot_safe_summary'"
+        ).fetchone()
+        chunk_id, raw_record = str(row[0]), str(row[1])
+        query = "стоимость"
+        if mutation == "record_only":
+            payload = json.loads(raw_record)
+            payload["text"] = "digestpoison"
+            con.execute(
+                "UPDATE bot_context_chunks SET record_json=? WHERE chunk_id=?",
+                (json.dumps(payload, ensure_ascii=False), chunk_id),
+            )
+            query = "digestpoison"
+        elif mutation == "physical_only":
+            con.execute(
+                "UPDATE bot_context_chunks SET source_system='trusted_summary' WHERE chunk_id=?",
+                (chunk_id,),
+            )
+        else:
+            duplicate = raw_record[:-1] + ',"text":"duplicatepoison"}'
+            assert con.execute("SELECT json_valid(?)", (duplicate,)).fetchone()[0] == 1
+            con.execute(
+                "UPDATE bot_context_chunks SET record_json=? WHERE chunk_id=?",
+                (duplicate, chunk_id),
+            )
+            query = "duplicatepoison"
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True)
+        search = api.search("foton", query, customer_id=customer_id, allowed_for_bot=True)
+
+    assert all(item["chunk_id"] != chunk_id for item in context["items"])
+    assert all(item["id"] != chunk_id for item in search["result"]["items"])
 
 
 @pytest.mark.parametrize(
@@ -573,12 +869,16 @@ def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chu
                     source_system="mail_archive_stage2",
                     source_ref=f"mail:{suffix}",
                     chunk_type="email_message",
-                    text=f"brandgateprobe {suffix}",
+                    text=f"Бренд: Фотон. brandgateprobe {suffix}",
+                    summary=f"Бренд: Фотон. brandgateprobe {suffix}",
+                    relevance_tags=("bot_safe", "structured", "foton"),
+                    event_at=NOW + timedelta(minutes=4),
                     allowed_for_bot=True,
                     requires_manager_review=False,
                     metadata=chunk_metadata,
                     created_at=NOW + timedelta(minutes=4),
-                )
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
             )
         store.upsert_bot_context_chunk(
             BotContextChunk(
@@ -596,8 +896,10 @@ def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chu
             )
         )
         for suffix, authorized in (("summary-good", True), ("summary-missing", None)):
-            metadata = {"client_safe": True}
-            if authorized is not None:
+            metadata = _canonical_summary_metadata()
+            if authorized is None:
+                metadata.pop("brand_context_authorized")
+            else:
                 metadata["brand_context_authorized"] = authorized
             store.upsert_bot_context_chunk(
                 BotContextChunk(
@@ -605,14 +907,18 @@ def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chu
                     customer_id=customer_id,
                     chunk_id=suffix,
                     source_system="customer_timeline_bot_safe_summary",
-                    source_ref=f"botsafe:{suffix}",
+                    source_ref=f"botsafe:{customer_id}:foton",
                     chunk_type="bot_safe_summary",
-                    text=f"brandgateprobe {suffix}",
+                    text=f"Бренд: Фотон. brandgateprobe {suffix}",
+                    summary=f"Бренд: Фотон. brandgateprobe {suffix}",
+                    relevance_tags=("bot_safe", "structured", "foton"),
+                    event_at=NOW + timedelta(minutes=4),
                     allowed_for_bot=True,
                     requires_manager_review=False,
                     metadata=metadata,
                     created_at=NOW + timedelta(minutes=4),
-                )
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
             )
 
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
@@ -673,14 +979,17 @@ def test_bot_safe_reader_rejects_poisoned_raw_sources_even_with_all_env_bypasses
                     chunk_id=chunk_id,
                     event_id=event.event_id,
                     source_system="customer_timeline_bot_safe_summary",
-                    source_ref=f"read-boundary:{index}",
+                    source_ref=f"botsafe:{customer_id}:foton",
                     chunk_type="bot_safe_summary",
-                    text=f"readboundarypoison {source_system}",
+                    text=f"Бренд: Фотон. readboundarypoison {source_system}",
+                    summary=f"Бренд: Фотон. readboundarypoison {source_system}",
+                    relevance_tags=("bot_safe", "structured", "foton"),
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"brand_context_authorized": True, "client_safe": True},
+                    metadata=_canonical_summary_metadata(),
                     created_at=NOW + timedelta(minutes=10 + index),
-                )
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
             )
         store._con.executemany(  # noqa: SLF001 - poison fixture bypasses the writer gate intentionally.
             "UPDATE bot_context_chunks SET source_system=? WHERE chunk_id=?",
@@ -718,10 +1027,10 @@ def test_bot_safe_reader_uses_one_strict_as_of_cutoff_before_limit_and_search(tm
     db_path, customer_id = seed_timeline_db(tmp_path)
     future_at = NOW + timedelta(days=30)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
-        for chunk_id, chunk_type, event_at in (
-            ("safe-past", "bot_safe_summary", NOW - timedelta(minutes=1)),
-            ("safe-future-purchase", "purchase_history", future_at),
-            ("safe-malformed", "bot_safe_summary", NOW - timedelta(minutes=2)),
+        for chunk_id, event_at, brand in (
+            ("safe-past", NOW - timedelta(minutes=1), "unpk"),
+            ("safe-future-purchase", future_at, "foton"),
+            ("safe-malformed", NOW - timedelta(minutes=2), "unpk"),
         ):
             store.upsert_bot_context_chunk(
                 BotContextChunk(
@@ -729,15 +1038,24 @@ def test_bot_safe_reader_uses_one_strict_as_of_cutoff_before_limit_and_search(tm
                     customer_id=customer_id,
                     chunk_id=chunk_id,
                     source_system="customer_timeline_bot_safe_summary",
-                    source_ref=f"temporal:{chunk_id}",
-                    chunk_type=chunk_type,
-                    text=f"temporalprobe {chunk_id}",
+                    source_ref=f"botsafe:{customer_id}:{brand}",
+                    chunk_type="bot_safe_summary",
+                    text=(
+                        f"Бренд: {'Фотон' if brand == 'foton' else 'УНПК'}. "
+                        f"temporalprobe {chunk_id}"
+                    ),
+                    summary=(
+                        f"Бренд: {'Фотон' if brand == 'foton' else 'УНПК'}. "
+                        f"temporalprobe {chunk_id}"
+                    ),
+                    relevance_tags=("bot_safe", "structured", brand),
                     event_at=event_at,
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"brand_context_authorized": True, "client_safe": True},
+                    metadata=_canonical_summary_metadata(brand=brand),
                     created_at=event_at,
-                )
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
             )
         store._con.execute(  # noqa: SLF001 - malformed legacy fixture bypasses contracts intentionally.
             "UPDATE bot_context_chunks SET event_at='not-a-time',created_at='not-a-time' WHERE chunk_id='safe-malformed'"
@@ -778,29 +1096,34 @@ def test_bot_safe_reader_uses_one_strict_as_of_cutoff_before_limit_and_search(tm
 
 def test_bot_safe_reader_fails_closed_on_client_safe_metadata(tmp_path: Path) -> None:
     db_path, customer_id = seed_timeline_db(tmp_path)
+    missing_client_safe = _canonical_summary_metadata()
+    missing_client_safe.pop("client_safe")
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         for chunk_id, metadata in (
-            ("client-safe-true", {"client_safe": True}),
-            ("client-safe-false", {"client_safe": False}),
-            ("client-safe-missing", {}),
-            ("client-safe-string", {"client_safe": "true"}),
-            ("client-safe-malformed", {}),
+            ("client-safe-true", _canonical_summary_metadata()),
+            ("client-safe-false", _canonical_summary_metadata(client_safe=False)),
+            ("client-safe-missing", missing_client_safe),
+            ("client-safe-string", _canonical_summary_metadata(client_safe="true")),
+            ("client-safe-malformed", _canonical_summary_metadata()),
         ):
             store.upsert_bot_context_chunk(
                 BotContextChunk(
                     tenant_id="foton",
                     customer_id=customer_id,
                     chunk_id=chunk_id,
-                    source_system="trusted_summary",
-                    source_ref=f"client-safe:{chunk_id}",
+                    source_system="customer_timeline_bot_safe_summary",
+                    source_ref=f"botsafe:{customer_id}:foton",
                     chunk_type="bot_safe_summary",
-                    text=f"clientsafeprobe {chunk_id}",
-                    event_at=NOW - timedelta(minutes=1),
+                    text=f"Бренд: Фотон. clientsafeprobe {chunk_id}",
+                    summary=f"Бренд: Фотон. clientsafeprobe {chunk_id}",
+                    relevance_tags=("bot_safe", "structured", "foton"),
+                    event_at=NOW + timedelta(minutes=5),
                     allowed_for_bot=True,
                     requires_manager_review=False,
                     metadata=metadata,
-                    created_at=NOW - timedelta(minutes=1),
-                )
+                    created_at=NOW + timedelta(minutes=5),
+                ),
+                actor=BOT_SAFE_SUMMARY_ACTOR,
             )
         store._con.execute(  # noqa: SLF001 - malformed legacy poison bypasses the writer contract.
             "UPDATE bot_context_chunks SET record_json='not-json' WHERE chunk_id='client-safe-malformed'"
@@ -1293,24 +1616,23 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
             tenant_id="foton",
             customer_id=customer.customer_id,
             opportunity_id=opportunity.opportunity_id,
-            event_id=event.event_id,
-            source_system="mango",
-            source_ref="call-1",
-            chunk_type="sales_context",
-            text="Клиент спрашивал стоимость и ждет звонок менеджера.",
-            summary="Интерес к цене",
+            source_system="customer_timeline_bot_safe_summary",
+            source_ref=f"botsafe:{customer.customer_id}:foton",
+            chunk_type="bot_safe_summary",
+            text="Бренд: Фотон. Клиент спрашивал стоимость и ждет звонок менеджера.",
+            summary="Бренд: Фотон. Клиент спрашивал стоимость и ждет звонок менеджера.",
             event_at=NOW + timedelta(minutes=1),
             freshness_score=0.9,
-            relevance_tags=("sales", "price"),
+            relevance_tags=("bot_safe", "structured", "foton", "sales", "price"),
             allowed_for_bot=True,
             requires_manager_review=False,
-            metadata={
-                "client_safe": True,
-                "raw_file": "hidden",
-                "next_step": {"status": "needs_manager_review", "display_text": "Спорный текст шага"},
-            },
+            metadata=_canonical_summary_metadata(
+                raw_file="hidden",
+                next_step={"status": "needs_manager_review", "display_text": "Спорный текст шага"},
+            ),
             created_at=NOW + timedelta(minutes=1),
-        )
+        ),
+        actor=BOT_SAFE_SUMMARY_ACTOR,
     )
     store.upsert_bot_context_chunk(
         BotContextChunk(
@@ -1333,7 +1655,7 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
     )
     store.record_conflict(
         "foton",
-        conflict_type="ambiguous_identity",
+        conflict_type="manager_review_probe",
         entity_refs=("phone:+79161234567", customer.customer_id, "customer:other"),
         actor="test",
     )

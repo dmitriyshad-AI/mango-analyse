@@ -1026,8 +1026,8 @@ def _backfill_chunk_labels(
         "source_rows": dict(source_rows),
         "client_safe_reason_counts": dict(client_safe_reasons),
         "policy_note": (
-            "For chunks without A2v3 semantic facts, cs_v1 is conservative: existing bot-visible chunks stay "
-            "client_safe=True by prior approval; manager-review/raw mail chunks are client_safe=False until Э4б."
+            "cs_v1 never derives client_safe from allowed_for_bot: only the canonical projection owner may "
+            "assert client_safe=True; missing owner evidence and manager-review/raw mail stay fail-closed."
         ),
     }
 
@@ -1050,18 +1050,26 @@ def _chunk_label_payload(
         tags = ()
     if source_system == MAIL_STAGE2_INGEST_SOURCE_SYSTEM:
         client_safe = bool(metadata.get("client_safe")) if "client_safe" in metadata else False
-        reason = existing_reason or ("a2v3_fact_safe" if client_safe else "stage2_mail_manager_review_pending")
-        memory_status = existing_memory or "manager_review_required"
+        reason = (
+            (existing_reason or "a2v3_fact_safe")
+            if client_safe
+            else "stage2_mail_manager_review_pending"
+        )
+        memory_status = (existing_memory or "manager_review_required") if client_safe else "manager_review_required"
         tags = tags or ("email", "manager_review")
     elif allowed_for_bot and not requires_manager_review:
-        client_safe = True
-        reason = existing_reason or "preexisting_bot_visible"
-        memory_status = existing_memory or "usable_memory"
-        tags = tags or ("preexisting_bot_visible",)
+        client_safe = metadata.get("client_safe") is True
+        reason = (
+            (existing_reason or "source_owner_client_safe")
+            if client_safe
+            else "source_owner_client_safe_missing"
+        )
+        memory_status = (existing_memory or "usable_memory") if client_safe else "manager_review_required"
+        tags = tags or (("source_owner_client_safe",) if client_safe else ("client_safe_missing",))
     else:
         client_safe = bool(metadata.get("client_safe")) if "client_safe" in metadata else False
-        reason = existing_reason or "manager_review_required"
-        memory_status = existing_memory or "manager_review_required"
+        reason = (existing_reason or "manager_review_required") if client_safe else "manager_review_required"
+        memory_status = (existing_memory or "manager_review_required") if client_safe else "manager_review_required"
         tags = tags or ("manager_review",)
     return {
         "client_safe": client_safe,

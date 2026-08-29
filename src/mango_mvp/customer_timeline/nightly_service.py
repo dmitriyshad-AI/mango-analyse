@@ -2044,6 +2044,7 @@ def stage4b_report_ok(report: Mapping[str, Any]) -> bool:
         "opened_mango_processed_non_strong_after",
         "opened_mango_processed_non_contentful_after",
         "opened_unknown_brand_non_call_after",
+        "opened_mango_processed_unknown_brand_after",
     )
     if not set(required_zero_checks).issubset(checks):
         return False

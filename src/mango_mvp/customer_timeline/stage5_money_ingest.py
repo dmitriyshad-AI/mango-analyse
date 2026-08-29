@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.customer_timeline.contracts import (
+    BotContextChunk,
     IdentityMatchClass,
     TimelineDirection,
     TimelineEvent,
@@ -18,14 +19,26 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.purchases import (
+    CANONICAL_PURCHASE_FACT_CODE_VERSION,
+    CANONICAL_PURCHASE_FACT_IDENTITY_PROOF,
     PURCHASE_MONEY_KIND_FACT,
     PURCHASE_MONEY_KIND_PLAN,
+    canonical_purchase_fact_sql,
     ensure_customer_purchases_v1_table,
     upsert_customer_purchase_rows,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.source_policy import (
+    PURCHASE_HISTORY_BOT_TEXT,
+    PURCHASE_HISTORY_CHUNK_TYPE,
+    PURCHASE_HISTORY_PROJECTION_OWNER,
+    PURCHASE_HISTORY_PROJECTION_VERSION,
+    PURCHASE_HISTORY_SEMANTIC_SCOPE,
+    PURCHASE_HISTORY_SOURCE_SYSTEM,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    authoritative_tallanto_student_owners,
     customer_timeline_run_lock,
     json_dumps,
     json_loads,
@@ -39,7 +52,7 @@ from mango_mvp.customer_timeline.temporal import (
 
 STAGE5_MONEY_INGEST_SCHEMA_VERSION = "stage5_money_ingest_v1"
 STAGE5_AMO_PRICE_SOURCE_SYSTEM = "amocrm_price_readonly"
-STAGE5_MONEY_CODE_VERSION = "customer_purchases_v1_primary_money_v2"
+STAGE5_MONEY_CODE_VERSION = CANONICAL_PURCHASE_FACT_CODE_VERSION
 PAID_AMO_STATUSES = frozenset({"Оплата получена", "Успешно", "won", "success", "paid"})
 
 
@@ -301,7 +314,7 @@ def _reconcile_purchase_history_chunks_on_store(
     tenant_id: str,
     as_of: datetime,
 ) -> Mapping[str, Any]:
-    """Retire stale legacy purchase summaries that disagree with canonical facts."""
+    """Own one neutral bot projection for every eligible canonical payment fact."""
 
     cutoff = normalize_aware_utc(as_of)
     con = store._con  # noqa: SLF001 - projection repair shares the Stage5 transaction.
@@ -309,86 +322,189 @@ def _reconcile_purchase_history_chunks_on_store(
         str(row["customer_id"]): row
         for row in con.execute(
             """
-            SELECT customer_id,total_in,total_out,deals_cnt,last_purchase_at,computability
-            FROM customer_purchases_v1
-            WHERE tenant_id=? AND period='all_time' AND money_kind=?
+            SELECT p.customer_id,p.total_in,p.total_out,p.deals_cnt,p.last_purchase_at,
+                   p.sources_json,p.computability,p.code_version,i.identity_status
+            FROM customer_purchases_v1 p
+            LEFT JOIN customer_identities i
+              ON i.tenant_id=p.tenant_id AND i.customer_id=p.customer_id
+            WHERE p.tenant_id=? AND p.period='all_time' AND p.money_kind=?
             """,
             (tenant_id, PURCHASE_MONEY_KIND_FACT),
         )
     }
+    eligible_customer_ids = {
+        str(row[0])
+        for row in con.execute(
+            f"""
+            SELECT purchase_fact.customer_id
+            FROM customer_purchases_v1 purchase_fact
+            WHERE purchase_fact.tenant_id=?
+              AND EXISTS (
+                SELECT 1 FROM customer_identities purchase_identity
+                WHERE purchase_identity.tenant_id=purchase_fact.tenant_id
+                  AND purchase_identity.customer_id=purchase_fact.customer_id
+                  AND purchase_identity.identity_status='strong'
+              )
+              AND {canonical_purchase_fact_sql('purchase_fact')}
+            """,
+            (tenant_id, cutoff.isoformat()),
+        )
+    }
+    eligible: dict[str, tuple[sqlite3.Row, datetime]] = {}
+    ineligible_reasons: dict[str, str] = {}
+    for customer_id, fact in facts.items():
+        fact_at = parse_aware_utc(fact["last_purchase_at"])
+        total_in = _money_value(fact["total_in"])
+        total_out = _money_value(fact["total_out"])
+        if str(fact["identity_status"] or "") != "strong":
+            ineligible_reasons[customer_id] = "identity_not_strong"
+        elif str(fact["code_version"] or "") != CANONICAL_PURCHASE_FACT_CODE_VERSION:
+            ineligible_reasons[customer_id] = "canonical_fact_wrong_code_version"
+        elif not _canonical_purchase_sources(fact["sources_json"]):
+            ineligible_reasons[customer_id] = "canonical_fact_wrong_provenance"
+        elif str(fact["computability"] or "") != "computed":
+            ineligible_reasons[customer_id] = "canonical_fact_not_computed"
+        elif int(fact["deals_cnt"] or 0) <= 0:
+            ineligible_reasons[customer_id] = "canonical_fact_zero_deals"
+        elif total_in is None or total_in <= 0 or total_out is None:
+            ineligible_reasons[customer_id] = "canonical_fact_invalid_amounts"
+        elif fact_at is None or fact_at > cutoff:
+            ineligible_reasons[customer_id] = "canonical_fact_invalid_date"
+        elif customer_id in eligible_customer_ids:
+            eligible[customer_id] = (fact, fact_at)
+        else:
+            ineligible_reasons[customer_id] = "canonical_fact_contract_mismatch"
     chunks = con.execute(
         """
-        SELECT chunk_id,customer_id,event_at,record_json
+        SELECT chunk_id,customer_id,source_ref,event_at,freshness_score,created_at,record_json
         FROM bot_context_chunks
-        WHERE tenant_id=? AND source_system='customer_purchases_v1'
-          AND chunk_type='purchase_history' AND superseded_by IS NULL
+        WHERE tenant_id=? AND source_system=?
+          AND chunk_type=? AND superseded_by IS NULL
         ORDER BY chunk_id
         """,
-        (tenant_id,),
+        (tenant_id, PURCHASE_HISTORY_SOURCE_SYSTEM, PURCHASE_HISTORY_CHUNK_TYPE),
     ).fetchall()
     reasons: Counter[str] = Counter()
-    mismatched = 0
     retired = 0
+    projected: Counter[str] = Counter()
+    covered: set[str] = set()
     for chunk in chunks:
-        mismatch_reasons: set[str] = set()
-        fact = facts.get(str(chunk["customer_id"]))
-        payload: Mapping[str, Any] = {}
-        try:
-            loaded = json.loads(str(chunk["record_json"] or ""))
-            if isinstance(loaded, Mapping):
-                payload = loaded
-            else:
-                mismatch_reasons.add("invalid_chunk_payload")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            mismatch_reasons.add("invalid_chunk_payload")
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
-        if fact is None:
-            mismatch_reasons.add("canonical_fact_missing")
+        customer_id = str(chunk["customer_id"])
+        eligible_fact = eligible.get(customer_id)
+        if eligible_fact is not None:
+            fact, fact_at = eligible_fact
+            expected = _purchase_history_chunk(
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                fact=fact,
+                fact_at=fact_at,
+                created_at=parse_aware_utc(chunk["created_at"]),
+            )
+            if expected.chunk_id == str(chunk["chunk_id"]):
+                result = store.upsert_bot_context_chunk(
+                    expected,
+                    actor=PURCHASE_HISTORY_PROJECTION_OWNER,
+                )
+                projected[result.status] += 1
+                covered.add(customer_id)
+                continue
+            reason = "noncanonical_projection_id"
         else:
-            fact_at = parse_aware_utc(fact["last_purchase_at"])
-            if (
-                str(fact["computability"] or "") != "computed"
-                or int(fact["deals_cnt"] or 0) <= 0
-                or fact_at is None
-                or fact_at > cutoff
-            ):
-                mismatch_reasons.add("canonical_fact_not_eligible")
-            else:
-                event_at = parse_aware_utc(chunk["event_at"])
-                metadata_at = parse_aware_utc(metadata.get("last_purchase_at"))
-                if event_at is None or abs((event_at - fact_at).total_seconds()) > 1:
-                    mismatch_reasons.add("event_at_mismatch")
-                if metadata_at is None or abs((metadata_at - fact_at).total_seconds()) > 1:
-                    mismatch_reasons.add("metadata_date_mismatch")
-                for key in ("total_in", "total_out"):
-                    projected = _money_value(metadata.get(key))
-                    canonical = _money_value(fact[key])
-                    if projected is None or canonical is None or round(projected, 2) != round(canonical, 2):
-                        mismatch_reasons.add(f"{key}_mismatch")
-                try:
-                    projected_deals = int(metadata.get("deals_cnt"))
-                except (TypeError, ValueError):
-                    projected_deals = -1
-                if projected_deals != int(fact["deals_cnt"] or 0):
-                    mismatch_reasons.add("deals_cnt_mismatch")
-        if not mismatch_reasons:
-            continue
-        mismatched += 1
-        reasons.update(mismatch_reasons)
+            reason = ineligible_reasons.get(customer_id, "canonical_fact_missing")
+        reasons[reason] += 1
         result = store.retire_bot_context_chunk(
             str(chunk["chunk_id"]),
-            reason="purchase_projection_mismatch",
-            actor="stage5_money_ingest",
+            reason="purchase_projection_not_eligible",
+            actor=PURCHASE_HISTORY_PROJECTION_OWNER,
         )
         retired += int(result.status == "updated")
+
+    for customer_id in sorted(set(eligible) - covered):
+        fact, fact_at = eligible[customer_id]
+        result = store.upsert_bot_context_chunk(
+            _purchase_history_chunk(
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                fact=fact,
+                fact_at=fact_at,
+            ),
+            actor=PURCHASE_HISTORY_PROJECTION_OWNER,
+        )
+        projected[result.status] += 1
+        covered.add(customer_id)
+
+    active_after = int(
+        con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id=? AND source_system=? "
+            "AND chunk_type=? AND superseded_by IS NULL",
+            (tenant_id, PURCHASE_HISTORY_SOURCE_SYSTEM, PURCHASE_HISTORY_CHUNK_TYPE),
+        ).fetchone()[0]
+    )
+    active_mismatches_after = abs(active_after - len(eligible))
+    if active_mismatches_after:
+        raise RuntimeError(
+            "purchase history projection reconciliation left active mismatches: "
+            f"{active_mismatches_after}"
+        )
     return {
         "active_chunks_seen": len(chunks),
         "canonical_fact_rows": len(facts),
-        "mismatched_chunks": mismatched,
+        "eligible_fact_rows": len(eligible),
+        "mismatched_chunks": retired,
         "retired_chunks": retired,
+        "projected_chunk_status_counts": dict(sorted(projected.items())),
         "reason_counts": dict(sorted(reasons.items())),
-        "active_mismatches_after": max(0, mismatched - retired),
+        "active_chunks_after": active_after,
+        "active_mismatches_after": active_mismatches_after,
     }
+
+
+def _purchase_history_chunk(
+    *,
+    tenant_id: str,
+    customer_id: str,
+    fact: sqlite3.Row,
+    fact_at: datetime,
+    created_at: datetime | None = None,
+) -> BotContextChunk:
+    """Build the sole brand-neutral purchase projection from one canonical fact."""
+
+    total_in = _money_value(fact["total_in"])
+    total_out = _money_value(fact["total_out"])
+    if total_in is None or total_out is None:
+        raise ValueError("canonical purchase fact must contain finite money values")
+
+    return BotContextChunk(
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        source_system=PURCHASE_HISTORY_SOURCE_SYSTEM,
+        source_ref=f"purchases:{customer_id}",
+        chunk_type=PURCHASE_HISTORY_CHUNK_TYPE,
+        text=PURCHASE_HISTORY_BOT_TEXT,
+        summary=PURCHASE_HISTORY_BOT_TEXT,
+        event_at=fact_at,
+        freshness_score=0.5,
+        relevance_tags=("purchase", "bot_visible", PURCHASE_HISTORY_SOURCE_SYSTEM),
+        allowed_for_bot=True,
+        requires_manager_review=False,
+        metadata={
+            "client_safe": True,
+            "client_safe_reason": "canonical_historical_payment_fact",
+            "client_safe_policy_version": "cs_v1",
+            "client_safe_provenance": PURCHASE_HISTORY_PROJECTION_OWNER,
+            "projection_owner": PURCHASE_HISTORY_PROJECTION_OWNER,
+            "projection_version": PURCHASE_HISTORY_PROJECTION_VERSION,
+            "semantic_scope": PURCHASE_HISTORY_SEMANTIC_SCOPE,
+            "memory_status": "usable_memory",
+            "raw_text_used": False,
+            "current_access_asserted": False,
+            "last_purchase_at": fact_at.isoformat(),
+            "total_in": round(total_in, 2),
+            "total_out": round(total_out, 2),
+            "deals_cnt": int(fact["deals_cnt"]),
+        },
+        created_at=created_at or fact_at,
+    )
 
 
 def _event_from_plan(plan: PlannedMoneyEvent) -> TimelineEvent:
@@ -583,6 +699,18 @@ def _purchase_aggregates(
     tenant_id: str,
     as_of: datetime,
 ) -> dict[tuple[str, str], dict[str, Any]]:
+    exact_tallanto_owners = authoritative_tallanto_student_owners(con, tenant_id)
+    unresolved_payment_refs = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT CAST(ref.value AS TEXT) FROM timeline_conflicts conflict, "
+            "json_each(conflict.record_json, '$.entity_refs') ref "
+            "WHERE conflict.tenant_id=? AND conflict.status IN ('open','active') "
+            "AND conflict.conflict_type='tallanto_payment_owner_unresolved'",
+            (tenant_id,),
+        )
+        if row[0]
+    }
     aggregates: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "tenant_id": tenant_id,
@@ -595,11 +723,13 @@ def _purchase_aggregates(
             "last_purchase_at": None,
             "last_purchase_key": None,
             "sources": Counter(),
+            "exact_owner_incoming_event_count": 0,
         }
     )
     for row in con.execute(
         """
-        SELECT event_id, customer_id, opportunity_id, event_at, source_system, source_id, record_json
+        SELECT event_id, customer_id, opportunity_id, event_at, source_system, source_id,
+               source_ref, record_json
         FROM timeline_events
         WHERE tenant_id = ?
           AND customer_id IS NOT NULL
@@ -622,6 +752,15 @@ def _purchase_aggregates(
         direction = _money_direction(record)
         customer_id = str(row["customer_id"])
         money_kind = PURCHASE_MONEY_KIND_FACT if row["source_system"] == "tallanto_crm_call" else PURCHASE_MONEY_KIND_PLAN
+        if money_kind == PURCHASE_MONEY_KIND_FACT:
+            contact_id = str(record.get("contact_id") or "").strip()
+            if (
+                str(row["source_ref"] or "") in unresolved_payment_refs
+                or str(record.get("contact_id_source") or "").strip() != "direct"
+                or record.get("contact_id_conflict") is not False
+                or exact_tallanto_owners.get(contact_id) != customer_id
+            ):
+                continue
         item = aggregates[(customer_id, money_kind)]
         item["customer_id"] = customer_id
         item["money_kind"] = money_kind
@@ -632,6 +771,8 @@ def _purchase_aggregates(
         # Tallanto `out` is normally a paired balance charge, not a refund or a
         # second purchase. Only confirmed incoming money advances purchase facts.
         if direction == "in":
+            if money_kind == PURCHASE_MONEY_KIND_FACT:
+                item["exact_owner_incoming_event_count"] += 1
             deal_or_payment_key = row["opportunity_id"] or (
                 row["source_id"] if money_kind == PURCHASE_MONEY_KIND_FACT else None
             )
@@ -650,6 +791,25 @@ def _purchase_aggregates(
 
 def _purchase_row(row: Mapping[str, Any]) -> Mapping[str, Any]:
     sources = row["sources"]
+    source_provenance: dict[str, Any] = {
+        "source": "stage5_primary_money_events",
+        "email_amounts_used": False,
+        "source_event_system_counts": dict(sorted(sources.items())),
+        "money_source": (
+            "tallanto_payment"
+            if row["money_kind"] == PURCHASE_MONEY_KIND_FACT
+            else "amo_lead_price"
+        ),
+    }
+    if row["money_kind"] == PURCHASE_MONEY_KIND_FACT:
+        source_provenance.update(
+            {
+                "identity_owner_proof": CANONICAL_PURCHASE_FACT_IDENTITY_PROOF,
+                "exact_owner_incoming_event_count": int(
+                    row["exact_owner_incoming_event_count"]
+                ),
+            }
+        )
     return {
         "tenant_id": row["tenant_id"],
         "customer_id": row["customer_id"],
@@ -659,14 +819,7 @@ def _purchase_row(row: Mapping[str, Any]) -> Mapping[str, Any]:
         "total_out": round(float(row["total_out"]), 2),
         "deals_cnt": len(row["deals"]),
         "last_purchase_at": row["last_purchase_at"],
-        "sources_json": json_dumps(
-            {
-                "source": "stage5_primary_money_events",
-                "email_amounts_used": False,
-                "source_event_system_counts": dict(sorted(sources.items())),
-                "money_source": "tallanto_payment" if row["money_kind"] == PURCHASE_MONEY_KIND_FACT else "amo_lead_price",
-            }
-        ),
+        "sources_json": json_dumps(source_provenance),
         "computability": "computed",
         "code_version": STAGE5_MONEY_CODE_VERSION,
     }
@@ -783,7 +936,25 @@ def _money_value(value: Any) -> float | None:
         number = Decimal(str(value).replace(" ", "").replace(",", "."))
     except (InvalidOperation, ValueError):
         return None
+    if not number.is_finite():
+        return None
     return float(number)
+
+
+def _canonical_purchase_sources(value: Any) -> bool:
+    try:
+        payload = json.loads(str(value or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, Mapping) and (
+        payload.get("source") == "stage5_primary_money_events"
+        and payload.get("money_source") == "tallanto_payment"
+        and payload.get("email_amounts_used") is False
+        and payload.get("identity_owner_proof") == CANONICAL_PURCHASE_FACT_IDENTITY_PROOF
+        and isinstance(payload.get("exact_owner_incoming_event_count"), int)
+        and not isinstance(payload.get("exact_owner_incoming_event_count"), bool)
+        and payload["exact_owner_incoming_event_count"] > 0
+    )
 
 
 def _event_datetime(value: Any, *, default: datetime) -> datetime | None:

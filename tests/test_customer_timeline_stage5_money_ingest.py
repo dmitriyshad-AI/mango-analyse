@@ -5,6 +5,7 @@ import sqlite3
 import importlib.util
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
     CustomerIdentity,
     CustomerOpportunity,
+    IdentityLink,
     IdentityStatus,
     TimelineDirection,
     TimelineEvent,
@@ -29,10 +31,38 @@ from mango_mvp.customer_timeline.stage5_money_ingest import (
     run_stage5_money_ingest,
 )
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.source_policy import (
+    BOT_SAFE_SUMMARY_ACTOR,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+    PURCHASE_HISTORY_BOT_TEXT,
+    PURCHASE_HISTORY_CHUNK_TYPE,
+    PURCHASE_HISTORY_PROJECTION_OWNER,
+    PURCHASE_HISTORY_PROJECTION_VERSION,
+    PURCHASE_HISTORY_SEMANTIC_SCOPE,
+    PURCHASE_HISTORY_SOURCE_SYSTEM,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_run_lock
 
 
 NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+TALLANTO_STUDENT_ID = "tallanto-student-1"
+
+
+def _exact_tallanto_payment_record(
+    amount: int | float,
+    direction: str,
+    *,
+    contact_id: str = TALLANTO_STUDENT_ID,
+    contact_id_source: str = "direct",
+    contact_id_conflict: bool = False,
+) -> dict[str, object]:
+    return {
+        "amount": amount,
+        "payment_direction": direction,
+        "contact_id": contact_id,
+        "contact_id_source": contact_id_source,
+        "contact_id_conflict": contact_id_conflict,
+    }
 
 
 def test_stage5_money_ingest_dry_run_does_not_write(tmp_path: Path) -> None:
@@ -298,7 +328,7 @@ def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(
                 subject="Tallanto payment",
                 summary="Оплата Tallanto",
                 match_status=match_status,
-                record={"amount": 7000, "payment_direction": "in"},
+                record=_exact_tallanto_payment_record(7000, "in"),
                 created_at=NOW,
             )
         )
@@ -320,7 +350,400 @@ def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(
     assert rows["plan"]["deals_cnt"] == 1
     assert rows["fact"]["total_in"] == 7000
     assert rows["fact"]["deals_cnt"] == 1
-    assert json.loads(rows["fact"]["sources_json"])["money_source"] == "tallanto_payment"
+    fact_sources = json.loads(rows["fact"]["sources_json"])
+    assert fact_sources["money_source"] == "tallanto_payment"
+    assert fact_sources["identity_owner_proof"] == "tallanto_student_id_exact_owner_v1"
+    assert fact_sources["exact_owner_incoming_event_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "record",
+    (
+        {"amount": 1000, "payment_direction": "in"},
+        _exact_tallanto_payment_record(1000, "in", contact_id_source="abonement"),
+        _exact_tallanto_payment_record(1000, "in", contact_id_conflict=True),
+        _exact_tallanto_payment_record(1000, "in", contact_id="other-student"),
+    ),
+)
+def test_stage5_rejects_payment_without_exact_tallanto_owner_proof(
+    tmp_path: Path,
+    record: dict[str, object],
+) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="unproven-payment",
+                source_ref="tallanto:most_finances:unproven-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=record,
+                created_at=NOW,
+            )
+        )
+
+    result = refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE source_system=? AND superseded_by IS NULL",
+            (PURCHASE_HISTORY_SOURCE_SYSTEM,),
+        ).fetchone()[0] == 0
+    assert result["money_kind"].get("fact", 0) == 0
+
+
+def test_exact_purchase_remains_visible_when_only_family_phone_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    family_id = "family:payment-safe"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton",
+                family_id,
+                "customer-1",
+                "confident",
+                "high",
+                "test",
+                NOW.isoformat(),
+                NOW.isoformat(),
+                "hash:payment-safe",
+                "{}",
+            ),
+        )
+        con.commit()
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="family-safe-payment",
+                source_ref="tallanto:most_finances:family-safe-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=NOW,
+            )
+        )
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id="customer-1",
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref="botsafe:customer-1:foton",
+                chunk_type="bot_safe_summary",
+                text="Бренд: Фотон. Проверенный клиентский контекст.",
+                summary="Бренд: Фотон. Проверенный клиентский контекст.",
+                relevance_tags=("bot_safe", "structured", "foton"),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={
+                    "brand_context_authorized": True,
+                    "brand_source": "test_fixture",
+                    "client_safe": True,
+                    "client_safe_provenance": BOT_SAFE_SUMMARY_ACTOR,
+                    "content_brand": "foton",
+                    "projection_owner": BOT_SAFE_SUMMARY_ACTOR,
+                    "projection_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+                    "raw_text_used": False,
+                },
+                created_at=NOW,
+            ),
+            actor=BOT_SAFE_SUMMARY_ACTOR,
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=(family_id,),
+            actor="test",
+        )
+
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+
+    assert [item["source_system"] for item in context["items"]] == [
+        PURCHASE_HISTORY_SOURCE_SYSTEM
+    ]
+
+
+@pytest.mark.parametrize(
+    "conflict_type",
+    ("tallanto_payment_owner_unresolved", "tallanto_identity_conflict"),
+)
+def test_stage5_blocks_purchase_when_exact_tallanto_payment_edge_is_open(
+    tmp_path: Path,
+    conflict_type: str,
+) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    payment_ref = "tallanto:most_finances:blocked-payment"
+    conflict_ref = (
+        payment_ref
+        if conflict_type == "tallanto_payment_owner_unresolved"
+        else f"tallanto_student_id:{TALLANTO_STUDENT_ID}"
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="blocked-payment",
+                source_ref=payment_ref,
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=NOW,
+            )
+        )
+        conflict_id = store.record_conflict(
+            "foton",
+            conflict_type=conflict_type,
+            entity_refs=(conflict_ref,),
+            actor="test",
+        ).record_id
+
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchone()[0] == 0
+        con.execute(
+            "UPDATE timeline_conflicts SET status='resolved',resolved_at=? WHERE conflict_id=?",
+            (NOW.isoformat(), conflict_id),
+        )
+        con.commit()
+
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "revocation_sql",
+    (
+        "DELETE FROM timeline_events WHERE source_system='tallanto_crm_call'",
+        "DELETE FROM identity_links WHERE link_type='tallanto_student_id'",
+    ),
+)
+def test_purchase_reader_rechecks_current_exact_source_proof_without_stage5_refresh(
+    tmp_path: Path,
+    revocation_sql: str,
+) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="revocable-payment",
+                source_ref="tallanto:most_finances:revocable-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=NOW,
+            )
+        )
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        before = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+    assert any(item["source_system"] == PURCHASE_HISTORY_SOURCE_SYSTEM for item in before["items"])
+
+    with sqlite3.connect(db_path) as con:
+        con.execute(revocation_sql)
+        con.commit()
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        after = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+    assert all(item["source_system"] != PURCHASE_HISTORY_SOURCE_SYSTEM for item in after["items"])
+
+
+def test_purchase_reader_rechecks_new_exact_identity_conflict_without_stage5_refresh(
+    tmp_path: Path,
+) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="conflicted-after-refresh",
+                source_ref="tallanto:most_finances:conflicted-after-refresh",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=NOW,
+            )
+        )
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_conflict",
+            entity_refs=(f"tallanto_student_id:{TALLANTO_STUDENT_ID}",),
+            actor="test",
+        )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+    assert all(item["source_system"] != PURCHASE_HISTORY_SOURCE_SYSTEM for item in context["items"])
+
+
+@pytest.mark.parametrize(
+    "poison",
+    ("event_record_direction", "event_physical_match", "identity_link_physical_match"),
+)
+def test_purchase_reader_rejects_stale_or_non_parity_source_proof(
+    tmp_path: Path,
+    poison: str,
+) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="valid-proof-payment",
+                source_ref="tallanto:most_finances:valid-proof-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=NOW,
+            )
+        )
+        if poison == "event_physical_match":
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer-1",
+                    event_type=TimelineEventType.TALLANTO_PAYMENT,
+                    event_at=NOW - timedelta(minutes=1),
+                    source_system="tallanto_crm_call",
+                    source_id="ambiguous-proof-payment",
+                    source_ref="tallanto:most_finances:ambiguous-proof-payment",
+                    direction=TimelineDirection.SYSTEM,
+                    match_status="ambiguous",
+                    record=_exact_tallanto_payment_record(1000, "in"),
+                    created_at=NOW,
+                )
+            )
+        if poison == "identity_link_physical_match":
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id="customer-1",
+                    link_type="tallanto_student_id",
+                    link_value=TALLANTO_STUDENT_ID,
+                    source_system="poison_candidate",
+                    source_ref="tallanto:contact:ambiguous-proof",
+                    match_class="ambiguous",
+                    confidence=0.5,
+                    first_seen_at=NOW,
+                    last_seen_at=NOW,
+                )
+            )
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        before = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+    assert any(item["source_system"] == PURCHASE_HISTORY_SOURCE_SYSTEM for item in before["items"])
+
+    with sqlite3.connect(db_path) as con:
+        if poison == "event_record_direction":
+            con.execute(
+                "UPDATE timeline_events SET record_json=json_set(record_json, "
+                "'$.record.payment_direction','out') WHERE source_id='valid-proof-payment'"
+            )
+        elif poison == "event_physical_match":
+            con.execute("DELETE FROM timeline_events WHERE source_id='valid-proof-payment'")
+            con.execute(
+                "UPDATE timeline_events SET match_status='strong_unique' "
+                "WHERE source_id='ambiguous-proof-payment'"
+            )
+        else:
+            con.execute(
+                "DELETE FROM identity_links WHERE source_system='tallanto_snapshot' "
+                "AND link_type='tallanto_student_id'"
+            )
+            con.execute(
+                "UPDATE identity_links SET match_class='strong_unique' "
+                "WHERE source_system='poison_candidate'"
+            )
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        after = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+    assert all(item["source_system"] != PURCHASE_HISTORY_SOURCE_SYSTEM for item in after["items"])
 
 
 def test_purchase_refresh_replaces_stale_owner_after_payment_relink(tmp_path: Path) -> None:
@@ -338,6 +761,18 @@ def test_purchase_refresh_replaces_stale_owner_after_payment_relink(tmp_path: Pa
 
     def write_payment(customer_id: str, match_status: str) -> None:
         with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="tallanto_student_id",
+                    link_value=TALLANTO_STUDENT_ID,
+                    source_system="tallanto_snapshot",
+                    source_ref="tallanto:contact:tallanto-student-1",
+                    match_class="strong_unique",
+                    confidence=1.0,
+                )
+            )
             store.upsert_event(
                 TimelineEvent(
                     tenant_id="foton",
@@ -349,7 +784,7 @@ def test_purchase_refresh_replaces_stale_owner_after_payment_relink(tmp_path: Pa
                     source_ref="tallanto:most_finances:relinked-payment",
                     direction=TimelineDirection.SYSTEM,
                     match_status=match_status,
-                    record={"amount": 1000, "payment_direction": "in"},
+                    record=_exact_tallanto_payment_record(1000, "in"),
                     created_at=NOW,
                 )
             )
@@ -397,7 +832,7 @@ def test_stage5_tallanto_balance_charge_does_not_become_refund_or_new_purchase(t
                     subject="Tallanto payment",
                     summary=direction,
                     match_status="strong_unique",
-                    record={"amount": 7000, "payment_direction": direction},
+                    record=_exact_tallanto_payment_record(7000, direction),
                     created_at=event_at,
                 )
             )
@@ -449,7 +884,7 @@ def test_purchase_refresh_uses_one_as_of_and_fails_closed(tmp_path: Path) -> Non
                     source_ref=f"tallanto:most_finances:{source_id}",
                     direction=TimelineDirection.SYSTEM,
                     match_status="strong_unique",
-                    record={"amount": amount, "payment_direction": direction},
+                    record=_exact_tallanto_payment_record(amount, direction),
                     created_at=event_at,
                 )
             )
@@ -480,7 +915,12 @@ def test_purchase_refresh_uses_one_as_of_and_fails_closed(tmp_path: Path) -> Non
             "SELECT total_in,total_out,deals_cnt,last_purchase_at "
             "FROM customer_purchases_v1 WHERE customer_id='customer-1' AND money_kind='fact'"
         ).fetchone()
-    assert first == repeat
+    assert first["as_of"] == repeat["as_of"]
+    assert first["total_in"] == repeat["total_in"]
+    assert first["purchase_history_reconciliation"]["active_mismatches_after"] == 0
+    assert repeat["purchase_history_reconciliation"]["active_mismatches_after"] == 0
+    assert first["purchase_history_reconciliation"]["projected_chunk_status_counts"] == {"created": 1}
+    assert repeat["purchase_history_reconciliation"]["projected_chunk_status_counts"] == {"duplicate": 1}
     assert first["as_of"] == NOW.isoformat()
     assert row[:3] == (4200.0, 0.0, 4)
     assert datetime.fromisoformat(row[3]).astimezone(timezone.utc) == NOW
@@ -546,7 +986,7 @@ def test_stage5_retires_stale_future_purchase_history_without_touching_payment_e
             source_ref="tallanto:most_finances:confirmed-payment",
             direction=TimelineDirection.SYSTEM,
             match_status="strong_unique",
-            record={"amount": 5000, "payment_direction": "in"},
+            record=_exact_tallanto_payment_record(5000, "in"),
             created_at=payment_at,
         )
         store.upsert_event(payment)
@@ -613,16 +1053,278 @@ def test_stage5_retires_stale_future_purchase_history_without_touching_payment_e
             "WHERE customer_id='customer-1' AND money_kind='fact'"
         ).fetchone()
 
-    assert first["purchase_history_reconciliation"]["retired_chunks"] == 1
+    assert first["purchase_history_reconciliation"]["retired_chunks"] == 2
     assert first["purchase_history_reconciliation"]["active_mismatches_after"] == 0
     assert repeat["purchase_history_reconciliation"]["mismatched_chunks"] == 0
     assert repeat["purchase_history_reconciliation"]["retired_chunks"] == 0
-    assert tuple(chunk) == (1, 0, "retired:purchase_projection_mismatch")
-    assert tuple(canonical_chunk) == (1, 0, None)
+    assert tuple(chunk) == (1, 0, "retired:purchase_projection_not_eligible")
+    assert tuple(canonical_chunk) == (1, 0, "retired:purchase_projection_not_eligible")
     assert bot_context["summary"]["review_required_chunks"] == 0
-    assert {item["chunk_id"] for item in bot_context["items"]} == {"canonical-purchase"}
+    assert len(bot_context["items"]) == 1
+    assert bot_context["items"][0]["source_system"] == "customer_purchases_v1"
+    assert bot_context["items"][0]["event_at"] is None
+    assert "5000" not in bot_context["items"][0]["text"]
     assert payment["superseded_by"] is None
     assert fact["last_purchase_at"] == payment_at.isoformat()
+
+
+def test_stage5_purchase_projection_is_neutral_exact_and_search_safe(tmp_path: Path) -> None:
+    db_path, _source_path, _out_dir = _fixture(tmp_path)
+    payment_at = NOW - timedelta(days=7)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=payment_at,
+                source_system="tallanto_crm_call",
+                source_id="neutral-payment",
+                source_ref="tallanto:most_finances:neutral-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(5432, "in"),
+                created_at=payment_at,
+            )
+        )
+
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+        neutral_search = api.search(
+            "foton",
+            "подтверждённая входящая оплата",
+            customer_id="customer-1",
+            allowed_for_bot=True,
+            as_of=NOW,
+        )
+        amount_search = api.search(
+            "foton", "5432", customer_id="customer-1", allowed_for_bot=True, as_of=NOW
+        )
+
+    purchase = next(item for item in context["items"] if item["source_system"] == "customer_purchases_v1")
+    assert purchase["text"] == PURCHASE_HISTORY_BOT_TEXT
+    assert purchase["summary"] == PURCHASE_HISTORY_BOT_TEXT
+    assert purchase["event_at"] is None
+    assert "5432" not in json.dumps(purchase, ensure_ascii=False)
+    assert neutral_search["result"]["backend"] == "fallback_like"
+    assert neutral_search["result"]["items"][0]["highlight"] is None
+    assert neutral_search["result"]["items"][0]["event_at"] is None
+    serialized_hit = json.dumps(neutral_search["result"]["items"][0], ensure_ascii=False)
+    assert "5432" not in serialized_hit
+    assert payment_at.date().isoformat() not in serialized_hit
+    assert "foton" not in serialized_hit.casefold()
+    assert "unpk" not in serialized_hit.casefold()
+    assert amount_search["result"]["items"] == []
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        fact = con.execute(
+            "SELECT * FROM customer_purchases_v1 WHERE customer_id='customer-1' AND money_kind='fact'"
+        ).fetchone()
+    poisoned = replace(
+        stage5_module._purchase_history_chunk(
+            tenant_id="foton",
+            customer_id="customer-1",
+            fact=fact,
+            fact_at=payment_at,
+        ),
+        text="purchase-oracle-secret",
+        summary="purchase-oracle-secret",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            poisoned,
+            actor=PURCHASE_HISTORY_PROJECTION_OWNER,
+        )
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        poisoned_search = api.search(
+            "foton",
+            "purchase-oracle-secret",
+            customer_id="customer-1",
+            allowed_for_bot=True,
+            as_of=NOW,
+        )
+    assert poisoned_search["result"]["items"] == []
+
+
+def test_purchase_reader_never_uses_another_customers_fact(tmp_path: Path) -> None:
+    db_path, _source_path, _out_dir = _fixture(tmp_path)
+    payment_at = NOW - timedelta(days=2)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer-2",
+                identity_status=IdentityStatus.STRONG,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=payment_at,
+                source_system="tallanto_crm_call",
+                source_id="customer-a-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=payment_at,
+            )
+        )
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id="customer-2",
+                source_system=PURCHASE_HISTORY_SOURCE_SYSTEM,
+                source_ref="purchases:customer-2",
+                chunk_type=PURCHASE_HISTORY_CHUNK_TYPE,
+                text=PURCHASE_HISTORY_BOT_TEXT,
+                summary=PURCHASE_HISTORY_BOT_TEXT,
+                event_at=payment_at,
+                relevance_tags=("purchase", "bot_visible", PURCHASE_HISTORY_SOURCE_SYSTEM),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={
+                    "client_safe": True,
+                    "client_safe_provenance": PURCHASE_HISTORY_PROJECTION_OWNER,
+                    "projection_owner": PURCHASE_HISTORY_PROJECTION_OWNER,
+                    "projection_version": PURCHASE_HISTORY_PROJECTION_VERSION,
+                    "semantic_scope": PURCHASE_HISTORY_SEMANTIC_SCOPE,
+                    "raw_text_used": False,
+                    "current_access_asserted": False,
+                    "last_purchase_at": payment_at.isoformat(),
+                    "total_in": 1000,
+                    "total_out": 0,
+                    "deals_cnt": 1,
+                },
+                created_at=payment_at,
+            ),
+            actor=PURCHASE_HISTORY_PROJECTION_OWNER,
+        )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        customer_b = api.bot_context(
+            "foton", "customer-2", allowed_only=True, as_of=NOW
+        )
+
+    assert all(
+        item["source_system"] != PURCHASE_HISTORY_SOURCE_SYSTEM
+        for item in customer_b["items"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "mutation"),
+    (
+        ("missing_fact", "DELETE FROM customer_purchases_v1 WHERE money_kind='fact'"),
+        ("plan_not_fact", "UPDATE customer_purchases_v1 SET money_kind='plan' WHERE money_kind='fact'"),
+        ("not_computed", "UPDATE customer_purchases_v1 SET computability='partial' WHERE money_kind='fact'"),
+        ("zero_deals", "UPDATE customer_purchases_v1 SET deals_cnt=0 WHERE money_kind='fact'"),
+        ("zero_in", "UPDATE customer_purchases_v1 SET total_in=0 WHERE money_kind='fact'"),
+        (
+            "non_finite_in",
+            "UPDATE customer_purchases_v1 SET total_in=1e999 WHERE money_kind='fact'",
+        ),
+        (
+            "wrong_code_version",
+            "UPDATE customer_purchases_v1 SET code_version='forged' WHERE money_kind='fact'",
+        ),
+        (
+            "wrong_source",
+            "UPDATE customer_purchases_v1 SET sources_json="
+            "'{\"source\":\"forged\",\"money_source\":\"tallanto_payment\","
+            "\"email_amounts_used\":false}' WHERE money_kind='fact'",
+        ),
+        (
+            "email_amount_used",
+            "UPDATE customer_purchases_v1 SET sources_json="
+            "'{\"source\":\"stage5_primary_money_events\","
+            "\"money_source\":\"tallanto_payment\",\"email_amounts_used\":true}' "
+            "WHERE money_kind='fact'",
+        ),
+        (
+            "missing_exact_owner_proof",
+            "UPDATE customer_purchases_v1 SET sources_json="
+            "json_remove(sources_json, '$.identity_owner_proof') WHERE money_kind='fact'",
+        ),
+        (
+            "future_fact",
+            "UPDATE customer_purchases_v1 SET last_purchase_at='2027-01-01T00:00:00+00:00' WHERE money_kind='fact'",
+        ),
+        ("amount_mismatch", "UPDATE customer_purchases_v1 SET total_in=9999 WHERE money_kind='fact'"),
+        ("identity_not_strong", "UPDATE customer_identities SET identity_status='partial' WHERE customer_id='customer-1'"),
+        (
+            "superseded_chunk",
+            "UPDATE bot_context_chunks SET superseded_by='retired:test' WHERE source_system='customer_purchases_v1'",
+        ),
+    ),
+)
+def test_purchase_reader_fails_closed_when_exact_contract_breaks(
+    tmp_path: Path,
+    case: str,
+    mutation: str,
+) -> None:
+    del case
+    db_path, _source_path, _out_dir = _fixture(tmp_path)
+    payment_at = NOW - timedelta(days=3)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=payment_at,
+                source_system="tallanto_crm_call",
+                source_id="gate-payment",
+                source_ref="tallanto:most_finances:gate-payment",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                record=_exact_tallanto_payment_record(1000, "in"),
+                created_at=payment_at,
+            )
+        )
+    refresh_customer_purchases_v1(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        as_of=NOW,
+    )
+    with sqlite3.connect(db_path) as con:
+        con.execute(mutation)
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        context = api.bot_context("foton", "customer-1", allowed_only=True, as_of=NOW)
+
+    assert all(item["source_system"] != "customer_purchases_v1" for item in context["items"])
+
+
+def test_money_value_rejects_non_finite_numbers() -> None:
+    assert stage5_module._money_value("NaN") is None
+    assert stage5_module._money_value("Infinity") is None
+    assert stage5_module._money_value("-Infinity") is None
 
 
 def test_stage5_is_sole_plan_owner_and_preserves_other_tenant(tmp_path: Path) -> None:
@@ -898,6 +1600,20 @@ def _seed_db(db_path: Path, allowed_root: Path) -> None:
             updated_at=NOW,
         )
         store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer-1",
+                link_type="tallanto_student_id",
+                link_value=TALLANTO_STUDENT_ID,
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:contact:tallanto-student-1",
+                match_class="strong_unique",
+                confidence=1.0,
+                first_seen_at=NOW,
+                last_seen_at=NOW,
+            )
+        )
         store.upsert_opportunity(
             CustomerOpportunity(
                 tenant_id="foton",

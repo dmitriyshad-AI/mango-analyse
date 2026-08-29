@@ -15,6 +15,11 @@ from mango_mvp.customer_timeline.next_step_resolver import (
     resolve_customer_next_step,
 )
 from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.source_policy import (
+    PURCHASE_HISTORY_BOT_TEXT,
+    PURCHASE_HISTORY_CHUNK_TYPE,
+    PURCHASE_HISTORY_SOURCE_SYSTEM,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     UNRESOLVED_CONFLICT_STATUSES,
@@ -368,6 +373,7 @@ class CustomerTimelineReadApi:
             self.store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
                 clauses,
                 params,
+                tenant_id=tenant,
                 customer_id=normalized_customer_id,
                 opportunity_id=None,
                 since=None,
@@ -393,6 +399,7 @@ class CustomerTimelineReadApi:
         self.store._append_chunk_filters(  # noqa: SLF001 - summary uses the same bot-safe boundary.
             allowed_clauses,
             allowed_params,
+            tenant_id=tenant,
             customer_id=normalized_customer_id,
             opportunity_id=None,
             since=None,
@@ -472,7 +479,10 @@ class CustomerTimelineReadApi:
             "as_of": evaluated_at.isoformat(),
             "result": {
                 **result,
-                "items": [project_search_hit(item) for item in result["items"]],
+                "items": [
+                    project_search_hit(item, bot_safe=allowed_for_bot is True)
+                    for item in result["items"]
+                ],
             },
             "redaction": redaction_summary(bot_safe=allowed_for_bot is True),
             "safety": customer_timeline_read_api_safety_contract(),
@@ -1243,6 +1253,10 @@ def project_signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[str, Any]:
+    neutral_purchase = audience == "bot" and (
+        item.get("source_system") == PURCHASE_HISTORY_SOURCE_SYSTEM
+        and item.get("chunk_type") == PURCHASE_HISTORY_CHUNK_TYPE
+    )
     payload = {
         "chunk_id": item.get("chunk_id"),
         "customer_id": item.get("customer_id") if audience != "bot" else None,
@@ -1250,9 +1264,9 @@ def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[st
         "event_id": item.get("event_id") if audience != "bot" else None,
         "source_system": item.get("source_system"),
         "chunk_type": item.get("chunk_type"),
-        "text": item.get("text"),
-        "summary": item.get("summary"),
-        "event_at": item.get("event_at"),
+        "text": PURCHASE_HISTORY_BOT_TEXT if neutral_purchase else item.get("text"),
+        "summary": PURCHASE_HISTORY_BOT_TEXT if neutral_purchase else item.get("summary"),
+        "event_at": None if neutral_purchase else item.get("event_at"),
         "freshness_score": item.get("freshness_score"),
         "relevance_tags": list(item.get("relevance_tags") or ()),
         "allowed_for_bot": bool(item.get("allowed_for_bot")),
@@ -1335,7 +1349,7 @@ def project_customer_id_mapping(item: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
-def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
+def project_search_hit(item: Mapping[str, Any], *, bot_safe: bool = False) -> Mapping[str, Any]:
     scope = item.get("scope")
     record = item.get("record") or {}
     if scope == "event":
@@ -1349,9 +1363,16 @@ def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return {
         "scope": scope,
         "id": item.get("id"),
-        "event_at": item.get("event_at"),
+        "event_at": (
+            None
+            if bot_safe
+            and scope == "bot_context"
+            and record.get("source_system") == PURCHASE_HISTORY_SOURCE_SYSTEM
+            and record.get("chunk_type") == PURCHASE_HISTORY_CHUNK_TYPE
+            else item.get("event_at")
+        ),
         "record": projected,
-        "highlight": item.get("highlight"),
+        "highlight": None if bot_safe else item.get("highlight"),
     }
 
 

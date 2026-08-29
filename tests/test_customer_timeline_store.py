@@ -1941,7 +1941,7 @@ def test_search_uses_fts_or_fallback_for_events_signals_and_chunks(tmp_path: Pat
     store.close()
 
 
-def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path: Path) -> None:
+def test_bot_context_search_requires_canonical_projection_in_fts_and_fallback(tmp_path: Path) -> None:
     store = open_store(tmp_path)
     customer = identity()
     ev = event(customer)
@@ -1985,7 +1985,7 @@ def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path:
             mode=mode,
             limit=10,
         )
-        assert [item["record"]["source_ref"] for item in bot_safe["items"]] == ["safe-context"]
+        assert bot_safe["items"] == []
         assert [item["record"]["source_ref"] for item in blocked["items"]] == ["blocked-channel-context"]
     store.close()
 

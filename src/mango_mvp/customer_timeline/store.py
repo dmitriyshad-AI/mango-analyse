@@ -35,14 +35,28 @@ from mango_mvp.customer_timeline.ids import (
     stable_digest,
     stable_prefixed_id,
 )
+from mango_mvp.customer_timeline.purchases import (
+    CANONICAL_PURCHASE_FACT_REQUIRED_COLUMNS,
+    canonical_purchase_fact_sql,
+)
 from mango_mvp.customer_timeline.safety import (
     customer_timeline_safety_contract,
     guard_customer_timeline_output_path,
     guard_customer_timeline_writable_path,
 )
 from mango_mvp.customer_timeline.source_policy import (
-    BOT_FORBIDDEN_SOURCE_SYSTEMS,
+    BOT_SAFE_SUMMARY_ACTOR,
+    BOT_SAFE_SUMMARY_CHUNK_TYPE,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+    BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+    PURCHASE_HISTORY_CHUNK_TYPE,
+    PURCHASE_HISTORY_BOT_TEXT,
+    PURCHASE_HISTORY_PROJECTION_OWNER,
+    PURCHASE_HISTORY_PROJECTION_VERSION,
+    PURCHASE_HISTORY_SEMANTIC_SCOPE,
+    PURCHASE_HISTORY_SOURCE_SYSTEM,
     assert_bot_context_chunk_source_policy,
+    assert_canonical_bot_projection_writer,
 )
 from mango_mvp.customer_timeline.temporal import parse_aware_utc, register_temporal_sql_functions
 
@@ -139,7 +153,6 @@ BRAND_AUTH_EVENT_SOURCES = (
     "wappi_max",
     "wappi_telegram",
 )
-BRAND_AUTH_SELF_SOURCES = ("customer_timeline_bot_safe_summary",)
 TALLANTO_D110_PROFILE_RESOLUTION_KEY = "tallanto_d110_profile_resolution"
 
 RUNTIME_DB_FILENAMES = {
@@ -291,7 +304,7 @@ BLOCKING_FAMILY_CONFLICT_TYPES = frozenset(
         "whatsapp_phone_ambiguous",
     }
 )
-_BLOCKING_FAMILY_CONFLICT_TYPE_SQL = "lower(conflict_type) IN (" + ",".join(
+_BLOCKING_FAMILY_CONFLICT_TYPE_SQL = "conflict_type IN (" + ",".join(
     f"'{value}'" for value in sorted(BLOCKING_FAMILY_CONFLICT_TYPES)
 ) + ")"
 
@@ -377,9 +390,9 @@ def blocking_tallanto_identity_values(con: sqlite3.Connection, tenant_id: str) -
         )
     }
     rows = con.execute(
-        "SELECT lower(conflict_type),record_json FROM timeline_conflicts "
+        "SELECT conflict_type,record_json FROM timeline_conflicts "
         "WHERE tenant_id=? AND status IN ('open','active') "
-        "AND lower(conflict_type) IN ('tallanto_identity_ambiguous','tallanto_identity_conflict')",
+        "AND conflict_type IN ('tallanto_identity_ambiguous','tallanto_identity_conflict')",
         (normalize_key(tenant_id, "tenant_id"),),
     )
     blocked: set[str] = set()
@@ -522,8 +535,18 @@ def has_open_family_identity_conflict(
     refs = {str(family_id)} if family_id else set()
     for customer_id in members:
         refs.update(customer_entity_ref_values(customer_id))
+    placeholders = ",".join("?" for _ in members)
+    if "family_members_v1" in tables:
+        refs.update(
+            str(row[0])
+            for row in con.execute(
+                f"SELECT DISTINCT family_id FROM family_members_v1 "
+                f"WHERE tenant_id=? AND customer_id IN ({placeholders}) "
+                "AND family_id IS NOT NULL AND family_id!=''",
+                (tenant, *members),
+            )
+        )
     if "identity_links" in tables:
-        placeholders = ",".join("?" for _ in members)
         for row in con.execute(
             f"SELECT link_type,link_value,source_ref FROM identity_links "
             f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
@@ -1299,6 +1322,8 @@ class CustomerTimelineSQLiteStore:
               ON ingestion_cursors(tenant_id, updated_at);
             CREATE INDEX IF NOT EXISTS ix_timeline_conflicts_status
               ON timeline_conflicts(tenant_id, status, severity, created_at);
+            CREATE INDEX IF NOT EXISTS ix_timeline_conflicts_type_status
+              ON timeline_conflicts(tenant_id, conflict_type, status);
             CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_old
               ON customer_id_mappings(tenant_id, old_customer_id, resolution_status);
             CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_new
@@ -2283,6 +2308,11 @@ class CustomerTimelineSQLiteStore:
             raise ValueError(f"chunk tenant does not match for chunk_id: {chunk.chunk_id}")
         if existing_chunk is not None and str(existing_chunk["customer_id"]) != chunk.customer_id:
             raise ValueError(f"chunk owner does not match for chunk_id: {chunk.chunk_id}")
+        assert_canonical_bot_projection_writer(
+            source_system=chunk.source_system,
+            metadata=chunk.metadata,
+            actor=actor,
+        )
         assert_bot_context_chunk_source_policy(
             source_system=chunk.source_system,
             allowed_for_bot=chunk.allowed_for_bot,
@@ -3934,6 +3964,12 @@ class CustomerTimelineSQLiteStore:
         text = require_text(query, "query")
         normalized_mode = normalize_key(mode, "mode")
         normalized_scopes = tuple(normalize_key(scope, "search scope") for scope in scopes)
+        if allowed_for_bot is True:
+            # One store-level boundary: callers cannot route bot reads through raw FTS
+            # content/highlights or through non-bot scopes.
+            normalized_mode = "fallback"
+            normalized_scopes = ("bot_context",)
+            include_highlights = False
         unknown_scopes = set(normalized_scopes) - ALLOWED_SEARCH_SCOPES
         if unknown_scopes:
             raise ValueError(f"unsupported search scopes: {sorted(unknown_scopes)}")
@@ -4062,6 +4098,7 @@ class CustomerTimelineSQLiteStore:
             _canonical_identity_conflict_ref,
             deterministic=True,
         )
+        register_timeline_record_integrity_sql_functions(con)
         return con
 
     def _acquire_writer_lock(self) -> None:
@@ -4691,6 +4728,7 @@ class CustomerTimelineSQLiteStore:
             self._append_chunk_filters(
                 chunk_clauses,
                 chunk_params,
+                tenant_id=tenant,
                 customer_id=customer_id,
                 opportunity_id=opportunity_id,
                 since=since,
@@ -4774,11 +4812,18 @@ class CustomerTimelineSQLiteStore:
             ).fetchall()
             hits.extend(search_hit_from_row("event", row) for row in rows)
         if "bot_context" in scopes:
-            clauses = ["tenant_id = ?", "record_json LIKE ?"]
-            params = [tenant, pattern]
+            searchable = (
+                "(CASE WHEN json_valid(record_json)=1 THEN json_extract(record_json, '$.text') END LIKE ? "
+                "OR CASE WHEN json_valid(record_json)=1 THEN json_extract(record_json, '$.summary') END LIKE ?)"
+                if allowed_for_bot is True
+                else "record_json LIKE ?"
+            )
+            clauses = ["tenant_id = ?", searchable]
+            params = [tenant, pattern, pattern] if allowed_for_bot is True else [tenant, pattern]
             self._append_chunk_filters(
                 clauses,
                 params,
+                tenant_id=tenant,
                 customer_id=customer_id,
                 opportunity_id=opportunity_id,
                 since=since,
@@ -4874,6 +4919,7 @@ class CustomerTimelineSQLiteStore:
         clauses: list[str],
         params: list[Any],
         *,
+        tenant_id: str,
         customer_id: Optional[str],
         opportunity_id: Optional[str],
         since: Optional[datetime],
@@ -4912,41 +4958,140 @@ class CustomerTimelineSQLiteStore:
             clauses.append(f"{prefix}requires_manager_review = 0")
             clauses.append(
                 f"json_valid({prefix}record_json) = 1 "
-                f"AND json_type({prefix}record_json, '$.metadata.client_safe') = 'true'"
+                f"AND _mango_timeline_record_digest({prefix}record_json) = {prefix}record_hash"
             )
-            forbidden_sources = tuple(sorted(BOT_FORBIDDEN_SOURCE_SYSTEMS))
-            forbidden_placeholders = ",".join("?" for _ in forbidden_sources)
             clauses.append(
-                f"COALESCE({prefix}source_system, '') NOT IN ({forbidden_placeholders})"
+                f"json_extract({prefix}record_json, '$.chunk_id') IS {prefix}chunk_id "
+                f"AND json_extract({prefix}record_json, '$.tenant_id') IS {prefix}tenant_id "
+                f"AND json_extract({prefix}record_json, '$.customer_id') IS {prefix}customer_id "
+                f"AND json_extract({prefix}record_json, '$.opportunity_id') IS {prefix}opportunity_id "
+                f"AND json_extract({prefix}record_json, '$.event_id') IS {prefix}event_id "
+                f"AND json_extract({prefix}record_json, '$.source_system') IS {prefix}source_system "
+                f"AND json_extract({prefix}record_json, '$.source_ref') IS {prefix}source_ref "
+                f"AND json_extract({prefix}record_json, '$.chunk_type') IS {prefix}chunk_type "
+                f"AND json_extract({prefix}record_json, '$.event_at') IS {prefix}event_at "
+                f"AND json_extract({prefix}record_json, '$.freshness_score') IS {prefix}freshness_score "
+                f"AND json_extract({prefix}record_json, '$.ordinal') IS {prefix}ordinal "
+                f"AND json_extract({prefix}record_json, '$.created_at') IS {prefix}created_at "
+                f"AND json_type({prefix}record_json, '$.allowed_for_bot') = 'true' "
+                f"AND json_type({prefix}record_json, '$.requires_manager_review') = 'false'"
             )
-            params.extend(forbidden_sources)
-            protected = (*BRAND_AUTH_EVENT_SOURCES, *BRAND_AUTH_SELF_SOURCES)
-            protected_placeholders = ",".join("?" for _ in protected)
-            event_placeholders = ",".join("?" for _ in BRAND_AUTH_EVENT_SOURCES)
-            self_placeholders = ",".join("?" for _ in BRAND_AUTH_SELF_SOURCES)
-            clauses.append(
-                f"(COALESCE({prefix}source_system, '') NOT IN ({protected_placeholders}) OR ("
-                f"{prefix}source_system IN ({event_placeholders}) "
-                f"AND CASE WHEN json_valid({prefix}record_json) = 1 "
-                f"THEN json_type({prefix}record_json, '$.metadata.brand_context_authorized') = 'true' "
-                "ELSE 0 END "
-                f"AND {prefix}event_id IS NOT NULL AND EXISTS ("
-                "SELECT 1 FROM timeline_events auth_event "
-                f"WHERE auth_event.tenant_id = {outer_prefix}tenant_id "
-                f"AND auth_event.event_id = {outer_prefix}event_id "
-                f"AND auth_event.customer_id = {outer_prefix}customer_id "
-                "AND auth_event.superseded_by IS NULL "
-                "AND CASE WHEN json_valid(auth_event.record_json) = 1 "
-                "THEN json_type(auth_event.record_json, '$.metadata.brand_context_authorized') = 'true' "
-                "ELSE 0 END"
-                ")) OR ("
-                f"{prefix}source_system IN ({self_placeholders}) "
-                f"AND CASE WHEN json_valid({prefix}record_json) = 1 "
-                f"THEN json_type({prefix}record_json, '$.metadata.brand_context_authorized') = 'true' "
-                "ELSE 0 END"
-                "))"
+            summary_conflict_clause = "1"
+            summary_conflict_params: list[Any] = []
+            if customer_id:
+                if has_open_family_identity_conflict(
+                    self._con,
+                    tenant_id,
+                    family_id="",
+                    customer_ids=(customer_id,),
+                ):
+                    summary_conflict_clause = "0"
+            else:
+                blocked_customer_ids = tuple(
+                    sorted(open_family_identity_conflict_customer_ids(self._con, tenant_id))
+                )
+                if blocked_customer_ids:
+                    summary_conflict_clause = (
+                        f"{outer_prefix}customer_id NOT IN (SELECT value FROM json_each(?))"
+                    )
+                    summary_conflict_params.append(
+                        json.dumps(blocked_customer_ids, ensure_ascii=False)
+                    )
+            summary_clause = (
+                f"({prefix}source_system=? AND {prefix}chunk_type=? "
+                f"AND {prefix}source_ref=('botsafe:' || {prefix}customer_id || ':' || "
+                f"json_extract({prefix}record_json, '$.metadata.content_brand')) "
+                f"AND json_type({prefix}record_json, '$.metadata.client_safe')='true' "
+                f"AND json_type({prefix}record_json, '$.metadata.brand_context_authorized')='true' "
+                f"AND json_type({prefix}record_json, '$.metadata.raw_text_used')='false' "
+                f"AND json_extract({prefix}record_json, '$.metadata.content_brand') IN ('foton','unpk') "
+                f"AND COALESCE(trim(json_extract({prefix}record_json, '$.metadata.brand_source')), '')!='' "
+                f"AND json_type({prefix}record_json, '$.text')='text' "
+                f"AND json_extract({prefix}record_json, '$.text')="
+                f"json_extract({prefix}record_json, '$.summary') "
+                f"AND ((json_extract({prefix}record_json, '$.metadata.content_brand')='foton' "
+                f"AND json_extract({prefix}record_json, '$.text') LIKE 'Бренд: Фотон.%') "
+                f"OR (json_extract({prefix}record_json, '$.metadata.content_brand')='unpk' "
+                f"AND json_extract({prefix}record_json, '$.text') LIKE 'Бренд: УНПК.%')) "
+                f"AND json_type({prefix}record_json, '$.relevance_tags')='array' "
+                f"AND (SELECT COUNT(*) FROM json_each({prefix}record_json, '$.relevance_tags') "
+                "WHERE value IN ('foton','unpk'))=1 "
+                f"AND EXISTS (SELECT 1 FROM json_each({prefix}record_json, '$.relevance_tags') "
+                f"WHERE type='text' AND value="
+                f"json_extract({prefix}record_json, '$.metadata.content_brand')) "
+                "AND EXISTS (SELECT 1 FROM customer_identities summary_identity "
+                f"WHERE summary_identity.tenant_id={outer_prefix}tenant_id "
+                f"AND summary_identity.customer_id={outer_prefix}customer_id "
+                "AND (summary_identity.identity_status='strong' OR ("
+                "summary_identity.identity_status='partial' AND EXISTS ("
+                "SELECT 1 FROM identity_links summary_proof "
+                "WHERE summary_proof.tenant_id=summary_identity.tenant_id "
+                "AND summary_proof.customer_id=summary_identity.customer_id "
+                "AND summary_proof.match_class IN ('strong_unique','manual'))))) "
+                f"AND json_extract({prefix}record_json, '$.metadata.client_safe_provenance')=? "
+                f"AND json_extract({prefix}record_json, '$.metadata.projection_owner')=? "
+                f"AND json_extract({prefix}record_json, '$.metadata.projection_version')=? "
+                f"AND {summary_conflict_clause})"
             )
-            params.extend((*protected, *BRAND_AUTH_EVENT_SOURCES, *BRAND_AUTH_SELF_SOURCES))
+            summary_params: list[Any] = [
+                BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+                BOT_SAFE_SUMMARY_CHUNK_TYPE,
+                BOT_SAFE_SUMMARY_ACTOR,
+                BOT_SAFE_SUMMARY_ACTOR,
+                BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+                *summary_conflict_params,
+            ]
+            purchase_clause = "0"
+            purchase_params: list[Any] = []
+            if CANONICAL_PURCHASE_FACT_REQUIRED_COLUMNS.issubset(
+                self._table_columns("customer_purchases_v1")
+            ):
+                purchase_clause = (
+                    f"({prefix}source_system=? AND {prefix}chunk_type=? "
+                    f"AND {prefix}source_ref=('purchases:' || {prefix}customer_id) "
+                    f"AND json_extract({prefix}record_json, '$.text')=? "
+                    f"AND json_extract({prefix}record_json, '$.summary')=? "
+                    f"AND json_type({prefix}record_json, '$.metadata.client_safe')='true' "
+                    f"AND json_type({prefix}record_json, '$.metadata.raw_text_used')='false' "
+                    f"AND json_type({prefix}record_json, '$.metadata.current_access_asserted')='false' "
+                    f"AND json_extract({prefix}record_json, '$.metadata.client_safe_provenance')=? "
+                    f"AND json_extract({prefix}record_json, '$.metadata.projection_owner')=? "
+                    f"AND json_extract({prefix}record_json, '$.metadata.projection_version')=? "
+                    f"AND json_extract({prefix}record_json, '$.metadata.semantic_scope')=? "
+                    "AND EXISTS (SELECT 1 FROM customer_purchases_v1 purchase_fact "
+                    f"WHERE purchase_fact.tenant_id={outer_prefix}tenant_id "
+                    f"AND purchase_fact.customer_id={outer_prefix}customer_id "
+                    "AND EXISTS (SELECT 1 FROM customer_identities purchase_identity "
+                    "WHERE purchase_identity.tenant_id=purchase_fact.tenant_id "
+                    "AND purchase_identity.customer_id=purchase_fact.customer_id "
+                    "AND purchase_identity.identity_status='strong') "
+                    f"AND {canonical_purchase_fact_sql('purchase_fact')} "
+                    f"AND abs(mango_tz_epoch({outer_prefix}event_at)-mango_tz_epoch(purchase_fact.last_purchase_at))<=1 "
+                    f"AND abs(mango_tz_epoch(json_extract({outer_prefix}record_json, '$.metadata.last_purchase_at'))"
+                    "-mango_tz_epoch(purchase_fact.last_purchase_at))<=1 "
+                    f"AND json_type({outer_prefix}record_json, '$.metadata.total_in') IN ('integer','real') "
+                    f"AND abs(CAST(json_extract({outer_prefix}record_json, '$.metadata.total_in') AS REAL)"
+                    "-CAST(purchase_fact.total_in AS REAL))<0.005 "
+                    f"AND json_type({outer_prefix}record_json, '$.metadata.total_out') IN ('integer','real') "
+                    f"AND abs(CAST(json_extract({outer_prefix}record_json, '$.metadata.total_out') AS REAL)"
+                    "-CAST(purchase_fact.total_out AS REAL))<0.005 "
+                    f"AND json_type({outer_prefix}record_json, '$.metadata.deals_cnt')='integer' "
+                    f"AND CAST(json_extract({outer_prefix}record_json, '$.metadata.deals_cnt') AS INTEGER)"
+                    "=purchase_fact.deals_cnt))"
+                )
+                purchase_params = [
+                    PURCHASE_HISTORY_SOURCE_SYSTEM,
+                    PURCHASE_HISTORY_CHUNK_TYPE,
+                    PURCHASE_HISTORY_BOT_TEXT,
+                    PURCHASE_HISTORY_BOT_TEXT,
+                    PURCHASE_HISTORY_PROJECTION_OWNER,
+                    PURCHASE_HISTORY_PROJECTION_OWNER,
+                    PURCHASE_HISTORY_PROJECTION_VERSION,
+                    PURCHASE_HISTORY_SEMANTIC_SCOPE,
+                    cutoff.isoformat(),
+                ]
+            clauses.append(f"({summary_clause} OR {purchase_clause})")
+            params.extend((*summary_params, *purchase_params))
 
     def _delete_superseded_from_fts(self, event_ids: Sequence[str]) -> None:
         if not event_ids:
@@ -5522,6 +5667,40 @@ def json_loads(value: str) -> Mapping[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("stored customer timeline JSON record must be an object")
     return parsed
+
+
+def _strict_timeline_record_digest(value: object) -> str | None:
+    """Recompute a persisted record hash while rejecting duplicate JSON keys."""
+
+    if not isinstance(value, str):
+        return None
+
+    def unique_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = item
+        return result
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=unique_object)
+        if not isinstance(parsed, Mapping):
+            return None
+        return stable_digest(scrub_timeline_persisted_json(parsed))
+    except (TypeError, ValueError, RecursionError, UnicodeError, OverflowError):
+        return None
+
+
+def register_timeline_record_integrity_sql_functions(con: sqlite3.Connection) -> None:
+    """Register the one persisted-record integrity primitive used by every reader."""
+
+    con.create_function(
+        "_mango_timeline_record_digest",
+        1,
+        _strict_timeline_record_digest,
+        deterministic=True,
+    )
 
 
 def event_record_for_fts(payload: Mapping[str, Any]) -> Mapping[str, Any]:

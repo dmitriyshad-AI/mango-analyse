@@ -559,16 +559,16 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
         )
     )
 
-    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 3}
+    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 2}
     assert report["plan"]["skipped"]["non_contentful_mango_call_chunks"] == 4
-    assert report["apply"]["chunks_updated"] == 3
+    assert report["apply"]["chunks_updated"] == 2
     assert report["apply"]["chunks_retracted_not_openable"] == 1
-    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 3
+    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 2
     assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
     assert report["final_checks"]["opened_mango_processed_non_contentful_after"] == 0
     assert report["final_checks"]["opened_disallowed_identity_after"] == 0
     assert report["final_checks"]["opened_unknown_brand_non_call_after"] == 0
-    assert report["final_checks"]["opened_mango_processed_unknown_brand_after"] == 1
+    assert report["final_checks"]["opened_mango_processed_unknown_brand_after"] == 0
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {
@@ -586,16 +586,14 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     assert rows[ambiguous_event.event_id]["allowed_for_bot"] == 0
     assert rows[unmatched_event.event_id]["allowed_for_bot"] == 0
     assert rows[partial_event.event_id]["allowed_for_bot"] == 1
-    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 1
+    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 0
     assert rows[non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[non_contentful_event.event_id]["requires_manager_review"] == 1
     assert rows[boolean_non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[numeric_non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[conflicting_contentful_event.event_id]["allowed_for_bot"] == 0
     unknown_payload = json.loads(rows[unknown_brand_event.event_id]["record_json"])
-    assert {"call", "mango_processed_summary", "bot_visible", "brand_unknown"}.issubset(
-        set(unknown_payload["relevance_tags"])
-    )
+    assert "bot_visible" not in set(unknown_payload["relevance_tags"])
     assert rows[wrong_chunk_type_event.event_id]["allowed_for_bot"] == 0
     assert rows[mismatch_event.event_id]["allowed_for_bot"] == 0
     assert rows[ambiguous_identity_event.event_id]["allowed_for_bot"] == 0

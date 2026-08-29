@@ -20,7 +20,9 @@ from mango_mvp.customer_timeline import (
     TimelineEventType,
 )
 from mango_mvp.customer_timeline.bot_safe_summary import (
+    BOT_SAFE_SUMMARY_ACTOR,
     BOT_SAFE_SUMMARY_CHUNK_TYPE,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
     BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
     BotSafeSummaryBuildConfig,
     _customer_ids_from_conflict,
@@ -1010,6 +1012,11 @@ def test_bot_safe_summary_unknown_brand_stays_manager_only(tmp_path: Path) -> No
     assert payload["allowed_for_bot"] is False
     assert payload["requires_manager_review"] is True
     assert payload["metadata"]["brand_context_authorized"] is False
+    assert payload["metadata"]["client_safe"] is False
+    assert payload["metadata"]["client_safe_provenance"] == BOT_SAFE_SUMMARY_ACTOR
+    assert payload["metadata"]["projection_owner"] == BOT_SAFE_SUMMARY_ACTOR
+    assert payload["metadata"]["projection_version"] == BOT_SAFE_SUMMARY_SCHEMA_VERSION
+    assert payload["metadata"]["memory_status"] == "manager_review_required"
 
 
 def test_bot_safe_summary_drops_other_brand_title_for_known_customer_brand(tmp_path: Path) -> None:

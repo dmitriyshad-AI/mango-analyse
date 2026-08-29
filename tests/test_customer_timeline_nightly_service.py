@@ -150,6 +150,7 @@ def test_stage4b_report_gate_requires_every_final_check() -> None:
         "opened_mango_processed_non_strong_after": 0,
         "opened_mango_processed_non_contentful_after": 0,
         "opened_unknown_brand_non_call_after": 0,
+        "opened_mango_processed_unknown_brand_after": 0,
     }
 
     report = {
@@ -182,6 +183,7 @@ def test_nightly_service_stage4b_controls_publication(
         "opened_mango_processed_non_strong_after": 0,
         "opened_mango_processed_non_contentful_after": 0,
         "opened_unknown_brand_non_call_after": 0,
+        "opened_mango_processed_unknown_brand_after": 0,
     }
     seen = []
     monkeypatch.setattr(

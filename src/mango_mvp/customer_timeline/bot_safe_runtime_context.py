@@ -8,20 +8,25 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.derived_signals import _is_active_deal
+from mango_mvp.customer_timeline.purchases import (
+    CANONICAL_PURCHASE_FACT_REQUIRED_COLUMNS,
+    canonical_purchase_fact_sql,
+)
 from mango_mvp.customer_timeline.store import (
     customer_timeline_readonly_uri,
     has_open_family_identity_conflict,
+    register_timeline_record_integrity_sql_functions,
 )
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_SOURCE_SYSTEMS,
     MAIL_STAGE2_SOURCE_SYSTEM,
     MANGO_PROCESSED_SOURCE_SYSTEM,
-    is_non_contentful_call_record,
 )
+from mango_mvp.customer_timeline.temporal import register_temporal_sql_functions
 from mango_mvp.customer_timeline.tallanto_finished_grade import (
     FAMILY_LINK_SCOPE_CANONICAL_IN,
     FAMILY_LINK_SCOPE_INVALID,
@@ -287,99 +292,36 @@ def build_bot_safe_crm_context(
         )
         if not customer_id:
             return _empty_context(*(warnings or ("customer_not_resolved",)), active_brand=brand)
-        bot_context = api.bot_context(tenant_id, customer_id, allowed_only=True, limit=max(1, min(int(limit or 3) * 4, 50)))
+        evaluated_at = api.store._clock()  # noqa: SLF001 - one cutoff owns every runtime read.
+        bot_context = api.bot_context(
+            tenant_id,
+            customer_id,
+            allowed_only=True,
+            as_of=evaluated_at,
+            limit=max(1, min(int(limit or 3) * 4, 50)),
+        )
         raw_items = tuple(item for item in (bot_context.get("items") or ()) if isinstance(item, Mapping))
-        mango_linked_chunk_ids = _mango_linked_chunk_ids(api, tenant_id=tenant_id, items=raw_items)
-
-    non_call_items = tuple(
-        item
-        for item in raw_items
-        if not (
-            _clean_text(item.get("chunk_id")) in mango_linked_chunk_ids
-            or (
-                _normalize_tag(item.get("source_system")) == MANGO_PROCESSED_SOURCE_SYSTEM
-                and _normalize_tag(item.get("chunk_type")) == MANGO_CALL_CHUNK_TYPE
-            )
-        )
-    )
-    validated_call_items = _customer_call_bot_items(
-        db_path,
-        tenant_id=tenant_id,
-        customer_id=customer_id,
-        limit=max(1, int(limit)) * 4,
-    )
-    items = _safe_items_for_brand(
-        (*validated_call_items[:1], *non_call_items, *validated_call_items[1:]),
-        active_brand=brand,
-        limit=limit,
-    )
-    exact_channel_scope = bool(
-        _clean_text(lookup.channel_source_system)
-        and _clean_text(lookup.channel_profile_id)
-        and _clean_text(lookup.channel_chat_id)
-    )
-    current_chat_items = (
-        _chat_scoped_bot_items(
-            db_path,
-            tenant_id=tenant_id,
-            customer_id=customer_id,
-            source_system=_clean_text(lookup.channel_source_system),
-            profile_id=_clean_text(lookup.channel_profile_id),
-            chat_id=_clean_text(lookup.channel_chat_id),
-            limit=max(1, int(limit)) * 4,
-        )
-        if exact_channel_scope
-        else ()
-    )
+    items = _safe_items_for_brand(raw_items, active_brand=brand, limit=limit)
     family_projection = dict(_build_bot_safe_family_projection(
         db_path,
         tenant_id=tenant_id,
         customer_id=customer_id,
         active_brand=brand,
         amo_lead_id=_clean_text(lookup.amo_lead_id),
+        as_of=evaluated_at,
     ))
-    selected_customer_id = _clean_text(family_projection.pop("_selected_customer_id", ""))
-    selected_child_key = _clean_text(family_projection.pop("_selected_child_key", ""))
-    allow_brand_neutral_client_memory = bool(family_projection.pop("_allow_brand_neutral_client_memory", False))
+    family_projection.pop("_selected_customer_id", None)
+    family_projection.pop("_selected_child_key", None)
+    family_projection.pop("_allow_brand_neutral_client_memory", None)
     family_dossier = family_projection
     family_item = _family_dossier_item(family_dossier, active_brand=brand)
     if family_dossier.get("child_scope") == "lead_attributed":
-        # ponytail: keep only chunks whose source event is attributed to the selected child.
-        items = _safe_items_for_brand(
-            _child_attributed_bot_items(
-                db_path,
-                tenant_id=tenant_id,
-                selected_customer_id=selected_customer_id,
-                selected_child_key=selected_child_key,
-                limit=max(1, int(limit)) * 4,
-            ),
-            active_brand=brand,
-            limit=limit,
-        )
+        # Canonical summaries are customer-level; do not attribute them to one child.
+        items = ()
     elif family_dossier.get("context_blocked") is True:
         items = ()
     elif family_dossier.get("needs_clarification") is True:
-        call_items = (
-            _customer_call_bot_items(
-                db_path,
-                tenant_id=tenant_id,
-                customer_id=customer_id,
-                limit=max(1, int(limit)) * 4,
-            )
-            if allow_brand_neutral_client_memory
-            else ()
-        )
-        items = _safe_items_for_brand(
-            (*current_chat_items[:1], *call_items, *current_chat_items[1:]),
-            active_brand=brand,
-            limit=limit,
-        )
-    elif exact_channel_scope:
-        items = _safe_items_for_brand(
-            (*current_chat_items[:1], *items),
-            active_brand=brand,
-            limit=limit,
-        )
+        items = ()
     if family_item:
         items = (family_item, *items[: max(0, int(limit) - 1)])
     if not items:
@@ -407,12 +349,11 @@ def build_bot_safe_crm_context(
                 "allowed_only": True,
                 "brand_scoped": True,
                 "channel_scope": (
-                    "exact_current_chat_plus_brand_neutral_call"
-                    if exact_channel_scope and allow_brand_neutral_client_memory
-                    else "brand_neutral_call"
-                    if allow_brand_neutral_client_memory
-                    else "exact_current_chat"
-                    if exact_channel_scope
+                    "canonical_projection"
+                    if any(
+                        _normalize_tag(item.get("chunk_type")) == BOT_SAFE_CHUNK_TYPE
+                        for item in items
+                    )
                     else ""
                 ),
                 "items": items,
@@ -963,10 +904,13 @@ def _build_bot_safe_family_projection(
     customer_id: str,
     active_brand: str,
     amo_lead_id: str,
+    as_of: datetime,
 ) -> Mapping[str, Any]:
     with sqlite3.connect(customer_timeline_readonly_uri(db_path), uri=True) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only = ON")
+        register_temporal_sql_functions(con)
+        register_timeline_record_integrity_sql_functions(con)
         tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         required = {"family_members_v1", "family_links_v1"}
         if not required.issubset(tables):
@@ -1078,7 +1022,6 @@ def _build_bot_safe_family_projection(
             return {
                 "child_scope": scope,
                 "needs_clarification": True,
-                "_allow_brand_neutral_client_memory": len(candidate_children) == 1,
             }
 
         selected_customer = str(selected["customer_id"])
@@ -1119,12 +1062,24 @@ def _build_bot_safe_family_projection(
                 event["record"] = _timeline_record(event.get("record_json"))
                 if _event_brand(event) == active_brand:
                     events.append(event)
-        purchase_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(customer_purchases_v1)")}
-        purchase = con.execute(
-            "SELECT total_in FROM customer_purchases_v1 WHERE tenant_id=? AND customer_id=? "
-            "AND period='all_time' AND money_kind='fact' AND typeof(total_in) IN ('integer','real') LIMIT 1",
-            (tenant_id, selected_customer),
-        ).fetchone() if {"tenant_id", "customer_id", "period", "money_kind", "total_in"}.issubset(purchase_columns) else None
+        purchase_columns = {
+            str(row["name"])
+            for row in con.execute("PRAGMA table_info(customer_purchases_v1)")
+        }
+        purchase = (
+            con.execute(
+                "SELECT purchase_fact.total_in FROM customer_purchases_v1 purchase_fact "
+                "WHERE purchase_fact.tenant_id=? AND purchase_fact.customer_id=? "
+                "AND EXISTS (SELECT 1 FROM customer_identities purchase_identity "
+                "WHERE purchase_identity.tenant_id=purchase_fact.tenant_id "
+                "AND purchase_identity.customer_id=purchase_fact.customer_id "
+                "AND purchase_identity.identity_status='strong') "
+                f"AND {canonical_purchase_fact_sql('purchase_fact')} LIMIT 1",
+                (tenant_id, selected_customer, as_of.isoformat()),
+            ).fetchone()
+            if CANONICAL_PURCHASE_FACT_REQUIRED_COLUMNS.issubset(purchase_columns)
+            else None
+        )
         purchase_total = float(purchase["total_in"]) if purchase is not None else 0.0
         purchases = "fact_confirmed" if math.isfinite(purchase_total) and purchase_total > 0 else "unknown"
         return {
@@ -1145,180 +1100,6 @@ def _build_bot_safe_family_projection(
                 else "unknown",
             },
         }
-
-
-def _mango_linked_chunk_ids(
-    api: CustomerTimelineReadApi,
-    *,
-    tenant_id: str,
-    items: Sequence[Mapping[str, Any]],
-) -> frozenset[str]:
-    chunk_ids = tuple(sorted({_clean_text(item.get("chunk_id")) for item in items} - {""}))
-    if not chunk_ids:
-        return frozenset()
-    placeholders = ",".join("?" for _ in chunk_ids)
-    return frozenset(
-        str(row["chunk_id"])
-        for row in api.store._con.execute(  # noqa: SLF001 - one read-time source boundary.
-            "SELECT c.chunk_id FROM bot_context_chunks c JOIN timeline_events e "
-            "ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
-            f"WHERE c.tenant_id=? AND e.source_system=? AND c.chunk_id IN ({placeholders})",
-            (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM, *chunk_ids),
-        )
-    )
-
-
-def _child_attributed_bot_items(
-    db_path: Path,
-    *,
-    tenant_id: str,
-    selected_customer_id: str,
-    selected_child_key: str,
-    limit: int,
-) -> tuple[Mapping[str, Any], ...]:
-    if not selected_customer_id or not selected_child_key:
-        return ()
-    config = CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=db_path.parent)
-    with CustomerTimelineReadApi.open(config) as api:
-        if api.store._con.execute(  # noqa: SLF001 - schema check for optional derived table.
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_child_attribution_v1'"
-        ).fetchone() is None:
-            return ()
-        clauses = [
-            "c.tenant_id = ?",
-            "a.customer_id = ?",
-            "a.child_key = ?",
-            "a.status = 'matched'",
-            "a.confidence IN ('high','medium')",
-            "e.customer_id = c.customer_id",
-            "e.superseded_by IS NULL",
-        ]
-        params: list[Any] = [tenant_id, selected_customer_id, selected_child_key]
-        api.store._append_chunk_filters(  # noqa: SLF001 - same canonical bot-safe boundary as read API.
-            clauses,
-            params,
-            customer_id=None,
-            opportunity_id=None,
-            since=None,
-            until=None,
-            allowed_for_bot=True,
-            table_alias="c",
-        )
-        rows = api.store._con.execute(  # noqa: SLF001 - child attribution is not exposed by the public read API.
-            "SELECT c.record_json,e.source_system AS event_source_system,"
-            "e.record_json AS event_record_json "
-            "FROM bot_context_chunks c "
-            "JOIN event_child_attribution_v1 a ON a.tenant_id=c.tenant_id AND a.event_id=c.event_id "
-            "JOIN timeline_events e ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
-            "JOIN customer_identities i ON i.tenant_id=c.tenant_id AND i.customer_id=c.customer_id "
-            f"WHERE {' AND '.join(clauses)} "
-            "AND (c.source_system!=? OR (e.source_system=? AND e.match_status='strong_unique' "
-            "AND i.identity_status IN ('strong','partial'))) "
-            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id",
-            (*params, MANGO_PROCESSED_SOURCE_SYSTEM, MANGO_PROCESSED_SOURCE_SYSTEM),
-        )
-        return _validated_bot_context_row_payloads(rows, limit=limit)
-
-
-def _chat_scoped_bot_items(
-    db_path: Path,
-    *,
-    tenant_id: str,
-    customer_id: str,
-    source_system: str,
-    profile_id: str,
-    chat_id: str,
-    limit: int,
-) -> tuple[Mapping[str, Any], ...]:
-    if source_system not in CHANNEL_HISTORY_SOURCE_SYSTEMS or not profile_id or not chat_id:
-        return ()
-    config = CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=db_path.parent)
-    with CustomerTimelineReadApi.open(config) as api:
-        clauses = [
-            "c.tenant_id=?", "c.customer_id=?", "c.source_system=?",
-            "c.chunk_type='channel_message'", "e.source_system=c.source_system",
-            "json_extract(e.record_json, '$.metadata.profile_id')=?",
-            "json_extract(e.record_json, '$.metadata.chat_id')=?",
-        ]
-        params: list[Any] = [tenant_id, customer_id, source_system, profile_id, chat_id]
-        api.store._append_chunk_filters(  # noqa: SLF001 - same canonical bot-safe boundary as read API.
-            clauses, params, customer_id=None, opportunity_id=None, since=None, until=None,
-            allowed_for_bot=True, table_alias="c",
-        )
-        rows = api.store._con.execute(  # noqa: SLF001 - exact chat scope is not exposed by the public read API.
-            "SELECT c.record_json FROM bot_context_chunks c "
-            "JOIN timeline_events e ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id LIMIT ?",
-            (*params, max(1, min(int(limit), 200))),
-        ).fetchall()
-    return tuple(json.loads(str(row["record_json"])) for row in rows)
-
-
-def _customer_call_bot_items(
-    db_path: Path,
-    *,
-    tenant_id: str,
-    customer_id: str,
-    limit: int,
-) -> tuple[Mapping[str, Any], ...]:
-    config = CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=db_path.parent)
-    with CustomerTimelineReadApi.open(config) as api:
-        clauses = [
-            "c.tenant_id=?", "c.customer_id=?", "c.source_system=?", "c.chunk_type=?",
-            "e.source_system=?", "e.match_status='strong_unique'", "e.customer_id=c.customer_id",
-            "e.superseded_by IS NULL",
-            "i.identity_status IN ('strong','partial')",
-        ]
-        params: list[Any] = [
-            tenant_id,
-            customer_id,
-            MANGO_PROCESSED_SOURCE_SYSTEM,
-            MANGO_CALL_CHUNK_TYPE,
-            MANGO_PROCESSED_SOURCE_SYSTEM,
-        ]
-        api.store._append_chunk_filters(  # noqa: SLF001 - same canonical bot-safe boundary as read API.
-            clauses, params, customer_id=None, opportunity_id=None, since=None, until=None,
-            allowed_for_bot=True,
-            table_alias="c",
-        )
-        rows = api.store._con.execute(  # noqa: SLF001 - source-specific read avoids cross-source crowd-out.
-            "SELECT c.record_json,e.source_system AS event_source_system,"
-            "e.record_json AS event_record_json FROM bot_context_chunks c "
-            "JOIN timeline_events e ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
-            "JOIN customer_identities i ON i.tenant_id=c.tenant_id AND i.customer_id=c.customer_id "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id",
-            tuple(params),
-        )
-        return _validated_bot_context_row_payloads(rows, limit=limit)
-
-
-def _validated_bot_context_row_payloads(
-    rows: Iterable[sqlite3.Row],
-    *,
-    limit: int,
-) -> tuple[Mapping[str, Any], ...]:
-    result: list[Mapping[str, Any]] = []
-    for row in rows:
-        try:
-            payload = json.loads(str(row["record_json"] or "{}"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, Mapping):
-            continue
-        event_source = _normalize_tag(row["event_source_system"])
-        if event_source == MANGO_PROCESSED_SOURCE_SYSTEM:
-            try:
-                event_payload = json.loads(str(row["event_record_json"] or "{}"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            if not isinstance(event_payload, Mapping) or is_non_contentful_call_record(event_payload):
-                continue
-        result.append(payload)
-        if len(result) >= max(1, min(int(limit), 200)):
-            break
-    return tuple(result)
 
 
 def _safe_json_list(raw: object, *, kind: str) -> list[str]:

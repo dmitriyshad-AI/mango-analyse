@@ -26,14 +26,15 @@ from mango_mvp.customer_timeline.store import (
     open_family_identity_conflict_customer_ids,
     scrub_timeline_persisted_json,
 )
-from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
+from mango_mvp.customer_timeline.source_policy import (
+    BOT_SAFE_SUMMARY_ACTOR,
+    BOT_SAFE_SUMMARY_CHUNK_TYPE,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+    BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+    is_non_contentful_call_record,
+)
 from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE as INSIGHTS_COMMON_SINGLE_NAME_RE
 
-
-BOT_SAFE_SUMMARY_SCHEMA_VERSION = "customer_timeline_bot_safe_summary_v1"
-BOT_SAFE_SUMMARY_CHUNK_TYPE = "bot_safe_summary"
-BOT_SAFE_SUMMARY_SOURCE_SYSTEM = "customer_timeline_bot_safe_summary"
-BOT_SAFE_SUMMARY_ACTOR = "customer_timeline_bot_safe_summary_builder"
 
 KNOWN_BRANDS = {"foton", "unpk"}
 GENERIC_TITLE_PATTERNS = (
@@ -466,6 +467,18 @@ def _build_customer_draft(
             "schema_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
             "raw_text_used": False,
             "brand_context_authorized": brand_authorized,
+            "client_safe": brand_authorized,
+            "client_safe_reason": (
+                "canonical_bot_safe_summary_projection"
+                if brand_authorized
+                else "brand_context_not_authorized"
+            ),
+            "client_safe_policy_version": "cs_v1",
+            "client_safe_provenance": BOT_SAFE_SUMMARY_ACTOR,
+            "projection_owner": BOT_SAFE_SUMMARY_ACTOR,
+            "projection_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+            "memory_status": "usable_memory" if brand_authorized else "manager_review_required",
+            "content_brand": brand,
             "brand_source": brand_source,
             "opportunity_count": len(opportunities),
             "event_count": len(events),
@@ -1144,7 +1157,7 @@ def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
         pending_attribution = pending_attribution.strip().casefold()
     if pending_attribution not in (None, False, 0, "", "false"):
         return False
-    authorization = metadata.get("brand_context_authorized")
+    brand_authorized = metadata.get("brand_context_authorized")
     if str(event.get("source_system") or "") in {
         "mail_archive",
         "mail_archive_stage2",
@@ -1153,8 +1166,8 @@ def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
         "telegram_history",
         "channel_snapshot",
     }:
-        return authorization is True
-    if authorization is False:
+        return brand_authorized is True
+    if brand_authorized is False:
         return False
     record = _mapping(event.get("record"))
     return not (

@@ -499,7 +499,7 @@ def test_reader_smoke_allows_strong_known_brand_mango_processed_chunks(tmp_path:
     assert gate["violations"] == {}
 
 
-def test_reader_smoke_blocks_mango_processed_non_strong_but_allows_unknown_brand_metric(tmp_path: Path) -> None:
+def test_reader_smoke_blocks_mango_processed_non_strong_and_unknown_brand(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -556,7 +556,7 @@ def test_reader_smoke_blocks_mango_processed_non_strong_but_allows_unknown_brand
     gate = smoke_report["mango_processed_allowed_safety_gate"]
     assert gate["ok"] is False
     assert gate["violations"]["allowed_mango_processed_non_strong_match"] == 1
-    assert "allowed_mango_processed_unknown_brand_metric" not in gate["violations"]
+    assert gate["violations"]["allowed_mango_processed_unknown_brand_metric"] == 1
     assert gate["counts"]["allowed_mango_processed_unknown_brand_metric"] == 1
 
 

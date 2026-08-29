@@ -5307,7 +5307,18 @@ def _fetch_chat_message_tail(
             )
         if request_count >= request_budget:
             request_limit_hit = True
-    if boundary_found and not pagination_drift_detected and (offset or empty_baseline):
+    empty_delta_needs_head_proof = bool(
+        boundary_found
+        and not raw_by_id
+        and not allow_empty_tail
+        and not empty_baseline
+    )
+    empty_delta_head_proven = False
+    if (
+        boundary_found
+        and not pagination_drift_detected
+        and (offset or empty_baseline or empty_delta_needs_head_proof)
+    ):
         last_requested_offset = 0
         if request_count >= request_budget:
             request_limit_hit = True
@@ -5345,7 +5356,9 @@ def _fetch_chat_message_tail(
                     pagination_drift_detected = True
                     if not drift_reason:
                         drift_reason = "head_changed"
-    if boundary_found and not raw_by_id and not allow_empty_tail and not empty_baseline:
+                elif empty_delta_needs_head_proof:
+                    empty_delta_head_proven = True
+    if empty_delta_needs_head_proof and not empty_delta_head_proven:
         pagination_drift_detected = True
         if not drift_reason:
             drift_reason = "empty_delta_not_allowed"

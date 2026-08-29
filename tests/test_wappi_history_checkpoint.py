@@ -1869,6 +1869,132 @@ def test_delta_tail_rejects_more_than_exactly_one_overlap() -> None:
     assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "unexpected_overlap"
 
 
+def test_delta_tail_accepts_metadata_only_append_after_matching_head_proof() -> None:
+    message = {
+        "id": "m1",
+        "chat_id": "chat",
+        "type": "text",
+        "body": "Без изменений",
+        "time": 100,
+    }
+
+    class StableHeadClient:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.offsets.append(int(kwargs["offset"]))
+            return {"messages": [message]}
+
+    client = StableHeadClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "m1"
+        ),
+    )
+
+    assert rows == ()
+    assert client.offsets == [0, 0]
+    assert wappi_history_module.fetch_chat_messages.last_boundary_found is True
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is False
+    first_signature = wappi_history_module.fetch_chat_messages.last_tail_first_signature
+    head_signature = wappi_history_module.fetch_chat_messages.last_tail_head_signature
+    assert len(first_signature) == 64
+    assert head_signature == first_signature
+
+
+def test_delta_tail_empty_append_requires_budget_for_head_proof() -> None:
+    class BoundaryHeadClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return {
+                "messages": [
+                    {
+                        "id": "m1",
+                        "chat_id": "chat",
+                        "type": "text",
+                        "body": "Сохранённая граница",
+                        "time": 100,
+                    }
+                ]
+            }
+
+    client = BoundaryHeadClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=1,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "m1"
+        ),
+    )
+
+    assert rows == ()
+    assert client.calls == 1
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "head_proof_budget"
+
+
+def test_delta_tail_blocks_empty_append_when_head_changes_during_proof() -> None:
+    boundary = {
+        "id": "m1",
+        "chat_id": "chat",
+        "type": "text",
+        "body": "Сохранённая граница",
+        "time": 100,
+    }
+    new_message = {
+        "id": "m2",
+        "chat_id": "chat",
+        "type": "text",
+        "body": "Новое сообщение",
+        "time": 101,
+    }
+
+    class MovingHeadClient:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.offsets.append(int(kwargs["offset"]))
+            rows = [boundary] if len(self.offsets) == 1 else [new_message, boundary]
+            return {"messages": rows}
+
+    client = MovingHeadClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "m1"
+        ),
+    )
+
+    assert rows == ()
+    assert client.offsets == [0, 0]
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "head_changed"
+    assert (
+        wappi_history_module.fetch_chat_messages.last_tail_head_signature
+        != wappi_history_module.fetch_chat_messages.last_tail_first_signature
+    )
+
+
 @pytest.mark.parametrize(
     "malformed_payload",
     ({}, {"messages": "not-a-list"}, {"messages": ["not-an-object"]}, {"data": {}}),
@@ -2055,7 +2181,7 @@ def test_regressed_marker_missing_boundary_stops_after_three_tail_pages(
     assert wappi_row_count(db_path) == original_rows
 
 
-def test_reconciliation_gap_commits_only_proven_other_chat_progress(tmp_path: Path) -> None:
+def test_metadata_only_marker_append_commits_after_head_proof(tmp_path: Path) -> None:
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(2)
     config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
@@ -2078,20 +2204,86 @@ def test_reconciliation_gap_commits_only_proven_other_chat_progress(tmp_path: Pa
     chats[0] = {**dict(chats[0]), "last_timestamp": 1_753_000_001}
     chats[1] = {**dict(chats[1]), "last_timestamp": int(chats[1]["last_timestamp"]) + 1}
 
-    report = run_wappi_history_import(
-        config,
-        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
-    )
+    client = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=client)
 
-    assert report["validation_ok"] is False
+    assert report["validation_ok"] is True
     assert report["mode"] == "apply"
     assert report["checkpoint"]["committed"] is True
-    assert report["checkpoint"]["complete"] is False
-    assert report["checkpoint"]["deferred_limit_hits"] == [
-        "p-tg:message_reconciliation_gap"
-    ]
+    assert report["checkpoint"]["complete"] is True
+    assert report["checkpoint"]["deferred_limit_hits"] == []
     assert wappi_row_count(db_path) == 3
     after = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
     assert after["chat_markers"][safe_token] == 1_753_000_001
-    assert after["chat_markers"][gap_token] == gap_marker
+    assert after["chat_markers"][gap_token] == gap_marker + 1
     assert after["chat_cursors"][gap_token] == gap_cursor
+    assert [
+        request
+        for request in client.message_request_calls
+        if request[1] == "c0001"
+    ] == [
+        ("p-tg", "c0001", 0, 10, "desc"),
+        ("p-tg", "c0001", 0, 10, "desc"),
+    ]
+
+
+def test_moving_head_blocks_all_writes_and_checkpoint_progress(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    baseline = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert baseline["validation_ok"] is True
+    checkpoint_path = wappi_history_checkpoint_path(checkpoint_dir)
+    checkpoint_bytes_before = checkpoint_path.read_bytes()
+    checkpoint_before = read_checkpoint(checkpoint_dir)
+    rows_before = wappi_row_count(db_path)
+
+    messages[("telegram", "p-tg", "c0000")].append(
+        {
+            "id": "c0000-new", "chat_id": "c0000", "type": "text",
+            "body": "Доказанное новое сообщение", "time": 1_753_000_001,
+        }
+    )
+    chats[0] = {**dict(chats[0]), "last_timestamp": 1_753_000_001}
+    chats[1] = {**dict(chats[1]), "last_timestamp": 1_753_000_001}
+    moving_message = {
+        "id": "c0001-new", "chat_id": "c0001", "type": "text",
+        "body": "Появилось между проверками", "time": 1_753_000_001,
+    }
+
+    class MovingGapHeadClient(CheckpointFakeClient):
+        gap_head_calls = 0
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            payload = super().get_chat_messages(**kwargs)
+            if kwargs["chat_id"] == "c0001" and int(kwargs["offset"]) == 0:
+                self.gap_head_calls += 1
+                if self.gap_head_calls == 2:
+                    return {"messages": [moving_message, *(payload.get("messages") or ())]}
+            return payload
+
+    client = MovingGapHeadClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=client)
+
+    stats = report["profiles"]["p-tg"]
+    assert report["validation_ok"] is False
+    assert report["mode"] == "apply_blocked"
+    assert report["writes"]["applied"] is False
+    assert report["summary"]["write_applied"] is False
+    assert report["checkpoint"]["committed"] is False
+    assert report["checkpoint"]["deferred_limit_hits"] == []
+    assert "p-tg:pagination_drift_detected" in report["limit_hits"]
+    assert stats["message_page_drift_reason"] == "head_changed"
+    assert stats["message_page_drift_marker_relation"] == "append"
+    assert stats["message_page_drift_offset"] == 0
+    assert stats["message_page_drift_pages"] == 1
+    assert stats["message_page_drift_first_signature"]
+    assert stats["message_page_drift_head_signature"]
+    assert stats["message_page_drift_head_signature"] != stats["message_page_drift_first_signature"]
+    assert any(request[1] == "c0000" for request in client.message_request_calls)
+    assert wappi_row_count(db_path) == rows_before
+    assert checkpoint_path.read_bytes() == checkpoint_bytes_before
+    assert read_checkpoint(checkpoint_dir) == checkpoint_before

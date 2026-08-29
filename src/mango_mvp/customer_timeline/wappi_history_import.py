@@ -57,8 +57,11 @@ from mango_mvp.customer_timeline.safety import (
 )
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX,
+    WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX,
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
+    wappi_event_retirement_prefix,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AMO_WAPPI_ENV_FILE,
@@ -509,21 +512,27 @@ def wappi_timeline_state(
     return state
 
 
-def wappi_timeline_chat_cursors(
+def wappi_timeline_chat_state(
     db_path: Path,
     *,
     tenant_id: str,
-) -> Mapping[str, Mapping[str, Mapping[str, Any]]]:
-    """Build newest-message boundaries locally; never reads Wappi or exposes raw IDs."""
+) -> tuple[
+    Mapping[str, Mapping[str, Mapping[str, Any]]],
+    Mapping[str, Mapping[str, Mapping[str, Any]]],
+]:
+    """Build checkpoint cursors and transient exact-chat evidence in one DB scan."""
     newest: dict[tuple[str, str], tuple[tuple[str, str], str, int]] = {}
-    persisted_messages: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+    active_messages: dict[tuple[str, str], list[tuple[str, str, str]]] = defaultdict(list)
+    managed_source_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
+    historical_candidate_keys: set[tuple[str, str]] = set()
     with open_readonly_sqlite(db_path) as con:
         if not sqlite_table_exists(con, "timeline_events"):
-            return {}
+            return {}, {}
         for row in con.execute(
-            "SELECT source_system,event_at,record_json FROM timeline_events "
+            "SELECT source_system,source_id,event_at,record_json,superseded_by "
+            "FROM timeline_events "
             "WHERE tenant_id=? AND source_system IN ('wappi_telegram','wappi_max') "
-            "AND coalesce(source_id,'')!='' AND superseded_by IS NULL "
+            "AND coalesce(source_id,'')!='' "
             "ORDER BY source_system,event_at,event_id",
             (normalize_key(tenant_id, "tenant_id"),),
         ):
@@ -536,6 +545,24 @@ def wappi_timeline_chat_cursors(
             message_id = str(metadata.get("message_id") or "").strip()
             if not profile_id or not chat_id or not message_id:
                 continue
+            source_id = str(row["source_id"] or "").strip()
+            superseded_by = str(row["superseded_by"] or "").strip()
+            retirement_prefix = wappi_event_retirement_prefix(superseded_by)
+            profile_key = f"{row['source_system']}:{profile_id}"
+            chat_token = wappi_checkpoint_token(chat_id)
+            state_key = (profile_key, chat_token)
+            if not superseded_by or retirement_prefix == WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX:
+                managed_source_ids[state_key].add(source_id)
+            persisted_non_personal = str(
+                payload.get("resolution_reason") or metadata.get("resolution_reason") or ""
+            ) == "timeline_identity_non_personal_chat"
+            if (
+                (not superseded_by and not persisted_non_personal)
+                or retirement_prefix == WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX
+            ):
+                historical_candidate_keys.add(state_key)
+            if superseded_by:
+                continue
             event_at = str(row["event_at"] or "")
             try:
                 parsed_at = datetime.fromisoformat(event_at.replace("Z", "+00:00"))
@@ -544,8 +571,6 @@ def wappi_timeline_chat_cursors(
                 timestamp = max(0, int(parsed_at.timestamp()))
             except (OverflowError, ValueError):
                 timestamp = 0
-            profile_key = f"{row['source_system']}:{profile_id}"
-            chat_token = wappi_checkpoint_token(chat_id)
             message_token = wappi_message_checkpoint_token(profile_id, chat_id, message_id)
             persisted_digest = wappi_persisted_message_digest(
                 profile_id=profile_id,
@@ -556,8 +581,8 @@ def wappi_timeline_chat_cursors(
                 text=str(message.get("text") or ""),
                 contact_name=str(payload.get("actor_name") or ""),
             )
-            persisted_messages[(profile_key, chat_token)].append(
-                (message_token, persisted_digest)
+            active_messages[state_key].append(
+                (message_token, persisted_digest, source_id)
             )
             sort_key = (event_at, message_id)
             current = newest.get((profile_key, chat_token))
@@ -567,22 +592,37 @@ def wappi_timeline_chat_cursors(
                     message_token,
                     timestamp,
                 )
-    grouped: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    grouped_cursors: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for (
         profile_key,
         chat_token,
     ), (_sort_key, message_token, timestamp) in newest.items():
-        sealed_messages = sorted(persisted_messages[(profile_key, chat_token)])
-        grouped[profile_key][chat_token] = {
+        grouped_cursors[profile_key][chat_token] = {
             "message_digest": message_token,
             "timestamp": timestamp,
-            "persisted_message_count": len(sealed_messages),
-            "persisted_set_digest": stable_digest(sealed_messages),
         }
-    return {
-        profile_key: dict(sorted(cursors.items()))
-        for profile_key, cursors in sorted(grouped.items())
-    }
+    grouped_snapshots: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    for profile_key, chat_token in sorted(managed_source_ids):
+        sealed_messages = tuple(sorted(active_messages[(profile_key, chat_token)]))
+        grouped_snapshots[profile_key][chat_token] = {
+            "active_messages": sealed_messages,
+            "active_source_ids": tuple(sorted(item[2] for item in sealed_messages)),
+            "managed_source_ids": tuple(
+                sorted(managed_source_ids[(profile_key, chat_token)])
+            ),
+            "historical_candidate": (profile_key, chat_token)
+            in historical_candidate_keys,
+        }
+    return (
+        {
+            profile_key: dict(sorted(cursors.items()))
+            for profile_key, cursors in sorted(grouped_cursors.items())
+        },
+        {
+            profile_key: dict(sorted(snapshots.items()))
+            for profile_key, snapshots in sorted(grouped_snapshots.items())
+        },
+    )
 
 
 def wappi_persisted_message_digest(
@@ -609,18 +649,42 @@ def wappi_persisted_message_digest(
     )
 
 
+def _wappi_active_or_verified_source_absent_sql(
+    column: str = "superseded_by",
+) -> str:
+    """SQL predicate for assignments that still belong to an exact Wappi chat."""
+    prefix = WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX
+    return (
+        f"(coalesce({column},'')='' OR ("
+        f"length({column})={len(prefix) + 16} "
+        f"AND substr({column},1,{len(prefix)})='{prefix}' "
+        f"AND substr({column},{len(prefix) + 1}) NOT GLOB '*[^0-9a-f]*'))"
+    )
+
+
 def wappi_catalog_lifecycle_source_ids(
     db_path: Path,
     *,
     tenant_id: str,
     chat_classes: Mapping[tuple[str, str, str], bool],
-    verified_historical_personal_chat_keys: frozenset[tuple[str, str, str]] = frozenset(),
-) -> tuple[dict[str, set[str]], dict[str, set[str]], Mapping[str, Any]]:
+    verified_historical_personal_source_ids: Mapping[
+        tuple[str, str, str], frozenset[str]
+    ] | None = None,
+) -> tuple[
+    dict[str, set[str]],
+    dict[str, set[str]],
+    dict[str, set[str]],
+    Mapping[str, Any],
+]:
     """Classify persisted Wappi history from the current complete chat catalog."""
+    verified_historical_personal_source_ids = (
+        verified_historical_personal_source_ids or {}
+    )
     personal = {source: set() for source in SOURCE_SYSTEM_BY_CHANNEL.values()}
     non_personal = {source: set() for source in SOURCE_SYSTEM_BY_CHANNEL.values()}
+    source_absent = {source: set() for source in SOURCE_SYSTEM_BY_CHANNEL.values()}
     physical_rows = mapped_rows = unmatched_rows = 0
-    historical_personal_rows = 0
+    historical_personal_rows = historical_source_absent_rows = 0
     historical_personal_chats: set[tuple[str, str, str]] = set()
     seen: set[tuple[str, str]] = set()
     with open_readonly_sqlite(db_path) as con:
@@ -646,16 +710,49 @@ def wappi_catalog_lifecycle_source_ids(
             persisted_non_personal = str(
                 payload.get("resolution_reason") or metadata.get("resolution_reason") or ""
             ) == "timeline_identity_non_personal_chat"
+            superseded_by = str(row["superseded_by"] or "")
+            retirement_prefix = wappi_event_retirement_prefix(superseded_by)
+            historical_exact_source_ids = verified_historical_personal_source_ids.get(key)
             if current_class is False:
                 non_personal[source_system].add(source_id)
             elif current_class is True:
-                personal[source_system].add(source_id)
-            elif persisted_non_personal:
-                non_personal[source_system].add(source_id)
-            elif not row["superseded_by"] and key in verified_historical_personal_chat_keys:
-                personal[source_system].add(source_id)
-                historical_personal_rows += 1
+                if historical_exact_source_ids is not None:
+                    historical_personal_chats.add(key)
+                    if source_id in historical_exact_source_ids:
+                        personal[source_system].add(source_id)
+                        historical_personal_rows += 1
+                    else:
+                        source_absent[source_system].add(source_id)
+                        historical_source_absent_rows += 1
+                elif retirement_prefix == WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX:
+                    # A current personal chat does not prove that a formerly
+                    # absent message returned.  Require the exact source-set
+                    # reconciliation before restoring or accepting the row.
+                    unmatched_rows += 1
+                    continue
+                elif (
+                    not superseded_by
+                    or retirement_prefix == WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX
+                ):
+                    personal[source_system].add(source_id)
+                else:
+                    unmatched_rows += 1
+                    continue
+            elif historical_exact_source_ids is not None and (
+                not superseded_by or bool(retirement_prefix)
+            ):
                 historical_personal_chats.add(key)
+                if source_id in historical_exact_source_ids:
+                    personal[source_system].add(source_id)
+                    historical_personal_rows += 1
+                else:
+                    source_absent[source_system].add(source_id)
+                    historical_source_absent_rows += 1
+            elif (
+                persisted_non_personal
+                or retirement_prefix == WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX
+            ):
+                non_personal[source_system].add(source_id)
             else:
                 unmatched_rows += 1
                 continue
@@ -665,7 +762,7 @@ def wappi_catalog_lifecycle_source_ids(
         for source, source_ids in non_personal.items()
         for source_id in source_ids
     )
-    return personal, non_personal, {
+    return personal, non_personal, source_absent, {
         "catalog_chats": len(chat_classes),
         "catalog_personal_chats": sum(chat_classes.values()),
         "catalog_non_personal_chats": len(chat_classes) - sum(chat_classes.values()),
@@ -674,6 +771,7 @@ def wappi_catalog_lifecycle_source_ids(
         "unmatched_rows": unmatched_rows,
         "verified_historical_personal_chats": len(historical_personal_chats),
         "verified_historical_personal_source_records": historical_personal_rows,
+        "verified_historical_source_absent_records": historical_source_absent_rows,
         "non_personal_source_records": len(hashed_non_personal),
         "non_personal_source_digest": stable_digest(hashed_non_personal),
         "catalog_classification_digest": stable_digest(
@@ -1699,6 +1797,13 @@ class WappiFetchStats:
     incremental_non_personal_skipped: int = 0
     historical_snapshot_checks: int = 0
     historical_snapshot_verified: int = 0
+    historical_snapshot_reconciled: int = 0
+    historical_snapshot_local_records: int = 0
+    historical_snapshot_source_records: int = 0
+    historical_snapshot_shared_exact: int = 0
+    historical_snapshot_source_new: int = 0
+    historical_snapshot_source_absent: int = 0
+    historical_snapshot_conflicting: int = 0
     full_history_audit: bool = False
     full_audit_clock_anomaly: bool = False
     resolution_status_counts: Counter[str] = field(default_factory=Counter)
@@ -1765,6 +1870,13 @@ class WappiFetchStats:
             "incremental_non_personal_skipped": self.incremental_non_personal_skipped,
             "historical_snapshot_checks": self.historical_snapshot_checks,
             "historical_snapshot_verified": self.historical_snapshot_verified,
+            "historical_snapshot_reconciled": self.historical_snapshot_reconciled,
+            "historical_snapshot_local_records": self.historical_snapshot_local_records,
+            "historical_snapshot_source_records": self.historical_snapshot_source_records,
+            "historical_snapshot_shared_exact": self.historical_snapshot_shared_exact,
+            "historical_snapshot_source_new": self.historical_snapshot_source_new,
+            "historical_snapshot_source_absent": self.historical_snapshot_source_absent,
+            "historical_snapshot_conflicting": self.historical_snapshot_conflicting,
             "full_history_audit": self.full_history_audit,
             "full_audit_clock_anomaly": self.full_audit_clock_anomaly,
             "resolution_status_counts": dict(self.resolution_status_counts),
@@ -2226,6 +2338,7 @@ def run_wappi_history_import(
     provisional_prime_report = resolver.prime_provisional_chat_resolutions(profiles)
     checkpoint_state: Mapping[str, Any] = {}
     local_chat_cursors: Mapping[str, Mapping[str, Mapping[str, Any]]] = {}
+    local_chat_snapshots: Mapping[str, Mapping[str, Mapping[str, Any]]] = {}
     next_checkpoint: Optional[dict[str, Any]] = None
     if config.checkpoint_dir is not None:
         next_checkpoint = {}
@@ -2241,7 +2354,7 @@ def run_wappi_history_import(
                 },
             )
         }
-        local_chat_cursors = wappi_timeline_chat_cursors(
+        local_chat_cursors, local_chat_snapshots = wappi_timeline_chat_state(
             config.timeline_db,
             tenant_id=config.tenant_id,
         )
@@ -2285,19 +2398,20 @@ def run_wappi_history_import(
         )
         if str(active_chat.get("chat") or "") == chat_token:
             continue
-        local_cursor = local_chat_cursors.get(profile_key, {}).get(chat_token)
+        local_snapshot = local_chat_snapshots.get(profile_key, {}).get(chat_token)
         if (
             not config.limits.complete_message_history
-            or not _wappi_chat_cursor_is_valid(local_cursor)
-            or not str(local_cursor.get("message_digest") or "")
-            or int(local_cursor.get("persisted_message_count") or 0) <= 0
-            or not str(local_cursor.get("persisted_set_digest") or "")
+            or not isinstance(local_snapshot, Mapping)
+            or not local_snapshot.get("historical_candidate")
+            or not tuple(local_snapshot.get("managed_source_ids") or ())
         ):
             continue
         historical_personal_chat_snapshots[(source_system, profile_id, chat_id)] = dict(
-            local_cursor
+            local_snapshot
         )
-    verified_historical_personal_chat_keys: set[tuple[str, str, str]] = set()
+    verified_historical_personal_source_ids: dict[
+        tuple[str, str, str], set[str]
+    ] = {}
     catalog_chat_classes: dict[tuple[str, str, str], bool] = {}
     records, fetch_stats_by_profile = fetch_wappi_history_records(
         client=client,
@@ -2309,7 +2423,7 @@ def run_wappi_history_import(
         next_checkpoint=next_checkpoint,
         catalog_chat_classes=catalog_chat_classes,
         historical_personal_chat_snapshots=historical_personal_chat_snapshots,
-        verified_historical_personal_chat_keys=verified_historical_personal_chat_keys,
+        verified_historical_personal_source_ids=verified_historical_personal_source_ids,
     )
     network_records_pre_guard = len(records)
     network_source_ids = {
@@ -2351,18 +2465,25 @@ def run_wappi_history_import(
         }
         for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
     }
-    catalog_personal_source_ids, catalog_non_personal_source_ids, catalog_lifecycle = (
-        wappi_catalog_lifecycle_source_ids(
-            config.timeline_db,
-            tenant_id=config.tenant_id,
-            chat_classes=catalog_chat_classes,
-            verified_historical_personal_chat_keys=frozenset(
-                verified_historical_personal_chat_keys
-            ),
-        )
+    (
+        catalog_personal_source_ids,
+        catalog_non_personal_source_ids,
+        historical_source_absent_ids,
+        catalog_lifecycle,
+    ) = wappi_catalog_lifecycle_source_ids(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+        chat_classes=catalog_chat_classes,
+        verified_historical_personal_source_ids={
+            key: frozenset(source_ids)
+            for key, source_ids in verified_historical_personal_source_ids.items()
+        },
     )
     for source_system in SOURCE_SYSTEM_BY_CHANNEL.values():
         catalog_personal_source_ids[source_system].update(
+            observed_personal_source_ids[source_system]
+        )
+        historical_source_absent_ids[source_system].difference_update(
             observed_personal_source_ids[source_system]
         )
         catalog_non_personal_source_ids[source_system].update(
@@ -2375,10 +2496,29 @@ def run_wappi_history_import(
             for source_id in source_ids
         )
     )[:16]
-    lifecycle_marker = f"retired:wappi_expected_excluded:{lifecycle_digest}"
+    lifecycle_marker = (
+        f"{WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX}{lifecycle_digest}"
+    )
+    source_absent_digest = stable_digest(
+        sorted(
+            (source_system, source_id)
+            for source_system, source_ids in historical_source_absent_ids.items()
+            for source_id in source_ids
+        )
+    )[:16]
+    source_absent_marker = (
+        f"{WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX}{source_absent_digest}"
+    )
+    expected_excluded_reconciliation_ids = {
+        source_system: catalog_personal_source_ids[source_system].union(
+            historical_source_absent_ids[source_system]
+        )
+        for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
+    }
     lifecycle_report: dict[str, Any] = {
         **catalog_lifecycle,
         "retirement_marker": lifecycle_marker,
+        "source_absent_retirement_marker": source_absent_marker,
         "current_ledger_expected_excluded_records": sum(
             len(source_ids) for source_ids in expected_excluded_source_ids.values()
         ),
@@ -2394,6 +2534,8 @@ def run_wappi_history_import(
         ),
         "restored_events": 0,
         "retired_events": 0,
+        "source_absent_retired_events": 0,
+        "source_absent_reclassified_non_personal_events": 0,
     }
     expected_source_ids = {
         source_system: {
@@ -2736,17 +2878,31 @@ def run_wappi_history_import(
         ) as store:
             store_summary_before = store.summary()
             with store.bulk_write():
-                restored = store.set_timeline_source_records_active(
+                restored_expected_excluded = store.set_timeline_source_records_active(
                     config.tenant_id,
-                    source_records=catalog_personal_source_ids,
+                    source_records=expected_excluded_reconciliation_ids,
                     active=True,
                     retirement_marker=lifecycle_marker,
                     retirement_reason="wappi_expected_excluded_reclassified_personal",
                     actor=config.actor,
                 )
-                lifecycle_report["restored_events"] = int(restored.get("changed_events") or 0)
+                restored_source_absent = store.set_timeline_source_records_active(
+                    config.tenant_id,
+                    source_records=observed_personal_source_ids,
+                    active=True,
+                    retirement_marker=source_absent_marker,
+                    retirement_reason="wappi_verified_snapshot_source_reappeared",
+                    actor=config.actor,
+                )
+                lifecycle_report["restored_events"] = sum(
+                    int(report.get("changed_events") or 0)
+                    for report in (
+                        restored_expected_excluded,
+                        restored_source_absent,
+                    )
+                )
                 write_status_counts["source_lifecycle_event_restored"] += int(
-                    restored.get("changed_events") or 0
+                    lifecycle_report["restored_events"]
                 )
                 for source_system, group in grouped.items():
                     report = TimelineImportService(store).import_records(
@@ -2785,6 +2941,20 @@ def run_wappi_history_import(
                     actor=config.actor,
                 )
                 write_status_counts.update(quarantined)
+                reclassified_source_absent = store.set_timeline_source_records_active(
+                    config.tenant_id,
+                    source_records=catalog_non_personal_source_ids,
+                    active=True,
+                    retirement_marker=source_absent_marker,
+                    retirement_reason="wappi_verified_source_absent_reclassified_non_personal",
+                    actor=config.actor,
+                )
+                lifecycle_report[
+                    "source_absent_reclassified_non_personal_events"
+                ] = int(reclassified_source_absent.get("changed_events") or 0)
+                write_status_counts[
+                    "source_lifecycle_source_absent_reclassified_non_personal"
+                ] += int(reclassified_source_absent.get("changed_events") or 0)
                 retired = store.set_timeline_source_records_active(
                     config.tenant_id,
                     source_records=catalog_non_personal_source_ids,
@@ -2796,6 +2966,20 @@ def run_wappi_history_import(
                 lifecycle_report["retired_events"] = int(retired.get("changed_events") or 0)
                 write_status_counts["source_lifecycle_event_retired"] += int(
                     retired.get("changed_events") or 0
+                )
+                source_absent_retired = store.set_timeline_source_records_active(
+                    config.tenant_id,
+                    source_records=historical_source_absent_ids,
+                    active=False,
+                    retirement_marker=source_absent_marker,
+                    retirement_reason="wappi_verified_snapshot_source_absent",
+                    actor=config.actor,
+                )
+                lifecycle_report["source_absent_retired_events"] = int(
+                    source_absent_retired.get("changed_events") or 0
+                )
+                write_status_counts["source_lifecycle_event_source_absent"] += int(
+                    source_absent_retired.get("changed_events") or 0
                 )
                 provisional_cleanup = remove_orphaned_provisional_customers(
                     store,
@@ -2879,8 +3063,56 @@ def run_wappi_history_import(
         )
         for source_system, source_ids in catalog_non_personal_source_ids.items()
     )
+    source_absent_active = sum(
+        len(
+            load_existing_wappi_source_ids(
+                config.timeline_db,
+                tenant_id=config.tenant_id,
+                source_systems={source_system},
+                source_ids=tuple(source_ids),
+            )
+        )
+        for source_system, source_ids in historical_source_absent_ids.items()
+    )
+    verified_historical_by_source = {
+        source_system: {
+            source_id
+            for (candidate_source, _profile_id, _chat_id), source_ids in (
+                verified_historical_personal_source_ids.items()
+            )
+            if candidate_source == source_system
+            for source_id in source_ids
+        }
+        for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
+    }
+    verified_historical_expected = sum(
+        len(source_ids) for source_ids in verified_historical_by_source.values()
+    )
+    verified_historical_present = sum(
+        len(
+            load_existing_wappi_source_ids(
+                config.timeline_db,
+                tenant_id=config.tenant_id,
+                source_systems={source_system},
+                source_ids=tuple(source_ids),
+            )
+        )
+        for source_system, source_ids in verified_historical_by_source.items()
+    )
     lifecycle_report["non_personal_active_after"] = non_personal_active
-    lifecycle_apply_complete = bool(apply_effective and non_personal_active == 0)
+    lifecycle_report["source_absent_active_after"] = source_absent_active
+    lifecycle_report["verified_historical_expected_active"] = (
+        verified_historical_expected
+    )
+    lifecycle_report["verified_historical_present_active"] = (
+        verified_historical_present
+    )
+    lifecycle_apply_complete = bool(
+        apply_effective
+        and non_personal_active == 0
+        and source_absent_active == 0
+        and verified_historical_present == verified_historical_expected
+    )
     lifecycle_report["applied_for_observed_catalog"] = lifecycle_apply_complete
     lifecycle_report["complete"] = bool(
         lifecycle_apply_complete
@@ -3560,7 +3792,7 @@ class WappiPairCustomerResolver:
                     chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
             if sqlite_table_exists(con, "timeline_events"):
                 for row in con.execute(
-                    """
+                    f"""
                     SELECT source_system,
                            json_extract(record_json, '$.metadata.profile_id') AS profile_id,
                            json_extract(record_json, '$.metadata.chat_id') AS chat_id,
@@ -3570,7 +3802,7 @@ class WappiPairCustomerResolver:
                     WHERE tenant_id = ?
                       AND source_system IN ('wappi_telegram', 'wappi_max')
                       AND customer_id IS NOT NULL
-                      AND superseded_by IS NULL
+                      AND {_wappi_active_or_verified_source_absent_sql()}
                     """,
                     (tenant,),
                 ):
@@ -4419,8 +4651,8 @@ def fetch_wappi_history_records(
     historical_personal_chat_snapshots: Optional[
         Mapping[tuple[str, str, str], Mapping[str, Any]]
     ] = None,
-    verified_historical_personal_chat_keys: Optional[
-        set[tuple[str, str, str]]
+    verified_historical_personal_source_ids: Optional[
+        dict[tuple[str, str, str], set[str]]
     ] = None,
 ) -> tuple[tuple[TimelineSourceRecord, ...], dict[tuple[str, str], WappiFetchStats]]:
     # next_checkpoint is an out-parameter (same shape as amo_incremental's
@@ -4457,6 +4689,53 @@ def fetch_wappi_history_records(
             )
             profile_budget_limit = min(limits.request_limit_total, total_requests + share)
         profile_messages = 0
+
+        def append_message_records(
+            messages: Sequence[WappiHistoryMessage],
+            *,
+            resolution: WappiChatResolution,
+        ) -> None:
+            nonlocal total_messages, profile_messages
+            for message in messages:
+                stats.messages_seen += 1
+                if not message.text.strip():
+                    stats.skipped_empty += 1
+                    continue
+                source_id = wappi_source_id(profile, message)
+                if source_id in seen_source_ids:
+                    stats.duplicate_source_ids += 1
+                    continue
+                seen_source_ids.add(source_id)
+                records.append(
+                    wappi_message_to_record(
+                        profile=profile,
+                        message=message,
+                        resolution=resolution,
+                    )
+                )
+                total_messages += 1
+                profile_messages += 1
+                stats.records_built += 1
+                stats.resolution_status_counts[
+                    resolution.reason or resolution.status
+                ] += 1
+                if resolution.resolved:
+                    if resolution.resolution_source == "amo_auto_resolver":
+                        stats.linked_by_amo_auto += 1
+                    elif resolution.resolution_source == "wappi_amo_widget":
+                        stats.linked_by_amo_widget += 1
+                    elif resolution.resolution_source == "amo_talk_authoritative":
+                        stats.linked_by_amo_talk += 1
+                    elif resolution.resolution_source == "timeline_identity":
+                        stats.linked_by_timeline += 1
+                    elif resolution.resolution_source == "wappi_provisional":
+                        stats.linked_by_provisional += 1
+                        stats.pending_attribution += 1
+                    else:
+                        stats.linked_by_pair += 1
+                else:
+                    stats.pending_attribution += 1
+
         chat_ids_seen: set[str] = set()
         dialogs_snapshot: list[Mapping[str, Any]] = []
         checkpoint_key = f"{profile.source_system}:{profile.profile_id}"
@@ -4623,8 +4902,18 @@ def fetch_wappi_history_records(
             ).items()
             if source_system == profile.source_system
             and profile_id == profile.profile_id
-            and chat_id not in initial_chat_classes
+            and (
+                chat_id not in initial_chat_classes
+                or (
+                    initial_chat_classes.get(chat_id) is True
+                    and bool(
+                        set(cursor.get("managed_source_ids") or ())
+                        - set(cursor.get("active_source_ids") or ())
+                    )
+                )
+            )
         )
+        strict_reconciled_current_tokens: set[str] = set()
         for chat_id, local_snapshot in profile_historical_snapshots:
             chat_token = wappi_checkpoint_token(chat_id)
             stats.historical_snapshot_checks += 1
@@ -4659,38 +4948,11 @@ def fetch_wappi_history_records(
             if request_limit_hit:
                 stats.request_limit_hit = True
                 stop_reason = "request_budget"
-            source_snapshot = sorted(
-                (
-                    wappi_message_checkpoint_token(
-                        profile.profile_id,
-                        chat_id,
-                        message.message_id,
-                    ),
-                    wappi_persisted_message_digest(
-                        profile_id=profile.profile_id,
-                        chat_id=chat_id,
-                        message_id=message.message_id,
-                        timestamp=message.timestamp,
-                        from_me=message.from_me,
-                        text=message.text,
-                        contact_name=message.contact_name,
-                    ),
-                )
-                for message in historical_messages
-                if message.text.strip()
-            )
-            snapshot_changed = (
-                len(source_snapshot)
-                != int(local_snapshot.get("persisted_message_count") or 0)
-                or stable_digest(source_snapshot)
-                != str(local_snapshot.get("persisted_set_digest") or "")
-            )
             if (
                 request_limit_hit
                 or message_limit_hit
                 or pagination_drift
                 or not boundary_found
-                or snapshot_changed
             ):
                 stats.message_page_drift_detected = True
                 stats.message_page_drift_chat_token = chat_token
@@ -4700,8 +4962,6 @@ def fetch_wappi_history_records(
                     else "full_history_pagination_drift"
                     if pagination_drift
                     else "historical_chat_snapshot_limit"
-                    if message_limit_hit or not boundary_found
-                    else "historical_chat_snapshot_changed"
                 )
                 stats.message_page_drift_offset = 0
                 stats.message_page_drift_pages = 0
@@ -4715,11 +4975,104 @@ def fetch_wappi_history_records(
                 )
                 historical_proof_failed = True
                 break
-            stats.historical_snapshot_verified += 1
-            if verified_historical_personal_chat_keys is not None:
-                verified_historical_personal_chat_keys.add(
-                    (profile.source_system, profile.profile_id, chat_id)
+            resolution = resolver.widget_chat_resolutions.get(
+                (profile.source_system, profile.profile_id, chat_id)
+            )
+            if (
+                resolution is None
+                or not resolution.resolved
+                or resolution.resolution_source not in WAPPI_EXACT_AMO_AUTHORITIES
+            ):
+                stats.message_page_drift_detected = True
+                stats.message_page_drift_chat_token = chat_token
+                stats.message_page_drift_reason = "historical_chat_identity_unproven"
+                stats.message_page_drift_cursor_kind = "full_history"
+                stats.message_page_drift_marker_relation = "historical_missing_catalog"
+                stop_reason = "historical_chat_identity_unproven"
+                historical_proof_failed = True
+                break
+            local_by_token = {
+                str(item[0]): (str(item[1]), str(item[2]))
+                for item in (local_snapshot.get("active_messages") or ())
+                if isinstance(item, Sequence)
+                and not isinstance(item, (str, bytes, bytearray))
+                and len(item) == 3
+            }
+            source_by_token = {
+                wappi_message_checkpoint_token(
+                    profile.profile_id,
+                    chat_id,
+                    message.message_id,
+                ): (
+                    wappi_persisted_message_digest(
+                        profile_id=profile.profile_id,
+                        chat_id=chat_id,
+                        message_id=message.message_id,
+                        timestamp=message.timestamp,
+                        from_me=message.from_me,
+                        text=message.text,
+                        contact_name=message.contact_name,
+                    ),
+                    wappi_source_id(profile, message),
                 )
+                for message in historical_messages
+                if message.text.strip()
+            }
+            local_tokens = set(local_by_token)
+            source_tokens = set(source_by_token)
+            shared_tokens = local_tokens.intersection(source_tokens)
+            shared_exact = {
+                token
+                for token in shared_tokens
+                if local_by_token[token][0] == source_by_token[token][0]
+            }
+            stats.historical_snapshot_local_records += len(local_tokens)
+            stats.historical_snapshot_source_records += len(source_tokens)
+            stats.historical_snapshot_shared_exact += len(shared_exact)
+            stats.historical_snapshot_source_new += len(source_tokens - local_tokens)
+            stats.historical_snapshot_source_absent += len(local_tokens - source_tokens)
+            stats.historical_snapshot_conflicting += len(shared_tokens - shared_exact)
+            if local_by_token != source_by_token:
+                stats.historical_snapshot_reconciled += 1
+            stats.historical_snapshot_verified += 1
+            if verified_historical_personal_source_ids is not None:
+                verified_historical_personal_source_ids[
+                    (profile.source_system, profile.profile_id, chat_id)
+                ] = {source_id for _digest, source_id in source_by_token.values()}
+            append_message_records(historical_messages, resolution=resolution)
+            if initial_chat_classes.get(chat_id) is True:
+                strict_reconciled_current_tokens.add(chat_token)
+                confirmed_tokens.add(chat_token)
+                if str(active_chat.get("chat") or "") == chat_token:
+                    active_chat = {}
+                current_dialog = next(
+                    item
+                    for item in dialogs_snapshot
+                    if extract_chat_id(item) == chat_id
+                )
+                current_marker = _safe_int(current_dialog.get("last_timestamp"))
+                if current_marker > 0:
+                    chat_markers[chat_token] = current_marker
+                else:
+                    chat_markers.pop(chat_token, None)
+                head_message_token = str(
+                    getattr(fetch_chat_messages, "last_head_message_token", "") or ""
+                )
+                if head_message_token:
+                    chat_cursors[chat_token] = {
+                        "message_digest": head_message_token,
+                        "timestamp": int(
+                            getattr(fetch_chat_messages, "last_head_message_timestamp", 0)
+                            or 0
+                        ),
+                    }
+                else:
+                    chat_cursors[chat_token] = {
+                        "empty_baseline": True,
+                        "timestamp": 0,
+                    }
+                if not incremental_base_complete:
+                    full_audit_markers[chat_token] = max(0, current_marker)
         if historical_proof_failed:
             stats.checkpoint_no_progress = checkpoint_enabled and bool(dialogs_snapshot)
             _stash_wappi_checkpoint(
@@ -4796,6 +5149,9 @@ def fetch_wappi_history_records(
             dialog_marker = _safe_int(dialog.get("last_timestamp"))
             saved_marker = chat_markers.get(chat_token)
             dialog_is_personal = is_personal_wappi_dialog(profile, dialog)
+            if chat_token in strict_reconciled_current_tokens:
+                stats.checkpoint_chats_skipped += 1
+                continue
             if not incremental_base_complete and chat_token in full_audit_verified:
                 stats.checkpoint_chats_skipped += 1
                 continue
@@ -4994,36 +5350,7 @@ def fetch_wappi_history_records(
                 ):
                     stats.message_limit_hit = True
                     break
-                stats.messages_seen += 1
-                if not message.text.strip():
-                    stats.skipped_empty += 1
-                    continue
-                source_id = wappi_source_id(profile, message)
-                if source_id in seen_source_ids:
-                    stats.duplicate_source_ids += 1
-                    continue
-                seen_source_ids.add(source_id)
-                records.append(wappi_message_to_record(profile=profile, message=message, resolution=resolution))
-                total_messages += 1
-                profile_messages += 1
-                stats.records_built += 1
-                stats.resolution_status_counts[resolution.reason or resolution.status] += 1
-                if resolution.resolved:
-                    if resolution.resolution_source == "amo_auto_resolver":
-                        stats.linked_by_amo_auto += 1
-                    elif resolution.resolution_source == "wappi_amo_widget":
-                        stats.linked_by_amo_widget += 1
-                    elif resolution.resolution_source == "amo_talk_authoritative":
-                        stats.linked_by_amo_talk += 1
-                    elif resolution.resolution_source == "timeline_identity":
-                        stats.linked_by_timeline += 1
-                    elif resolution.resolution_source == "wappi_provisional":
-                        stats.linked_by_provisional += 1
-                        stats.pending_attribution += 1
-                    else:
-                        stats.linked_by_pair += 1
-                else:
-                    stats.pending_attribution += 1
+                append_message_records((message,), resolution=resolution)
             if checkpoint_enabled and chat_token:
                 if stop_after_chat:
                     active_chat = {
@@ -6238,7 +6565,7 @@ def load_existing_wappi_event_customers(
                     WHERE tenant_id = ?
                       AND source_system = ?
                       AND source_id IN ({placeholders})
-                      AND superseded_by IS NULL
+                      AND {_wappi_active_or_verified_source_absent_sql()}
                     """,
                     (tenant, source_system, *chunk),
                 ):

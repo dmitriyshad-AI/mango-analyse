@@ -64,14 +64,36 @@ from mango_mvp.customer_timeline.temporal import parse_aware_utc, register_tempo
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
 CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260702_002_soft_delete_content_key_backfill"
 CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION = "customer_timeline_integrity_v1"
-_WAPPI_EVENT_RETIREMENT_PREFIX = "retired:wappi_expected_excluded:"
+WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX = "retired:wappi_expected_excluded:"
+WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX = "retired:wappi_verified_source_absent:"
+_WAPPI_EVENT_RETIREMENT_PREFIXES = (
+    WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX,
+    WAPPI_VERIFIED_SOURCE_ABSENT_RETIREMENT_PREFIX,
+)
+
+
+def wappi_event_retirement_prefix(value: Any) -> str:
+    marker = str(value or "")
+    for prefix in _WAPPI_EVENT_RETIREMENT_PREFIXES:
+        suffix = marker.removeprefix(prefix)
+        if (
+            marker.startswith(prefix)
+            and len(suffix) == 16
+            and not any(char not in "0123456789abcdef" for char in suffix)
+        ):
+            return prefix
+    return ""
+
+
 _VALID_WAPPI_EVENT_RETIREMENT_SQL = (
-    "COALESCE(c.source_system,'') IN ('wappi_telegram','wappi_max') "
-    f"AND length(c.superseded_by)={len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 16} "
-    f"AND substr(c.superseded_by,1,{len(_WAPPI_EVENT_RETIREMENT_PREFIX)})="
-    f"'{_WAPPI_EVENT_RETIREMENT_PREFIX}' "
-    f"AND substr(c.superseded_by,{len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 1}) "
-    "NOT GLOB '*[^0-9a-f]*'"
+    "COALESCE(c.source_system,'') IN ('wappi_telegram','wappi_max') AND ("
+    + " OR ".join(
+        f"(length(c.superseded_by)={len(prefix) + 16} "
+        f"AND substr(c.superseded_by,1,{len(prefix)})='{prefix}' "
+        f"AND substr(c.superseded_by,{len(prefix) + 1}) NOT GLOB '*[^0-9a-f]*')"
+        for prefix in _WAPPI_EVENT_RETIREMENT_PREFIXES
+    )
+    + ")"
 )
 MAIL_IDENTITY_SENTINEL_MAX = datetime(1970, 1, 2, tzinfo=timezone.utc)
 UNRESOLVED_CONFLICT_STATUSES = frozenset({"open", "active"})
@@ -2481,11 +2503,8 @@ class CustomerTimelineSQLiteStore:
         self._ensure_writable()
         tenant = normalize_key(tenant_id, "tenant_id")
         marker = require_text(retirement_marker, "retirement_marker")
-        marker_suffix = marker.removeprefix(_WAPPI_EVENT_RETIREMENT_PREFIX)
-        if (
-            len(marker_suffix) != 16
-            or any(char not in "0123456789abcdef" for char in marker_suffix)
-        ):
+        marker_prefix = wappi_event_retirement_prefix(marker)
+        if not marker_prefix:
             raise ValueError("unsupported source lifecycle marker")
         reason = normalize_key(retirement_reason, "retirement_reason")
         rows: list[sqlite3.Row] = []
@@ -2500,10 +2519,10 @@ class CustomerTimelineSQLiteStore:
                 batch = source_ids[offset : offset + 400]
                 placeholders = ",".join("?" for _ in batch)
                 lifecycle_clause = (
-                    f"length(superseded_by)={len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 16} "
-                    f"AND substr(superseded_by,1,{len(_WAPPI_EVENT_RETIREMENT_PREFIX)})="
-                    f"'{_WAPPI_EVENT_RETIREMENT_PREFIX}' "
-                    f"AND substr(superseded_by,{len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 1}) "
+                    f"length(superseded_by)={len(marker_prefix) + 16} "
+                    f"AND substr(superseded_by,1,{len(marker_prefix)})="
+                    f"'{marker_prefix}' "
+                    f"AND substr(superseded_by,{len(marker_prefix) + 1}) "
                     "NOT GLOB '*[^0-9a-f]*'"
                     if active
                     else "coalesce(superseded_by,'')=''"
@@ -2557,10 +2576,10 @@ class CustomerTimelineSQLiteStore:
                     "opportunity_id=NULL,match_status=?,confidence=0.0,"
                     "record_json=?,record_hash=? "
                     "WHERE tenant_id=? AND event_id=? "
-                    f"AND length(superseded_by)={len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 16} "
-                    f"AND substr(superseded_by,1,{len(_WAPPI_EVENT_RETIREMENT_PREFIX)})="
-                    f"'{_WAPPI_EVENT_RETIREMENT_PREFIX}' "
-                    f"AND substr(superseded_by,{len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 1}) "
+                    f"AND length(superseded_by)={len(marker_prefix) + 16} "
+                    f"AND substr(superseded_by,1,{len(marker_prefix)})="
+                    f"'{marker_prefix}' "
+                    f"AND substr(superseded_by,{len(marker_prefix) + 1}) "
                     "NOT GLOB '*[^0-9a-f]*'",
                     (
                         IdentityMatchClass.UNMATCHED.value,

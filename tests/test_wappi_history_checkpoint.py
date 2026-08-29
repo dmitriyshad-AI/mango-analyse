@@ -16,6 +16,12 @@ from typing import Any, Mapping, Optional
 import pytest
 
 import mango_mvp.customer_timeline.wappi_history_import as wappi_history_module
+from mango_mvp.customer_timeline.contracts import (
+    CustomerIdentity,
+    IdentityLink,
+    IdentityMatchClass,
+    IdentityStatus,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.wappi_history_import import (
     WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
@@ -141,6 +147,59 @@ def make_config(
             sleep_seconds=0,
         ),
     )
+
+
+def install_exact_widget_identity(
+    tmp_path: Path,
+    *,
+    db_path: Path,
+    contact_id: str,
+    customer_id: str,
+    link_db: Optional[Path] = None,
+) -> Path:
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id=customer_id,
+                identity_status=IdentityStatus.STRONG,
+                source_ref=f"amocrm:contact:{contact_id}",
+            ),
+            actor="test",
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type="amo_contact_id",
+                link_value=contact_id,
+                source_system="amocrm_snapshot",
+                source_ref=f"amocrm:contact:{contact_id}",
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                confidence=1.0,
+            ),
+            actor="test",
+        )
+    resolved_link_db = link_db or tmp_path / "wappi_amo_links.sqlite"
+    with sqlite3.connect(resolved_link_db) as con:
+        wappi_history_module._ensure_wappi_widget_link_schema(con)
+        con.execute(
+            "INSERT INTO wappi_amo_links "
+            "(channel,profile_id,chat_id,contact_id,lead_ids_json,status,checked_at,"
+            "response_sha256,resolution_source,last_timestamp,matched_points) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(channel,profile_id,chat_id) DO UPDATE SET "
+            "contact_id=excluded.contact_id,status=excluded.status,"
+            "response_sha256=excluded.response_sha256,"
+            "resolution_source=excluded.resolution_source",
+            (
+                "telegram", "p-tg", "c0000", contact_id, "[]", "resolved",
+                "2026-08-29T00:00:00+00:00", f"proof-{contact_id}",
+                "wappi_widget", 1_753_000_000, 0,
+            ),
+        )
+        con.commit()
+    return resolved_link_db
 
 
 def wappi_row_count(db_path: Path) -> int:
@@ -397,6 +456,231 @@ def test_missing_catalog_chat_blocks_lifecycle_pass_without_retiring_history(
     assert saved["reset_reason"] == "active_chat_missing_from_catalog"
 
 
+def test_source_absent_message_reappears_in_current_chat_with_unchanged_marker(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    link_db = install_exact_widget_identity(
+        tmp_path,
+        db_path=db_path,
+        contact_id="2002",
+        customer_id="customer:source-absent",
+    )
+    config = replace(
+        make_config(
+            tmp_path,
+            db_path=db_path,
+            phase1=phase1,
+            checkpoint_dir=checkpoint_dir,
+        ),
+        widget_link_db=link_db,
+        refresh_widget_links=False,
+    )
+    baseline = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert baseline["publish_ready"] is True
+
+    empty_messages = dict(messages)
+    empty_messages[("telegram", "p-tg", "c0000")] = []
+    retired = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient(
+            {"p-tg": chats[1:], "p-max": []},
+            empty_messages,
+        ),
+    )
+    assert retired["source_lifecycle"]["source_absent_retired_events"] == 1
+    assert active_wappi_row_count(db_path) == 1
+
+    reappeared_client = CheckpointFakeClient(
+        {"p-tg": chats, "p-max": []},
+        messages,
+    )
+    reappeared = run_wappi_history_import(config, client=reappeared_client)
+
+    assert reappeared["publish_ready"] is True
+    assert [
+        request
+        for request in reappeared_client.message_request_calls
+        if request[1] == "c0000"
+    ] == [
+        ("p-tg", "c0000", 0, 10, "asc"),
+        ("p-tg", "c0000", 0, 10, "asc"),
+    ]
+    assert reappeared["source_lifecycle"]["restored_events"] == 1
+    assert active_wappi_row_count(db_path) == 2
+    with sqlite3.connect(db_path) as con:
+        marker = con.execute(
+            "SELECT superseded_by FROM timeline_events "
+            "WHERE json_extract(record_json,'$.metadata.chat_id')='c0000'"
+        ).fetchone()[0]
+    assert marker is None
+
+    disjoint_messages = [
+        {
+            "id": f"c0000-replacement-{index:03d}",
+            "chat_id": "c0000",
+            "type": "text",
+            "body": f"Стабильная замена {index}",
+            "time": 1_753_100_000 + index,
+        }
+        for index in range(35)
+    ]
+    replaced_source = dict(messages)
+    replaced_source[("telegram", "p-tg", "c0000")] = disjoint_messages
+    replaced_while_absent = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient(
+            {"p-tg": chats[1:], "p-max": []},
+            replaced_source,
+        ),
+    )
+    assert replaced_while_absent["publish_ready"] is True
+    assert replaced_while_absent["source_lifecycle"]["source_absent_retired_events"] == 1
+
+    changed_catalog = [
+        {**dict(chats[0]), "last_timestamp": 1_753_100_034},
+        dict(chats[1]),
+    ]
+    disjoint_client = CheckpointFakeClient(
+        {"p-tg": changed_catalog, "p-max": []},
+        replaced_source,
+    )
+    disjoint_reappeared = run_wappi_history_import(config, client=disjoint_client)
+
+    assert disjoint_reappeared["publish_ready"] is True
+    disjoint_calls = [
+        request
+        for request in disjoint_client.message_request_calls
+        if request[1] == "c0000"
+    ]
+    assert [request[2] for request in disjoint_calls] == [0, 10, 20, 30] * 2
+    assert {request[4] for request in disjoint_calls} == {"asc"}
+    checkpoint = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    cursor = checkpoint["chat_cursors"][wappi_checkpoint_token("c0000")]
+    assert cursor["message_digest"] == wappi_history_module.wappi_message_checkpoint_token(
+        "p-tg",
+        "c0000",
+        "c0000-replacement-034",
+    )
+
+    overdue_checkpoint = dict(read_checkpoint(checkpoint_dir))
+    overdue_profiles = {
+        key: dict(value)
+        for key, value in overdue_checkpoint["profiles"].items()
+    }
+    for profile_state in overdue_profiles.values():
+        profile_state["full_audit_at"] = (
+            datetime.now(timezone.utc) - timedelta(days=8)
+        ).isoformat()
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps(
+            {
+                "schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
+                "profiles": overdue_profiles,
+            }
+        ),
+        encoding="utf-8",
+    )
+    overdue_client = CheckpointFakeClient(
+        {"p-tg": changed_catalog, "p-max": []},
+        replaced_source,
+    )
+    overdue = run_wappi_history_import(config, client=overdue_client)
+
+    assert overdue["publish_ready"] is True
+    assert overdue["history_validation"]["full_audit_passed"] is True
+    overdue_disjoint_calls = [
+        request
+        for request in overdue_client.message_request_calls
+        if request[1] == "c0000"
+    ]
+    assert [request[2] for request in overdue_disjoint_calls] == [0, 10, 20, 30] * 2
+    assert {request[4] for request in overdue_disjoint_calls} == {"asc"}
+
+
+def test_source_absent_exact_owner_conflict_does_not_reassign_event(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    first_customer = "customer:source-absent-first"
+    link_db = install_exact_widget_identity(
+        tmp_path,
+        db_path=db_path,
+        contact_id="2002",
+        customer_id=first_customer,
+    )
+    config = replace(
+        make_config(
+            tmp_path,
+            db_path=db_path,
+            phase1=phase1,
+            checkpoint_dir=checkpoint_dir,
+        ),
+        widget_link_db=link_db,
+        refresh_widget_links=False,
+    )
+    baseline = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert baseline["publish_ready"] is True
+
+    empty_messages = dict(messages)
+    empty_messages[("telegram", "p-tg", "c0000")] = []
+    retired = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient(
+            {"p-tg": chats[1:], "p-max": []},
+            empty_messages,
+        ),
+    )
+    assert retired["source_lifecycle"]["source_absent_retired_events"] == 1
+
+    install_exact_widget_identity(
+        tmp_path,
+        db_path=db_path,
+        contact_id="3003",
+        customer_id="customer:source-absent-second",
+        link_db=link_db,
+    )
+    checkpoint_path = wappi_history_checkpoint_path(checkpoint_dir)
+    checkpoint_before = checkpoint_path.read_bytes()
+    with sqlite3.connect(db_path) as con:
+        event_before = con.execute(
+            "SELECT customer_id,superseded_by,record_hash FROM timeline_events "
+            "WHERE json_extract(record_json,'$.metadata.chat_id')='c0000'"
+        ).fetchone()
+
+    conflict = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient(
+            {"p-tg": chats[1:], "p-max": []},
+            messages,
+        ),
+    )
+
+    assert conflict["publish_ready"] is False
+    assert conflict["mode"] == "apply_blocked"
+    assert conflict["writes"]["applied"] is False
+    assert conflict["checkpoint"]["committed"] is False
+    assert conflict["profiles"]["p-tg"]["message_page_drift_reason"] == (
+        "historical_chat_identity_unproven"
+    )
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    with sqlite3.connect(db_path) as con:
+        event_after = con.execute(
+            "SELECT customer_id,superseded_by,record_hash FROM timeline_events "
+            "WHERE json_extract(record_json,'$.metadata.chat_id')='c0000'"
+        ).fetchone()
+    assert event_after == event_before
+    assert event_after[0] == first_customer
+
+
 def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_history(
     tmp_path: Path,
 ) -> None:
@@ -413,22 +697,13 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
         client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
     )
     assert baseline["publish_ready"] is True
-
-    link_db = tmp_path / "wappi_amo_links.sqlite"
-    with sqlite3.connect(link_db) as con:
-        wappi_history_module._ensure_wappi_widget_link_schema(con)
-        con.execute(
-            "INSERT INTO wappi_amo_links "
-            "(channel,profile_id,chat_id,contact_id,lead_ids_json,status,checked_at,"
-            "response_sha256,resolution_source,last_timestamp,matched_points) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                "telegram", "p-tg", "c0000", "2002", "[\"1001\"]", "resolved",
-                "2026-08-29T00:00:00+00:00", "proof", "wappi_widget",
-                1_753_000_000, 0,
-            ),
-        )
-        con.commit()
+    customer_id = "customer:historical-widget"
+    link_db = install_exact_widget_identity(
+        tmp_path,
+        db_path=db_path,
+        contact_id="2002",
+        customer_id=customer_id,
+    )
     config = replace(
         base_config,
         widget_link_db=link_db,
@@ -509,41 +784,93 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
         client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
     )
 
-    assert rewritten_absent["publish_ready"] is False
-    assert rewritten_absent["mode"] == "apply_blocked"
-    assert rewritten_absent["writes"]["applied"] is False
-    assert rewritten_absent["checkpoint"]["committed"] is False
-    assert rewritten_absent["profiles"]["p-tg"]["message_page_drift_reason"] == (
-        "historical_chat_snapshot_changed"
+    assert rewritten_absent["publish_ready"] is True
+    assert rewritten_absent["mode"] == "apply"
+    assert rewritten_absent["writes"]["applied"] is True
+    assert rewritten_absent["checkpoint"]["committed"] is True
+    assert rewritten_absent["profiles"]["p-tg"]["historical_snapshot_reconciled"] == 1
+    assert rewritten_absent["profiles"]["p-tg"]["historical_snapshot_conflicting"] == 1
+    with sqlite3.connect(db_path) as con:
+        rewritten_payload = json.loads(
+            con.execute(
+                "SELECT record_json FROM timeline_events "
+                "WHERE json_extract(record_json,'$.metadata.message_id')='c0000-m000'"
+            ).fetchone()[0]
+        )
+    assert rewritten_payload["record"]["message"]["text"] == (
+        "Отредактированное сообщение с прежним ID"
     )
-    assert checkpoint_path.read_bytes() == checkpoint_before
     assert active_wappi_row_count(db_path) == 2
 
     messages[("telegram", "p-tg", "c0000")][0] = original_head
-    messages[("telegram", "p-tg", "c0000")].append(
-        {
-            "id": "c0000-new",
-            "chat_id": "c0000",
-            "type": "text",
-            "body": "Новое сообщение задним числом в отсутствующем чате",
-            "time": 1_752_999_999,
-        }
-    )
+    new_message = {
+        "id": "c0000-new",
+        "chat_id": "c0000",
+        "type": "text",
+        "body": "Новое сообщение задним числом в отсутствующем чате",
+        "time": 1_752_999_999,
+    }
+    messages[("telegram", "p-tg", "c0000")].append(new_message)
     changed_absent = run_wappi_history_import(
         config,
         client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
     )
 
-    assert changed_absent["publish_ready"] is False
-    assert changed_absent["mode"] == "apply_blocked"
-    assert changed_absent["writes"]["applied"] is False
-    assert changed_absent["checkpoint"]["committed"] is False
-    assert changed_absent["profiles"]["p-tg"]["message_page_drift_reason"] == (
-        "historical_chat_snapshot_changed"
+    assert changed_absent["publish_ready"] is True
+    assert changed_absent["mode"] == "apply"
+    assert changed_absent["writes"]["applied"] is True
+    assert changed_absent["checkpoint"]["committed"] is True
+    assert changed_absent["profiles"]["p-tg"]["historical_snapshot_reconciled"] == 1
+    assert changed_absent["profiles"]["p-tg"]["historical_snapshot_source_new"] == 1
+    assert changed_absent["profiles"]["p-tg"]["historical_snapshot_conflicting"] == 1
+    assert changed_absent["source_lifecycle"]["verified_historical_personal_chats"] == 1
+    assert active_wappi_row_count(db_path) == 3
+
+    messages[("telegram", "p-tg", "c0000")] = [new_message]
+    partially_deleted = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
     )
-    assert changed_absent["source_lifecycle"]["verified_historical_personal_chats"] == 0
-    assert checkpoint_path.read_bytes() == checkpoint_before
+
+    assert partially_deleted["publish_ready"] is True
+    assert partially_deleted["profiles"]["p-tg"]["historical_snapshot_source_absent"] == 1
+    assert partially_deleted["source_lifecycle"]["source_absent_retired_events"] == 1
+    assert partially_deleted["source_lifecycle"]["source_absent_active_after"] == 0
     assert active_wappi_row_count(db_path) == 2
+
+    messages[("telegram", "p-tg", "c0000")] = []
+    deleted_to_empty = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert deleted_to_empty["publish_ready"] is True
+    assert deleted_to_empty["profiles"]["p-tg"]["historical_snapshot_source_records"] == 0
+    assert deleted_to_empty["source_lifecycle"]["source_absent_retired_events"] == 1
+    assert deleted_to_empty["source_lifecycle"]["verified_historical_expected_active"] == 0
+    assert active_wappi_row_count(db_path) == 1
+
+    repeated_empty = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert repeated_empty["publish_ready"] is True
+    assert repeated_empty["source_lifecycle"]["source_absent_retired_events"] == 0
+    assert repeated_empty["source_lifecycle"]["source_absent_active_after"] == 0
+    assert active_wappi_row_count(db_path) == 1
+
+    messages[("telegram", "p-tg", "c0000")] = [original_head, new_message]
+    reappeared = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert reappeared["publish_ready"] is True
+    assert reappeared["profiles"]["p-tg"]["historical_snapshot_source_new"] == 2
+    assert reappeared["source_lifecycle"]["restored_events"] == 2
+    assert reappeared["source_lifecycle"]["verified_historical_present_active"] == 2
+    assert active_wappi_row_count(db_path) == 3
 
     grouped = [{**dict(chats[0]), "type": "group"}, dict(chats[1])]
     grouped_client = CheckpointFakeClient({"p-tg": grouped, "p-max": []}, messages)
@@ -555,7 +882,7 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
     assert excluded["publish_ready"] is True
     assert excluded["source_lifecycle"]["verified_historical_personal_source_records"] == 0
     assert not any(request[1] == "c0000" for request in grouped_client.message_request_calls)
-    assert excluded["source_lifecycle"]["retired_events"] == 1
+    assert excluded["source_lifecycle"]["retired_events"] == 2
     assert active_wappi_row_count(db_path) == 1
 
     absent_after_exclusion = run_wappi_history_import(
@@ -563,9 +890,10 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
         client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
     )
 
-    assert absent_after_exclusion["publish_ready"] is False
-    assert absent_after_exclusion["source_lifecycle"]["unmatched_rows"] == 1
+    assert absent_after_exclusion["publish_ready"] is True
+    assert absent_after_exclusion["source_lifecycle"]["unmatched_rows"] == 0
     assert absent_after_exclusion["source_lifecycle"]["verified_historical_personal_source_records"] == 0
+    assert absent_after_exclusion["source_lifecycle"]["catalog_non_personal_source_records"] == 2
     assert active_wappi_row_count(db_path) == 1
 
 

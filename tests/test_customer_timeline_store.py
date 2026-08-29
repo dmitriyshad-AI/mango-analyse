@@ -509,7 +509,17 @@ def test_integrity_report_detects_missing_and_cross_tenant_links(
     assert mismatch["violations"][f"{code}_tenant_mismatch"] == 1
 
 
-def test_integrity_report_accepts_tagged_event_and_opaque_chunk_tombstones(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "retired:wappi_expected_excluded:0123456789abcdef",
+        "retired:wappi_verified_source_absent:0123456789abcdef",
+    ),
+)
+def test_integrity_report_accepts_tagged_event_and_opaque_chunk_tombstones(
+    tmp_path: Path,
+    marker: str,
+) -> None:
     db_path = seed_integrity_graph(tmp_path)
     with sqlite3.connect(db_path) as con:
         event_id = con.execute(
@@ -520,9 +530,9 @@ def test_integrity_report_accepts_tagged_event_and_opaque_chunk_tombstones(tmp_p
         ).fetchone()[0]
         con.execute(
             "UPDATE timeline_events SET source_system='wappi_telegram',"
-            "superseded_by='retired:wappi_expected_excluded:0123456789abcdef',"
+            "superseded_by=?,"
             "record_json=json_set(record_json,'$.source_system','wappi_telegram') WHERE event_id=?",
-            (event_id,),
+            (marker, event_id),
         )
         con.execute(
             "UPDATE bot_context_chunks SET superseded_by='opaque:test_lifecycle' WHERE chunk_id=?",

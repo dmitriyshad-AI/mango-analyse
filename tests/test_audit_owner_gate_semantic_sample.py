@@ -28,7 +28,9 @@ def _review_db(path: Path) -> sqlite3.Connection:
           canonical_name TEXT, grades_json TEXT, subjects_json TEXT, status TEXT, brand TEXT
         );
         CREATE TABLE family_members_v1 (
-          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT
+          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT,
+          confidence TEXT, reason TEXT, created_at TEXT, updated_at TEXT,
+          record_hash TEXT, record_json TEXT
         );
         CREATE TABLE customer_opportunities (
           tenant_id TEXT, customer_id TEXT, opportunity_id TEXT, title TEXT,
@@ -214,10 +216,10 @@ def test_population_is_unique_by_family_and_conflicts_match_exact_refs(tmp_path:
         ("foton", "family:1", "customer:1b", "child:2", "Второй ребёнок", '["6"]', '["физика"]', "confident", "foton"),
     )
     con.executemany(
-        "INSERT INTO family_members_v1 VALUES (?,?,?,?)",
+        "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
         [
-            ("foton", "family:1", "customer:1", "confident"),
-            ("foton", "family:1", "customer:1b", "confident"),
+            ("foton", "family:1", "customer:1", "confident", "high", "test", "2026-07-01", "2026-07-01", "hash:1", "{}"),
+            ("foton", "family:1", "customer:1b", "confident", "high", "test", "2026-07-01", "2026-07-01", "hash:1b", "{}"),
         ],
     )
     con.execute("DELETE FROM timeline_conflicts")
@@ -263,8 +265,8 @@ def test_population_includes_canonical_family_without_child_link(tmp_path: Path)
     con = _review_db(tmp_path / "population-without-child.sqlite")
     con.execute("DELETE FROM family_links_v1")
     con.execute(
-        "INSERT INTO family_members_v1 VALUES (?,?,?,?)",
-        ("foton", "family:without-child", "customer:1", "confident"),
+        "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("foton", "family:without-child", "customer:1", "confident", "high", "test", "2026-07-01", "2026-07-01", "hash:without-child", "{}"),
     )
     con.commit()
 
@@ -382,6 +384,9 @@ def test_human_review_ambiguous_input_requires_primary_exact_nineteen(tmp_path: 
     assert "AMO leads=0" in refs[0]["position"]
     assert "AMO contacts=2" in refs[1]["position"]
     assert "AMO leads=2" in refs[1]["position"]
+    assert refs[1]["candidate_amo_contact_sha256s"] == rows[1]["candidate_amo_contact_sha256s"]
+    assert refs[1]["candidate_amo_lead_sha256s"] == rows[1]["candidate_amo_lead_sha256s"]
+    assert refs[1]["resolution_status"] == "unresolved_no_authoritative_lead"
 
     path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows[:-1]}), encoding="utf-8")
     with pytest.raises(ValueError, match="exactly 19"):
@@ -555,43 +560,49 @@ def test_human_review_student_classes_use_current_family_scope_contract(tmp_path
     assert graduate == "нет"
 
 
-def test_human_review_active_deals_reuses_family_scope_and_canonical_status(tmp_path: Path) -> None:
-    con = sqlite3.connect(tmp_path / "human-review-active-deals.sqlite")
-    con.row_factory = sqlite3.Row
-    con.executescript(
-        """
-        CREATE TABLE family_members_v1 (
-          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT
-        );
-        CREATE TABLE customer_opportunities (
-          tenant_id TEXT, customer_id TEXT, opportunity_id TEXT, opportunity_type TEXT,
-          source_system TEXT, source_id TEXT, title TEXT, status TEXT,
-          opened_at TEXT, closed_at TEXT
-        );
-        INSERT INTO family_members_v1 VALUES
-          ('foton','family:1','customer:1','confident'),
-          ('foton','family:1','customer:2','confident');
-        INSERT INTO customer_opportunities VALUES
-          ('foton','customer:1','opportunity:1','amo_deal','amocrm_snapshot','101','Курс','open','2026-08-01',NULL),
-          ('foton','customer:2','opportunity:2','amo_deal','amocrm_snapshot','102','Лагерь','won','2026-08-02',NULL),
-          ('foton','customer:2','opportunity:3','amo_deal','amocrm_snapshot','103','Архив','open','2026-08-03','2026-08-20'),
-          ('foton','customer:2','opportunity:4','amo_deal','amocrm_snapshot','104','Будущая','open','2026-09-01',NULL),
-          ('foton','customer:2','opportunity:5','amo_deal','amocrm_snapshot','105','Терминальная','142','2026-08-04',NULL);
-        """
+def test_human_review_quarantines_ambiguous_amo_candidates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    con = _review_db(tmp_path / "human-review-ambiguous.sqlite")
+    monkeypatch.setattr(
+        MODULE,
+        "build_customer_dossier",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            display_name="Родитель",
+            phone="+70000000000",
+            email="parent@example.com",
+            brand="foton",
+            family=(),
+            active_deals=(SimpleNamespace(text="Сделка, которую нельзя приписать"),),
+            next_step="Позвонить клиенту",
+            next_step_source="amo_task:1",
+            no_action_reason_code="",
+            chronology=(),
+        ),
     )
+    contact_sha = "a" * 64
+    lead_sha = "b" * 64
 
-    rows = MODULE._human_review_active_deals(
+    row = MODULE._human_review_row(
         con,
         tenant_id="foton",
         customer_id="customer:1",
+        cohort="19 AMO ambiguous",
+        selection_source="case",
+        reason="multiple_amo_deals",
         as_of=datetime(2026, 8, 29, tzinfo=timezone.utc),
+        audit_identity={
+            "resolution_status": "ambiguous_candidate_set",
+            "candidate_amo_contact_sha256s": [contact_sha],
+            "candidate_amo_lead_sha256s": [lead_sha],
+        },
     )
 
-    assert len(rows) == 1
-    assert "Курс" in rows[0]
-    assert "amocrm_snapshot:101" in rows[0]
-    assert all(
-        marker not in row
-        for row in rows
-        for marker in ("Лагерь", "Архив", "Будущая", "Терминальная")
-    )
+    assert row["Аудит связи AMO"].startswith("AUDIT_IDENTITY_HOLD")
+    assert contact_sha in row["Кандидаты AMO (SHA256)"]
+    assert lead_sha in row["Кандидаты AMO (SHA256)"]
+    assert row["Активные сделки"] == ""
+    assert row["Следующий шаг"] == ""
+    assert row["Источник шага"] == ""
+    assert row["Ограничение действия"] == "AUDIT_IDENTITY_HOLD"

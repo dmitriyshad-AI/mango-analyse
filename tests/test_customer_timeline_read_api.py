@@ -70,7 +70,9 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert profile["manager_projection"]["schema_version"] == "customer_profile_manager_projection_v2"
         assert profile["manager_projection"]["manager_action"]["readiness_state"] == "review"
         assert "amo_tasks_cursor_missing" in profile["manager_projection"]["manager_action"]["readiness_reason_codes"]
-        assert {item["link_value"] for item in profile["manager_projection"]["identity_links"]} == {"contact-raw-1", "lead-raw-1"}
+        assert {item["link_value"] for item in profile["manager_projection"]["identity_links"]} == {
+            "contact-raw-1", "lead-1", "lead-raw-1",
+        }
         assert profile["customer_id_mappings"] == [
             {
                 "mapping_id": profile["customer_id_mappings"][0]["mapping_id"],
@@ -1488,6 +1490,20 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
             link_value="+79161234567",
             source_system="tallanto_snapshot",
             source_ref="students.csv#1",
+            match_class="strong_unique",
+            confidence=0.95,
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+    )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            link_type="amo_lead_id",
+            link_value="lead-1",
+            source_system="amocrm_snapshot",
+            source_ref="amo:lead:lead-1",
             match_class="strong_unique",
             confidence=0.95,
             first_seen_at=NOW,

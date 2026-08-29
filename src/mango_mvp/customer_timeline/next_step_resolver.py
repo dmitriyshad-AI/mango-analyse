@@ -8,7 +8,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
-from mango_mvp.customer_timeline.store import open_family_identity_conflict_customer_ids
+from mango_mvp.customer_timeline.derived_signals import _is_active_deal_at
+from mango_mvp.customer_timeline.store import (
+    open_family_identity_conflict_customer_ids,
+    trusted_family_customer_ids_by_customer,
+)
 from mango_mvp.insights.sanitizers import has_personal_data_risk
 from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
 
@@ -19,6 +23,46 @@ NEXT_STEP_STATUS_ACTIVE = "active"
 NEXT_STEP_STATUS_CLOSED = "closed"
 NEXT_STEP_STATUS_EMPTY = "empty"
 NEXT_STEP_STATUS_NEEDS_MANAGER_REVIEW = "needs_manager_review"
+
+_DIRECT_CONTACT_OPTOUT_RE = re.compile(
+    r"(?:"
+    r"\b(?:больше\s+)?(?:мне\s+|нам\s+|со\s+мной\s+)?не\s+"
+    r"(?:пишите|звоните|беспокойте|связывайтесь|связываться)\b|"
+    r"\b(?:просьба|прошу|пожалуйста)\s+не\s+"
+    r"(?:писать|звонить|беспокоить|связываться)\b|"
+    r"\bне\s+(?:надо|нужно)\s+(?:(?:больше|мне|нам)\s+){0,3}"
+    r"(?:писать|звонить|беспокоить|связываться)"
+    r"(?:\s+(?:мне|нам))?\b|"
+    r"\bперестаньте\s+(?:мне\s+|нам\s+)?(?:писать|звонить|беспокоить)\b|"
+    r"\b(?:удалите|уберите|исключите)\s+(?:меня|мой\s+номер)\s+"
+    r"(?:из\s+)?(?:рассылки|базы)\b|"
+    r"\bудалите\s+мои\s+данные\b|"
+    r"\b(?:я\s+)?не\s+хочу\s+(?:больше\s+)?(?:получать\s+)?"
+    r"(?:рассылку|сообщения|звонки|письма)\b|"
+    r"\bотпишите\s+меня\b|\bхочу\s+отписаться\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_TEMPORARY_CONTACT_PAUSE_RE = re.compile(
+    r"\b(?:пока|сейчас|сегодня|до\s+[а-яё0-9]|в\s+течение)\b",
+    re.IGNORECASE,
+)
+
+_REPORTED_CONTACT_OPTOUT_RE = re.compile(
+    r"\b(?:менеджер|оператор|сотрудник)\b[^.!?;,]{0,30}"
+    r"\b(?:сказал(?:а|и)?|написал(?:а|и)?|просил(?:а|и)?)\b",
+    re.IGNORECASE,
+)
+
+_DIRECT_MESSAGE_EVENT_TYPES = frozenset({
+    "email_message",
+    "telegram_message",
+    "whatsapp_message",
+    "max_message",
+    "web_chat_message",
+    "wappi_message",
+})
 
 _MANAGER_AMO_TERMINAL_STATUS_IDS = frozenset({"142", "143"})
 _MANAGER_AMO_ACTIVE_STATUS_TEXTS = frozenset({
@@ -38,9 +82,13 @@ _MANAGER_ACTION_UNSAFE_CANDIDATE_REASONS = frozenset({
     "task_id_provenance_mismatch",
     "task_entity_type_invalid",
     "task_lead_missing",
+    "task_lead_owner_missing",
+    "task_lead_owner_foreign",
+    "task_lead_owner_ambiguous",
     "task_owner_actor_mismatch",
     "task_action_mismatch",
     "task_due_mismatch",
+    "task_event_time_invalid",
     "task_opportunity_missing",
     "task_opportunity_foreign_customer",
     "task_opportunity_not_amo_deal",
@@ -48,6 +96,7 @@ _MANAGER_ACTION_UNSAFE_CANDIDATE_REASONS = frozenset({
     "task_opportunity_lead_mismatch",
     "task_opportunity_provenance_mismatch",
     "task_opportunity_provenance_source_invalid",
+    "durable_opt_out",
 })
 
 MANAGER_REVIEW_ACTION = "Уточнить у менеджера"
@@ -271,8 +320,142 @@ class ManagerActionResolution:
 class ManagerActionReadSnapshot:
     task_rows_by_customer: Mapping[str, tuple[Mapping[str, Any], ...]]
     opportunities_by_id: Mapping[str, sqlite3.Row]
+    lead_owner_customer_ids_by_lead_id: Mapping[str, tuple[str, ...]]
     conflict_customer_ids: frozenset[str]
     freshness_failures: tuple[str, ...]
+    family_customer_ids_by_customer: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    contact_restrictions_by_customer: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+def event_has_explicit_contact_opt_out(event: Mapping[str, Any]) -> bool:
+    """Recognize only a direct inbound stop-contact request, never a call-quality hint."""
+    if _compact(event.get("direction")).casefold() != "inbound":
+        return False
+    event_type = _compact(event.get("event_type")).casefold()
+    source_system = _compact(event.get("source_system")).casefold()
+    record = _mapping(event.get("record"))
+    if (
+        event_type not in _DIRECT_MESSAGE_EVENT_TYPES
+        and "wappi" not in source_system
+    ):
+        return False
+    message = _mapping(record.get("message"))
+    for value in (
+        message.get("text"),
+        record.get("full_clean_text"),
+        event.get("text_preview"),
+        event.get("summary"),
+        record.get("text"),
+        record.get("body"),
+    ):
+        text = re.sub(r"\s+", " ", _compact(value)).strip()
+        for match in _DIRECT_CONTACT_OPTOUT_RE.finditer(text):
+            clause_start = max(text.rfind(mark, 0, match.start()) for mark in ".!?;,\n") + 1
+            clause_ends = [text.find(mark, match.end()) for mark in ".!?;,\n"]
+            clause_end = min((pos for pos in clause_ends if pos >= 0), default=len(text))
+            clause = text[clause_start:clause_end]
+            prefix = text[clause_start:match.start()]
+            if (
+                not _REPORTED_CONTACT_OPTOUT_RE.search(prefix)
+                and not _TEMPORARY_CONTACT_PAUSE_RE.search(clause)
+            ):
+                return True
+    return False
+
+
+def load_durable_contact_restrictions_batch(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_ids: Sequence[str],
+    as_of: datetime,
+) -> tuple[Mapping[str, tuple[str, ...]], Mapping[str, tuple[str, ...]]]:
+    """Load trusted family scopes and high-confidence contact restrictions in one batch."""
+    scopes = trusted_family_customer_ids_by_customer(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=customer_ids,
+        as_of=as_of,
+    )
+    restrictions: dict[str, tuple[str, ...]] = {customer_id: () for customer_id in scopes}
+    roots_by_member: dict[str, set[str]] = defaultdict(set)
+    for root, members in scopes.items():
+        for member in members:
+            roots_by_member[member].add(root)
+    selected_members = tuple(sorted(roots_by_member))
+    if not selected_members:
+        return scopes, restrictions
+    selected = json.dumps(selected_members, ensure_ascii=False)
+    for row in con.execute(
+        "SELECT customer_id,record_json FROM customer_identities WHERE tenant_id=? "
+        "AND customer_id IN (SELECT value FROM json_each(?))",
+        (tenant_id, selected),
+    ):
+        record = _safe_json_object(row["record_json"])
+        metadata = _mapping(record.get("metadata"))
+        positive = (
+            record.get("no_contact"),
+            record.get("opt_out"),
+            record.get("do_not_contact"),
+            metadata.get("no_contact"),
+            metadata.get("opt_out"),
+            metadata.get("do_not_contact"),
+        )
+        blocked = any(
+            value is True or str(value).strip().casefold() in {"1", "true", "yes", "да"}
+            for value in positive
+        )
+        allowed_values = (metadata.get("contact_allowed"), record.get("contact_allowed"))
+        blocked = blocked or any(
+            value is False
+            or (
+                value is not None
+                and str(value).strip().casefold() in {"0", "false", "no", "нет"}
+            )
+            for value in allowed_values
+        )
+        if blocked:
+            for root in roots_by_member.get(str(row["customer_id"]), ()):
+                restrictions[root] = ("durable_opt_out",)
+    rows = con.execute(
+        "SELECT customer_id,event_type,source_system,direction,text_preview,summary,record_json "
+        "FROM timeline_events WHERE tenant_id=? "
+        "AND customer_id IN (SELECT value FROM json_each(?)) "
+        "AND julianday(event_at)<=julianday(?) "
+        "AND direction='inbound' "
+        "AND (event_type IN ('email_message','telegram_message','whatsapp_message',"
+        "                    'max_message','web_chat_message','wappi_message') "
+        "     OR source_system LIKE '%wappi%') "
+        "AND match_status IN ('strong_unique','manual') "
+        "AND (superseded_by IS NULL OR superseded_by='') "
+        "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')",
+        (tenant_id, selected, as_of.isoformat()),
+    ).fetchall()
+    for row in rows:
+        stored = _safe_json_object(row["record_json"])
+        event = dict(row)
+        event["record"] = _mapping(stored.get("record"))
+        if event_has_explicit_contact_opt_out(event):
+            for root in roots_by_member.get(str(row["customer_id"]), ()):
+                restrictions[root] = ("durable_opt_out",)
+    return scopes, restrictions
+
+
+def load_durable_contact_restrictions(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> tuple[str, ...]:
+    """Return high-confidence, cutoff-safe contact restrictions for one trusted family."""
+    _, restrictions = load_durable_contact_restrictions_batch(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=(customer_id,),
+        as_of=as_of,
+    )
+    return restrictions[customer_id]
 
 
 def resolve_customer_next_step(
@@ -403,6 +586,15 @@ def resolve_customer_manager_action(
     global_failures: list[str] = []
     if customer_id in snapshot.conflict_customer_ids:
         global_failures.append("identity_conflict_open")
+    restrictions = snapshot.contact_restrictions_by_customer.get(customer_id)
+    if restrictions is None:
+        restrictions = load_durable_contact_restrictions(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            as_of=checked_at,
+        )
+    global_failures.extend(restrictions)
     global_failures.extend(snapshot.freshness_failures)
     candidates = [
         _manager_action_from_amo_task(
@@ -413,6 +605,7 @@ def resolve_customer_manager_action(
             global_failures=global_failures,
             duplicate_task_id=int(row["global_task_id_count"] or 0) > 1,
             opportunities_by_id=snapshot.opportunities_by_id,
+            lead_owner_customer_ids_by_lead_id=snapshot.lead_owner_customer_ids_by_lead_id,
         )
         for row in rows
     ]
@@ -431,9 +624,27 @@ def load_manager_action_read_snapshot(
     tenant_id: str,
     customer_ids: Sequence[str],
     as_of: datetime,
+    family_customer_ids_by_customer: Mapping[str, tuple[str, ...]] | None = None,
+    contact_restrictions_by_customer: Mapping[str, tuple[str, ...]] | None = None,
 ) -> ManagerActionReadSnapshot:
     """Read selected customers' tasks and only their referenced opportunities once."""
     selected_customer_ids = tuple(sorted({str(value) for value in customer_ids if str(value)}))
+    if family_customer_ids_by_customer is None or contact_restrictions_by_customer is None:
+        family_scopes, contact_restrictions = load_durable_contact_restrictions_batch(
+            con,
+            tenant_id=tenant_id,
+            customer_ids=selected_customer_ids,
+            as_of=as_of,
+        )
+    else:
+        family_scopes = {
+            customer_id: tuple(family_customer_ids_by_customer.get(customer_id) or (customer_id,))
+            for customer_id in selected_customer_ids
+        }
+        contact_restrictions = {
+            customer_id: tuple(contact_restrictions_by_customer.get(customer_id) or ())
+            for customer_id in selected_customer_ids
+        }
     task_rows_by_customer: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     if selected_customer_ids:
         task_rows = con.execute(
@@ -447,14 +658,15 @@ def load_manager_action_read_snapshot(
                      ROW_NUMBER() OVER (
                        PARTITION BY task.customer_id ORDER BY task.event_at DESC, task.event_id DESC
                      ) AS customer_row_number
-              FROM json_each(?) AS selected_customer
-              JOIN timeline_events AS task ON task.customer_id = selected_customer.value
+              FROM timeline_events AS task
               WHERE task.tenant_id = ? AND task.event_type = 'amo_task'
+                AND task.customer_id IN (SELECT value FROM json_each(?))
+                AND julianday(task.event_at)<=julianday(?)
             )
             WHERE customer_row_number <= 500
             ORDER BY customer_id, event_at DESC, event_id DESC
             """,
-            (json.dumps(selected_customer_ids, ensure_ascii=False), tenant_id),
+            (tenant_id, json.dumps(selected_customer_ids, ensure_ascii=False), as_of.isoformat()),
         ).fetchall()
         selected_task_ids = tuple(sorted({
             str(row["source_id"])
@@ -471,9 +683,10 @@ def load_manager_action_read_snapshot(
                     FROM timeline_events AS task
                     JOIN json_each(?) AS selected_task ON selected_task.value = task.source_id
                     WHERE task.tenant_id = ? AND task.event_type = 'amo_task'
+                      AND julianday(task.event_at)<=julianday(?)
                     GROUP BY task.source_id
                     """,
-                    (json.dumps(selected_task_ids, ensure_ascii=False), tenant_id),
+                    (json.dumps(selected_task_ids, ensure_ascii=False), tenant_id, as_of.isoformat()),
                 ).fetchall()
             }
         for row in task_rows:
@@ -500,11 +713,45 @@ def load_manager_action_read_snapshot(
                 (tenant_id, json.dumps(referenced_opportunity_ids, ensure_ascii=False)),
             ).fetchall()
         }
+    referenced_lead_ids = tuple(sorted({
+        str(row["source_id"])
+        for row in opportunities_by_id.values()
+        if str(row["source_id"] or "")
+    }))
+    lead_owners: dict[str, set[str]] = defaultdict(set)
+    if referenced_lead_ids and _table_exists(con, "identity_links"):
+        for row in con.execute(
+            """
+            SELECT link_value,customer_id
+            FROM identity_links
+            WHERE tenant_id=? AND link_type='amo_lead_id'
+              AND match_class IN ('strong_unique','manual')
+              AND customer_id IS NOT NULL AND customer_id!=''
+              AND julianday(first_seen_at)<=julianday(?)
+              AND link_value IN (SELECT value FROM json_each(?))
+            """,
+            (
+                tenant_id,
+                as_of.isoformat(),
+                json.dumps(referenced_lead_ids, ensure_ascii=False),
+            ),
+        ):
+            lead_owners[str(row["link_value"])].add(str(row["customer_id"]))
     return ManagerActionReadSnapshot(
         task_rows_by_customer={key: tuple(value) for key, value in task_rows_by_customer.items()},
         opportunities_by_id=opportunities_by_id,
-        conflict_customer_ids=frozenset(open_family_identity_conflict_customer_ids(con, tenant_id)),
+        lead_owner_customer_ids_by_lead_id={
+            lead_id: tuple(sorted(lead_owners.get(lead_id, ())))
+            for lead_id in referenced_lead_ids
+        },
+        conflict_customer_ids=open_family_identity_conflict_customer_ids(
+            con,
+            tenant_id,
+            as_of=as_of.isoformat(),
+        ),
         freshness_failures=_amo_tasks_freshness_failures(con, tenant_id=tenant_id, as_of=as_of),
+        family_customer_ids_by_customer=family_scopes,
+        contact_restrictions_by_customer=contact_restrictions,
     )
 
 
@@ -517,6 +764,7 @@ def _manager_action_from_amo_task(
     global_failures: Sequence[str],
     duplicate_task_id: bool,
     opportunities_by_id: Mapping[str, sqlite3.Row],
+    lead_owner_customer_ids_by_lead_id: Mapping[str, tuple[str, ...]],
 ) -> tuple[ManagerActionResolution, datetime, str, int]:
     stored = _safe_json_object(row["record_json"])
     record = _mapping(stored.get("record"))
@@ -556,6 +804,14 @@ def _manager_action_from_amo_task(
         failures.append("task_entity_type_invalid")
     if not lead_id:
         failures.append("task_lead_missing")
+    else:
+        lead_owners = lead_owner_customer_ids_by_lead_id.get(lead_id, ())
+        if not lead_owners:
+            failures.append("task_lead_owner_missing")
+        elif len(lead_owners) > 1:
+            failures.append("task_lead_owner_ambiguous")
+        elif lead_owners[0] != customer_id:
+            failures.append("task_lead_owner_foreign")
     completed = record.get("completed")
     if completed is True:
         failures.append("task_completed")
@@ -580,7 +836,7 @@ def _manager_action_from_amo_task(
         failures.append("task_due_not_future")
     if completed is False and next_due != complete_till:
         failures.append("task_due_mismatch")
-    if event_at is None or event_at > as_of + timedelta(minutes=5):
+    if event_at is None or event_at > as_of:
         failures.append("task_event_time_invalid")
 
     opportunity_id = _compact(row["opportunity_id"])
@@ -600,14 +856,14 @@ def _manager_action_from_amo_task(
             failures.append("task_opportunity_provenance_mismatch")
         if _compact(provenance.get("opportunity_source_system")) != "amocrm_snapshot":
             failures.append("task_opportunity_provenance_source_invalid")
-        opened_at = _parse_iso_datetime(opportunity["opened_at"])
-        if opened_at is not None and opened_at > as_of:
-            failures.append("task_opportunity_not_active")
         opportunity_state = _manager_amo_opportunity_state(dict(opportunity))
-        if opportunity_state == "closed":
+        if not _is_active_deal_at(dict(opportunity), as_of=as_of):
             failures.append("task_opportunity_not_active")
         elif opportunity_state != "active":
-            failures.append("task_opportunity_status_missing")
+            # A later close is compatible with an active historical cutoff.
+            closed_at = _parse_iso_datetime(opportunity["closed_at"])
+            if closed_at is None or closed_at <= as_of:
+                failures.append("task_opportunity_status_missing")
 
     reasons = tuple(dict.fromkeys(failures))
     action_provenance = {
@@ -620,7 +876,11 @@ def _manager_action_from_amo_task(
         "opportunity_id": opportunity_id,
     }
     owner_provenance = {**action_provenance, "field": "responsible_user_id"} if responsible_id else {}
-    due_provenance = {**action_provenance, "field": "complete_till"} if record.get("complete_till") else {}
+    due_provenance = {
+        **action_provenance,
+        "field": "due_at",
+        "source_field": "complete_till",
+    } if record.get("complete_till") else {}
     candidate_safe_to_display = not any(
         reason in _MANAGER_ACTION_UNSAFE_CANDIDATE_REASONS for reason in reasons
     )

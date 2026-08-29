@@ -88,7 +88,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from mango_mvp.customer_timeline.bot_safe_runtime_context import _is_active_amo_deal  # noqa: E402
 from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
     OWNER50_CONTROL_COLUMNS,
     _family_scope_customer_ids,
@@ -982,7 +981,8 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
 _HUMAN_REVIEW_COLUMNS = (
     "Когорта", "Позиция/источник отбора", "customer_id", "Клиент", "Телефон", "Email", "Бренд",
     "Дети/семья", "Класс закончен", "Следующий класс", "Статус выпускника",
-    "Активные сделки", "Следующий шаг", "Источник шага", "Последняя история",
+    "Аудит связи AMO", "Кандидаты AMO (SHA256)", "Активные сделки", "Следующий шаг", "Источник шага",
+    "Ограничение действия", "Последняя история",
     "Причина проверки", "Владелец/семья верны?", "История верна и полна?",
     "Досье экономит время?", "Действие верно сейчас?", "Решение/что исправить",
 )
@@ -1162,6 +1162,11 @@ def _ambiguous_link_refs(path: Path, *, expected_count: int) -> list[Mapping[str
         case_label = f"sha256:{case_event_sha256[:12]}"
         result.append({
             "customer_sha256": customer_sha256,
+            "case_event_sha256": case_event_sha256,
+            "candidate_amo_contact_sha256s": contact_candidates,
+            "candidate_amo_lead_sha256s": lead_candidates,
+            "resolution_status": resolution_status,
+            "resolved_amo_lead_sha256": resolved_lead,
             "position": (
                 f"case={case_label}; AMO contacts={len(contact_candidates)}; "
                 f"AMO leads={len(lead_candidates)}; status={resolution_status}"
@@ -1233,45 +1238,6 @@ def _student_classes(
     )
 
 
-def _human_review_active_deals(
-    con: sqlite3.Connection,
-    *,
-    tenant_id: str,
-    customer_id: str,
-    as_of: datetime,
-) -> tuple[str, ...]:
-    """Render active AMO deals for the private review without widening CustomerDossier."""
-    members = _family_scope_customer_ids(
-        con, tenant_id=tenant_id, customer_id=customer_id,
-    )
-    placeholders = ",".join("?" for _ in members)
-    rows = con.execute(
-        f"""
-        SELECT opportunity_id, opportunity_type, source_system, source_id,
-               title, status, opened_at, closed_at
-        FROM customer_opportunities
-        WHERE tenant_id=? AND customer_id IN ({placeholders})
-          AND opportunity_type='amo_deal'
-          AND (opened_at IS NULL OR julianday(opened_at)<=julianday(?))
-          AND (closed_at IS NULL OR TRIM(closed_at)='')
-        ORDER BY opened_at DESC, opportunity_id
-        """,
-        (tenant_id, *members, as_of.isoformat()),
-    ).fetchall()
-    result: list[str] = []
-    for row in rows:
-        if not _is_active_amo_deal(dict(row)):
-            continue
-        title = str(row["title"] or "").strip() or f"Сделка #{row['source_id']}"
-        status = str(row["status"] or "").strip() or "открыта"
-        parts = [title, f"статус: {status}"]
-        if row["opened_at"]:
-            parts.append(f"открыта: {row['opened_at']}")
-        parts.append(f"источник: {row['source_system']}:{row['source_id']}")
-        result.append("; ".join(parts))
-    return tuple(result)
-
-
 def _human_review_row(
     con: sqlite3.Connection,
     *,
@@ -1281,6 +1247,7 @@ def _human_review_row(
     selection_source: str,
     reason: str,
     as_of: datetime,
+    audit_identity: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     dossier = build_customer_dossier(
         con, tenant_id=tenant_id, customer_id=customer_id, as_of=as_of,
@@ -1288,6 +1255,14 @@ def _human_review_row(
     finished_class, next_class, graduate = _student_classes(
         con, tenant_id=tenant_id, customer_id=customer_id, as_of=as_of,
     )
+    audit_identity = audit_identity or {}
+    resolution_status = str(audit_identity.get("resolution_status") or "")
+    audit_hold = bool(resolution_status and resolution_status != "resolved_authoritative_singleton")
+    candidate_lines = [
+        *(f"contact:{value}" for value in audit_identity.get("candidate_amo_contact_sha256s") or ()),
+        *(f"lead:{value}" for value in audit_identity.get("candidate_amo_lead_sha256s") or ()),
+    ]
+    active_deals = tuple(getattr(dossier, "active_deals", ()))
     return {
         "Когорта": cohort,
         "Позиция/источник отбора": selection_source,
@@ -1300,14 +1275,12 @@ def _human_review_row(
         "Класс закончен": finished_class,
         "Следующий класс": next_class,
         "Статус выпускника": graduate,
-        "Активные сделки": "\n".join(_human_review_active_deals(
-            con,
-            tenant_id=tenant_id,
-            customer_id=customer_id,
-            as_of=as_of,
-        )),
-        "Следующий шаг": dossier.next_step,
-        "Источник шага": dossier.next_step_source,
+        "Аудит связи AMO": f"AUDIT_IDENTITY_HOLD: {resolution_status}" if audit_hold else "связь не помечена как спорная",
+        "Кандидаты AMO (SHA256)": "\n".join(candidate_lines),
+        "Активные сделки": "" if audit_hold else "\n".join(row.text for row in active_deals),
+        "Следующий шаг": "" if audit_hold else dossier.next_step,
+        "Источник шага": "" if audit_hold else dossier.next_step_source,
+        "Ограничение действия": "AUDIT_IDENTITY_HOLD" if audit_hold else getattr(dossier, "no_action_reason_code", ""),
         "Последняя история": "\n".join(row.text for row in dossier.chronology),
         "Причина проверки": reason,
     }
@@ -1397,6 +1370,7 @@ def cmd_human_review(args: argparse.Namespace) -> int:
             review_rows.append(_human_review_row(
                 con, tenant_id=args.tenant_id, customer_id=str(row["customer_id"]), cohort="19 AMO ambiguous",
                 selection_source=str(row.get("position") or ""), reason=str(row.get("reason_code") or ""), as_of=as_of,
+                audit_identity=row,
             ))
 
     _write_human_review_workbook(out_xlsx, review_rows)

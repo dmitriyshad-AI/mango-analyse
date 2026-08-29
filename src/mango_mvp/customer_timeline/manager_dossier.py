@@ -15,6 +15,7 @@ from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.derived_signals import (
     _is_access_event,
     _is_active_deal,
+    _is_active_deal_at,
     dedupe_customer_payment_rows as dedupe_family_payment_rows,
 )
 from mango_mvp.customer_timeline.freshness import (
@@ -28,7 +29,9 @@ from mango_mvp.customer_timeline.next_step_resolver import (
     NEXT_STEP_STATUS_EMPTY,
     _event_text,
     _is_non_closing_service_event,
+    event_has_explicit_contact_opt_out,
     is_meaningful_manager_action,
+    load_durable_contact_restrictions_batch,
     load_manager_action_read_snapshot,
     resolve_customer_manager_action,
 )
@@ -40,6 +43,7 @@ from mango_mvp.customer_timeline.store import (
     customer_entity_ref_values,
     customer_timeline_readonly_uri,
     open_family_identity_conflict_customer_ids,
+    trusted_family_customer_ids as _family_scope_customer_ids,
 )
 from mango_mvp.customer_timeline.tallanto_finished_grade import (
     FAMILY_LINK_SCOPE_INVALID,
@@ -216,23 +220,6 @@ OWNER50_REQUIRED_COLUMNS = (
     "Члены семьи",
     "Ответственный задачи", "Срок задачи", "AMO task_id", "AMO lead_id",
 )
-MANAGER_OPTOUT_PHRASES = (
-    "не пишите",
-    "больше не пишите",
-    "перестаньте писать",
-    "не звоните",
-    "больше не звоните",
-    "не надо мне звонить",
-    "не беспокойте",
-    "не связывайтесь",
-    "не связываться",
-    "удалите номер",
-    "отпишите меня",
-    "хочу отписаться",
-    "не хочу получать рассылку",
-)
-
-
 # ---------------------------------------------------------------------------
 # Owner50: classify_family -- классификация READY/CANDIDATE/EXCLUDED (§3-5
 # спеки владельца SPEC_tablitsa_50_semey.md), встроена сюда по запросу
@@ -945,6 +932,8 @@ class CustomerDossier:
     actuality_header: str = ""
     family: tuple[DossierRow, ...] = field(default_factory=tuple)
     money: tuple[DossierRow, ...] = field(default_factory=tuple)
+    active_deals: tuple[DossierRow, ...] = field(default_factory=tuple)
+    attendance: tuple[DossierRow, ...] = field(default_factory=tuple)
     signals: tuple[DossierRow, ...] = field(default_factory=tuple)
     next_step: str = ""
     next_step_source: str = ""
@@ -965,6 +954,10 @@ def build_customer_dossier(
     as_of: datetime | None = None,
     manager_action_read_snapshot: ManagerActionReadSnapshot | None = None,
 ) -> CustomerDossier:
+    evaluation_at = as_of or datetime.now(timezone.utc)
+    if evaluation_at.tzinfo is None or evaluation_at.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    evaluation_at = evaluation_at.astimezone(timezone.utc)
     con.row_factory = sqlite3.Row
     customer = con.execute(
         """
@@ -976,6 +969,17 @@ def build_customer_dossier(
     ).fetchone()
     if customer is None:
         raise ValueError(f"customer not found: {customer_id}")
+    if manager_action_read_snapshot is None:
+        manager_action_read_snapshot = load_manager_action_read_snapshot(
+            con,
+            tenant_id=tenant_id,
+            customer_ids=(customer_id,),
+            as_of=evaluation_at,
+        )
+    family_customer_ids = (
+        manager_action_read_snapshot.family_customer_ids_by_customer.get(customer_id)
+        or (customer_id,)
+    )
     customer_record = _safe_json(customer["record_json"])
     identity_brands = [
         str(item).strip().casefold()
@@ -984,14 +988,26 @@ def build_customer_dossier(
     ]
     opportunities = con.execute(
         """
-        SELECT opportunity_id, record_json
-        FROM customer_opportunities
-        WHERE tenant_id = ? AND customer_id = ?
-        ORDER BY opened_at DESC, opportunity_id
+        SELECT opportunity.opportunity_id, opportunity.customer_id,
+               opportunity.opportunity_type, opportunity.source_system,
+               opportunity.source_id, opportunity.title, opportunity.status,
+               opportunity.opened_at, opportunity.closed_at, opportunity.record_json,
+               identity.display_name AS source_customer_name
+        FROM customer_opportunities AS opportunity
+        LEFT JOIN customer_identities AS identity
+          ON identity.tenant_id=opportunity.tenant_id
+         AND identity.customer_id=opportunity.customer_id
+        WHERE opportunity.tenant_id = ?
+          AND opportunity.customer_id IN (SELECT value FROM json_each(?))
+          AND (opportunity.opened_at IS NULL OR julianday(opportunity.opened_at)<=julianday(?))
+        ORDER BY opportunity.opened_at DESC, opportunity.opportunity_id
         """,
-        (tenant_id, customer_id),
+        (tenant_id, json.dumps(family_customer_ids, ensure_ascii=False), evaluation_at.isoformat()),
     ).fetchall()
-    opportunity_records = tuple(_safe_json(row["record_json"]) for row in opportunities)
+    customer_opportunities = tuple(
+        row for row in opportunities if str(row["customer_id"]) == customer_id
+    )
+    opportunity_records = tuple(_safe_json(row["record_json"]) for row in customer_opportunities)
     event_brand_records = tuple(
         _safe_json(row["record_json"])
         for row in con.execute(
@@ -999,8 +1015,9 @@ def build_customer_dossier(
             SELECT record_json
             FROM timeline_events
             WHERE tenant_id = ? AND customer_id = ?
+              AND julianday(event_at)<=julianday(?)
             """,
-            (tenant_id, customer_id),
+            (tenant_id, customer_id, evaluation_at.isoformat()),
         ).fetchall()
     )
     derived_brands = customer_summary_brands(opportunity_records, event_brand_records, ())
@@ -1019,16 +1036,17 @@ def build_customer_dossier(
           AND customer_id = ?
           AND event_type = 'mango_call'
           AND match_status = 'strong_unique'
+          AND julianday(event_at)<=julianday(?)
           AND (superseded_by IS NULL OR superseded_by = '')
           AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
         ORDER BY event_at DESC, event_id DESC
         LIMIT 100
         """,
-        (tenant_id, customer_id),
+        (tenant_id, customer_id, evaluation_at.isoformat()),
     ).fetchall()
     interests: list[DossierMarker] = []
     pains: list[DossierMarker] = []
-    for value in _product_interest_values(customer["record_json"], opportunities):
+    for value in _product_interest_values(customer["record_json"], customer_opportunities):
         interests.append(DossierMarker(kind="interest", text=f"Из данных: {value}", source="products_of_interest"))
     call_texts = canonical_calls or {}
     for event in events:
@@ -1038,14 +1056,20 @@ def build_customer_dossier(
         source = f"mango_call:{event['source_id']}"
         interests.extend(_markers_from_client_text(client_text, INTEREST_MARKER_RE, kind="interest", label="Интерес из звонка", source=source))
         pains.extend(_markers_from_client_text(client_text, PAIN_MARKER_RE, kind="pain", label="Боль из звонка", source=source))
-    signals = _signal_rows(con, tenant_id=tenant_id, customer_id=customer_id)
+    signals = _signal_rows(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=evaluation_at,
+    )
     manager_action = resolve_customer_manager_action(
         con,
         tenant_id=tenant_id,
         customer_id=customer_id,
-        as_of=as_of,
+        as_of=evaluation_at,
         read_snapshot=manager_action_read_snapshot,
     )
+    identity_conflict_open = "identity_conflict_open" in manager_action.readiness_reason_codes
     action_ready = manager_action.readiness_state == "ready"
     next_step = manager_action.action if action_ready else ""
     next_step_source = (
@@ -1066,18 +1090,52 @@ def build_customer_dossier(
                 con,
                 tenant_id=tenant_id,
                 customer_id=customer_id,
+                customer_ids=family_customer_ids,
                 active_brand=brands[0] if len(brands) == 1 else "",
             )
         ),
-        money=tuple(_money_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
+        money=tuple(_money_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            as_of=evaluation_at,
+        )),
+        active_deals=() if identity_conflict_open else tuple(_active_deal_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            opportunities=opportunities,
+            as_of=evaluation_at,
+        )),
+        attendance=() if identity_conflict_open else tuple(_attendance_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            as_of=evaluation_at,
+        )),
         signals=tuple(signals),
         next_step=next_step,
         next_step_source=next_step_source,
         action_status=manager_action.status,
         no_action_reason_code=manager_action.reason,
         manager_action=manager_action,
-        objections=tuple(_objection_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
-        chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=12)),
+        objections=tuple(_objection_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            as_of=evaluation_at,
+        )),
+        chronology=tuple(_chronology_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            as_of=evaluation_at,
+            limit=12,
+        )),
         interests=tuple(_dedupe_markers(interests, limit=8)),
         pains=tuple(_dedupe_markers(pains, limit=8)),
     )
@@ -1170,6 +1228,8 @@ def build_manager_dossier_workbook(
         "pains_total": sum(len(item.pains) for item in dossiers),
         "family_rows_total": sum(len(item.family) for item in dossiers),
         "money_rows_total": sum(len(item.money) for item in dossiers),
+        "active_deals_total": sum(len(item.active_deals) for item in dossiers),
+        "attendance_rows_total": sum(len(item.attendance) for item in dossiers),
         "signals_total": sum(len(item.signals) for item in dossiers),
         "objections_total": sum(len(item.objections) for item in dossiers),
         "chronology_rows_total": sum(len(item.chronology) for item in dossiers),
@@ -1512,7 +1572,12 @@ def manager_outreach_eligibility(
         ):
             reasons.append("meaningful_outbound_after_evidence")
     # ponytail: block historical hard risks until a structured resolution/opt-in field exists.
-    reasons.extend(_durable_contact_risks(con, tenant_id=tenant_id, customer_id=customer_id))
+    reasons.extend(_durable_contact_risks(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=now,
+    ))
     unique_reasons = tuple(dict.fromkeys(reasons))
     return {
         "eligible": not unique_reasons,
@@ -1569,28 +1634,29 @@ def _has_active_customer_access(con: sqlite3.Connection, *, tenant_id: str, cust
     return False
 
 
-def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> tuple[str, ...]:
-    customer_ids = list(_family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id))
-    family_link_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(family_links_v1)").fetchall()}
-    if not _table_exists(con, "family_members_v1") and "family_id" in family_link_columns:
-        related = con.execute(
-            "SELECT DISTINCT sibling.customer_id FROM family_links_v1 current "
-            "JOIN family_links_v1 sibling ON sibling.tenant_id=current.tenant_id AND sibling.family_id=current.family_id "
-            "WHERE current.tenant_id=? AND current.customer_id=? "
-            "AND current.status='confident' AND current.confidence IN ('high','medium') "
-            "AND sibling.status='confident' AND sibling.confidence IN ('high','medium')",
-            (tenant_id, customer_id),
-        ).fetchall()
-        customer_ids.extend(str(row[0]) for row in related if row[0])
-    customer_ids = list(dict.fromkeys(customer_ids))
+def _durable_contact_risks(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> tuple[str, ...]:
+    scopes, restrictions = load_durable_contact_restrictions_batch(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=(customer_id,),
+        as_of=as_of,
+    )
+    customer_ids = scopes[customer_id]
     rows = con.execute(
         "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
         f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({','.join('?' for _ in customer_ids)}) "
+        "AND julianday(event_at)<=julianday(?) "
         "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true') "
         "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
-        (tenant_id, *customer_ids),
+        (tenant_id, *customer_ids, as_of.isoformat()),
     ).fetchall()
-    risks: list[str] = []
+    risks = list(restrictions[customer_id])
     for row in rows:
         event = dict(row)
         stored = _safe_json(row["record_json"])
@@ -1603,8 +1669,6 @@ def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_
         text = _event_text(event)
         if hard_codes_from_text(text):
             risks.append("durable_p0_history")
-        if any(phrase in text for phrase in MANAGER_OPTOUT_PHRASES):
-            risks.append("durable_opt_out")
     return tuple(dict.fromkeys(risks))
 
 
@@ -1817,10 +1881,11 @@ def _owner50_family_rows(
         include_purchases="customer_purchases_v1" in available,
         include_objections="customer_objections_v1" in available,
     )
+    task_customer_ids = tuple(str(row["customer_id"]) for row in snapshot["signals"])
     manager_action_read_snapshot = load_manager_action_read_snapshot(
         con,
         tenant_id=tenant_id,
-        customer_ids=tuple(str(row["customer_id"]) for row in snapshot["signals"]),
+        customer_ids=task_customer_ids,
         as_of=as_of,
     )
     selected_families = frozenset(str(value) for value in family_ids if str(value))
@@ -1921,12 +1986,21 @@ def _owner50_family_rows(
                 if value in OWNER50_BRAND_ALIASES
             )
             no_contact = (
-                record.get("no_contact"), record.get("opt_out"), metadata.get("no_contact"),
-                metadata.get("opt_out"), metadata.get("do_not_contact"),
+                record.get("no_contact"), record.get("opt_out"), record.get("do_not_contact"),
+                metadata.get("no_contact"), metadata.get("opt_out"), metadata.get("do_not_contact"),
             )
-            if any(str(value).strip().casefold() in {"1", "true", "yes", "да"} for value in no_contact) or str(
-                metadata.get("contact_allowed", "true")
-            ).casefold() in {"0", "false", "no", "нет"}:
+            contact_allowed = (record.get("contact_allowed"), metadata.get("contact_allowed"))
+            if any(
+                value is True or str(value).strip().casefold() in {"1", "true", "yes", "да"}
+                for value in no_contact
+            ) or any(
+                value is False
+                or (
+                    value is not None
+                    and str(value).strip().casefold() in {"0", "false", "no", "нет"}
+                )
+                for value in contact_allowed
+            ):
                 hard_reasons.append("structured_no_contact")
             roles = [member["customer_id"], member["display_name"], *(metadata.get(key) for key in ("role", "kind", "type", "tags"))]
             if OWNER50_STAFF_TEST_RE.search(" ".join(_plain_values(roles))):
@@ -2097,7 +2171,7 @@ def _owner50_family_rows(
             ).casefold()
             if event_is_inbound and hard_codes_from_text(customer_risk_text):
                 hard_reasons.append("durable_p0_history")
-            if event_is_inbound and any(phrase in customer_risk_text for phrase in MANAGER_OPTOUT_PHRASES):
+            if event and event_has_explicit_contact_opt_out(event):
                 hard_reasons.append("durable_opt_out")
             signal_brands = {
                 brand
@@ -2128,6 +2202,8 @@ def _owner50_family_rows(
         for event in events:
             if _owner50_event_is_explicit_refund(event):
                 hard_reasons.append("durable_p0_history")
+            if event_has_explicit_contact_opt_out(event):
+                hard_reasons.append("durable_opt_out")
             if _clean_text(event.get("direction")).casefold() != "inbound":
                 continue
             text = _event_text(event)
@@ -2139,8 +2215,6 @@ def _owner50_family_rows(
                 event, codes=event_p0_codes, all_events=all_events, as_of=as_of,
             ):
                 hard_reasons.append("durable_p0_history")
-            if any(phrase in text for phrase in MANAGER_OPTOUT_PHRASES):
-                hard_reasons.append("durable_opt_out")
         hard_reasons.extend(f"active_risk_signal:{row['signal_type']}" for row in family["risk_signals"])
         # bug-fix owner50_pravki #3 (continued): dedupe_family_payment_rows схлопывает
         # сырые per-period строки в один аггрегат на customer_id (all_time побеждает
@@ -2823,6 +2897,7 @@ def _owner50_snapshot(
             JOIN family_members_v1 AS member
               ON member.tenant_id=event.tenant_id AND member.customer_id=event.customer_id
             WHERE event.tenant_id=?
+              AND julianday(event.event_at)<=julianday(?)
               AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
               AND (
                 event.direction IN ('inbound','outbound')
@@ -2844,7 +2919,7 @@ def _owner50_snapshot(
               )
             LIMIT ?
             """,
-            (tenant_id, OWNER50_EVENT_SCAN_LIMIT + 1),
+            (tenant_id, as_of.isoformat(), OWNER50_EVENT_SCAN_LIMIT + 1),
         ),
         "risk_signals": fetch(
             f"""
@@ -3215,11 +3290,11 @@ def _family_rows(
     *,
     tenant_id: str,
     customer_id: str,
+    customer_ids: Sequence[str],
     active_brand: str,
 ) -> list[DossierRow]:
     if not _table_exists(con, "family_links_v1"):
         return []
-    customer_ids = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
@@ -3256,10 +3331,16 @@ def _family_rows(
     return result
 
 
-def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+def _money_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str],
+    as_of: datetime,
+) -> list[DossierRow]:
     if not _table_exists(con, "customer_purchases_v1"):
         return []
-    customer_ids = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
@@ -3270,9 +3351,11 @@ def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) ->
         LEFT JOIN customer_identities AS identity
           ON identity.tenant_id = purchase.tenant_id AND identity.customer_id = purchase.customer_id
         WHERE purchase.tenant_id = ? AND purchase.customer_id IN ({placeholders})
+          AND (purchase.last_purchase_at IS NULL OR purchase.last_purchase_at=''
+               OR julianday(purchase.last_purchase_at)<=julianday(?))
         ORDER BY purchase.customer_id, purchase.period, purchase.money_kind
         """,
-        (tenant_id, *customer_ids),
+        (tenant_id, *customer_ids, as_of.isoformat()),
     ).fetchall()
     result: list[DossierRow] = []
     labels = {"fact": "факт оплат", "plan": "план сделок"}
@@ -3294,22 +3377,30 @@ def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) ->
     return result
 
 
-def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+def _signal_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> list[DossierRow]:
     if not _table_exists(con, "derived_signals"):
         return []
     rows = con.execute(
         """
-        SELECT signal_type, severity, expires_at, confidence, requires_manager_review, record_json
+        SELECT signal_type, severity, created_at, expires_at, confidence,
+               requires_manager_review, record_json
         FROM derived_signals
         WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
-          AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) >= julianday('now'))
+          AND julianday(created_at)<=julianday(?)
+          AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) >= julianday(?))
         ORDER BY CASE severity
                    WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4
                  END,
                  expires_at, signal_type
         LIMIT 12
         """,
-        (tenant_id, customer_id),
+        (tenant_id, customer_id, as_of.isoformat(), as_of.isoformat()),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3330,7 +3421,13 @@ def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -
     return result
 
 
-def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+def _objection_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> list[DossierRow]:
     if not _table_exists(con, "customer_objections_v1"):
         return []
     rows = con.execute(
@@ -3340,10 +3437,11 @@ def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str
         WHERE tenant_id = ?
           AND customer_id = ?
           AND speaker = 'client'
+          AND julianday(extracted_at)<=julianday(?)
         ORDER BY confidence DESC, extracted_at DESC
         LIMIT 12
         """,
-        (tenant_id, customer_id),
+        (tenant_id, customer_id, as_of.isoformat()),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3357,30 +3455,139 @@ def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str
     return result
 
 
-def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str, limit: int) -> list[DossierRow]:
-    customer_ids = _family_scope_customer_ids(
-        con,
-        tenant_id=tenant_id,
-        customer_id=customer_id,
-    )
+def _active_deal_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str],
+    opportunities: Sequence[sqlite3.Row],
+    as_of: datetime,
+) -> list[DossierRow]:
+    """Expose only cutoff-active AMO deals with one exact canonical owner."""
+    lead_ids = tuple(sorted({
+        _clean_text(row["source_id"])
+        for row in opportunities
+        if _clean_text(row["source_id"])
+    }))
+    owners: dict[str, set[str]] = defaultdict(set)
+    if lead_ids and _table_exists(con, "identity_links"):
+        for row in con.execute(
+            """
+            SELECT link_value, customer_id
+            FROM identity_links
+            WHERE tenant_id=? AND link_type='amo_lead_id'
+              AND match_class IN ('strong_unique','manual')
+              AND (first_seen_at IS NULL OR julianday(first_seen_at)<=julianday(?))
+              AND link_value IN (SELECT value FROM json_each(?))
+            """,
+            (tenant_id, as_of.isoformat(), json.dumps(lead_ids, ensure_ascii=False)),
+        ):
+            owners[str(row["link_value"])].add(str(row["customer_id"]))
+
+    result: list[DossierRow] = []
+    for row in opportunities:
+        opportunity = dict(row)
+        lead_id = _clean_text(row["source_id"])
+        row_customer_id = str(row["customer_id"])
+        if owners.get(lead_id) != {row_customer_id} or not _is_active_deal_at(opportunity, as_of=as_of):
+            continue
+        title = _clean_text(row["title"]) or f"Сделка #{lead_id}"
+        status = _clean_text(row["status"]) or "открыта"
+        details = [title, f"статус на срез: {status}"]
+        if row["opened_at"]:
+            details.append(f"открыта: {row['opened_at']}")
+        if len(customer_ids) > 1:
+            member = _clean_text(row["source_customer_name"]) or row_customer_id
+            details.append(f"карточка: {member}")
+        result.append(DossierRow(
+            "Активные сделки",
+            "; ".join(details),
+            f"customer_opportunities:{row['opportunity_id']}",
+        ))
+    return result
+
+
+def _attendance_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str],
+    as_of: datetime,
+) -> list[DossierRow]:
+    placeholders = ",".join("?" for _ in customer_ids)
+    rows = con.execute(
+        f"""
+        SELECT event.event_id, event.event_at, event.event_type, event.source_system,
+               event.subject, event.summary, event.text_preview,
+               event.customer_id, identity.display_name AS source_customer_name
+        FROM timeline_events AS event
+        LEFT JOIN customer_identities AS identity
+          ON identity.tenant_id=event.tenant_id AND identity.customer_id=event.customer_id
+        WHERE event.tenant_id=?
+          AND event.customer_id IN ({placeholders})
+          AND julianday(event.event_at)<=julianday(?)
+          AND (event.event_type='tallanto_attendance' OR event.source_system='tallanto_attendance_api')
+          AND event.match_status IN ('strong_unique','manual')
+          AND (event.superseded_by IS NULL OR event.superseded_by='')
+          AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
+        ORDER BY event.event_at DESC,event.event_id DESC
+        LIMIT 12
+        """,
+        (tenant_id, *customer_ids, as_of.isoformat()),
+    ).fetchall()
+    result: list[DossierRow] = []
+    for row in rows:
+        summary = _event_summary_for_manager(row) or "Запись Tallanto о занятии."
+        text = f"{row['event_at']} {summary}"
+        if len(customer_ids) > 1:
+            member = _clean_text(row["source_customer_name"]) or str(row["customer_id"])
+            text = f"{text} [карточка: {member}]"
+        result.append(DossierRow(
+            "Занятия",
+            text,
+            f"{row['source_system']}:{row['event_id']}",
+        ))
+    return result
+
+
+def _chronology_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str] | None = None,
+    as_of: datetime | None = None,
+    limit: int,
+) -> list[DossierRow]:
+    cutoff = as_of or datetime.now(timezone.utc)
+    if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    customer_ids = tuple(customer_ids or _family_scope_customer_ids(
+        con, tenant_id=tenant_id, customer_id=customer_id, as_of=cutoff,
+    ))
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
         SELECT event.event_at, event.event_type, event.source_system, event.subject,
-               event.summary, event.text_preview, event.record_json, event.customer_id,
+               event.summary, event.text_preview, event.customer_id,
                identity.display_name AS source_customer_name
         FROM timeline_events AS event
         LEFT JOIN customer_identities AS identity
           ON identity.tenant_id = event.tenant_id AND identity.customer_id = event.customer_id
         WHERE event.tenant_id = ?
           AND event.customer_id IN ({placeholders})
+          AND julianday(event.event_at)<=julianday(?)
           AND (event.superseded_by IS NULL OR event.superseded_by = '')
           AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
-          AND (event.event_type != 'mango_call' OR event.match_status = 'strong_unique')
+          AND event.match_status IN ('strong_unique','manual')
+          AND event.event_type != 'tallanto_attendance'
+          AND event.source_system != 'tallanto_attendance_api'
         ORDER BY event.event_at DESC, event.event_id DESC
         LIMIT ?
         """,
-        (tenant_id, *customer_ids, int(limit)),
+        (tenant_id, *customer_ids, cutoff.isoformat(), int(limit)),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3399,44 +3606,6 @@ def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: st
             )
         )
     return result
-
-
-
-def _family_scope_customer_ids(
-    con: sqlite3.Connection,
-    *,
-    tenant_id: str,
-    customer_id: str,
-) -> tuple[str, ...]:
-    if not _table_exists(con, "family_members_v1"):
-        return (customer_id,)
-    root = con.execute(
-        """
-        SELECT family_id, membership_status
-        FROM family_members_v1
-        WHERE tenant_id = ? AND customer_id = ?
-        """,
-        (tenant_id, customer_id),
-    ).fetchone()
-    if root is None or str(root["membership_status"] or "") not in {"confident", "singleton"}:
-        return (customer_id,)
-    members = tuple(
-        str(row["customer_id"])
-        for row in con.execute(
-            """
-            SELECT customer_id
-            FROM family_members_v1
-            WHERE tenant_id = ? AND family_id = ?
-              AND membership_status IN ('confident', 'singleton')
-            ORDER BY customer_id
-            """,
-            (tenant_id, root["family_id"]),
-        )
-    )
-    if customer_id not in members or not 1 <= len(members) <= 8:
-        return (customer_id,)
-    return members
-
 
 def _event_summary_for_manager(row: sqlite3.Row) -> str:
     event_type = str(row["event_type"] or "")
@@ -3830,7 +3999,7 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
     overview = wb.active
     overview.title = "Оглавление"
     overview.append((
-        "customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг",
+        "customer_id", "Имя", "Бренд", "Семья", "Активные сделки", "Занятия", "Сигналы", "Следующий шаг",
         "Статус действия", "Код причины бездействия", "Ответственный", "Срок",
         "Готовность", "Интересов", "Болей", "Возражений", "Хронология",
     ))
@@ -3845,6 +4014,8 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
                 dossier.display_name,
                 dossier.brand,
                 len(dossier.family),
+                len(dossier.active_deals),
+                len(dossier.attendance),
                 len(dossier.signals),
                 dossier.next_step,
                 dossier.action_status,
@@ -3871,6 +4042,10 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
         for row in dossier.family:
             ws.append((row.section, row.text, _display_source(row.source)))
         for row in dossier.money:
+            ws.append((row.section, row.text, _display_source(row.source)))
+        for row in dossier.active_deals:
+            ws.append((row.section, row.text, _display_source(row.source)))
+        for row in dossier.attendance:
             ws.append((row.section, row.text, _display_source(row.source)))
         for row in dossier.signals:
             ws.append((row.section, row.text, _display_source(row.source)))
@@ -3925,6 +4100,10 @@ def _display_source(source: str) -> str:
         return "Семейная карта"
     if text.startswith("customer_purchases_v1"):
         return "Деньги из staging"
+    if text.startswith("customer_opportunities"):
+        return "Сделка AMO"
+    if text.startswith("tallanto_attendance"):
+        return "Занятие Tallanto"
     if text.startswith("derived_signals"):
         return "Сигнал Customer Timeline"
     if text.startswith("customer_objections_v1"):

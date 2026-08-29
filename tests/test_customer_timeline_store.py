@@ -1404,6 +1404,77 @@ def test_family_conflict_gate_uses_explicit_business_types(
     assert actual is blocked
 
 
+def test_family_conflict_gate_reconstructs_created_and_resolved_cutoff(tmp_path: Path) -> None:
+    db_path = tmp_path / "conflict-cutoff.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = identity()
+        store.upsert_customer(customer)
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=(f"customer:{customer.customer_id}",),
+        )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE timeline_conflicts SET status='resolved',created_at=?,resolved_at=?",
+            ((NOW + timedelta(hours=1)).isoformat(), (NOW + timedelta(hours=3)).isoformat()),
+        )
+        con.commit()
+        before = store_module.open_family_identity_conflict_customer_ids(
+            con, "foton", as_of=NOW.isoformat(),
+        )
+        during = store_module.open_family_identity_conflict_customer_ids(
+            con, "foton", as_of=(NOW + timedelta(hours=2)).isoformat(),
+        )
+        after = store_module.open_family_identity_conflict_customer_ids(
+            con, "foton", as_of=(NOW + timedelta(hours=4)).isoformat(),
+        )
+
+    assert customer.customer_id not in before
+    assert customer.customer_id in during
+    assert customer.customer_id not in after
+
+
+def test_trusted_family_scope_uses_atomic_snapshot_not_materialization_time(tmp_path: Path) -> None:
+    db_path = tmp_path / "family-cutoff.sqlite"
+    first = identity(phone="+79160000021")
+    second = identity(phone="+79160000022")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(first)
+        store.upsert_customer(second)
+    with sqlite3.connect(db_path) as con:
+        con.executemany(
+            """
+            INSERT INTO family_members_v1
+            (tenant_id,family_id,customer_id,membership_status,confidence,reason,
+             created_at,updated_at,record_hash,record_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                ("foton", "family:cutoff", first.customer_id, "confident", "high", "test",
+                 NOW.isoformat(), (NOW + timedelta(hours=2)).isoformat(), "hash:first", "{}"),
+                ("foton", "family:cutoff", second.customer_id, "confident", "high", "test",
+                 NOW.isoformat(), (NOW + timedelta(hours=2)).isoformat(), "hash:second", "{}"),
+            ),
+        )
+        con.commit()
+        before = store_module.trusted_family_customer_ids(
+            con,
+            tenant_id="foton",
+            customer_id=first.customer_id,
+            as_of=NOW + timedelta(hours=1),
+        )
+        after = store_module.trusted_family_customer_ids(
+            con,
+            tenant_id="foton",
+            customer_id=first.customer_id,
+            as_of=NOW + timedelta(hours=3),
+        )
+
+    assert before == tuple(sorted((first.customer_id, second.customer_id)))
+    assert after == tuple(sorted((first.customer_id, second.customer_id)))
+
+
 @pytest.mark.parametrize("family_table_present", [False, True])
 def test_family_conflict_gate_is_addressed_with_or_without_family_table(
     tmp_path: Path,

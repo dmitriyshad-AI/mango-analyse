@@ -492,9 +492,83 @@ def authoritative_tallanto_student_owners(
     return owners
 
 
+def trusted_family_customer_ids_by_customer(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_ids: Sequence[str],
+    as_of: datetime | None = None,
+) -> Mapping[str, tuple[str, ...]]:
+    """Return bounded scopes from the current atomic family-graph snapshot.
+
+    ``family_members_v1`` timestamps describe the materialized build, not membership
+    valid-time. ``as_of`` is retained for reader compatibility and timezone validation;
+    event and conflict lifecycles are sliced separately by their own timestamps.
+    """
+    selected = tuple(sorted({str(value) for value in customer_ids if str(value)}))
+    result = {customer_id: (customer_id,) for customer_id in selected}
+    if not selected:
+        return result
+    table_exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='family_members_v1'"
+    ).fetchone()
+    if table_exists is None:
+        return result
+    if as_of is not None:
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise ValueError("as_of must be timezone-aware")
+    roots = con.execute(
+        "SELECT customer_id,family_id,membership_status,confidence FROM family_members_v1 "
+        "WHERE tenant_id=? AND customer_id IN (SELECT value FROM json_each(?))",
+        (tenant_id, json.dumps(selected, ensure_ascii=False)),
+    ).fetchall()
+    family_by_root = {
+        str(row[0]): str(row[1])
+        for row in roots
+        if str(row[2] or "") in {"confident", "singleton"}
+        and str(row[3] or "") in {"high", "medium"}
+        and str(row[1] or "")
+    }
+    family_ids = tuple(sorted(set(family_by_root.values())))
+    if not family_ids:
+        return result
+    members_by_family: dict[str, list[str]] = {}
+    for row in con.execute(
+        "SELECT family_id,customer_id FROM family_members_v1 "
+        "WHERE tenant_id=? AND family_id IN (SELECT value FROM json_each(?)) "
+        "AND membership_status IN ('confident','singleton') "
+        "AND confidence IN ('high','medium') ORDER BY family_id,customer_id",
+        (tenant_id, json.dumps(family_ids, ensure_ascii=False)),
+    ):
+        members_by_family.setdefault(str(row[0]), []).append(str(row[1]))
+    for root, family_id in family_by_root.items():
+        members = tuple(members_by_family.get(family_id, ()))
+        if root in members and 1 <= len(members) <= 8:
+            result[root] = members
+    return result
+
+
+def trusted_family_customer_ids(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime | None = None,
+) -> tuple[str, ...]:
+    """Return the bounded, explicitly confirmed family scope for one customer."""
+    return trusted_family_customer_ids_by_customer(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=(customer_id,),
+        as_of=as_of,
+    )[customer_id]
+
+
 def open_family_identity_conflict_customer_ids(
     con: sqlite3.Connection,
     tenant_id: str,
+    *,
+    as_of: Optional[str] = None,
 ) -> frozenset[str]:
     """Return customers blocked by an open identity/family/brand conflict."""
     tenant = normalize_key(tenant_id, "tenant_id")
@@ -510,20 +584,28 @@ def open_family_identity_conflict_customer_ids(
         _canonical_identity_conflict_ref,
         deterministic=True,
     )
+    link_cutoff_sql = (
+        "AND (link.first_seen_at IS NULL OR julianday(link.first_seen_at) IS NULL "
+        "OR julianday(link.first_seen_at)<=julianday(?))"
+        if as_of is not None
+        else ""
+    )
     identity_union = ""
     if "identity_links" in tables:
-        identity_union = """
+        identity_union = f"""
           UNION
           SELECT link.customer_id
           FROM identity_links AS link
           JOIN open_refs AS ref
             ON ref.canonical_identity_ref=link.link_type || ':' || link.link_value
           WHERE link.tenant_id=? AND link.customer_id IS NOT NULL AND link.customer_id!=''
+            {link_cutoff_sql}
           UNION
           SELECT link.customer_id
           FROM identity_links AS link
           JOIN open_refs AS ref ON ref.entity_ref=link.source_ref
           WHERE link.tenant_id=? AND link.customer_id IS NOT NULL AND link.customer_id!=''
+            {link_cutoff_sql}
         """
     family_union = ""
     if "family_members_v1" in tables:
@@ -541,11 +623,28 @@ def open_family_identity_conflict_customer_ids(
           JOIN directly_blocked AS blocked ON blocked.customer_id=member.customer_id
           WHERE member.tenant_id=?
         """
-    params: list[str] = [tenant, tenant, tenant]
+    conflict_cutoff_sql = (
+        "AND (julianday(conflict.created_at) IS NULL "
+        "OR julianday(conflict.created_at)<=julianday(?)) "
+        "AND (conflict.resolved_at IS NULL OR julianday(conflict.resolved_at) IS NULL "
+        "OR julianday(conflict.resolved_at)>julianday(?))"
+        if as_of is not None
+        else "AND conflict.status IN ('open','active')"
+    )
+    params: list[str] = [tenant]
+    if as_of is not None:
+        params.extend((as_of, as_of))
+    params.extend((tenant, tenant))
     if identity_union:
-        params.extend((tenant, tenant))
+        params.append(tenant)
+        if as_of is not None:
+            params.append(as_of)
+        params.append(tenant)
+        if as_of is not None:
+            params.append(as_of)
     if family_union:
-        params.extend((tenant, tenant))
+        params.append(tenant)
+        params.append(tenant)
     rows = con.execute(
         f"""
         WITH open_refs AS MATERIALIZED (
@@ -553,7 +652,7 @@ def open_family_identity_conflict_customer_ids(
                  _mango_canonical_identity_ref(CAST(ref.value AS TEXT)) AS canonical_identity_ref
           FROM timeline_conflicts AS conflict,
                json_each(conflict.record_json, '$.entity_refs') AS ref
-          WHERE conflict.tenant_id=? AND conflict.status IN ('open','active')
+          WHERE conflict.tenant_id=? {conflict_cutoff_sql}
             AND {_BLOCKING_FAMILY_CONFLICT_TYPE_SQL.replace('conflict_type', 'conflict.conflict_type')}
         ), directly_blocked AS (
           SELECT identity.customer_id

@@ -516,6 +516,34 @@ def test_reader_smoke_allows_strong_known_brand_mango_processed_chunks(tmp_path:
     assert gate["counts"]["allowed_mango_processed_chunks"] == 1
     assert gate["violations"] == {}
 
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE timeline_events SET superseded_by='owner_changed:test' WHERE event_id=?",
+            (event_id,),
+        )
+        con.commit()
+
+    poisoned_report, poisoned_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert poisoned_ok is False
+    poisoned_gate = poisoned_report["mango_processed_allowed_safety_gate"]
+    assert poisoned_gate["ok"] is False
+    assert poisoned_gate["violations"]["allowed_mango_processed_missing_or_superseded_event"] == 1
+
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE bot_context_chunks SET superseded_by='retired:test' WHERE chunk_id='mango-strong'"
+        )
+        con.commit()
+
+    retired_report, retired_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert retired_ok is True
+    retired_gate = retired_report["mango_processed_allowed_safety_gate"]
+    assert retired_gate["ok"] is True
+    assert retired_gate["counts"]["allowed_mango_processed_chunks"] == 0
+    assert retired_gate["violations"] == {}
+
 
 def test_reader_smoke_blocks_mango_processed_non_strong_and_unknown_brand(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"

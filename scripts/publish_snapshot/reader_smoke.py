@@ -206,7 +206,21 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE source_system = 'mango_processed_summary'
                       AND allowed_for_bot = 1
                       AND requires_manager_review = 0
-                      AND COALESCE(superseded_by, '') = ''
+                      AND superseded_by IS NULL
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_missing_or_superseded_event": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    LEFT JOIN timeline_events AS e ON e.event_id = b.event_id
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND b.superseded_by IS NULL
+                      AND (e.event_id IS NULL OR e.superseded_by IS NOT NULL)
                     """
                 ).fetchone()[0]
             ),
@@ -219,8 +233,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND COALESCE(b.superseded_by, '') = ''
-                      AND COALESCE(e.superseded_by, '') = ''
+                      AND b.superseded_by IS NULL
                       AND COALESCE(e.match_status, '') != 'strong_unique'
                     """
                 ).fetchone()[0]
@@ -233,7 +246,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND COALESCE(b.superseded_by, '') = ''
+                      AND b.superseded_by IS NULL
                       AND COALESCE(b.chunk_type, '') != 'mango_call_summary'
                     """
                 ).fetchone()[0]
@@ -247,9 +260,12 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND COALESCE(b.superseded_by, '') = ''
-                      AND COALESCE(e.superseded_by, '') = ''
-                      AND COALESCE(b.customer_id, '') != COALESCE(e.customer_id, '')
+                      AND b.superseded_by IS NULL
+                      AND (
+                        e.event_id IS NULL
+                        OR e.superseded_by IS NOT NULL
+                        OR COALESCE(b.customer_id, '') != COALESCE(e.customer_id, '')
+                      )
                     """
                 ).fetchone()[0]
             ),
@@ -264,11 +280,11 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND COALESCE(b.superseded_by, '') = ''
-                      AND COALESCE(e.superseded_by, '') = ''
+                      AND b.superseded_by IS NULL
                       AND (
                         b.customer_id IS NULL OR b.customer_id = ''
                         OR e.customer_id IS NULL OR e.customer_id = ''
+                        OR e.superseded_by IS NOT NULL
                         OR b.customer_id != e.customer_id
                         OR ci.identity_status IS NULL
                         OR ci.identity_status NOT IN ('strong', 'partial')
@@ -284,7 +300,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND COALESCE(b.superseded_by, '') = ''
+                      AND b.superseded_by IS NULL
                       AND LOWER(COALESCE(json_extract(b.record_json, '$.metadata.content_brand'), '')) NOT IN ('foton', 'unpk')
                     """
                 ).fetchone()[0]

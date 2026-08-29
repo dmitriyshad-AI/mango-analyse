@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -394,6 +395,178 @@ def test_missing_catalog_chat_blocks_lifecycle_pass_without_retiring_history(
     saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
     assert saved["active_chat"] is None
     assert saved["reset_reason"] == "active_chat_missing_from_catalog"
+
+
+def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_history(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    base_config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+    baseline = run_wappi_history_import(
+        base_config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert baseline["publish_ready"] is True
+
+    link_db = tmp_path / "wappi_amo_links.sqlite"
+    with sqlite3.connect(link_db) as con:
+        wappi_history_module._ensure_wappi_widget_link_schema(con)
+        con.execute(
+            "INSERT INTO wappi_amo_links "
+            "(channel,profile_id,chat_id,contact_id,lead_ids_json,status,checked_at,"
+            "response_sha256,resolution_source,last_timestamp,matched_points) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "telegram", "p-tg", "c0000", "2002", "[\"1001\"]", "resolved",
+                "2026-08-29T00:00:00+00:00", "proof", "wappi_widget",
+                1_753_000_000, 0,
+            ),
+        )
+        con.commit()
+    config = replace(
+        base_config,
+        widget_link_db=link_db,
+        refresh_widget_links=False,
+    )
+
+    absent_client = CheckpointFakeClient(
+        {"p-tg": chats[1:], "p-max": []}, messages
+    )
+    absent = run_wappi_history_import(
+        config,
+        client=absent_client,
+    )
+
+    assert absent["publish_ready"] is True
+    assert absent["source_lifecycle"]["unmatched_rows"] == 0
+    assert absent["source_lifecycle"]["verified_historical_personal_chats"] == 1
+    assert absent["source_lifecycle"]["verified_historical_personal_source_records"] == 1
+    assert absent["profiles"]["p-tg"]["historical_snapshot_checks"] == 1
+    assert absent["profiles"]["p-tg"]["historical_snapshot_verified"] == 1
+    assert [
+        request
+        for request in absent_client.message_request_calls
+        if request[1] == "c0000"
+    ] == [
+        ("p-tg", "c0000", 0, 10, "asc"),
+        ("p-tg", "c0000", 0, 10, "asc"),
+    ]
+    assert absent["source_lifecycle"]["restored_events"] == 0
+    assert absent["source_lifecycle"]["retired_events"] == 0
+    assert active_wappi_row_count(db_path) == 2
+
+    checkpoint_path = wappi_history_checkpoint_path(checkpoint_dir)
+    checkpoint_before = checkpoint_path.read_bytes()
+
+    class GrowingHistoricalSnapshotClient(CheckpointFakeClient):
+        historical_calls = 0
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            if kwargs["chat_id"] == "c0000":
+                self.historical_calls += 1
+                if self.historical_calls == 2:
+                    self.messages[("telegram", "p-tg", "c0000")].append(
+                        {
+                            "id": "c0000-race",
+                            "chat_id": "c0000",
+                            "type": "text",
+                            "body": "Появилось между снимком и проверкой",
+                            "time": 1_752_999_998,
+                        }
+                    )
+            return super().get_chat_messages(**kwargs)
+
+    raced_absent = run_wappi_history_import(
+        config,
+        client=GrowingHistoricalSnapshotClient(
+            {"p-tg": chats[1:], "p-max": []}, messages
+        ),
+    )
+
+    assert raced_absent["publish_ready"] is False
+    assert raced_absent["writes"]["applied"] is False
+    assert raced_absent["checkpoint"]["committed"] is False
+    assert raced_absent["profiles"]["p-tg"]["message_page_drift_reason"] == (
+        "full_history_pagination_drift"
+    )
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    assert active_wappi_row_count(db_path) == 2
+
+    original_head = dict(messages[("telegram", "p-tg", "c0000")][0])
+    messages[("telegram", "p-tg", "c0000")][0] = {
+        **original_head,
+        "body": "Отредактированное сообщение с прежним ID",
+        "time": 1_753_000_010,
+    }
+    rewritten_absent = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert rewritten_absent["publish_ready"] is False
+    assert rewritten_absent["mode"] == "apply_blocked"
+    assert rewritten_absent["writes"]["applied"] is False
+    assert rewritten_absent["checkpoint"]["committed"] is False
+    assert rewritten_absent["profiles"]["p-tg"]["message_page_drift_reason"] == (
+        "historical_chat_snapshot_changed"
+    )
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    assert active_wappi_row_count(db_path) == 2
+
+    messages[("telegram", "p-tg", "c0000")][0] = original_head
+    messages[("telegram", "p-tg", "c0000")].append(
+        {
+            "id": "c0000-new",
+            "chat_id": "c0000",
+            "type": "text",
+            "body": "Новое сообщение задним числом в отсутствующем чате",
+            "time": 1_752_999_999,
+        }
+    )
+    changed_absent = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert changed_absent["publish_ready"] is False
+    assert changed_absent["mode"] == "apply_blocked"
+    assert changed_absent["writes"]["applied"] is False
+    assert changed_absent["checkpoint"]["committed"] is False
+    assert changed_absent["profiles"]["p-tg"]["message_page_drift_reason"] == (
+        "historical_chat_snapshot_changed"
+    )
+    assert changed_absent["source_lifecycle"]["verified_historical_personal_chats"] == 0
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    assert active_wappi_row_count(db_path) == 2
+
+    grouped = [{**dict(chats[0]), "type": "group"}, dict(chats[1])]
+    grouped_client = CheckpointFakeClient({"p-tg": grouped, "p-max": []}, messages)
+    excluded = run_wappi_history_import(
+        config,
+        client=grouped_client,
+    )
+
+    assert excluded["publish_ready"] is True
+    assert excluded["source_lifecycle"]["verified_historical_personal_source_records"] == 0
+    assert not any(request[1] == "c0000" for request in grouped_client.message_request_calls)
+    assert excluded["source_lifecycle"]["retired_events"] == 1
+    assert active_wappi_row_count(db_path) == 1
+
+    absent_after_exclusion = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert absent_after_exclusion["publish_ready"] is False
+    assert absent_after_exclusion["source_lifecycle"]["unmatched_rows"] == 1
+    assert absent_after_exclusion["source_lifecycle"]["verified_historical_personal_source_records"] == 0
+    assert active_wappi_row_count(db_path) == 1
 
 
 def test_current_non_personal_records_are_retired_and_excluded_from_persistence_gate(
@@ -2275,6 +2448,133 @@ def test_full_history_malformed_message_payload_is_blocking() -> None:
     )
 
     assert rows == ()
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+
+
+def test_strict_full_snapshot_rechecks_exact_page_terminal() -> None:
+    messages = {
+        ("telegram", "p-tg", "chat"): [
+            {
+                "id": "m-1",
+                "chat_id": "chat",
+                "type": "text",
+                "body": "Исходное",
+                "time": 1,
+            }
+        ]
+    }
+
+    class TerminalGrowthClient(CheckpointFakeClient):
+        calls = 0
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            if self.calls == 4:
+                self.messages[("telegram", "p-tg", "chat")].append(
+                    {
+                        "id": "m-2",
+                        "chat_id": "chat",
+                        "type": "text",
+                        "body": "Появилось на прежней пустой границе",
+                        "time": 2,
+                    }
+                )
+            return super().get_chat_messages(**kwargs)
+
+    client = TerminalGrowthClient({"p-tg": []}, messages)
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(
+            page_size=1,
+            complete_message_history=True,
+            sleep_seconds=0,
+        ),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=4,
+        strict_snapshot_verification=True,
+    )
+
+    assert [row.message_id for row in rows] == ["m-1"]
+    assert client.message_request_calls == [
+        ("p-tg", "chat", 0, 1, "asc"),
+        ("p-tg", "chat", 1, 1, "asc"),
+        ("p-tg", "chat", 0, 1, "asc"),
+        ("p-tg", "chat", 1, 1, "asc"),
+    ]
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+
+
+@pytest.mark.parametrize(
+    "envelope_shape",
+    ["direct", "nested", "sibling_pagination", "nested_meta"],
+)
+def test_strict_full_snapshot_never_accepts_short_page_with_more_hidden(
+    envelope_shape: str,
+) -> None:
+    message = {
+        "id": "m-1",
+        "chat_id": "chat",
+        "type": "text",
+        "body": "Видимое",
+        "time": 1,
+    }
+
+    class IncompletePageClient(CheckpointFakeClient):
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.message_request_calls.append(
+                (
+                    kwargs["profile_id"],
+                    kwargs["chat_id"],
+                    kwargs["offset"],
+                    kwargs["limit"],
+                    kwargs["order"],
+                )
+            )
+            page = {
+                "messages": [message] if kwargs["offset"] == 0 else [],
+                "has_more": True,
+            }
+            if envelope_shape == "nested":
+                return {
+                    "data": {
+                        "status": "ok",
+                        "has_more": True,
+                        "data": {"messages": page["messages"]},
+                    }
+                }
+            if envelope_shape == "sibling_pagination":
+                return {
+                    "data": {"messages": page["messages"]},
+                    "pagination": {"has_more": True},
+                }
+            if envelope_shape == "nested_meta":
+                return {
+                    "data": {
+                        "messages": page["messages"],
+                        "meta": {"has_more": True},
+                    }
+                }
+            return page
+
+    client = IncompletePageClient({"p-tg": []}, {})
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(
+            page_size=10,
+            complete_message_history=True,
+            sleep_seconds=0,
+        ),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=3,
+        strict_snapshot_verification=True,
+    )
+
+    assert [row.message_id for row in rows] == ["m-1"]
+    assert [request[2] for request in client.message_request_calls] == [0, 1]
     assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
 
 

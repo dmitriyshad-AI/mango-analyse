@@ -244,6 +244,8 @@ class WappiMessagePage:
     raw_count: int = 0
     terminal: bool = False
     terminal_null: bool = False
+    has_more: bool | None = None
+    pagination_metadata_well_formed: bool = True
     semantic_signatures: tuple[str, ...] = ()
     raw_message_ids: tuple[str, ...] = ()
     reason: str = ""
@@ -700,27 +702,71 @@ def normalize_wappi_message_page(
     expected_chat = str(expected_chat_id or "").strip()
     if not isinstance(payload, Mapping):
         return WappiMessagePage(reason="message_payload_not_mapping")
-    missing = object()
-
-    def locate_rows(container: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
-        for key in ("messages", "items", "data"):
-            if key not in container:
+    pending_envelopes: list[tuple[Mapping[str, Any], bool]] = [(payload, True)]
+    envelopes: list[Mapping[str, Any]] = []
+    visited_envelopes: set[int] = set()
+    row_candidates: list[Any] = []
+    envelope_cycle = False
+    while pending_envelopes:
+        envelope, rows_allowed = pending_envelopes.pop()
+        if id(envelope) in visited_envelopes:
+            envelope_cycle = True
+            continue
+        visited_envelopes.add(id(envelope))
+        envelopes.append(envelope)
+        if rows_allowed:
+            row_candidates.extend(
+                envelope[key] for key in ("messages", "items") if key in envelope
+            )
+        for key in ("data", "meta", "pagination"):
+            if key not in envelope:
                 continue
-            value = container[key]
-            if key == "data" and isinstance(value, Mapping):
-                return locate_rows(value)
-            return value, container
-        return missing, container
-
-    raw_rows, envelope = locate_rows(payload)
-    if raw_rows is missing:
+            value = envelope[key]
+            if isinstance(value, Mapping):
+                pending_envelopes.append((value, rows_allowed and key == "data"))
+            elif rows_allowed and key == "data":
+                row_candidates.append(value)
+    if envelope_cycle:
+        return WappiMessagePage(reason="message_envelope_cycle")
+    if not row_candidates:
         return WappiMessagePage(reason="message_list_missing")
-    status = str(envelope.get("status") or payload.get("status") or "").strip().casefold()
-    has_more = envelope.get("has_more", payload.get("has_more"))
-    terminal = status == "done" and has_more is False
+    if len(row_candidates) != 1:
+        return WappiMessagePage(reason="message_list_ambiguous")
+    raw_rows = row_candidates[0]
+    statuses = tuple(
+        status
+        for envelope in envelopes
+        if (status := str(envelope.get("status") or "").strip().casefold())
+    )
+    has_more_values = tuple(
+        envelope["has_more"]
+        for envelope in envelopes
+        if "has_more" in envelope
+    )
+    has_more_flag = (
+        has_more_values[0]
+        if has_more_values and type(has_more_values[0]) is bool
+        else None
+    )
+    pagination_metadata_well_formed = bool(
+        all(type(value) is bool for value in has_more_values)
+        and len(set(has_more_values)) <= 1
+        and len(set(statuses)) <= 1
+    )
+    status = statuses[0] if statuses else ""
+    terminal = bool(
+        pagination_metadata_well_formed
+        and status == "done"
+        and has_more_flag is False
+    )
     if raw_rows is None:
         if terminal:
-            return WappiMessagePage(terminal=True, terminal_null=True)
+            return WappiMessagePage(
+                terminal=True,
+                terminal_null=True,
+                has_more=has_more_flag,
+                pagination_metadata_well_formed=pagination_metadata_well_formed,
+            )
         return WappiMessagePage(reason="message_null_not_terminal")
     if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
         return WappiMessagePage(reason="message_list_not_sequence")
@@ -783,6 +829,8 @@ def normalize_wappi_message_page(
         items=tuple(items_by_id.values()),
         raw_count=len(rows),
         terminal=terminal,
+        has_more=has_more_flag,
+        pagination_metadata_well_formed=pagination_metadata_well_formed,
         semantic_signatures=tuple(signatures_by_id.values()),
         raw_message_ids=tuple(raw_message_ids),
     )

@@ -139,6 +139,27 @@ def test_wappi_message_page_normalizer_semantically_deduplicates_first_wins() ->
     assert len(page.semantic_signatures) == 1
 
 
+def test_wappi_message_page_normalizer_fails_closed_on_cyclic_or_ambiguous_envelopes() -> None:
+    message = _message("m-1")
+    cyclic: dict[str, Any] = {}
+    cyclic["data"] = cyclic
+
+    for payload, reason in (
+        (cyclic, "message_envelope_cycle"),
+        (
+            {"messages": [message], "data": {"messages": [message]}},
+            "message_list_ambiguous",
+        ),
+    ):
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert page.valid is False
+        assert page.reason == reason
+
+
 @pytest.mark.parametrize(
     ("rows", "reason"),
     (

@@ -1992,7 +1992,9 @@ def test_wappi_history_limit_hit_fails_closed(tmp_path: Path) -> None:
     assert "p-tg:chat_limit_hit" in report["limit_hits"]
 
 
-def test_wappi_history_unions_reordered_chat_snapshots(tmp_path: Path) -> None:
+def test_wappi_history_blocks_reordered_chat_snapshots_before_message_reads(
+    tmp_path: Path,
+) -> None:
     class DriftingWappiClient(FakeWappiClient):
         def __init__(self, chats, messages):
             super().__init__(chats, messages)
@@ -2034,11 +2036,11 @@ def test_wappi_history_unions_reordered_chat_snapshots(tmp_path: Path) -> None:
         client=client,
     )
 
-    assert report["profiles"]["p-tg"]["pagination_drift_detected"] is False
+    assert report["profiles"]["p-tg"]["pagination_drift_detected"] is True
     assert report["profiles"]["p-tg"]["chat_snapshot_drift_detected"] is True
-    assert any(call.get("kind") == "messages" for call in client.calls)
-    assert "p-tg:pagination_drift_detected" not in report["limit_hits"]
-    assert report["validation_ok"] is True
+    assert not any(call.get("kind") == "messages" for call in client.calls)
+    assert "p-tg:pagination_drift_detected" in report["limit_hits"]
+    assert report["validation_ok"] is False
 
 
 def test_wappi_history_detects_message_pagination_drift(tmp_path: Path) -> None:
@@ -2136,17 +2138,11 @@ def test_wappi_history_stable_multi_page_has_no_pagination_drift(tmp_path: Path)
     assert kinds.index("messages") > max(index for index, kind in enumerate(kinds) if kind == "chats")
 
 
-def test_wappi_history_allows_append_only_growth_during_verification(tmp_path: Path) -> None:
+def test_wappi_history_allows_message_append_only_growth_during_verification(
+    tmp_path: Path,
+) -> None:
     class GrowingWappiClient(FakeWappiClient):
-        chat_second_page_calls = 0
         message_first_page_calls = 0
-
-        def list_chats(self, **kwargs):
-            if kwargs.get("offset") == 1:
-                self.chat_second_page_calls += 1
-                if self.chat_second_page_calls == 2:
-                    self.chats[kwargs["profile_id"]].append({"id": "chat-3", "type": "user"})
-            return super().list_chats(**kwargs)
 
         def get_chat_messages(self, **kwargs):
             key = (kwargs["channel"], kwargs["profile_id"], kwargs["chat_id"])
@@ -2194,7 +2190,7 @@ def test_wappi_history_allows_append_only_growth_during_verification(tmp_path: P
     assert all(call.get("order") == "asc" for call in client.calls)
 
 
-def test_wappi_history_duplicate_chat_id_between_pages_is_deduplicated(tmp_path: Path) -> None:
+def test_wappi_history_duplicate_chat_id_blocks_before_message_reads(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
     client = FakeWappiClient(
@@ -2226,7 +2222,7 @@ def test_wappi_history_duplicate_chat_id_between_pages_is_deduplicated(tmp_path:
     assert stats["chat_snapshot_drift_detected"] is False
     assert report["validation_ok"] is False
     assert any(marker.endswith("pagination_drift_detected") for marker in report["limit_hits"])
-    assert len([call for call in client.calls if call.get("kind") == "messages"]) == 1
+    assert len([call for call in client.calls if call.get("kind") == "messages"]) == 0
 
 
 def test_wappi_history_request_budget_caps_inner_pagination(tmp_path: Path) -> None:
@@ -2237,7 +2233,13 @@ def test_wappi_history_request_budget_caps_inner_pagination(tmp_path: Path) -> N
         {"p-tg": [], "p-max": [{"id": "chat-1", "type": "user"}]},
         {
             ("max", "p-max", "chat-1"): [
-                {"unexpected": index}
+                {
+                    "id": f"m-{index}",
+                    "chat_id": "chat-1",
+                    "type": "text",
+                    "body": "Текст",
+                    "time": 1_753_000_000 + index,
+                }
                 for index in range(350)
             ]
         },

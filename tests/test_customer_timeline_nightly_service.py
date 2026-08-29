@@ -135,6 +135,31 @@ def bot_safe_proof(summary: dict[str, object]) -> dict[str, object]:
     )
 
 
+def test_cursor_freshness_rejects_cursor_more_than_five_minutes_in_future() -> None:
+    cursor = {
+        "updated_at": NOW.isoformat(),
+        "last_cursor_ts": (NOW + timedelta(minutes=5)).isoformat(),
+    }
+    assert nightly_service_module._cursor_is_fresh(cursor, now=NOW) is True
+
+    cursor["last_cursor_ts"] = (NOW + timedelta(minutes=5, seconds=1)).isoformat()
+    assert nightly_service_module._cursor_is_fresh(cursor, now=NOW) is False
+
+
+def test_cursor_freshness_requires_valid_cursor_and_recent_check() -> None:
+    assert nightly_service_module._cursor_is_fresh(
+        {"updated_at": NOW.isoformat(), "last_cursor_ts": "not-a-date"},
+        now=NOW,
+    ) is False
+    assert nightly_service_module._cursor_is_fresh(
+        {
+            "updated_at": (NOW - timedelta(hours=37)).isoformat(),
+            "last_cursor_ts": (NOW - timedelta(hours=1)).isoformat(),
+        },
+        now=NOW,
+    ) is False
+
+
 def test_bot_safe_proof_rejects_zero_summaries() -> None:
     proof = bot_safe_proof({"considered_customers": 10, "customers_with_summary": 0})
 

@@ -23,7 +23,7 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
 
 
-def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path: Path) -> None:
+def test_family_graph_keeps_child_relevant_single_child_event_ambiguous_without_name(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")
     _seed_event(db_path, tmp_path, customer_id="customer:one", source_id="call-1", summary="Клиент спросил про расписание курса.")
@@ -53,8 +53,66 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
         event = con.execute("SELECT status, confidence, reason, child_key FROM event_child_attribution_v1").fetchone()
     assert family == ("Аня", "confident", "high")
     assert member == ("singleton", "medium")
-    assert event[0:3] == ("matched", "high", "single_child_family")
-    assert event[3]
+    assert event[0:3] == ("ambiguous", "low", "child_relevant_but_no_unique_name")
+    assert event[3] == ""
+
+
+def test_family_graph_does_not_assign_event_naming_another_child_to_single_child(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")
+    _seed_event(
+        db_path,
+        tmp_path,
+        customer_id="customer:one",
+        source_id="call-other-child",
+        summary="Клиента интересовала летняя школа для Тимофея.",
+    )
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:one", phone="+79000000001")
+    _insert_field(profiles_db, profile_id="customer:one", field="child_name", value="Филипп", child_key="child_1")
+    _insert_field(profiles_db, profile_id="customer:one", field="grade", value="5", child_key="child_1")
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        event = con.execute(
+            "SELECT a.status,a.confidence,a.reason,a.child_key FROM event_child_attribution_v1 a "
+            "JOIN timeline_events e USING(event_id) WHERE e.source_id='call-other-child'"
+        ).fetchone()
+    assert event == ("ambiguous", "low", "child_relevant_but_no_unique_name", "")
+
+
+def test_family_graph_keeps_single_child_opportunity_ambiguous_without_exact_name(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE customer_opportunities SET title='26/27 уч.год мат 8 кл онлайн'")
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:one", phone="+79000000001")
+    _insert_field(profiles_db, profile_id="customer:one", field="child_name", value="Евгений", child_key="child_1")
+    _insert_field(profiles_db, profile_id="customer:one", field="grade", value="5", child_key="child_1")
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        opportunity = con.execute(
+            "SELECT status,confidence,reason,child_key FROM opportunity_child_attribution_v1"
+        ).fetchone()
+    assert opportunity == ("ambiguous", "low", "child_relevant_but_no_unique_name", "")
 
 
 def test_family_graph_reuses_normalized_amo_organization_brand(tmp_path: Path) -> None:

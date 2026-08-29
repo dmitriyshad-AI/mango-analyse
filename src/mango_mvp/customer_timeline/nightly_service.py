@@ -113,6 +113,7 @@ DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS = 6.0 * 3600.0
 # Set generously above the ~24h nightly cadence so one missed/late run does
 # not immediately flip a healthy, quiet source to "stale".
 SOURCE_PROOF_STALE_AFTER_HOURS = 36.0
+SOURCE_CURSOR_MAX_FUTURE_SKEW = timedelta(minutes=5)
 
 # Wappi and Mail are mandatory stages.  Keep this list exact so failures in a
 # similarly named/optional stage cannot inherit their publication semantics.
@@ -3269,7 +3270,10 @@ def _cursor_is_fresh(cursor: Optional[Mapping[str, Any]], *, now: datetime) -> b
     if cursor is None:
         return False
     checked = _parse_iso_or_none(cursor.get("updated_at"))
-    if checked is None:
+    last_cursor = _parse_iso_or_none(cursor.get("last_cursor_ts"))
+    if checked is None or last_cursor is None:
+        return False
+    if last_cursor - now > SOURCE_CURSOR_MAX_FUTURE_SKEW:
         return False
     age_hours = (now - checked).total_seconds() / 3600.0
     return 0 <= age_hours <= SOURCE_PROOF_STALE_AFTER_HOURS

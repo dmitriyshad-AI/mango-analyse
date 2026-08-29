@@ -1949,6 +1949,14 @@ def _attribute_text(
             "reason": "multiple_child_name_mentions",
             "matched_names": [str(group.get("canonical_name") or "") for group in matches],
         }
+    if _child_relevant_text(normalized, event_type=event_type, object_kind=object_kind):
+        return {
+            "child_key": "",
+            "status": "ambiguous",
+            "confidence": "low",
+            "reason": "child_relevant_but_no_unique_name",
+            "matched_names": [],
+        }
     if len(usable) == 1 and usable[0].get("confidence") == "high":
         return {
             "child_customer_id": str(usable[0].get("customer_id") or context.customer_id),
@@ -1956,14 +1964,6 @@ def _attribute_text(
             "status": "matched",
             "confidence": "high",
             "reason": "single_child_family",
-            "matched_names": [],
-        }
-    if _child_relevant_text(normalized, event_type=event_type, object_kind=object_kind):
-        return {
-            "child_key": "",
-            "status": "ambiguous",
-            "confidence": "low",
-            "reason": "child_relevant_but_no_unique_name",
             "matched_names": [],
         }
     return None
@@ -2176,7 +2176,15 @@ def _name_mentioned(normalized_text: str, name: Any) -> bool:
     canonical_text_tokens = set(text_tokens)
     for token in tuple(text_tokens):
         canonical_text_tokens.update(_safe_name_keys(token))
-    return any(key in canonical_text_tokens for key in keys)
+    if any(key in canonical_text_tokens for key in keys):
+        return True
+    name_options = _name_token_options(str(name or ""))
+    text_options = [options[0] for token in text_tokens if (options := _name_token_options(token))]
+    return any(
+        _token_option_sets_match(name_token, text_token)
+        for name_token in name_options
+        for text_token in text_options
+    )
 
 
 def _name_key(value: str) -> str:

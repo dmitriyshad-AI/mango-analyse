@@ -204,6 +204,50 @@ def test_tallanto_cards_sync_reuses_db_and_fetches_only_recent_changes(tmp_path:
     assert _event_count(tmp_path / "staging.sqlite") == 3
 
 
+def test_tallanto_cards_sync_repairs_only_proven_future_timezone_cursor(tmp_path: Path) -> None:
+    db_path = tmp_path / "staging.sqlite"
+    first = run_tallanto_cards_sync(
+        _config(
+            tmp_path,
+            FakeContactClient([_contact(contact_id="legacy-cursor")]),
+            timeline_db=db_path,
+        )
+    )
+    assert first["complete"] is True
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        current = store.get_ingestion_cursor("foton", TALLANTO_CARDS_SOURCE_SYSTEM)
+        assert current is not None
+        with sqlite3.connect(db_path) as con:
+            latest_event_at = datetime.fromisoformat(
+                con.execute(
+                    "SELECT event_at FROM timeline_events "
+                    "WHERE source_system='tallanto_snapshot' ORDER BY julianday(event_at) DESC LIMIT 1"
+                ).fetchone()[0]
+            )
+        store.upsert_ingestion_cursor(
+            "foton",
+            TALLANTO_CARDS_SOURCE_SYSTEM,
+            last_cursor_ts=latest_event_at + timedelta(hours=3),
+            metadata=current.metadata,
+            actor="test",
+        )
+
+    second = run_tallanto_cards_sync(
+        _config(tmp_path, QueryAwareContactClient([]), timeline_db=db_path)
+    )
+
+    assert second["complete"] is True
+    assert second["cursor_repair"]["applied"] is True
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        repaired = store.get_ingestion_cursor("foton", TALLANTO_CARDS_SOURCE_SYSTEM)
+    assert repaired is not None
+    assert repaired.last_cursor_ts <= datetime.now(timezone.utc) + timedelta(minutes=5)
+    assert repaired.metadata["cursor_repair"]["reason"] == (
+        "legacy_naive_tallanto_datetime_was_interpreted_as_utc"
+    )
+
+
 def test_tallanto_cards_sync_repeated_import_does_not_increase_raw_events(tmp_path: Path) -> None:
     contacts = [_contact(contact_id="10", phone="+7 916 222-33-44", email="parent10@example.com")]
     first = run_tallanto_cards_sync(_config(tmp_path, FakeContactClient(contacts)))
@@ -730,6 +774,19 @@ def test_map_raw_contact_keeps_confirmed_business_fields_only() -> None:
     assert mapped["branch"] == "Долгопрудный"
     assert mapped["subjects"] == "Физика, Математика"
     assert mapped["amo_contact_id"] == "123"
+    assert mapped["created_at"] == "2026-01-01T10:00:00+03:00"
+    assert mapped["updated_at"] == "2026-07-25T10:00:00+03:00"
+
+
+def test_map_raw_contact_keeps_fallback_timestamp_timezone_aware() -> None:
+    mapped = map_raw_contact_to_snapshot_payload(
+        {"id": "student-1", "first_name": "Иван"},
+        snapshot_at="2026-07-26T00:00:00+00:00",
+    )
+
+    assert mapped is not None
+    assert mapped["created_at"] == "2026-07-26T03:00:00+03:00"
+    assert mapped["updated_at"] == "2026-07-26T03:00:00+03:00"
 
 
 def test_tallanto_cards_sync_uses_only_explicit_env_file(

@@ -340,3 +340,200 @@ def test_business_population_is_anchored_in_current_tallanto_students(
     population = MODULE._dossier_population(con, tenant_id="foton")
 
     assert bool(population) is expected
+
+def test_human_review_active_input_requires_exact_eight_unique_hashes(tmp_path: Path) -> None:
+    rows = [
+        {"customer_sha256": f"{index:064x}", "position": index, "reason_code": "no_explicit_next_step"}
+        for index in range(8)
+    ]
+    path = tmp_path / "exam.json"
+    path.write_text(json.dumps({"cards": {"active_deal_closed_or_empty": rows}}), encoding="utf-8")
+
+    assert len(MODULE._active_no_step_refs(path, expected_count=8)) == 8
+
+    rows[-1]["customer_sha256"] = rows[0]["customer_sha256"]
+    path.write_text(json.dumps({"cards": {"active_deal_closed_or_empty": rows}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE._active_no_step_refs(path, expected_count=8)
+
+
+def _ambiguous_case(index: int) -> dict[str, object]:
+    return {
+        "customer_sha256": f"{index + 1:064x}",
+        "case_event_sha256": f"{1000 + index:064x}",
+        "reason_codes": ["multiple_amo_contacts"],
+        "candidate_amo_contact_sha256s": [f"{2000 + index:064x}"],
+        "candidate_amo_lead_sha256s": [],
+        "resolution_status": "unresolved_no_authoritative_lead",
+        "resolved_amo_lead_sha256": None,
+    }
+
+
+def test_human_review_ambiguous_input_requires_primary_exact_nineteen(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[1]["candidate_amo_contact_sha256s"] = [f"{3001:064x}", f"{3002:064x}"]
+    rows[1]["candidate_amo_lead_sha256s"] = [f"{4001:064x}", f"{4002:064x}"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    refs = MODULE._ambiguous_link_refs(path, expected_count=19)
+    assert len(refs) == 19
+    assert "AMO leads=0" in refs[0]["position"]
+    assert "AMO contacts=2" in refs[1]["position"]
+    assert "AMO leads=2" in refs[1]["position"]
+
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows[:-1]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly 19"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_duplicate_case(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[-1]["case_event_sha256"] = rows[0]["case_event_sha256"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate cases"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_duplicate_customer_and_non_string_hash(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[-1]["customer_sha256"] = rows[0]["customer_sha256"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate customers"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0]["customer_sha256"] = 123
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a SHA256 string"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_raw_amo_ids_and_invalid_candidate_hashes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0]["amo_lead_id"] = "raw-lead-1"
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="only hashed AMO candidates"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+    del rows[0]["amo_lead_id"]
+    rows[0]["candidate_amo_contact_sha256s"] = ["not-a-sha256"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="64-character SHA256"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("reason_codes", ["multiple_amo_contacts:contact_id=123"], "allowed codes"),
+        ("resolution_status", "unresolved:lead_id=456", "allowed code"),
+        ("case_ref", "amo:lead:456", "only hashed AMO candidates"),
+        ("customer_id", "customer:raw", "only hashed AMO candidates"),
+    ),
+)
+def test_human_review_ambiguous_input_rejects_freeform_identity_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0][field] = value
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_unknown_top_level_field(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    path.write_text(json.dumps({
+        "schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA,
+        "rows": rows,
+        "raw_note": "lead_id=456",
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected top-level fields"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_duplicate_candidate_hash(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    candidate = f"{6001:064x}"
+    rows[0]["candidate_amo_lead_sha256s"] = [candidate, candidate]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate SHA256"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_unresolved_singleton_lead(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0]["candidate_amo_lead_sha256s"] = [f"{7001:064x}"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="zero or multiple"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+    rows[0]["candidate_amo_lead_sha256s"] = []
+    rows[0]["resolution_status"] = "ambiguous_multiple_authoritative_leads"
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="requires multiple"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_allows_resolved_lead_only_for_authoritative_singleton(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    resolved = f"{5001:064x}"
+    rows[0].update({
+        "candidate_amo_lead_sha256s": [resolved],
+        "resolution_status": "resolved_authoritative_singleton",
+        "resolved_amo_lead_sha256": resolved,
+    })
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    assert len(MODULE._ambiguous_link_refs(path, expected_count=19)) == 19
+
+    rows[0]["candidate_amo_lead_sha256s"] = [resolved, f"{5002:064x}"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="authoritative singleton"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_workbook_is_one_private_owner_sheet(tmp_path: Path) -> None:
+    out = tmp_path / "human.xlsx"
+    MODULE._write_human_review_workbook(
+        out,
+        [{
+            "Когорта": "8 active/no-step",
+            "customer_id": "customer:1",
+            "Клиент": "Клиент с ПД",
+            "История верна и полна?": "",
+            "Досье экономит время?": "",
+            "Действие верно сейчас?": "",
+        }],
+    )
+
+    wb = load_workbook(out, read_only=True)
+    assert wb.sheetnames == ["Human review"]
+    headers = [cell.value for cell in next(wb["Human review"].iter_rows())]
+    assert "Владелец/семья верны?" in headers
+    assert "История верна и полна?" in headers
+    assert "Досье экономит время?" in headers
+    assert "Действие верно сейчас?" in headers
+    assert out.stat().st_mode & 0o777 == 0o600

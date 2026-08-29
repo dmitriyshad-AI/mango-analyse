@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.contracts import (
     UNIQUE_IDENTITY_LINK_TYPES,
 )
 from mango_mvp.customer_timeline.ids import (
+    is_nullish_customer_id,
     normalize_email,
     normalize_key,
     optional_text,
@@ -1070,7 +1071,10 @@ class MangoCallSummaryNormalizer:
             "existing_timeline_increment",
         }
         match_class = identity_match_class_from_payload(payload)
-        resolved_customer_id = optional_text(first_value(payload, ("customer_id", "resolved_customer_id")))
+        raw_customer_id = first_value(payload, ("customer_id", "resolved_customer_id"))
+        resolved_customer_id = None if is_nullish_customer_id(raw_customer_id) else optional_text(raw_customer_id)
+        if strict_existing_identity and match_class == IdentityMatchClass.STRONG_UNIQUE and not resolved_customer_id:
+            match_class = IdentityMatchClass.UNMATCHED
         customer_id: Optional[str]
         customers: tuple[CustomerIdentity, ...]
         links: tuple[IdentityLink, ...]
@@ -1121,6 +1125,11 @@ class MangoCallSummaryNormalizer:
         call_type = normalize_key(first_value(payload, ("call_type", "call_quality_type")) or "unknown", "call_type")
         is_non_conversation = is_non_contentful_call_record(payload)
         summary = None if is_non_conversation else compact_text(first_value(payload, ("summary", "insight_summary", "analysis_summary")), limit=500)
+        raw_direction = optional_text(first_value(payload, ("direction",)))
+        try:
+            direction = TimelineDirection((raw_direction or TimelineDirection.SYSTEM.value).casefold())
+        except ValueError:
+            direction = TimelineDirection.SYSTEM
         event = TimelineEvent(
             tenant_id=self.tenant_id,
             customer_id=customer_id,
@@ -1129,7 +1138,7 @@ class MangoCallSummaryNormalizer:
             source_system=self.source_system,
             source_id=call_id,
             source_ref=source_ref,
-            direction=TimelineDirection(first_value(payload, ("direction",)) or "inbound"),
+            direction=direction,
             actor_name=optional_text(first_value(payload, ("manager_name", "sales_manager"))),
             actor_ref=optional_text(first_value(payload, ("manager_id", "employee_id"))),
             subject=compact_text(first_value(payload, ("subject", "product", "topic")), limit=160),

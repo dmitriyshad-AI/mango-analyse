@@ -11,6 +11,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,79}$")
 _EMAIL_RE = re.compile(r"(?i)^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}$")
+NULLISH_CUSTOMER_ID_VALUES = frozenset({"none", "null", "nan", "undefined", "<na>", "n/a"})
 
 
 def stable_digest(payload: Mapping[str, Any]) -> str:
@@ -44,6 +45,31 @@ def optional_text(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def is_nullish_customer_id(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip()
+    return not text or text.casefold() in NULLISH_CUSTOMER_ID_VALUES
+
+
+def optional_customer_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.casefold() in NULLISH_CUSTOMER_ID_VALUES:
+        raise ValueError(f"customer_id contains a null placeholder: {value!r}")
+    return text
+
+
+def require_customer_id(value: Any) -> str:
+    text = require_text(value, "customer_id")
+    if text.casefold() in NULLISH_CUSTOMER_ID_VALUES:
+        raise ValueError(f"customer_id contains a null placeholder: {value!r}")
+    return text
 
 
 def require_timezone(value: datetime, field_name: str) -> None:
@@ -132,7 +158,7 @@ def customer_entity_ref(customer_id: Any) -> str:
     against real customer_ids), so one authoritative customer_id never ends
     up split across two different ref spellings.
     """
-    text = require_text(customer_id, "customer_id")
+    text = require_customer_id(customer_id)
     while text.startswith("customer:customer:"):
         text = text.removeprefix("customer:")
     return text if text.startswith("customer:") else f"customer:{text}"
@@ -170,7 +196,7 @@ def stable_opportunity_id(
         "opportunity",
         {
             "tenant_id": normalize_key(tenant_id, "tenant_id"),
-            "customer_id": require_text(customer_id, "customer_id"),
+            "customer_id": require_customer_id(customer_id),
             "opportunity_type": normalize_key(opportunity_type, "opportunity_type"),
             "source_system": normalize_key(source_system, "source_system"),
             "source_id": require_text(source_id, "source_id"),
@@ -228,7 +254,7 @@ def stable_signal_id(
         "derived_signal",
         {
             "tenant_id": normalize_key(tenant_id, "tenant_id"),
-            "customer_id": optional_text(customer_id),
+            "customer_id": optional_customer_id(customer_id),
             "signal_type": normalize_key(signal_type, "signal_type"),
             "source_event_ids": sorted(require_text(item, "source_event_id") for item in source_event_ids),
             "evidence_text": optional_text(evidence_text),
@@ -253,7 +279,7 @@ def stable_chunk_id(
         "bot_context_chunk",
         {
             "tenant_id": normalize_key(tenant_id, "tenant_id"),
-            "customer_id": require_text(customer_id, "customer_id"),
+            "customer_id": require_customer_id(customer_id),
             "chunk_type": normalize_key(chunk_type, "chunk_type"),
             "event_id": optional_text(event_id),
             "source_ref": optional_text(source_ref),

@@ -16,6 +16,7 @@ from mango_mvp.customer_timeline.amo_incremental import (
     fetch_endpoint_checkpointed,
     fetch_events_source,
     load_amo_link_index,
+    load_amo_opportunity_index,
     run_amo_incremental,
 )
 from mango_mvp.customer_timeline.contracts import (
@@ -38,6 +39,76 @@ from mango_mvp.customer_timeline.nightly_incremental import (
 
 
 NOW = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+
+
+def test_amo_indexes_ignore_sql_and_textual_null_customer_ids(tmp_path) -> None:
+    db_path = tmp_path / "staging.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        valid = CustomerIdentity(
+            tenant_id="foton",
+            customer_id="customer:valid",
+            identity_status="strong",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        discarded = CustomerIdentity(
+            tenant_id="foton",
+            customer_id="customer:discarded",
+            identity_status="strong",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        store.upsert_customer(valid)
+        store.upsert_customer(discarded)
+        links = []
+        opportunities = []
+        for suffix, customer in (("valid", valid), ("null", discarded), ("text", discarded)):
+            link = IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type="amo_contact_id",
+                link_value=f"contact-{suffix}",
+                source_system="amocrm_snapshot",
+                source_ref=f"contact:{suffix}",
+            )
+            opportunity = CustomerOpportunity(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                opportunity_type="amo_deal",
+                source_system="amocrm_snapshot",
+                source_id=f"lead-{suffix}",
+            )
+            store.upsert_identity_link(link)
+            store.upsert_opportunity(opportunity)
+            links.append(link)
+            opportunities.append(opportunity)
+        store._con.execute(  # noqa: SLF001 - historical corruption fixture.
+            "UPDATE identity_links SET customer_id=NULL WHERE link_id=?", (links[1].link_id,)
+        )
+        store._con.execute(  # noqa: SLF001
+            "UPDATE identity_links SET customer_id='None' WHERE link_id=?", (links[2].link_id,)
+        )
+        store._con.execute(  # noqa: SLF001
+            "UPDATE customer_opportunities SET customer_id='' WHERE opportunity_id=?",
+            (opportunities[1].opportunity_id,),
+        )
+        store._con.execute(  # noqa: SLF001
+            "UPDATE customer_opportunities SET customer_id='None' WHERE opportunity_id=?",
+            (opportunities[2].opportunity_id,),
+        )
+        store._con.commit()  # noqa: SLF001
+
+    assert load_amo_link_index(db_path, tenant_id="foton") == {
+        ("amo_contact_id", "contact-valid"): ("customer:valid",)
+    }
+    assert load_amo_opportunity_index(db_path, tenant_id="foton") == {
+        "lead-valid": (
+            {
+                "opportunity_id": opportunities[0].opportunity_id,
+                "customer_id": "customer:valid",
+            },
+        )
+    }
 
 
 def _write_verified_task_snapshot(tmp_path, rows=()):

@@ -18,7 +18,7 @@ from mango_mvp.existing_clients.amo_step1_snapshot import (
     embedded_items,
     read_mcp_env,
 )
-from mango_mvp.customer_timeline.ids import normalize_email, stable_digest
+from mango_mvp.customer_timeline.ids import is_nullish_customer_id, normalize_email, stable_digest
 from mango_mvp.customer_timeline.canonical_readonly_import import upsert_amo_task_snapshot
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
@@ -1233,6 +1233,8 @@ def load_amo_link_index(db_path: Path, *, tenant_id: str) -> Mapping[tuple[str, 
             SELECT link_type, link_value, customer_id
             FROM identity_links
             WHERE tenant_id = ?
+              AND customer_id IS NOT NULL
+              AND trim(customer_id) != ''
               AND link_type IN (
                 'amo_lead_id', 'amo_contact_id', 'phone', 'mango_client_phone',
                 'whatsapp_phone', 'email'
@@ -1242,7 +1244,10 @@ def load_amo_link_index(db_path: Path, *, tenant_id: str) -> Mapping[tuple[str, 
         ):
             link_type = str(row["link_type"])
             canonical_type = "phone" if link_type in {"phone", "mango_client_phone", "whatsapp_phone"} else link_type
-            result.setdefault((canonical_type, str(row["link_value"])), set()).add(str(row["customer_id"]))
+            customer_id = row["customer_id"]
+            if is_nullish_customer_id(customer_id):
+                continue
+            result.setdefault((canonical_type, str(row["link_value"])), set()).add(str(customer_id))
     return {key: tuple(sorted(values)) for key, values in result.items()}
 
 
@@ -1258,11 +1263,15 @@ def load_amo_opportunity_index(db_path: Path, *, tenant_id: str) -> Mapping[str,
             WHERE tenant_id = ?
               AND source_system = 'amocrm_snapshot'
               AND opportunity_type = 'amo_deal'
+              AND customer_id IS NOT NULL
+              AND trim(customer_id) != ''
               AND source_id IS NOT NULL
               AND source_id != ''
             """,
             (tenant_id,),
         ):
+            if is_nullish_customer_id(row["customer_id"]):
+                continue
             result.setdefault(str(row["source_id"]), []).append(
                 {
                     "opportunity_id": str(row["opportunity_id"]),

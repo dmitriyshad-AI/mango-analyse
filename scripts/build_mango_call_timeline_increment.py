@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from mango_mvp.customer_timeline.contracts import IdentityMatchClass
+from mango_mvp.customer_timeline.contracts import IdentityMatchClass, TimelineDirection
+from mango_mvp.customer_timeline.ids import is_nullish_customer_id
 from mango_mvp.customer_timeline.call_source_identity import (
     build_call_lineage,
     call_source_base_id,
@@ -420,13 +421,21 @@ def resolve_phone_identity(con: sqlite3.Connection, tenant_id: str, phone: str |
         """,
         (tenant_id, normalized_phone),
     ).fetchall()
-    customer_ids = sorted({str(row["customer_id"]) for row in rows if row["customer_id"]})
+    has_nullish_owner = any(is_nullish_customer_id(row["customer_id"]) for row in rows)
+    valid_rows = tuple(row for row in rows if not is_nullish_customer_id(row["customer_id"]))
+    customer_ids = sorted({str(row["customer_id"]) for row in valid_rows})
     classes = {str(row["match_class"] or "").strip() for row in rows}
     if not rows:
         return IdentityResolution(IdentityMatchClass.UNMATCHED.value, None, "no_identity_link", 0)
-    if len(customer_ids) == 1 and not (classes & UNSAFE_LINK_CLASSES):
+    if len(customer_ids) == 1 and not has_nullish_owner and not (classes & UNSAFE_LINK_CLASSES):
         return IdentityResolution(IdentityMatchClass.STRONG_UNIQUE.value, customer_ids[0], "single_existing_customer", 1)
-    reason = "multiple_existing_customers" if len(customer_ids) > 1 else "unsafe_existing_link_class"
+    reason = (
+        "invalid_existing_link_owner"
+        if has_nullish_owner
+        else "multiple_existing_customers"
+        if len(customer_ids) > 1
+        else "unsafe_existing_link_class"
+    )
     return IdentityResolution(IdentityMatchClass.AMBIGUOUS.value, None, reason, len(customer_ids))
 
 
@@ -482,12 +491,14 @@ def analysis_call_type(analysis: Mapping[str, Any]) -> str:
 
 
 def normalize_direction(value: str | None) -> str:
-    text = text_value(value).lower()
+    text = text_value(value).casefold()
     if text in {"outbound", "out", "исходящий"}:
-        return "outbound"
+        return TimelineDirection.OUTBOUND.value
     if text in {"inbound", "in", "входящий"}:
-        return "inbound"
-    return text or "inbound"
+        return TimelineDirection.INBOUND.value
+    if text == TimelineDirection.INTERNAL.value:
+        return TimelineDirection.INTERNAL.value
+    return TimelineDirection.SYSTEM.value
 
 
 def open_timeline_ro(path: Path) -> sqlite3.Connection:

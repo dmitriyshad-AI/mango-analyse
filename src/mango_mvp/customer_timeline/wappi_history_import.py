@@ -288,6 +288,7 @@ class WappiHistoryImportConfig:
 # never message text, names, phones, emails or tokens.
 WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION = "customer_timeline_wappi_history_checkpoint_v1"
 WAPPI_INCREMENTAL_FULL_AUDIT_DAYS = 7
+WAPPI_DELTA_TAIL_MAX_PAGES = 3
 
 
 def wappi_history_checkpoint_path(checkpoint_dir: Path) -> Path:
@@ -297,6 +298,34 @@ def wappi_history_checkpoint_path(checkpoint_dir: Path) -> Path:
 def wappi_checkpoint_token(value: str) -> str:
     # A Telegram chat_id is the peer's user id: keep only a one-way digest.
     return stable_digest({"wappi_chat": str(value or "")})[:32]
+
+
+def wappi_message_checkpoint_token(profile_id: str, chat_id: str, message_id: str) -> str:
+    """Privacy-safe boundary used to stop an append-only chat tail read."""
+    return stable_digest(
+        {
+            "wappi_profile": str(profile_id or ""),
+            "wappi_chat": str(chat_id or ""),
+            "wappi_message": str(message_id or ""),
+        }
+    )
+
+
+def _wappi_chat_cursor_is_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    raw_timestamp = value.get("timestamp")
+    timestamp = _wappi_safe_int(raw_timestamp)
+    digest_valid = bool(
+        re.fullmatch(r"[0-9a-f]{64}", str(value.get("message_digest") or ""))
+    )
+    if value.get("empty_baseline") is True:
+        return bool(
+            type(raw_timestamp) is int
+            and raw_timestamp == 0
+            and "message_digest" not in value
+        )
+    return bool(timestamp is not None and timestamp >= 0 and digest_valid)
 
 
 def wappi_checkpoint_anchor(tokens: Sequence[str]) -> str:
@@ -390,6 +419,14 @@ def _wappi_checkpoint_entry_is_valid(value: Any) -> bool:
             for marker, stamp in markers.items()
         ):
             return False
+    chat_cursors = value.get("chat_cursors", {})
+    if not isinstance(chat_cursors, Mapping) or any(
+        not isinstance(chat_token, str)
+        or not chat_token
+        or not _wappi_chat_cursor_is_valid(cursor)
+        for chat_token, cursor in chat_cursors.items()
+    ):
+        return False
     if any(key in value and not isinstance(value[key], bool) for key in ("complete", "incremental_cycle")):
         return False
     if any(key in value and not isinstance(value[key], str) for key in ("full_audit_at", "full_audit_started_at")):
@@ -469,6 +506,125 @@ def wappi_timeline_state(
     finally:
         con.close()
     return state
+
+
+def wappi_timeline_chat_cursors(
+    db_path: Path,
+    *,
+    tenant_id: str,
+) -> Mapping[str, Mapping[str, Mapping[str, Any]]]:
+    """Build newest-message boundaries locally; never reads Wappi or exposes raw IDs."""
+    newest: dict[tuple[str, str], tuple[tuple[str, str], str, int]] = {}
+    with open_readonly_sqlite(db_path) as con:
+        if not sqlite_table_exists(con, "timeline_events"):
+            return {}
+        for row in con.execute(
+            "SELECT source_system,event_at,record_json FROM timeline_events "
+            "WHERE tenant_id=? AND source_system IN ('wappi_telegram','wappi_max') "
+            "AND coalesce(source_id,'')!='' AND superseded_by IS NULL "
+            "ORDER BY source_system,event_at,event_id",
+            (normalize_key(tenant_id, "tenant_id"),),
+        ):
+            payload = json.loads(str(row["record_json"] or "{}"))
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+            profile_id = str(metadata.get("profile_id") or "").strip()
+            chat_id = str(metadata.get("chat_id") or "").strip()
+            message_id = str(metadata.get("message_id") or "").strip()
+            if not profile_id or not chat_id or not message_id:
+                continue
+            event_at = str(row["event_at"] or "")
+            try:
+                parsed_at = datetime.fromisoformat(event_at.replace("Z", "+00:00"))
+                if parsed_at.tzinfo is None:
+                    parsed_at = parsed_at.replace(tzinfo=timezone.utc)
+                timestamp = max(0, int(parsed_at.timestamp()))
+            except (OverflowError, ValueError):
+                timestamp = 0
+            profile_key = f"{row['source_system']}:{profile_id}"
+            chat_token = wappi_checkpoint_token(chat_id)
+            sort_key = (event_at, message_id)
+            current = newest.get((profile_key, chat_token))
+            if current is None or sort_key > current[0]:
+                newest[(profile_key, chat_token)] = (
+                    sort_key,
+                    wappi_message_checkpoint_token(profile_id, chat_id, message_id),
+                    timestamp,
+                )
+    grouped: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    for (profile_key, chat_token), (_sort_key, message_token, timestamp) in newest.items():
+        grouped[profile_key][chat_token] = {
+            "message_digest": message_token,
+            "timestamp": timestamp,
+        }
+    return {
+        profile_key: dict(sorted(cursors.items()))
+        for profile_key, cursors in sorted(grouped.items())
+    }
+
+
+def wappi_catalog_lifecycle_source_ids(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    chat_classes: Mapping[tuple[str, str, str], bool],
+) -> tuple[dict[str, set[str]], dict[str, set[str]], Mapping[str, Any]]:
+    """Classify persisted Wappi history from the current complete chat catalog."""
+    personal = {source: set() for source in SOURCE_SYSTEM_BY_CHANNEL.values()}
+    non_personal = {source: set() for source in SOURCE_SYSTEM_BY_CHANNEL.values()}
+    physical_rows = mapped_rows = unmatched_rows = 0
+    seen: set[tuple[str, str]] = set()
+    with open_readonly_sqlite(db_path) as con:
+        for row in con.execute(
+            "SELECT source_system,source_id,record_json FROM timeline_events "
+            "WHERE tenant_id=? AND source_system IN ('wappi_telegram','wappi_max') "
+            "AND coalesce(source_id,'')!=''",
+            (normalize_key(tenant_id, "tenant_id"),),
+        ):
+            physical_rows += 1
+            source_system, source_id = str(row["source_system"]), str(row["source_id"])
+            if (source_system, source_id) in seen:
+                raise ValueError("duplicate physical Wappi source record")
+            seen.add((source_system, source_id))
+            payload = json.loads(str(row["record_json"] or "{}"))
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+            key = (
+                source_system,
+                str(metadata.get("profile_id") or ""),
+                str(metadata.get("chat_id") or ""),
+            )
+            current_class = chat_classes.get(key)
+            persisted_non_personal = str(
+                payload.get("resolution_reason") or metadata.get("resolution_reason") or ""
+            ) == "timeline_identity_non_personal_chat"
+            if current_class is False or (current_class is None and persisted_non_personal):
+                non_personal[source_system].add(source_id)
+            elif current_class is True:
+                personal[source_system].add(source_id)
+            else:
+                unmatched_rows += 1
+                continue
+            mapped_rows += 1
+    hashed_non_personal = sorted(
+        stable_digest({"source_system": source, "source_id": source_id})
+        for source, source_ids in non_personal.items()
+        for source_id in source_ids
+    )
+    return personal, non_personal, {
+        "catalog_chats": len(chat_classes),
+        "catalog_personal_chats": sum(chat_classes.values()),
+        "catalog_non_personal_chats": len(chat_classes) - sum(chat_classes.values()),
+        "physical_rows": physical_rows,
+        "mapped_rows": mapped_rows,
+        "unmatched_rows": unmatched_rows,
+        "non_personal_source_records": len(hashed_non_personal),
+        "non_personal_source_digest": stable_digest(hashed_non_personal),
+        "catalog_classification_digest": stable_digest(
+            sorted(
+                (source, profile, wappi_checkpoint_token(chat), is_personal)
+                for (source, profile, chat), is_personal in chat_classes.items()
+            )
+        ),
+    }
 
 
 def usable_wappi_checkpoint_profiles(
@@ -1455,7 +1611,22 @@ class WappiFetchStats:
     chat_limit_hit: bool = False
     pagination_drift_detected: bool = False
     chat_snapshot_drift_detected: bool = False
+    catalog_total_stale_low: bool = False
+    catalog_reported_total_min: Optional[int] = None
+    catalog_reported_total_max: Optional[int] = None
+    catalog_terminal_empty: bool = False
+    catalog_boundary_mode: str = ""
+    catalog_boundary_proven: bool = False
+    catalog_passes: int = 0
     message_page_drift_detected: bool = False
+    message_page_drift_chat_token: str = ""
+    message_page_drift_reason: str = ""
+    message_page_drift_offset: int = 0
+    message_page_drift_pages: int = 0
+    message_page_drift_cursor_kind: str = ""
+    message_page_drift_marker_relation: str = ""
+    message_page_drift_first_signature: str = ""
+    message_page_drift_head_signature: str = ""
     checkpoint_network_error: bool = False
     checkpoint_no_progress: bool = False
     checkpoint_chats_skipped: int = 0
@@ -1465,6 +1636,9 @@ class WappiFetchStats:
     incremental_chats_changed: int = 0
     incremental_chats_without_marker: int = 0
     incremental_chats_marker_regressed: int = 0
+    incremental_tail_chats: int = 0
+    incremental_tail_fallbacks: int = 0
+    incremental_non_personal_skipped: int = 0
     full_history_audit: bool = False
     full_audit_clock_anomaly: bool = False
     resolution_status_counts: Counter[str] = field(default_factory=Counter)
@@ -1501,7 +1675,22 @@ class WappiFetchStats:
             "chat_limit_hit": self.chat_limit_hit,
             "pagination_drift_detected": self.pagination_drift_detected,
             "chat_snapshot_drift_detected": self.chat_snapshot_drift_detected,
+            "catalog_total_stale_low": self.catalog_total_stale_low,
+            "catalog_reported_total_min": self.catalog_reported_total_min,
+            "catalog_reported_total_max": self.catalog_reported_total_max,
+            "catalog_terminal_empty": self.catalog_terminal_empty,
+            "catalog_boundary_mode": self.catalog_boundary_mode,
+            "catalog_boundary_proven": self.catalog_boundary_proven,
+            "catalog_passes": self.catalog_passes,
             "message_page_drift_detected": self.message_page_drift_detected,
+            "message_page_drift_chat_token": self.message_page_drift_chat_token,
+            "message_page_drift_reason": self.message_page_drift_reason,
+            "message_page_drift_offset": self.message_page_drift_offset,
+            "message_page_drift_pages": self.message_page_drift_pages,
+            "message_page_drift_cursor_kind": self.message_page_drift_cursor_kind,
+            "message_page_drift_marker_relation": self.message_page_drift_marker_relation,
+            "message_page_drift_first_signature": self.message_page_drift_first_signature,
+            "message_page_drift_head_signature": self.message_page_drift_head_signature,
             "checkpoint_network_error": self.checkpoint_network_error,
             "checkpoint_no_progress": self.checkpoint_no_progress,
             "checkpoint_chats_skipped": self.checkpoint_chats_skipped,
@@ -1511,6 +1700,9 @@ class WappiFetchStats:
             "incremental_chats_changed": self.incremental_chats_changed,
             "incremental_chats_without_marker": self.incremental_chats_without_marker,
             "incremental_chats_marker_regressed": self.incremental_chats_marker_regressed,
+            "incremental_tail_chats": self.incremental_tail_chats,
+            "incremental_tail_fallbacks": self.incremental_tail_fallbacks,
+            "incremental_non_personal_skipped": self.incremental_non_personal_skipped,
             "full_history_audit": self.full_history_audit,
             "full_audit_clock_anomaly": self.full_audit_clock_anomaly,
             "resolution_status_counts": dict(self.resolution_status_counts),
@@ -1986,6 +2178,28 @@ def run_wappi_history_import(
                 },
             )
         }
+        local_chat_cursors = wappi_timeline_chat_cursors(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+        )
+        enriched_profiles: dict[str, Any] = {}
+        for profile_key, raw_entry in checkpoint_state["profiles"].items():
+            entry = dict(raw_entry)
+            existing = entry.get("chat_cursors")
+            existing_cursors = dict(existing) if isinstance(existing, Mapping) else {}
+            merged_cursors = {
+                **local_chat_cursors.get(str(profile_key), {}),
+                **existing_cursors,
+            }
+            for chat_token in entry.get("chats_done") or ():
+                merged_cursors.setdefault(
+                    str(chat_token),
+                    {"empty_baseline": True, "timestamp": 0},
+                )
+            entry["chat_cursors"] = dict(sorted(merged_cursors.items()))
+            enriched_profiles[str(profile_key)] = entry
+        checkpoint_state = {"profiles": enriched_profiles}
+    catalog_chat_classes: dict[tuple[str, str, str], bool] = {}
     records, fetch_stats_by_profile = fetch_wappi_history_records(
         client=client,
         profiles=profiles,
@@ -1994,6 +2208,7 @@ def run_wappi_history_import(
         tenant_id=config.tenant_id,
         checkpoint=checkpoint_state,
         next_checkpoint=next_checkpoint,
+        catalog_chat_classes=catalog_chat_classes,
     )
     network_records_pre_guard = len(records)
     network_source_ids = {
@@ -2013,15 +2228,88 @@ def run_wappi_history_import(
         if str(record.payload.get("timeline_source_id") or "")
     }
     records = (*records, *local_relink_records)
+    expected_excluded_source_ids = {
+        source_system: {
+            str(record.payload.get("timeline_source_id") or "")
+            for record in records[:network_records_pre_guard]
+            if record.source_system == source_system
+            and str(record.payload.get("timeline_source_id") or "")
+            and str(record.payload.get("resolution_reason") or "")
+            == "timeline_identity_non_personal_chat"
+        }
+        for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
+    }
+    observed_personal_source_ids = {
+        source_system: {
+            str(record.payload.get("timeline_source_id") or "")
+            for record in records[:network_records_pre_guard]
+            if record.source_system == source_system
+            and str(record.payload.get("timeline_source_id") or "")
+            and str(record.payload.get("resolution_reason") or "")
+            != "timeline_identity_non_personal_chat"
+        }
+        for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
+    }
+    catalog_personal_source_ids, catalog_non_personal_source_ids, catalog_lifecycle = (
+        wappi_catalog_lifecycle_source_ids(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+            chat_classes=catalog_chat_classes,
+        )
+    )
+    for source_system in SOURCE_SYSTEM_BY_CHANNEL.values():
+        catalog_personal_source_ids[source_system].update(
+            observed_personal_source_ids[source_system]
+        )
+        catalog_non_personal_source_ids[source_system].update(
+            expected_excluded_source_ids[source_system]
+        )
+    lifecycle_digest = stable_digest(
+        sorted(
+            (source_system, source_id)
+            for source_system, source_ids in catalog_non_personal_source_ids.items()
+            for source_id in source_ids
+        )
+    )[:16]
+    lifecycle_marker = f"retired:wappi_expected_excluded:{lifecycle_digest}"
+    lifecycle_report: dict[str, Any] = {
+        **catalog_lifecycle,
+        "retirement_marker": lifecycle_marker,
+        "current_ledger_expected_excluded_records": sum(
+            len(source_ids) for source_ids in expected_excluded_source_ids.values()
+        ),
+        "catalog_non_personal_source_records": sum(
+            len(source_ids) for source_ids in catalog_non_personal_source_ids.values()
+        ),
+        "non_personal_source_digest": stable_digest(
+            sorted(
+                stable_digest({"source_system": source, "source_id": source_id})
+                for source, source_ids in catalog_non_personal_source_ids.items()
+                for source_id in source_ids
+            )
+        ),
+        "restored_events": 0,
+        "retired_events": 0,
+    }
     expected_source_ids = {
         source_system: {
             str(record.payload.get("timeline_source_id") or "")
             for record in records
             if record.source_system == source_system
             and str(record.payload.get("timeline_source_id") or "")
+            and str(record.payload.get("resolution_reason") or "")
+            != "timeline_identity_non_personal_chat"
         }
         for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
     }
+    persistence_expected_excluded_non_personal = 0
+    for source_system, source_ids in expected_source_ids.items():
+        excluded = source_ids.intersection(catalog_non_personal_source_ids[source_system])
+        persistence_expected_excluded_non_personal += len(excluded)
+        source_ids.difference_update(excluded)
+    lifecycle_report["persistence_expected_excluded_non_personal_records"] = (
+        persistence_expected_excluded_non_personal
+    )
     records_pre_guard = len(records)
     existing_source_ids = load_existing_wappi_source_ids(
         config.timeline_db,
@@ -2204,18 +2492,24 @@ def run_wappi_history_import(
         }
         for profile in profiles
     }
-    limit_hits = [
-        f"{profile_id}:{field}"
-        for profile_id, report in sorted(profile_reports.items())
+    limit_hits: list[str] = []
+    for profile_id, report in sorted(profile_reports.items()):
         for field in (
             "chat_limit_hit",
             "message_limit_hit",
             "request_limit_hit",
             "pagination_drift_detected",
             "checkpoint_no_progress",
-        )
-        if report.get(field)
-    ]
+        ):
+            if not report.get(field):
+                continue
+            if (
+                field == "pagination_drift_detected"
+                and report.get("message_page_drift_reason") == "empty_delta_not_allowed"
+            ):
+                limit_hits.append(f"{profile_id}:message_reconciliation_gap")
+            else:
+                limit_hits.append(f"{profile_id}:{field}")
     limit_hits.extend(widget_setup_errors)
     attribution_warnings: list[str] = []
     pending_attribution_count = outcome_counts["network"]["quarantine"]
@@ -2291,7 +2585,12 @@ def run_wappi_history_import(
             marker
             for marker in limit_hits
             if marker.rsplit(":", 1)[-1]
-            in {"request_limit_hit", "empty_profile", "widget_personal_chat_coverage_incomplete"}
+            in {
+                "request_limit_hit",
+                "empty_profile",
+                "widget_personal_chat_coverage_incomplete",
+                "message_reconciliation_gap",
+            }
         ]
     blocking_limit_hits = [marker for marker in limit_hits if marker not in checkpoint_deferred]
 
@@ -2333,6 +2632,18 @@ def run_wappi_history_import(
         ) as store:
             store_summary_before = store.summary()
             with store.bulk_write():
+                restored = store.set_timeline_source_records_active(
+                    config.tenant_id,
+                    source_records=catalog_personal_source_ids,
+                    active=True,
+                    retirement_marker=lifecycle_marker,
+                    retirement_reason="wappi_expected_excluded_reclassified_personal",
+                    actor=config.actor,
+                )
+                lifecycle_report["restored_events"] = int(restored.get("changed_events") or 0)
+                write_status_counts["source_lifecycle_event_restored"] += int(
+                    restored.get("changed_events") or 0
+                )
                 for source_system, group in grouped.items():
                     report = TimelineImportService(store).import_records(
                         group,
@@ -2370,6 +2681,18 @@ def run_wappi_history_import(
                     actor=config.actor,
                 )
                 write_status_counts.update(quarantined)
+                retired = store.set_timeline_source_records_active(
+                    config.tenant_id,
+                    source_records=catalog_non_personal_source_ids,
+                    active=False,
+                    retirement_marker=lifecycle_marker,
+                    retirement_reason="wappi_expected_excluded_non_personal_chat",
+                    actor=config.actor,
+                )
+                lifecycle_report["retired_events"] = int(retired.get("changed_events") or 0)
+                write_status_counts["source_lifecycle_event_retired"] += int(
+                    retired.get("changed_events") or 0
+                )
                 provisional_cleanup = remove_orphaned_provisional_customers(
                     store,
                     tenant_id=config.tenant_id,
@@ -2441,13 +2764,38 @@ def run_wappi_history_import(
     messages_expected_in_timeline = sum(len(source_ids) for source_ids in expected_source_ids.values())
     messages_missing_from_timeline = max(0, messages_expected_in_timeline - messages_present_in_timeline)
     source_persistence_complete = apply_effective and messages_missing_from_timeline == 0
+    non_personal_active = sum(
+        len(
+            load_existing_wappi_source_ids(
+                config.timeline_db,
+                tenant_id=config.tenant_id,
+                source_systems={source_system},
+                source_ids=tuple(source_ids),
+            )
+        )
+        for source_system, source_ids in catalog_non_personal_source_ids.items()
+    )
+    lifecycle_report["non_personal_active_after"] = non_personal_active
+    lifecycle_apply_complete = bool(apply_effective and non_personal_active == 0)
+    lifecycle_report["applied_for_observed_catalog"] = lifecycle_apply_complete
+    lifecycle_report["complete"] = bool(
+        lifecycle_apply_complete
+        and checkpoint_complete
+        and catalog_chat_classes
+        and int(lifecycle_report.get("unmatched_rows") or 0) == 0
+    )
     publish_ready = (
         validation_ok
         and source_accounting_complete
         and local_accounting_complete
         and source_persistence_complete
+        and lifecycle_report["complete"]
     )
-    if next_checkpoint is not None and source_persistence_complete:
+    if (
+        next_checkpoint is not None
+        and source_persistence_complete
+        and lifecycle_apply_complete
+    ):
         # A checkpoint may only advance after every current source_id is visible.
         current_timeline_state = wappi_timeline_state(
             config.timeline_db, tenant_id=config.tenant_id, profiles=profiles
@@ -2521,6 +2869,7 @@ def run_wappi_history_import(
         "source_accounting_complete": source_accounting_complete,
         "local_accounting_complete": local_accounting_complete,
         "source_persistence_complete": source_persistence_complete,
+        "source_lifecycle": lifecycle_report,
         "attribution_complete": attribution_complete,
         "publish_ready": publish_ready,
         "limit_hits": limit_hits,
@@ -3818,6 +4167,141 @@ class WappiPairCustomerResolver:
         )
 
 
+@dataclass(frozen=True)
+class _WappiChatCatalogPass:
+    dialogs: tuple[Mapping[str, Any], ...]
+    chat_classes: Mapping[str, bool]
+    page_tokens: tuple[tuple[int, tuple[str, ...]], ...]
+    reported_totals: tuple[int, ...]
+    requests: int
+    terminal_offset: int
+    terminal_empty: bool
+    boundary_mode: str
+    raw_rows: int
+    missing_chat_ids: int
+    duplicate_chat_ids: int
+    error: str = ""
+
+
+def _fetch_wappi_chat_catalog_pass(
+    *,
+    client: WappiHistoryClient,
+    profile: WappiProfileSpec,
+    limits: WappiFetchLimits,
+    request_budget: int,
+    checkpoint_enabled: bool,
+    initial_offset: int = 0,
+) -> _WappiChatCatalogPass:
+    """Read one immutable catalog snapshot and prove its terminal boundary."""
+    dialogs_by_id: dict[str, Mapping[str, Any]] = {}
+    chat_classes: dict[str, bool] = {}
+    page_tokens: list[tuple[int, tuple[str, ...]]] = []
+    reported_totals: list[int] = []
+    requests = 0
+    raw_rows = 0
+    missing_chat_ids = 0
+    duplicate_chat_ids = 0
+    logical_offset = 0
+    terminal_empty = False
+    boundary_mode = ""
+    error = ""
+    while True:
+        if requests >= max(0, int(request_budget)):
+            error = "request_budget"
+            break
+        if not limits.complete_message_history and logical_offset >= limits.chat_limit_per_profile:
+            error = "chat_limit"
+            break
+        page_limit = (
+            limits.page_size
+            if limits.complete_message_history
+            else min(limits.page_size, limits.chat_limit_per_profile - logical_offset)
+        )
+        if page_limit <= 0:
+            error = "chat_limit"
+            break
+        try:
+            payload = client.list_chats(
+                channel=profile.channel,
+                profile_id=profile.profile_id,
+                limit=page_limit,
+                offset=max(0, int(initial_offset)) + logical_offset,
+                order="asc",
+                show_all=limits.show_all_chats,
+            )
+        except WappiPhysicalRequestBudgetExceeded:
+            error = "request_budget"
+            break
+        except AmoWappiHttpError:
+            if not checkpoint_enabled:
+                raise
+            error = "network_error"
+            break
+        requests += 1
+        sleep_if_needed(limits.sleep_seconds)
+        payload_is_proven, dialogs = _extract_wappi_items_with_shape_proof(
+            payload, "dialogs", "chats", "items", "data"
+        )
+        total_present, observed_total = _extract_wappi_total_count(payload)
+        if not payload_is_proven or not total_present or observed_total is None:
+            error = "pagination_drift"
+            break
+        reported_totals.append(observed_total)
+        page_tokens.append(
+            (logical_offset, tuple(wappi_checkpoint_token(extract_chat_id(item)) for item in dialogs))
+        )
+        if not dialogs:
+            terminal_empty = True
+            boundary_mode = "explicit_empty"
+            break
+        raw_rows += len(dialogs)
+        for dialog in dialogs:
+            chat_id = extract_chat_id(dialog)
+            if not chat_id:
+                missing_chat_ids += 1
+                continue
+            if chat_id in dialogs_by_id:
+                duplicate_chat_ids += 1
+                continue
+            dialogs_by_id[chat_id] = dialog
+            chat_classes[chat_id] = is_personal_wappi_dialog(profile, dialog)
+        if missing_chat_ids or duplicate_chat_ids:
+            error = "pagination_drift"
+            break
+        if not limits.complete_message_history and len(dialogs_by_id) > limits.chat_limit_per_profile:
+            error = "chat_limit"
+            break
+        if len(dialogs) > page_limit:
+            if logical_offset != 0:
+                error = "pagination_drift"
+                break
+            boundary_mode = "oversized_whole_snapshot"
+            logical_offset += len(dialogs)
+            break
+        logical_offset += len(dialogs)
+    if (
+        not error
+        and boundary_mode
+        and reported_totals
+        and max(reported_totals) > len(dialogs_by_id)
+    ):
+        error = "pagination_drift"
+    return _WappiChatCatalogPass(
+        dialogs=tuple(dialogs_by_id.values()),
+        chat_classes=chat_classes,
+        page_tokens=tuple(page_tokens),
+        reported_totals=tuple(reported_totals),
+        requests=requests,
+        terminal_offset=logical_offset,
+        terminal_empty=terminal_empty,
+        boundary_mode=boundary_mode,
+        raw_rows=raw_rows,
+        missing_chat_ids=missing_chat_ids,
+        duplicate_chat_ids=duplicate_chat_ids,
+        error=error,
+    )
+
+
 def fetch_wappi_history_records(
     *,
     client: WappiHistoryClient,
@@ -3827,6 +4311,7 @@ def fetch_wappi_history_records(
     tenant_id: str,
     checkpoint: Optional[Mapping[str, Any]] = None,
     next_checkpoint: Optional[dict[str, Any]] = None,
+    catalog_chat_classes: Optional[dict[tuple[str, str, str], bool]] = None,
 ) -> tuple[tuple[TimelineSourceRecord, ...], dict[tuple[str, str], WappiFetchStats]]:
     # next_checkpoint is an out-parameter (same shape as amo_incremental's
     # fetch_endpoint_checkpointed) so the existing 2-tuple contract is unchanged.
@@ -3861,11 +4346,9 @@ def fetch_wappi_history_records(
                 (limits.request_limit_total - total_requests) // max(1, len(profiles) - profile_index),
             )
             profile_budget_limit = min(limits.request_limit_total, total_requests + share)
-        offset = 0
         profile_messages = 0
         chat_ids_seen: set[str] = set()
         dialogs_snapshot: list[Mapping[str, Any]] = []
-        chat_page_specs: list[tuple[int, int]] = []
         checkpoint_key = f"{profile.source_system}:{profile.profile_id}"
         fingerprint = wappi_fetch_universe_fingerprint(profile, limits, tenant_id=tenant_id)
         entry, reset_reason = _wappi_resume_entry(checkpoint_profiles, checkpoint_key, fingerprint)
@@ -3894,141 +4377,102 @@ def fetch_wappi_history_records(
             for key, value in (entry.get("chat_markers") or {}).items()
             if isinstance(key, str) and _wappi_safe_int(value) is not None
         }
+        chat_cursors = {
+            str(key): dict(value)
+            for key, value in (entry.get("chat_cursors") or {}).items()
+            if isinstance(key, str) and _wappi_chat_cursor_is_valid(value)
+        }
         tail_checked: set[str] = set()
         resumed_from = len(confirmed_tokens)
         active_chat = entry.get("active_chat") if isinstance(entry.get("active_chat"), Mapping) else {}
         catalog_page_tokens: list[tuple[int, tuple[str, ...]]] = []
-        catalog_total: Optional[int] = None
         catalog_complete = False
         stop_reason = "source_exhausted"
-        while (
-            (limits.complete_message_history or len(dialogs_snapshot) < limits.chat_limit_per_profile)
-            and total_requests < profile_budget_limit
-        ):
-            page_limit = (
-                limits.page_size
-                if limits.complete_message_history
-                else min(limits.page_size, limits.chat_limit_per_profile - len(dialogs_snapshot))
+        first_catalog = _fetch_wappi_chat_catalog_pass(
+            client=client,
+            profile=profile,
+            limits=limits,
+            request_budget=max(0, profile_budget_limit - total_requests),
+            checkpoint_enabled=checkpoint_enabled,
+        )
+        stats.catalog_passes = 1
+        total_requests += first_catalog.requests
+        stats.requests += first_catalog.requests
+        second_catalog: Optional[_WappiChatCatalogPass] = None
+        if not first_catalog.error and first_catalog.boundary_mode:
+            second_catalog = _fetch_wappi_chat_catalog_pass(
+                client=client,
+                profile=profile,
+                limits=limits,
+                request_budget=max(0, profile_budget_limit - total_requests),
+                checkpoint_enabled=checkpoint_enabled,
+                initial_offset=0,
             )
-            if page_limit <= 0:
-                break
-            try:
-                payload = client.list_chats(
-                    channel=profile.channel,
-                    profile_id=profile.profile_id,
-                    limit=page_limit,
-                    offset=offset,
-                    order="asc",
-                    show_all=limits.show_all_chats,
-                )
-            except WappiPhysicalRequestBudgetExceeded:
-                stats.request_limit_hit = True
-                stop_reason = "request_budget"
-                break
-            except AmoWappiHttpError:
-                if not checkpoint_enabled:
-                    raise
-                stats.checkpoint_network_error = True
-                stop_reason = "network_error"
-                break
-            total_requests += 1
-            stats.requests += 1
-            sleep_if_needed(limits.sleep_seconds)
-            dialogs = extract_wappi_items(payload, "dialogs", "chats", "items", "data")
-            total_present, observed_total = _extract_wappi_total_count(payload)
-            if total_present and observed_total is None:
+            stats.catalog_passes = 2
+            total_requests += second_catalog.requests
+            stats.requests += second_catalog.requests
+        catalog_attempts = tuple(
+            item for item in (first_catalog, second_catalog) if item is not None
+        )
+        reported_totals = tuple(
+            total for item in catalog_attempts for total in item.reported_totals
+        )
+        if reported_totals:
+            stats.catalog_reported_total_min = min(reported_totals)
+            stats.catalog_reported_total_max = max(reported_totals)
+        stats.chats_seen = first_catalog.raw_rows
+        stats.skipped_chat_id_missing = sum(item.missing_chat_ids for item in catalog_attempts)
+        stats.duplicate_chat_ids = sum(item.duplicate_chat_ids for item in catalog_attempts)
+        stats.catalog_terminal_empty = bool(
+            second_catalog is not None
+            and first_catalog.terminal_empty
+            and second_catalog.terminal_empty
+        )
+        stats.catalog_boundary_mode = first_catalog.boundary_mode
+        catalog_error = next((item.error for item in catalog_attempts if item.error), "")
+        if catalog_error == "request_budget":
+            stats.request_limit_hit = True
+            stop_reason = "request_budget"
+        elif catalog_error == "network_error":
+            stats.checkpoint_network_error = True
+            stop_reason = "network_error"
+        elif catalog_error == "chat_limit":
+            stats.chat_limit_hit = True
+            stop_reason = "chat_limit"
+        elif catalog_error:
+            stats.pagination_drift_detected = True
+            stop_reason = "pagination_drift"
+        if not catalog_error and second_catalog is not None:
+            stats.chat_snapshot_drift_detected = bool(
+                first_catalog.chat_classes != second_catalog.chat_classes
+                or first_catalog.terminal_offset != second_catalog.terminal_offset
+                or first_catalog.boundary_mode != second_catalog.boundary_mode
+            )
+            if stats.chat_snapshot_drift_detected:
                 stats.pagination_drift_detected = True
-                stop_reason = "pagination_drift"
-                break
-            if observed_total is not None:
-                catalog_total = max(catalog_total or 0, observed_total)
-            chat_page_specs.append((offset, page_limit))
-            catalog_page_tokens.append(
-                (offset, tuple(wappi_checkpoint_token(extract_chat_id(item)) for item in dialogs))
-            )
-            if not dialogs:
-                catalog_complete = catalog_total is None or offset >= catalog_total
-                if not catalog_complete:
-                    stats.pagination_drift_detected = True
-                    stop_reason = "pagination_drift"
-                break
-            stats.chats_seen += len(dialogs)
-            for dialog in dialogs:
-                if not limits.complete_message_history and len(dialogs_snapshot) >= limits.chat_limit_per_profile:
-                    break
-                chat_id = extract_chat_id(dialog)
-                if not chat_id:
-                    stats.skipped_chat_id_missing += 1
-                    continue
-                if chat_id in chat_ids_seen:
-                    stats.duplicate_chat_ids += 1
-                    continue
-                chat_ids_seen.add(chat_id)
-                dialogs_snapshot.append(dialog)
-                stats.chats_loaded += 1
-            next_offset = offset + len(dialogs)
-            if catalog_total is not None and next_offset >= catalog_total:
-                catalog_complete = True
-                break
-            if len(dialogs) < page_limit and catalog_total is None:
-                catalog_complete = True
-                break
-            offset = next_offset
-        verification_chat_ids: set[str] = set()
-        for verification_offset, verification_limit in chat_page_specs:
-            if total_requests >= profile_budget_limit:
-                stats.request_limit_hit = True
-                stop_reason = "request_budget"
-                break
-            try:
-                verification_payload = client.list_chats(
-                    channel=profile.channel,
-                    profile_id=profile.profile_id,
-                    limit=verification_limit,
-                    offset=verification_offset,
-                    order="asc",
-                    show_all=limits.show_all_chats,
-                )
-            except WappiPhysicalRequestBudgetExceeded:
-                stats.request_limit_hit = True
-                stop_reason = "request_budget"
-                break
-            except AmoWappiHttpError:
-                if not checkpoint_enabled:
-                    raise
-                stats.checkpoint_network_error = True
-                stop_reason = "network_error"
-                break
+                stop_reason = "catalog_drift"
             else:
-                total_requests += 1
-                stats.requests += 1
-                sleep_if_needed(limits.sleep_seconds)
-                verification_dialogs = extract_wappi_items(
-                    verification_payload,
-                    "dialogs",
-                    "chats",
-                    "items",
-                    "data",
-                )
-                for item in verification_dialogs:
-                    chat_id = extract_chat_id(item)
-                    if chat_id and chat_id in verification_chat_ids:
-                        stats.duplicate_chat_ids += 1
-                    elif chat_id:
-                        verification_chat_ids.add(chat_id)
-                        if chat_id not in chat_ids_seen:
-                            chat_ids_seen.add(chat_id)
-                            dialogs_snapshot.append(item)
-                            stats.chats_loaded += 1
-        stats.chat_snapshot_drift_detected = chat_ids_seen != verification_chat_ids
-        if checkpoint_enabled and limits.complete_message_history and catalog_total is None:
-            stats.pagination_drift_detected = True
-            stop_reason = "pagination_drift"
-        if not stats.chat_snapshot_drift_detected and catalog_complete and catalog_total is not None and (
-            len(chat_ids_seen) != catalog_total or len(verification_chat_ids) != catalog_total
-        ):
-            stats.pagination_drift_detected = True
-            stop_reason = "pagination_drift"
+                catalog_complete = True
+                stats.catalog_boundary_proven = True
+                stats.catalog_boundary_mode = second_catalog.boundary_mode
+                dialogs_snapshot = list(second_catalog.dialogs)
+                initial_chat_classes = dict(second_catalog.chat_classes)
+                chat_ids_seen = set(initial_chat_classes)
+                catalog_page_tokens = list(second_catalog.page_tokens)
+                stats.chats_loaded = len(dialogs_snapshot)
+                if reported_totals and min(reported_totals) < len(dialogs_snapshot):
+                    stats.catalog_total_stale_low = True
+                if catalog_chat_classes is not None:
+                    catalog_chat_classes.update(
+                        {
+                            (profile.source_system, profile.profile_id, chat_id): is_personal
+                            for chat_id, is_personal in initial_chat_classes.items()
+                        }
+                    )
+        if not catalog_complete:
+            diagnostic_catalog = second_catalog or first_catalog
+            stats.chats_loaded = len(diagnostic_catalog.dialogs)
+            catalog_page_tokens = list(diagnostic_catalog.page_tokens)
         if entry and not incremental_base_complete and entry.get("catalog_page_anchor") and not reset_reason and catalog_complete:
             current_catalog_anchor = wappi_checkpoint_anchor(
                 tuple(token for _offset, page_tokens in catalog_page_tokens for token in page_tokens)
@@ -4036,8 +4480,28 @@ def fetch_wappi_history_records(
             if current_catalog_anchor != entry.get("catalog_page_anchor"):
                 reset_reason = "catalog_page_drift"
                 tail_checked.clear()
-        if not limits.complete_message_history and len(dialogs_snapshot) >= limits.chat_limit_per_profile:
-            stats.chat_limit_hit = True
+        if not catalog_complete:
+            stats.checkpoint_no_progress = checkpoint_enabled and bool(stats.chats_loaded)
+            _stash_wappi_checkpoint(
+                next_checkpoint, checkpoint_key, fingerprint=fingerprint, confirmed=confirmed_tokens,
+                active_chat=active_chat, catalog_pages=catalog_page_tokens,
+                chat_markers=chat_markers, chat_cursors=chat_cursors,
+                incremental_cycle=incremental_base_complete,
+                full_audit_at=full_audit_at,
+                full_audit_started_at=full_audit_started_at,
+                full_audit_markers=full_audit_markers,
+                chats_total=stats.chats_loaded,
+                resumed_from=resumed_from, complete=False, stop_reason=stop_reason, reset_reason=reset_reason,
+            )
+            continue
+        current_catalog_tokens = {
+            wappi_checkpoint_token(extract_chat_id(item))
+            for item in dialogs_snapshot
+            if extract_chat_id(item)
+        }
+        if active_chat and str(active_chat.get("chat") or "") not in current_catalog_tokens:
+            active_chat = {}
+            reset_reason = reset_reason or "active_chat_missing_from_catalog"
         if total_requests >= profile_budget_limit:
             stats.request_limit_hit = True
             stats.checkpoint_no_progress = checkpoint_enabled and bool(dialogs_snapshot)
@@ -4045,7 +4509,7 @@ def fetch_wappi_history_records(
             _stash_wappi_checkpoint(
                 next_checkpoint, checkpoint_key, fingerprint=fingerprint, confirmed=confirmed_tokens,
                 active_chat=active_chat, catalog_pages=catalog_page_tokens,
-                chat_markers=chat_markers,
+                chat_markers=chat_markers, chat_cursors=chat_cursors,
                 incremental_cycle=incremental_base_complete,
                 full_audit_at=full_audit_at,
                 full_audit_started_at=full_audit_started_at,
@@ -4064,13 +4528,30 @@ def fetch_wappi_history_records(
             for item in dialogs_snapshot
             if extract_chat_id(item)
             and wappi_checkpoint_token(extract_chat_id(item)) in full_audit_markers
+            and full_audit_markers[wappi_checkpoint_token(extract_chat_id(item))] > 0
             and full_audit_markers[wappi_checkpoint_token(extract_chat_id(item))]
             == _safe_int(item.get("last_timestamp"))
         }
-        dialogs_snapshot.sort(key=lambda item: (
-            wappi_checkpoint_token(extract_chat_id(item)) in
-            (confirmed_at_start if incremental_base_complete else full_audit_verified)
-        ))
+        full_audit_markerless_pending = {
+            token
+            for token, marker in full_audit_markers.items()
+            if marker <= 0
+        }
+        active_chat_token = str(active_chat.get("chat") or "")
+
+        def dialog_resume_rank(item: Mapping[str, Any]) -> int:
+            token = wappi_checkpoint_token(extract_chat_id(item))
+            if active_chat_token and token == active_chat_token:
+                return 0
+            if incremental_base_complete:
+                return 2 if token in confirmed_at_start else 1
+            if token in full_audit_verified:
+                return 3
+            if token in full_audit_markerless_pending:
+                return 2
+            return 1
+
+        dialogs_snapshot.sort(key=dialog_resume_rank)
         tail_required: set[str] = set()
         for dialog in dialogs_snapshot:
             if not limits.complete_message_history and (
@@ -4082,6 +4563,7 @@ def fetch_wappi_history_records(
             chat_token = wappi_checkpoint_token(chat_id) if chat_id else ""
             dialog_marker = _safe_int(dialog.get("last_timestamp"))
             saved_marker = chat_markers.get(chat_token)
+            dialog_is_personal = is_personal_wappi_dialog(profile, dialog)
             if not incremental_base_complete and chat_token in full_audit_verified:
                 stats.checkpoint_chats_skipped += 1
                 continue
@@ -4097,10 +4579,78 @@ def fetch_wappi_history_records(
                     stats.incremental_chats_marker_regressed += 1
                 else:
                     stats.incremental_chats_changed += 1
-            is_tail_check = bool(incremental_base_complete and chat_token and chat_token in confirmed_at_start)
+            full_audit_markerless_recheck = bool(
+                not incremental_base_complete
+                and chat_token
+                and chat_token in full_audit_markerless_pending
+                and dialog_marker <= 0
+                and chat_token in confirmed_at_start
+            )
+            is_tail_check = bool(
+                (incremental_base_complete and chat_token and chat_token in confirmed_at_start)
+                or full_audit_markerless_recheck
+            )
             if is_tail_check and chat_token in tail_checked:
                 stats.checkpoint_chats_skipped += 1
                 continue
+            if is_tail_check:
+                tail_required.add(chat_token)
+            cursor = chat_cursors.get(chat_token)
+            if incremental_base_complete and not dialog_is_personal:
+                stats.incremental_non_personal_skipped += 1
+                resumable_if_personal = bool(
+                    chat_token in confirmed_at_start
+                    and _wappi_chat_cursor_is_valid(cursor)
+                )
+                if resumable_if_personal:
+                    confirmed_tokens.add(chat_token)
+                else:
+                    confirmed_tokens.discard(chat_token)
+                if resumable_if_personal and dialog_marker > 0:
+                    chat_markers[chat_token] = dialog_marker
+                elif not resumable_if_personal:
+                    chat_markers.pop(chat_token, None)
+                if str(active_chat.get("chat") or "") == chat_token:
+                    active_chat = {}
+                if is_tail_check:
+                    tail_checked.add(chat_token)
+                continue
+            marker_is_append = bool(
+                saved_marker is not None and saved_marker > 0 and dialog_marker > saved_marker
+            )
+            marker_is_regressed = bool(
+                saved_marker is not None
+                and saved_marker > 0
+                and dialog_marker > 0
+                and dialog_marker < saved_marker
+            )
+            marker_is_unavailable = dialog_marker <= 0 or saved_marker is None
+            cursor_is_empty_baseline = bool(
+                isinstance(cursor, Mapping) and cursor.get("empty_baseline") is True
+            )
+            cursor_timestamp = (
+                _wappi_safe_int(cursor.get("timestamp")) or 0
+                if isinstance(cursor, Mapping)
+                else 0
+            )
+            marker_is_cursor_catchup = bool(
+                marker_is_append
+                and cursor_timestamp > 0
+                and dialog_marker <= cursor_timestamp
+            )
+            use_tail_boundary = bool(
+                is_tail_check
+                and _wappi_chat_cursor_is_valid(cursor)
+                and (marker_is_append or marker_is_unavailable or marker_is_regressed)
+                and not active_chat
+            )
+            if is_tail_check and not use_tail_boundary:
+                stats.incremental_tail_fallbacks += 1
+                stats.pagination_drift_detected = True
+                stop_reason = "tail_boundary_unproven"
+                break
+            if use_tail_boundary:
+                stats.incremental_tail_chats += 1
             resume_offset = (
                 int(active_chat.get("message_offset") or 0)
                 if checkpoint_enabled and active_chat and str(active_chat.get("chat") or "") == chat_token
@@ -4122,6 +4672,21 @@ def fetch_wappi_history_records(
                         if resume_offset and "page_offset" in active_chat
                         else None
                     ),
+                    stop_after_message_token=(
+                        str(cursor.get("message_digest") or "")
+                        if use_tail_boundary
+                        and isinstance(cursor, Mapping)
+                        and not cursor_is_empty_baseline
+                        else ""
+                    ),
+                    allow_empty_tail=(
+                        marker_is_unavailable
+                        or marker_is_regressed
+                        or marker_is_cursor_catchup
+                    ),
+                    empty_baseline_tail=bool(
+                        use_tail_boundary and cursor_is_empty_baseline
+                    ),
                 )
             except AmoWappiHttpError:
                 if not checkpoint_enabled:
@@ -4142,13 +4707,46 @@ def fetch_wappi_history_records(
             if bool(getattr(fetch_chat_messages, "last_limit_hit", False)):
                 stats.message_limit_hit = True
             if bool(getattr(fetch_chat_messages, "last_pagination_drift_detected", False)):
+                tail_mode = bool(getattr(fetch_chat_messages, "last_tail_mode", False))
                 stats.message_page_drift_detected = True
+                stats.message_page_drift_chat_token = chat_token
+                stats.message_page_drift_reason = (
+                    str(getattr(fetch_chat_messages, "last_tail_drift_reason", "") or "unknown")
+                    if tail_mode else "full_history_pagination_drift"
+                )
+                stats.message_page_drift_offset = (
+                    int(getattr(fetch_chat_messages, "last_tail_page_offset", 0) or 0)
+                    if tail_mode else 0
+                )
+                stats.message_page_drift_pages = (
+                    int(getattr(fetch_chat_messages, "last_tail_page_count", 0) or 0)
+                    if tail_mode else 0
+                )
+                stats.message_page_drift_cursor_kind = (
+                    "full_history" if not tail_mode
+                    else "empty_baseline" if cursor_is_empty_baseline
+                    else "message_digest"
+                )
+                stats.message_page_drift_marker_relation = (
+                    "new" if not tail_mode
+                    else "regressed" if marker_is_regressed
+                    else "append" if marker_is_append
+                    else "unavailable"
+                )
+                stats.message_page_drift_first_signature = (
+                    str(getattr(fetch_chat_messages, "last_tail_first_signature", "") or "")
+                    if tail_mode else ""
+                )
+                stats.message_page_drift_head_signature = (
+                    str(getattr(fetch_chat_messages, "last_tail_head_signature", "") or "")
+                    if tail_mode else ""
+                )
                 stats.pagination_drift_detected = True
                 break
             resolution = resolver.resolve_chat(profile=profile, dialog=dialog, messages=messages)
             stats.amo_auto_calls = resolver.amo_auto_calls - profile_amo_calls_start
             stats.widget_calls = resolver.widget_calls - profile_widget_calls_start
-            if is_personal_wappi_dialog(profile, dialog):
+            if dialog_is_personal:
                 stats.personal_chats += 1
                 if resolution.resolved and resolution.resolution_source in {
                     "wappi_amo_widget",
@@ -4211,6 +4809,16 @@ def fetch_wappi_history_records(
                     active_chat = {}
                 if not stop_after_chat and dialog_marker > 0:
                     chat_markers[chat_token] = dialog_marker
+                head_message_token = str(
+                    getattr(fetch_chat_messages, "last_head_message_token", "") or ""
+                )
+                if not stop_after_chat and head_message_token:
+                    chat_cursors[chat_token] = {
+                        "message_digest": head_message_token,
+                        "timestamp": int(
+                            getattr(fetch_chat_messages, "last_head_message_timestamp", 0) or 0
+                        ),
+                    }
                 if not stop_after_chat and not incremental_base_complete:
                     full_audit_markers[chat_token] = max(0, dialog_marker)
                     full_audit_verified.add(chat_token)
@@ -4230,16 +4838,25 @@ def fetch_wappi_history_records(
                 or stats.pagination_drift_detected
                 or stats.chat_snapshot_drift_detected
                 or not catalog_complete
+                or bool(active_chat)
                 or not tail_required.issubset(tail_checked)
-                or (not incremental_base_complete and not current_tokens.issubset(full_audit_verified))
+                or (
+                    not incremental_base_complete
+                    and not current_tokens.issubset(full_audit_verified)
+                )
             )
             if stats.pagination_drift_detected:
-                stop_reason = "pagination_drift"
+                stop_reason = (
+                    "message_reconciliation_gap"
+                    if stats.message_page_drift_reason == "empty_delta_not_allowed"
+                    else "pagination_drift"
+                )
             if stats.chat_snapshot_drift_detected:
                 stop_reason = "catalog_drift"
             if profile_complete:
                 confirmed_tokens.intersection_update(current_tokens)
                 chat_markers = {key: value for key, value in chat_markers.items() if key in current_tokens}
+                chat_cursors = {key: value for key, value in chat_cursors.items() if key in current_tokens}
                 if not incremental_base_complete:
                     full_audit_at = datetime.now(timezone.utc).isoformat()
                     full_audit_started_at = ""
@@ -4252,6 +4869,7 @@ def fetch_wappi_history_records(
                 active_chat=active_chat,
                 catalog_pages=catalog_page_tokens,
                 chat_markers=chat_markers,
+                chat_cursors=chat_cursors,
                 incremental_cycle=incremental_base_complete,
                 full_audit_at=full_audit_at,
                 full_audit_started_at=full_audit_started_at,
@@ -4285,6 +4903,7 @@ def _stash_wappi_checkpoint(
     active_chat: Mapping[str, Any],
     catalog_pages: Sequence[tuple[int, tuple[str, ...]]],
     chat_markers: Optional[Mapping[str, int]] = None,
+    chat_cursors: Optional[Mapping[str, Mapping[str, Any]]] = None,
     incremental_cycle: bool = False,
     full_audit_at: str = "",
     full_audit_started_at: str = "",
@@ -4314,6 +4933,7 @@ def _stash_wappi_checkpoint(
         "resumed_from": int(resumed_from),
         "chats_done": sorted(confirmed),
         "chat_markers": dict(sorted((chat_markers or {}).items())),
+        "chat_cursors": dict(sorted((chat_cursors or {}).items())),
         "active_chat": dict(active_chat) if active_chat else None,
     }
 
@@ -4365,7 +4985,22 @@ def fetch_chat_messages(
     start_offset: int = 0,
     resume_anchor: str = "",
     resume_anchor_offset: Optional[int] = None,
+    stop_after_message_token: str = "",
+    allow_empty_tail: bool = False,
+    empty_baseline_tail: bool = False,
 ) -> tuple[WappiHistoryMessage, ...]:
+    if stop_after_message_token or empty_baseline_tail:
+        return _fetch_chat_message_tail(
+            client,
+            profile=profile,
+            chat_id=chat_id,
+            limits=limits,
+            request_counter=request_counter,
+            request_budget=request_budget,
+            boundary_token=stop_after_message_token,
+            allow_empty_tail=allow_empty_tail,
+            empty_baseline=empty_baseline_tail,
+        )
     messages: list[WappiHistoryMessage] = []
     offset = max(0, int(start_offset))
     request_count = 0
@@ -4375,7 +5010,10 @@ def fetch_chat_messages(
     page_anchor_value = resume_anchor
     page_anchor_offset = max(0, int(resume_anchor_offset or 0))
     next_offset = offset
+    head_message_token = ""
+    head_message_timestamp = 0
     page_signatures: list[tuple[int, int, tuple[str, ...]]] = []
+    seen_message_ids: set[str] = set()
     if offset > 0 and resume_anchor and not request_limit_hit:
         # Re-read the last CONFIRMED message page: if it drifted, the saved
         # offset points at the wrong place, so restart this chat from zero.
@@ -4384,24 +5022,33 @@ def fetch_chat_messages(
             if resume_anchor_offset is not None
             else max(0, offset - limits.page_size)
         )
-        anchor_payload = client.get_chat_messages(
-            channel=profile.channel,
-            profile_id=profile.profile_id,
-            chat_id=chat_id,
-            limit=limits.page_size,
-            offset=anchor_offset,
-            order="asc",
-            mark_all=False,
-        )
+        try:
+            anchor_payload = client.get_chat_messages(
+                channel=profile.channel,
+                profile_id=profile.profile_id,
+                chat_id=chat_id,
+                limit=limits.page_size,
+                offset=anchor_offset,
+                order="asc",
+                mark_all=False,
+            )
+        except WappiPhysicalRequestBudgetExceeded:
+            request_limit_hit = True
+            anchor_payload = None
         request_count += 1
         request_counter.requests += 1
-        anchor_items = extract_wappi_items(anchor_payload, "messages", "items", "data")
-        current_anchor = wappi_checkpoint_anchor(
-            tuple(str(item.get("id") or item.get("message_id") or "") for item in anchor_items)
+        anchor_proven, anchor_items = _extract_wappi_items_with_shape_proof(
+            anchor_payload, "messages", "items", "data"
         )
-        if current_anchor != resume_anchor:
-            offset = 0
-            page_anchor_value = ""
+        if not anchor_proven:
+            pagination_drift_detected = True
+        else:
+            current_anchor = wappi_checkpoint_anchor(
+                tuple(str(item.get("id") or item.get("message_id") or "") for item in anchor_items)
+            )
+            if current_anchor != resume_anchor:
+                offset = 0
+                page_anchor_value = ""
         if request_count >= request_budget:
             # The anchor probe ate the last request: the chat is NOT finished,
             # otherwise the caller would confirm it with zero messages read.
@@ -4409,6 +5056,7 @@ def fetch_chat_messages(
     while (
         (limits.complete_message_history or len(messages) < limits.messages_per_chat)
         and request_count < request_budget
+        and not pagination_drift_detected
     ):
         page_limit = (
             limits.page_size
@@ -4433,10 +5081,25 @@ def fetch_chat_messages(
         request_count += 1
         request_counter.requests += 1
         sleep_if_needed(limits.sleep_seconds)
-        raw_messages = extract_wappi_items(payload, "messages", "items", "data")
+        payload_is_proven, raw_messages = _extract_wappi_items_with_shape_proof(
+            payload, "messages", "items", "data"
+        )
+        if not payload_is_proven:
+            pagination_drift_detected = True
+            break
         if not raw_messages:
             break
-        page_ids = tuple(str(item.get("id") or item.get("message_id") or "") for item in raw_messages)
+        page_ids = tuple(
+            str(item.get("id") or item.get("message_id") or "").strip()
+            for item in raw_messages
+        )
+        if not all(page_ids) or len(page_ids) != len(set(page_ids)):
+            pagination_drift_detected = True
+            break
+        if seen_message_ids.intersection(page_ids):
+            pagination_drift_detected = True
+            break
+        seen_message_ids.update(page_ids)
         page_signatures.append((offset, page_limit, page_ids))
         page_anchor_value = wappi_checkpoint_anchor(page_ids)
         page_anchor_offset = offset
@@ -4446,6 +5109,10 @@ def fetch_chat_messages(
             if item is None:
                 request_counter.skipped_bad_message += 1
                 continue
+            head_message_token = wappi_message_checkpoint_token(
+                profile.profile_id, chat_id, item.message_id
+            )
+            head_message_timestamp = max(0, int(item.timestamp))
             messages.append(item)
         if len(raw_messages) < page_limit:
             break
@@ -4455,6 +5122,8 @@ def fetch_chat_messages(
         elif request_count >= request_budget:
             request_limit_hit = True
     for verification_offset, verification_limit, expected_ids in page_signatures:
+        if pagination_drift_detected:
+            break
         if request_count >= request_budget:
             request_limit_hit = True
             break
@@ -4474,7 +5143,12 @@ def fetch_chat_messages(
         request_count += 1
         request_counter.requests += 1
         sleep_if_needed(limits.sleep_seconds)
-        verification_items = extract_wappi_items(verification_payload, "messages", "items", "data")
+        verification_is_proven, verification_items = _extract_wappi_items_with_shape_proof(
+            verification_payload, "messages", "items", "data"
+        )
+        if not verification_is_proven:
+            pagination_drift_detected = True
+            break
         verification_ids = tuple(str(item.get("id") or item.get("message_id") or "") for item in verification_items)
         if verification_ids[: len(expected_ids)] != expected_ids:
             pagination_drift_detected = True
@@ -4485,6 +5159,221 @@ def fetch_chat_messages(
     setattr(fetch_chat_messages, "last_next_offset", next_offset)
     setattr(fetch_chat_messages, "last_page_anchor", page_anchor_value)
     setattr(fetch_chat_messages, "last_page_offset", page_anchor_offset)
+    setattr(fetch_chat_messages, "last_head_message_token", head_message_token)
+    setattr(fetch_chat_messages, "last_head_message_timestamp", head_message_timestamp)
+    setattr(fetch_chat_messages, "last_boundary_found", not pagination_drift_detected)
+    setattr(fetch_chat_messages, "last_tail_mode", False)
+    return tuple(sorted(messages, key=lambda item: (item.timestamp, item.message_id)))
+
+
+def _fetch_chat_message_tail(
+    client: WappiHistoryClient,
+    *,
+    profile: WappiProfileSpec,
+    chat_id: str,
+    limits: WappiFetchLimits,
+    request_counter: WappiFetchStats,
+    request_budget: int,
+    boundary_token: str,
+    allow_empty_tail: bool,
+    empty_baseline: bool,
+) -> tuple[WappiHistoryMessage, ...]:
+    """Read at most three newest pages until the sealed local boundary."""
+    page_limit = limits.page_size
+    offset = 0
+    request_count = 0
+    page_count = 0
+    request_limit_hit = request_budget <= 0
+    pagination_drift_detected = False
+    boundary_found = False
+    drift_reason = ""
+    first_signature: tuple[str, ...] = ()
+    head_signature: tuple[str, ...] = ()
+    last_requested_offset = 0
+    previous_anchor = ""
+    seen_page_signatures: set[tuple[str, ...]] = set()
+    raw_by_id: dict[str, Mapping[str, Any]] = {}
+    head_message_token = ""
+    head_message_timestamp = 0
+    while (
+        request_count < request_budget
+        and request_count < WAPPI_DELTA_TAIL_MAX_PAGES
+        and not boundary_found
+    ):
+        last_requested_offset = offset
+        try:
+            payload = client.get_chat_messages(
+                channel=profile.channel,
+                profile_id=profile.profile_id,
+                chat_id=chat_id,
+                limit=page_limit,
+                offset=offset,
+                order="desc",
+                mark_all=False,
+            )
+        except WappiPhysicalRequestBudgetExceeded:
+            request_limit_hit = True
+            drift_reason = "request_budget"
+            break
+        request_count += 1
+        page_count += 1
+        request_counter.requests += 1
+        sleep_if_needed(limits.sleep_seconds)
+        payload_is_proven, page_rows = _extract_wappi_items_with_shape_proof(
+            payload, "messages", "items", "data"
+        )
+        if not payload_is_proven:
+            pagination_drift_detected = True
+            drift_reason = "malformed_page"
+            break
+        page_ids = tuple(
+            str(item.get("id") or item.get("message_id") or "").strip()
+            for item in page_rows
+        )
+        if page_rows and not all(page_ids):
+            pagination_drift_detected = True
+            drift_reason = "missing_message_id"
+            break
+        if page_rows and len(page_ids) != len(set(page_ids)):
+            pagination_drift_detected = True
+            drift_reason = "duplicate_message_id"
+            break
+        if page_rows and page_ids in seen_page_signatures:
+            pagination_drift_detected = True
+            drift_reason = "repeated_page"
+            break
+        if page_rows and previous_anchor and previous_anchor not in page_ids:
+            pagination_drift_detected = True
+            drift_reason = "missing_overlap"
+            break
+        if (
+            page_rows
+            and previous_anchor
+            and set(page_ids).intersection(raw_by_id) != {previous_anchor}
+        ):
+            pagination_drift_detected = True
+            drift_reason = "unexpected_overlap"
+            break
+        if not page_rows:
+            if empty_baseline:
+                boundary_found = True
+            else:
+                drift_reason = "boundary_not_found_short_page"
+            break
+        seen_page_signatures.add(page_ids)
+        if not first_signature:
+            first_signature = page_ids
+            head_id = page_ids[0]
+            head_message_token = wappi_message_checkpoint_token(
+                profile.profile_id, chat_id, head_id
+            )
+            head_item = wappi_message_from_raw(
+                profile.profile_id, {**dict(page_rows[0]), "chat_id": chat_id}
+            )
+            if head_item is not None:
+                head_message_timestamp = max(0, int(head_item.timestamp))
+        for raw, message_id in zip(page_rows, page_ids):
+            token = wappi_message_checkpoint_token(profile.profile_id, chat_id, message_id)
+            if boundary_token and token == boundary_token:
+                boundary_found = True
+                break
+            raw_by_id.setdefault(message_id, raw)
+        if empty_baseline and len(page_rows) < page_limit:
+            boundary_found = True
+        elif not boundary_found and len(page_rows) < page_limit:
+            drift_reason = "boundary_not_found_short_page"
+        if boundary_found or len(page_rows) < page_limit:
+            break
+        previous_anchor = page_ids[-1]
+        offset += page_limit - 1
+        if not limits.complete_message_history and len(raw_by_id) >= limits.messages_per_chat:
+            request_limit_hit = True
+            break
+    if not boundary_found:
+        pagination_drift_detected = True
+        if not drift_reason:
+            drift_reason = (
+                "request_budget" if request_count >= request_budget
+                else "boundary_not_found_max_pages"
+                if request_count >= WAPPI_DELTA_TAIL_MAX_PAGES
+                else "boundary_not_found_short_page"
+            )
+        if request_count >= request_budget:
+            request_limit_hit = True
+    if boundary_found and not pagination_drift_detected and (offset or empty_baseline):
+        last_requested_offset = 0
+        if request_count >= request_budget:
+            request_limit_hit = True
+            pagination_drift_detected = True
+            drift_reason = "head_proof_budget"
+        else:
+            try:
+                head_payload = client.get_chat_messages(
+                    channel=profile.channel,
+                    profile_id=profile.profile_id,
+                    chat_id=chat_id,
+                    limit=page_limit,
+                    offset=0,
+                    order="desc",
+                    mark_all=False,
+                )
+            except WappiPhysicalRequestBudgetExceeded:
+                request_limit_hit = True
+                pagination_drift_detected = True
+                drift_reason = "head_proof_budget"
+            else:
+                request_count += 1
+                request_counter.requests += 1
+                sleep_if_needed(limits.sleep_seconds)
+                head_is_proven, head_rows = _extract_wappi_items_with_shape_proof(
+                    head_payload, "messages", "items", "data"
+                )
+                if not head_is_proven:
+                    pagination_drift_detected = True
+                    drift_reason = "malformed_head"
+                    head_rows = ()
+                head_signature = tuple(
+                    str(item.get("id") or item.get("message_id") or "").strip()
+                    for item in head_rows
+                )
+                if head_signature != first_signature:
+                    pagination_drift_detected = True
+                    if not drift_reason:
+                        drift_reason = "head_changed"
+    if boundary_found and not raw_by_id and not allow_empty_tail and not empty_baseline:
+        pagination_drift_detected = True
+        if not drift_reason:
+            drift_reason = "empty_delta_not_allowed"
+    messages: list[WappiHistoryMessage] = []
+    if not pagination_drift_detected:
+        for raw in raw_by_id.values():
+            item = wappi_message_from_raw(
+                profile.profile_id, {**dict(raw), "chat_id": chat_id}
+            )
+            if item is None:
+                request_counter.skipped_bad_message += 1
+                continue
+            messages.append(item)
+    setattr(fetch_chat_messages, "last_request_count", request_count)
+    setattr(fetch_chat_messages, "last_limit_hit", False)
+    setattr(fetch_chat_messages, "last_request_limit_hit", request_limit_hit)
+    setattr(fetch_chat_messages, "last_pagination_drift_detected", pagination_drift_detected)
+    setattr(fetch_chat_messages, "last_next_offset", 0)
+    setattr(fetch_chat_messages, "last_page_anchor", "")
+    setattr(fetch_chat_messages, "last_page_offset", 0)
+    setattr(fetch_chat_messages, "last_head_message_token", head_message_token)
+    setattr(fetch_chat_messages, "last_head_message_timestamp", head_message_timestamp)
+    setattr(fetch_chat_messages, "last_boundary_found", boundary_found)
+    setattr(fetch_chat_messages, "last_tail_mode", True)
+    setattr(fetch_chat_messages, "last_tail_drift_reason", drift_reason)
+    setattr(fetch_chat_messages, "last_tail_page_offset", last_requested_offset)
+    setattr(fetch_chat_messages, "last_tail_page_count", page_count)
+    setattr(fetch_chat_messages, "last_tail_first_signature", (
+        wappi_checkpoint_anchor(first_signature) if first_signature else ""
+    ))
+    setattr(fetch_chat_messages, "last_tail_head_signature", (
+        wappi_checkpoint_anchor(head_signature) if head_signature else ""
+    ))
     return tuple(sorted(messages, key=lambda item: (item.timestamp, item.message_id)))
 
 
@@ -5367,6 +6256,26 @@ def extract_wappi_items(payload: Mapping[str, Any], *keys: str) -> tuple[Mapping
     if isinstance(candidates, Sequence) and not isinstance(candidates, (str, bytes, bytearray)):
         return tuple(dict(item) for item in candidates if isinstance(item, Mapping))
     return ()
+
+
+def _extract_wappi_items_with_shape_proof(
+    payload: Any, *keys: str
+) -> tuple[bool, tuple[Mapping[str, Any], ...]]:
+    """Accept an empty result only when the response contains an explicit valid list."""
+    if not isinstance(payload, Mapping):
+        return False, ()
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, Mapping) and key == "data":
+            return _extract_wappi_items_with_shape_proof(value, *keys)
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+            return False, ()
+        if not all(isinstance(item, Mapping) for item in value):
+            return False, ()
+        return True, tuple(dict(item) for item in value)
+    return False, ()
 
 
 def extract_chat_id(dialog: Mapping[str, Any]) -> str:

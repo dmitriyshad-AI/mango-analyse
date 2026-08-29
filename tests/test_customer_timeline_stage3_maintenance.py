@@ -13,7 +13,9 @@ import mango_mvp.customer_timeline.stage3_maintenance as stage3_module
 from mango_mvp.customer_timeline import (
     BotContextChunk,
     CustomerIdentity,
+    CustomerOpportunity,
     CustomerTimelineSQLiteStore,
+    DerivedSignal,
     IdentityLink,
     Stage3MaintenanceConfig,
     TimelineDirection,
@@ -517,3 +519,215 @@ def test_stage3_calls_preflight_fails_before_any_timeline_write(tmp_path: Path) 
 
     assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before_sha
     assert not (tmp_path / "out-preflight").exists()
+
+
+def test_stage3_removes_nullish_identity_shell_and_preserves_quarantined_raw_event(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = _identity()
+        store.upsert_customer(customer)
+        link = IdentityLink(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            link_type="amo_contact_id",
+            link_value="contact-nullish",
+            source_system="amocrm_snapshot",
+            source_ref="contact:nullish",
+            confidence=1.0,
+        )
+        store.upsert_identity_link(link)
+        opportunity = CustomerOpportunity(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            opportunity_type="amo_deal",
+            source_system="amocrm_snapshot",
+            source_id="lead-nullish",
+            opened_at=NOW,
+        )
+        store.upsert_opportunity(opportunity)
+        raw_event = replace(
+            _email_event(
+                customer,
+                source_id="nullish-raw".ljust(64, "0"),
+                preview="Сырое событие",
+            ),
+            opportunity_id=opportunity.opportunity_id,
+            subject="сохранённоесыроесобытие",
+            summary="сохранённоесыроесобытие",
+        )
+        store.upsert_event(raw_event)
+        context = replace(
+            _mail_chunk(raw_event, text="производныйконтекст удалить"),
+            opportunity_id=opportunity.opportunity_id,
+        )
+        store.upsert_bot_context_chunk(context)
+        signal = DerivedSignal(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            opportunity_id=opportunity.opportunity_id,
+            event_id=raw_event.event_id,
+            source_event_ids=(raw_event.event_id,),
+            signal_type="follow_up",
+            severity="low",
+            evidence_text="Производный сигнал",
+            created_at=NOW,
+        )
+        store.upsert_signal(signal)
+        family_payload = {
+            "tenant_id": "foton",
+            "family_id": "family:nullish",
+            "customer_id": "None",
+            "membership_status": "singleton",
+            "confidence": "high",
+            "reason": "test",
+            "created_at": NOW.isoformat(),
+            "updated_at": NOW.isoformat(),
+        }
+        store._con.execute(  # noqa: SLF001 - historical corruption fixture.
+            "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton",
+                "family:nullish",
+                "None",
+                "singleton",
+                "high",
+                "test",
+                NOW.isoformat(),
+                NOW.isoformat(),
+                stable_digest(family_payload),
+                json.dumps(family_payload, ensure_ascii=False),
+            ),
+        )
+        for table in (
+            "customer_identities",
+            "identity_links",
+            "customer_opportunities",
+            "timeline_events",
+            "derived_signals",
+            "bot_context_chunks",
+        ):
+            rows = store._con.execute(  # noqa: SLF001
+                f"SELECT rowid,record_json FROM {table} WHERE customer_id=?", (customer.customer_id,)
+            ).fetchall()
+            for rowid, record_json in rows:
+                payload = json.loads(record_json)
+                payload["customer_id"] = "None"
+                store._con.execute(  # noqa: SLF001
+                    f"UPDATE {table} SET customer_id='None',record_json=?,record_hash=? WHERE rowid=?",
+                    (
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                        stable_digest(payload),
+                        rowid,
+                    ),
+                )
+        store._con.commit()  # noqa: SLF001
+
+    dry_config = Stage3MaintenanceConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        out_dir=tmp_path / "out-dry",
+        apply=False,
+        signal_as_of=NOW + timedelta(days=1),
+    )
+    dry = run_stage3_maintenance(dry_config)
+    assert dry["nullish_customer_id_repair_plan"] == {
+        "bad_literal_values": 1,
+        "literal_counts": {
+            "bot_context_chunks.customer_id": 1,
+            "customer_identities.customer_id": 1,
+            "customer_opportunities.customer_id": 1,
+            "derived_signals.customer_id": 1,
+            "family_members_v1.customer_id": 1,
+            "identity_links.customer_id": 1,
+            "timeline_events.customer_id": 1,
+        },
+        "active_events": 1,
+        "identity_links": 1,
+        "opportunities": 1,
+        "derived_signals": 1,
+        "bot_context_chunks": 1,
+        "family_members": 1,
+        "customer_identities": 1,
+        "stop_counts": {},
+    }
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM customer_identities WHERE customer_id='None'").fetchone()[0] == 1
+
+    apply_config = replace(dry_config, out_dir=tmp_path / "out-apply", apply=True)
+    applied = run_stage3_maintenance(apply_config)
+    repeated = run_stage3_maintenance(apply_config)
+    assert applied["nullish_customer_id_repair"] == {
+        "writes": 7,
+        "events_quarantined": 1,
+        "links_detached": 1,
+        "opportunities_deleted": 1,
+        "signals_deleted": 1,
+        "chunks_deleted": 1,
+        "family_members_deleted": 1,
+        "customer_identities_deleted": 1,
+    }
+    assert repeated["nullish_customer_id_repair"]["writes"] == 0
+    assert applied["validation_ok"] is True
+    assert repeated["validation_ok"] is True
+
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        con = store._con  # noqa: SLF001
+        event_row = con.execute(
+            "SELECT customer_id,opportunity_id,match_status,confidence,record_json "
+            "FROM timeline_events WHERE event_id=?",
+            (raw_event.event_id,),
+        ).fetchone()
+        assert tuple(event_row[:4]) == (None, None, "ambiguous", 0.0)
+        assert json.loads(event_row[4])["metadata"]["resolution_reason"] == "textual_null_customer_id"
+        assert con.execute("SELECT COUNT(*) FROM identity_links WHERE customer_id IS NULL").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM customer_opportunities").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM derived_signals").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM family_members_v1").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 0
+        assert store.search_timeline("foton", "сохранённоесыроесобытие", mode="fts")["items"] == []
+        assert store.search_timeline("foton", "сохранённоесыроесобытие", mode="fallback")["items"] == []
+
+
+def test_stage3_stops_before_writing_on_mixed_nullish_source_pair(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        first = _identity()
+        second = replace(
+            _identity(),
+            customer_id="customer:second",
+            primary_phone="+79160000002",
+            primary_email="second@example.com",
+        )
+        store.upsert_customer(first)
+        store.upsert_customer(second)
+        bad = _email_event(first, source_id="mixed-source".ljust(64, "0"), preview="bad")
+        good = replace(bad, customer_id=second.customer_id, event_type="system_note", event_id=None)
+        store.upsert_event(bad)
+        store.upsert_event(good)
+        payload = bad.to_json_dict()
+        payload["customer_id"] = "None"
+        store._con.execute(  # noqa: SLF001
+            "UPDATE timeline_events SET customer_id='None',record_json=?,record_hash=? WHERE event_id=?",
+            (
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                stable_digest(payload),
+                bad.event_id,
+            ),
+        )
+        store._con.commit()  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="mixed_active_source_pairs"):
+        run_stage3_maintenance(
+            Stage3MaintenanceConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "out-mixed",
+                apply=True,
+            )
+        )
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events WHERE customer_id='None'").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM audit_log WHERE actor='stage3_nullish_customer_id_repair'").fetchone()[0] == 0

@@ -50,6 +50,8 @@ class CheckpointFakeClient:
         self.messages = {key: list(value) for key, value in messages.items()}
         self.chat_calls: list[tuple[str, int, int]] = []
         self.message_calls: list[tuple[str, str, int]] = []
+        self.message_orders: list[str] = []
+        self.message_request_calls: list[tuple[str, str, int, int, str]] = []
         self.fail_catalog_from_offset: Optional[int] = None
         self.fail_message_at: Optional[tuple[str, int]] = None
 
@@ -68,9 +70,13 @@ class CheckpointFakeClient:
         order: str = "desc", mark_all: bool = False,
     ) -> Mapping[str, Any]:
         self.message_calls.append((profile_id, chat_id, offset))
+        self.message_orders.append(order)
+        self.message_request_calls.append((profile_id, chat_id, offset, limit, order))
         if self.fail_message_at is not None and (chat_id, offset) == self.fail_message_at:
             raise AmoWappiHttpError("HTTP 503: service unavailable")
         items = self.messages.get((channel, profile_id, chat_id), [])
+        if order == "desc":
+            items = list(reversed(items))
         return {"messages": items[offset : offset + limit]}
 
 
@@ -145,6 +151,16 @@ def wappi_row_count(db_path: Path) -> int:
         )
 
 
+def active_wappi_row_count(db_path: Path) -> int:
+    with sqlite3.connect(db_path) as con:
+        return int(
+            con.execute(
+                "SELECT COUNT(*) FROM timeline_events "
+                "WHERE source_system LIKE 'wappi_%' AND superseded_by IS NULL"
+            ).fetchone()[0]
+        )
+
+
 def read_checkpoint(checkpoint_dir: Path) -> Mapping[str, Any]:
     return load_wappi_history_checkpoint(checkpoint_dir)
 
@@ -154,6 +170,297 @@ def prepare(tmp_path: Path) -> tuple[Path, Path, Path]:
     CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
     checkpoint_dir = tmp_path / "checkpoints"
     return db_path, write_phase1_config(tmp_path), checkpoint_dir
+
+
+def test_source_lifecycle_rejects_non_wappi_sources(tmp_path: Path) -> None:
+    db_path = tmp_path / "timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        with pytest.raises(ValueError, match="restricted to Wappi"):
+            store.set_timeline_source_records_active(
+                "foton",
+                source_records={"amocrm_event": ("1",)},
+                active=False,
+                retirement_marker="retired:wappi_expected_excluded:0123456789abcdef",
+                retirement_reason="non_personal_chat",
+            )
+
+
+def test_source_lifecycle_does_not_restore_similar_foreign_marker(tmp_path: Path) -> None:
+    db_path, _phase1, _checkpoint_dir = prepare(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO timeline_events "
+            "(event_id,dedupe_key,tenant_id,event_type,source_system,source_id,direction,"
+            "match_status,event_at,importance,created_at,record_json,record_hash,superseded_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "event:foreign-marker", "dedupe:foreign-marker", "foton", "message",
+                "wappi_telegram", "message:1", "system", "strong_unique",
+                "2026-08-27T00:00:00+00:00", 0, "2026-08-27T00:00:00+00:00", "{}", "hash",
+                "retired:wappi_expected_excluded:not-hex",
+            ),
+        )
+        con.commit()
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        report = store.set_timeline_source_records_active(
+            "foton",
+            source_records={"wappi_telegram": ("message:1",)},
+            active=True,
+            retirement_marker="retired:wappi_expected_excluded:0123456789abcdef",
+            retirement_reason="reclassified_personal",
+        )
+    with sqlite3.connect(db_path) as con:
+        marker = con.execute(
+            "SELECT superseded_by FROM timeline_events WHERE event_id='event:foreign-marker'"
+        ).fetchone()[0]
+
+    assert report["changed_events"] == 0
+    assert marker == "retired:wappi_expected_excluded:not-hex"
+
+
+def test_delta_catalog_retires_and_restores_all_chat_history_without_message_reads(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1, messages_per_chat=2)
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    initial = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+
+    assert initial["validation_ok"] is True
+    assert wappi_row_count(db_path) == 2
+    assert active_wappi_row_count(db_path) == 2
+
+    non_personal = [{**chats[0], "type": "group"}]
+    excluded_client = CheckpointFakeClient({"p-tg": non_personal, "p-max": []}, messages)
+    excluded = run_wappi_history_import(config, client=excluded_client)
+
+    assert excluded_client.message_calls == []
+    assert wappi_row_count(db_path) == 2
+    assert active_wappi_row_count(db_path) == 0
+    assert excluded["source_lifecycle"]["current_ledger_expected_excluded_records"] == 0
+    assert excluded["source_lifecycle"]["catalog_non_personal_source_records"] == 2
+    assert excluded["source_lifecycle"]["retired_events"] == 2
+    assert excluded["source_lifecycle"]["non_personal_active_after"] == 0
+    assert excluded["source_lifecycle"]["complete"] is True
+    with sqlite3.connect(db_path) as con:
+        markers = {str(row[0]) for row in con.execute("SELECT superseded_by FROM timeline_events")}
+    assert len(markers) == 1
+    assert next(iter(markers)).startswith("retired:wappi_expected_excluded:")
+
+    restored_client = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    restored = run_wappi_history_import(config, client=restored_client)
+
+    assert restored_client.message_calls == []
+    assert restored["source_lifecycle"]["restored_events"] == 2
+    assert restored["history_validation"]["mode"] == "incremental_catalog"
+    assert restored["history_validation"]["full_audit_completed_this_run"] is False
+    assert active_wappi_row_count(db_path) == 2
+    with sqlite3.connect(db_path) as con:
+        restored_rows = con.execute(
+            "SELECT customer_id,match_status,"
+            "json_extract(record_json,'$.resolution_reason'),"
+            "json_extract(record_json,'$.metadata.identity_authority'),"
+            "json_extract(record_json,'$.metadata.pending_attribution') "
+            "FROM timeline_events ORDER BY source_id"
+        ).fetchall()
+        active_bot_chunks = con.execute(
+            "SELECT count(*) FROM bot_context_chunks "
+            "WHERE source_system IN ('wappi_telegram','wappi_max') "
+            "AND coalesce(superseded_by,'')=''"
+        ).fetchone()[0]
+    assert restored_rows == [
+        (
+            None,
+            "unmatched",
+            "wappi_catalog_reclassified_personal_pending_attribution",
+            "pending_attribution",
+            1,
+        ),
+        (
+            None,
+            "unmatched",
+            "wappi_catalog_reclassified_personal_pending_attribution",
+            "pending_attribution",
+            1,
+        ),
+    ]
+    assert active_bot_chunks == 0
+
+    repeated_client = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    repeated = run_wappi_history_import(config, client=repeated_client)
+    assert repeated_client.message_calls == []
+    assert repeated["source_lifecycle"]["restored_events"] == 0
+    assert repeated["source_lifecycle"]["retired_events"] == 0
+    assert wappi_row_count(db_path) == active_wappi_row_count(db_path) == 2
+
+    changed_non_personal = [
+        {
+            **chats[0],
+            "type": "group",
+            "last_timestamp": int(chats[0]["last_timestamp"]) + 10,
+        }
+    ]
+    changed_excluded = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient(
+            {"p-tg": changed_non_personal, "p-max": []}, messages
+        ),
+    )
+    assert changed_excluded["source_lifecycle"]["retired_events"] == 2
+    assert active_wappi_row_count(db_path) == 0
+
+    messages[("telegram", "p-tg", "c0000")].append(
+        {
+            "id": "c0000-m002",
+            "chat_id": "c0000",
+            "type": "text",
+            "body": "Снова личный",
+            "time": 1_753_000_020,
+        }
+    )
+    changed_personal = [
+        {**chats[0], "last_timestamp": int(chats[0]["last_timestamp"]) + 20}
+    ]
+    changed_client = CheckpointFakeClient(
+        {"p-tg": changed_personal, "p-max": []}, messages
+    )
+    changed_restored = run_wappi_history_import(config, client=changed_client)
+
+    assert changed_restored["publish_ready"] is True
+    assert {
+        order
+        for profile, chat, _offset, _limit, order in changed_client.message_request_calls
+        if profile == "p-tg" and chat == "c0000"
+    } == {"desc"}
+    assert wappi_row_count(db_path) == active_wappi_row_count(db_path) == 3
+
+
+def test_missing_catalog_chat_blocks_lifecycle_pass_without_retiring_history(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+    initial = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert initial["publish_ready"] is True
+
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    tg_state = profiles["wappi_telegram:p-tg"]
+    tg_state["complete"] = False
+    tg_state["incremental_cycle"] = True
+    tg_state["active_chat"] = {
+        "chat": wappi_history_module.wappi_checkpoint_token("c0000"),
+        "message_offset": 1,
+        "page_anchor": "saved-page",
+        "page_offset": 0,
+    }
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps(
+            {
+                "schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
+                "profiles": profiles,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    missing_one = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats[1:], "p-max": []}, messages),
+    )
+
+    assert missing_one["source_lifecycle"]["unmatched_rows"] == 1
+    assert missing_one["source_lifecycle"]["complete"] is False
+    assert missing_one["publish_ready"] is False
+    assert active_wappi_row_count(db_path) == 2
+    saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert saved["active_chat"] is None
+    assert saved["reset_reason"] == "active_chat_missing_from_catalog"
+
+
+def test_current_non_personal_records_are_retired_and_excluded_from_persistence_gate(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1, messages_per_chat=2)
+    non_personal = [{**chats[0], "type": "group"}]
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    report = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": non_personal, "p-max": []}, messages),
+    )
+
+    assert report["source_persistence_complete"] is True
+    assert report["checkpoint"]["committed"] is True
+    assert report["summary"]["messages_expected_in_timeline"] == 0
+    assert report["summary"]["messages_missing_from_timeline"] == 0
+    assert report["source_lifecycle"]["current_ledger_expected_excluded_records"] == 2
+    assert report["source_lifecycle"]["retired_events"] == 2
+    assert report["source_lifecycle"]["non_personal_active_after"] == 0
+    assert wappi_row_count(db_path) == 2
+    assert active_wappi_row_count(db_path) == 0
+
+
+def test_new_non_personal_chat_is_not_confirmed_before_personal_flip(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+    run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": [], "p-max": []}, {}),
+    )
+    chats, messages = build_universe(1)
+    group = [{**chats[0], "type": "group"}]
+    group_client = CheckpointFakeClient({"p-tg": group, "p-max": []}, messages)
+    group_report = run_wappi_history_import(config, client=group_client)
+
+    token = wappi_history_module.wappi_checkpoint_token("c0000")
+    assert group_report["checkpoint"]["committed"] is True
+    group_state = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert group_client.message_calls == []
+    assert token not in group_state["chats_done"]
+    assert token not in group_state["chat_markers"]
+
+    personal_client = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    personal = run_wappi_history_import(config, client=personal_client)
+
+    assert personal["publish_ready"] is True
+    assert {
+        order
+        for profile, chat, _offset, _limit, order in personal_client.message_request_calls
+        if profile == "p-tg" and chat == "c0000"
+    } == {"asc"}
+    assert active_wappi_row_count(db_path) == 1
 
 
 def test_checkpoint_requires_complete_message_history(tmp_path: Path) -> None:
@@ -180,8 +487,10 @@ def test_checkpoint_dir_must_stay_under_allowed_root(tmp_path: Path) -> None:
         )
 
 
-def test_catalog_failure_on_page_13_resumes_from_that_page(tmp_path: Path) -> None:
-    """Catalogue dies on page 13 of 13: run 1 confirms 120 chats, run 2 finishes."""
+def test_catalog_failure_on_page_13_writes_nothing_until_full_catalog_is_proven(
+    tmp_path: Path,
+) -> None:
+    """An unproven catalogue cannot authorize message reads or partial writes."""
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(130)
     first = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
@@ -192,14 +501,15 @@ def test_catalog_failure_on_page_13_resumes_from_that_page(tmp_path: Path) -> No
         client=first,
     )
 
-    assert report_one["mode"] == "apply"
+    assert report_one["mode"] == "apply_blocked"
     assert report_one["validation_ok"] is False
     assert report_one["checkpoint"]["complete"] is False
-    assert report_one["checkpoint"]["committed"] is True
+    assert report_one["checkpoint"]["committed"] is False
     tg_state = report_one["checkpoint"]["profiles"]["wappi_telegram:p-tg"]
     assert tg_state["stop_reason"] == "network_error"
-    assert tg_state["chats_done"] == 120
-    assert wappi_row_count(db_path) == 120
+    assert tg_state["chats_done"] == 0
+    assert first.message_calls == []
+    assert wappi_row_count(db_path) == 0
 
     second = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
     report_two = run_wappi_history_import(
@@ -208,7 +518,7 @@ def test_catalog_failure_on_page_13_resumes_from_that_page(tmp_path: Path) -> No
     )
 
     refetched = {chat_id for _profile, chat_id, _offset in second.message_calls}
-    assert {chat["id"] for chat in chats[120:]}.issubset(refetched)
+    assert {chat["id"] for chat in chats}.issubset(refetched)
     assert wappi_row_count(db_path) == 130
     assert report_two["checkpoint"]["complete"] is True
     assert report_two["validation_ok"] is True
@@ -222,7 +532,7 @@ def test_message_page_failure_resumes_inside_long_chat(tmp_path: Path) -> None:
     first = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
     # Catalogue page + first message page fit; the second message page does not.
     report_one = run_wappi_history_import(
-        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=5),
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=7),
         client=first,
     )
 
@@ -252,7 +562,13 @@ def test_request_limit_pause_writes_and_next_run_continues(tmp_path: Path) -> No
     first = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
 
     report_one = run_wappi_history_import(
-        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=12),
+        make_config(
+            tmp_path,
+            db_path=db_path,
+            phase1=phase1,
+            checkpoint_dir=checkpoint_dir,
+            request_limit_total=12,
+        ),
         client=first,
     )
 
@@ -387,7 +703,7 @@ def test_message_page_drift_restarts_that_chat_from_zero(tmp_path: Path) -> None
     chats, messages = build_universe(1, messages_per_chat=30)
     first = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
     run_wappi_history_import(
-        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=5),
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=7),
         client=first,
     )
     saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]["active_chat"]
@@ -425,6 +741,8 @@ def test_repeat_run_creates_no_duplicates(tmp_path: Path) -> None:
     assert second.message_calls == []
     assert report_two["validation_ok"] is True
     assert "p-tg" not in report_two["summary"]["empty_profiles"]
+    assert report_two["profiles"]["p-tg"]["records_built"] == 0
+    assert report_two["profiles"]["p-tg"]["catalog_passes"] == 2
     assert report_two["profiles"]["p-tg"]["incremental_chats_skipped"] == 6
 
 
@@ -460,7 +778,7 @@ def test_failed_changed_chat_does_not_force_full_refetch(tmp_path: Path) -> None
         {"id": "c0001-m030", "chat_id": "c0001", "type": "text", "body": "Позднее", "time": 1_753_000_030}
     )
     failing = CheckpointFakeClient({"p-tg": changed, "p-max": []}, messages)
-    failing.fail_message_at = ("c0001", 10)
+    failing.fail_message_at = ("c0001", 0)
     failed = run_wappi_history_import(config, client=failing)
 
     state = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
@@ -545,11 +863,6 @@ def test_periodic_full_audit_recovers_message_hidden_by_unchanged_marker(tmp_pat
 def test_periodic_full_audit_resumes_and_reaches_last_chat_with_small_budget(tmp_path: Path) -> None:
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(20)
-    for index, chat in enumerate(chats):
-        if index % 2:
-            chat.pop("last_timestamp", None)
-        else:
-            chat["last_timestamp"] = 0
     config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
     run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
     messages[("telegram", "p-tg", "c0019")].append(
@@ -591,10 +904,59 @@ def test_periodic_full_audit_resumes_and_reaches_last_chat_with_small_budget(tmp
     unchanged = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
     daily = run_wappi_history_import(config, client=unchanged)
     assert daily["history_validation"]["mode"] == "incremental_catalog"
-    assert {chat_id for _profile, chat_id, _offset in unchanged.message_calls} == {
-        str(chat["id"]) for chat in chats
-    }
-    assert daily["summary"]["incremental_chats_without_marker"] == 20
+    assert unchanged.message_calls == []
+    assert daily["summary"]["incremental_chats_skipped"] == 20
+
+
+def test_full_audit_rechecks_markerless_cursor_before_pass(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1)
+    chats[0].pop("last_timestamp", None)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    initial = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert initial["publish_ready"] is True
+
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    tg_state = profiles["wappi_telegram:p-tg"]
+    chat_token = wappi_history_module.wappi_checkpoint_token("c0000")
+    tg_state["full_audit_at"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    tg_state["full_audit_started_at"] = datetime.now(timezone.utc).isoformat()
+    tg_state["full_audit_markers"] = {chat_token: 0}
+    tg_state["complete"] = False
+    tg_state["incremental_cycle"] = False
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps(
+            {
+                "schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
+                "profiles": profiles,
+            }
+        ),
+        encoding="utf-8",
+    )
+    messages[("telegram", "p-tg", "c0000")].append(
+        {
+            "id": "c0000-late",
+            "chat_id": "c0000",
+            "type": "text",
+            "body": "Позднее",
+            "time": 1_753_000_100,
+        }
+    )
+
+    client = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=client)
+
+    assert report["history_validation"]["full_audit_passed"] is True
+    assert wappi_row_count(db_path) == 2
+    assert {
+        order
+        for profile, chat, _offset, _limit, order in client.message_request_calls
+        if profile == "p-tg" and chat == "c0000"
+    } == {"desc"}
 
 
 def test_full_audit_network_failure_keeps_checked_chat_progress(tmp_path: Path) -> None:
@@ -709,7 +1071,7 @@ def test_telegram_and_max_profiles_do_not_share_checkpoint(tmp_path: Path) -> No
     client = CheckpointFakeClient({"p-tg": tg_chats, "p-max": max_chats}, {**tg_messages, **max_messages})
 
     run_wappi_history_import(
-        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=12),
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir),
         client=client,
     )
 
@@ -740,7 +1102,7 @@ def test_first_profile_cannot_starve_the_second_one(tmp_path: Path) -> None:
         run_wappi_history_import(
             make_config(
                 tmp_path, db_path=db_path, phase1=phase1,
-                checkpoint_dir=checkpoint_dir, request_limit_total=14,
+                checkpoint_dir=checkpoint_dir, request_limit_total=17,
             ),
             client=CheckpointFakeClient({"p-tg": tg_chats, "p-max": max_chats}, universe),
         )
@@ -1017,16 +1379,16 @@ def test_anchor_probe_that_eats_the_last_request_never_confirms_the_chat(tmp_pat
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(1, messages_per_chat=30)
     run_wappi_history_import(
-        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=5),
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=7),
         client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
     )
     assert wappi_row_count(db_path) == 10
 
-    # Budget for run 2: p-max 2 + catalogue 1 + verification 1 + exactly one message
-    # request, which the anchor probe consumes.
+    # Budget for run 2: p-max 2 + two proved catalogue passes (4) + exactly one
+    # message request, which the anchor probe consumes.
     starved = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
     report = run_wappi_history_import(
-        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=5),
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir, request_limit_total=7),
         client=starved,
     )
 
@@ -1342,4 +1704,324 @@ def test_catalog_snapshot_drift_blocks_terminal_complete(tmp_path: Path) -> None
     assert tg_state["complete"] is False
     assert tg_state["stop_reason"] == "catalog_drift"
     assert report["validation_ok"] is False
-    assert wappi_history_checkpoint_path(checkpoint_dir).exists()
+    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
+
+
+def test_catalog_class_drift_stops_before_message_reads(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1)
+
+    class ClassDriftClient(CheckpointFakeClient):
+        p_tg_passes = 0
+
+        def list_chats(self, **kwargs: Any) -> Mapping[str, Any]:
+            if kwargs["profile_id"] == "p-tg" and int(kwargs.get("offset") or 0) == 0:
+                self.p_tg_passes += 1
+                if self.p_tg_passes == 2:
+                    self.chats["p-tg"][0] = {**self.chats["p-tg"][0], "type": "group"}
+            return super().list_chats(**kwargs)
+
+    client = ClassDriftClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir),
+        client=client,
+    )
+
+    stats = report["profiles"]["p-tg"]
+    assert stats["catalog_passes"] == 2
+    assert stats["chat_snapshot_drift_detected"] is True
+    assert stats["pagination_drift_detected"] is True
+    assert client.message_calls == []
+    assert report["validation_ok"] is False
+
+
+def test_oversized_whole_catalog_is_verified_by_two_independent_passes(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+
+    class WholeSnapshotClient(CheckpointFakeClient):
+        def list_chats(self, **kwargs: Any) -> Mapping[str, Any]:
+            profile_id = str(kwargs["profile_id"])
+            self.chat_calls.append(
+                (profile_id, int(kwargs.get("offset") or 0), int(kwargs.get("limit") or 0))
+            )
+            items = self.chats.get(profile_id, [])
+            return {"dialogs": items, "total_count": len(items)}
+
+    client = WholeSnapshotClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(
+        make_config(
+            tmp_path,
+            db_path=db_path,
+            phase1=phase1,
+            checkpoint_dir=checkpoint_dir,
+            page_size=1,
+        ),
+        client=client,
+    )
+
+    stats = report["profiles"]["p-tg"]
+    assert [offset for profile, offset, _limit in client.chat_calls if profile == "p-tg"] == [0, 0]
+    assert stats["catalog_passes"] == 2
+    assert stats["catalog_boundary_mode"] == "oversized_whole_snapshot"
+    assert stats["catalog_boundary_proven"] is True
+    assert stats["chat_snapshot_drift_detected"] is False
+    assert report["validation_ok"] is True
+
+
+def test_malformed_catalog_payload_is_not_treated_as_empty(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+
+    class MalformedCatalogClient(CheckpointFakeClient):
+        def list_chats(self, **kwargs: Any) -> Mapping[str, Any]:
+            if kwargs["profile_id"] == "p-tg":
+                return {"dialogs": "not-a-list", "total_count": 0}
+            return super().list_chats(**kwargs)
+
+    client = MalformedCatalogClient({"p-tg": [], "p-max": []}, {})
+    report = run_wappi_history_import(
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir),
+        client=client,
+    )
+
+    assert report["profiles"]["p-tg"]["pagination_drift_detected"] is True
+    assert client.message_calls == []
+    assert report["validation_ok"] is False
+
+
+def test_full_history_duplicate_across_pages_is_pagination_drift() -> None:
+    class CrossPageDuplicateClient:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            offset = int(kwargs["offset"])
+            self.offsets.append(offset)
+            ids = {0: ("m1", "m2"), 2: ("m2", "m3")}.get(offset, ())
+            return {
+                "messages": [
+                    {
+                        "id": message_id,
+                        "chat_id": "chat",
+                        "type": "text",
+                        "body": message_id,
+                        "time": index + 1,
+                    }
+                    for index, message_id in enumerate(ids)
+                ]
+            }
+
+    client = CrossPageDuplicateClient()
+    stats = wappi_history_module.WappiFetchStats()
+    wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=2, complete_message_history=True, sleep_seconds=0),
+        request_counter=stats,
+        request_budget=4,
+    )
+
+    assert client.offsets == [0, 2]
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+
+
+def test_delta_tail_rejects_more_than_exactly_one_overlap() -> None:
+    class ExtraOverlapClient:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            offset = int(kwargs["offset"])
+            self.offsets.append(offset)
+            ids = {0: ("m5", "m4", "m3"), 2: ("m4", "m3", "m2")}.get(offset, ())
+            return {
+                "messages": [
+                    {
+                        "id": message_id,
+                        "chat_id": "chat",
+                        "type": "text",
+                        "body": message_id,
+                        "time": 100 - index,
+                    }
+                    for index, message_id in enumerate(ids)
+                ]
+            }
+
+    client = ExtraOverlapClient()
+    stats = wappi_history_module.WappiFetchStats()
+    wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=3, complete_message_history=True, sleep_seconds=0),
+        request_counter=stats,
+        request_budget=3,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "m0"
+        ),
+    )
+
+    assert client.offsets == [0, 2]
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "unexpected_overlap"
+
+
+@pytest.mark.parametrize(
+    "malformed_payload",
+    ({}, {"messages": "not-a-list"}, {"messages": ["not-an-object"]}, {"data": {}}),
+)
+def test_empty_baseline_malformed_payload_is_blocking(
+    malformed_payload: Mapping[str, Any],
+) -> None:
+    class MalformedClient(CheckpointFakeClient):
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.message_calls.append(
+                (kwargs["profile_id"], kwargs["chat_id"], kwargs["offset"])
+            )
+            self.message_request_calls.append(
+                (
+                    kwargs["profile_id"], kwargs["chat_id"], kwargs["offset"],
+                    kwargs["limit"], kwargs["order"],
+                )
+            )
+            return malformed_payload
+
+    client = MalformedClient({"p-tg": []}, {})
+    stats = wappi_history_module.WappiFetchStats()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="empty-chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=stats,
+        request_budget=2,
+        allow_empty_tail=True,
+        empty_baseline_tail=True,
+    )
+
+    assert rows == ()
+    assert len(client.message_request_calls) == 1
+    assert wappi_history_module.fetch_chat_messages.last_boundary_found is False
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "malformed_page"
+
+
+def test_empty_baseline_cursor_sentinel_is_strict() -> None:
+    assert wappi_history_module._wappi_chat_cursor_is_valid(
+        {"empty_baseline": True, "timestamp": 0}
+    )
+    for invalid in (
+        {"empty_baseline": True, "timestamp": 1},
+        {"empty_baseline": True, "timestamp": 0, "message_digest": "x" * 64},
+        {"empty_baseline": True},
+        {"empty_baseline": True, "timestamp": "0"},
+        {"empty_baseline": True, "timestamp": False},
+        {"empty_baseline": True, "timestamp": 0, "message_digest": ""},
+    ):
+        assert not wappi_history_module._wappi_chat_cursor_is_valid(invalid)
+
+
+def test_full_history_malformed_message_payload_is_blocking() -> None:
+    class MalformedClient(CheckpointFakeClient):
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            return {"messages": "not-a-list"}
+
+    rows = wappi_history_module.fetch_chat_messages(
+        MalformedClient({"p-tg": []}, {}),
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="malformed-chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+    )
+
+    assert rows == ()
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+
+
+def test_regressed_marker_missing_boundary_stops_after_three_tail_pages(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1, messages_per_chat=500)
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+        page_size=100,
+    )
+    run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    original_rows = wappi_row_count(db_path)
+    messages[("telegram", "p-tg", "c0000")] = [
+        {**dict(row), "id": f"replaced-{row['id']}"}
+        for row in messages[("telegram", "p-tg", "c0000")]
+    ]
+    regressed = [{**dict(chats[0]), "last_timestamp": int(chats[0]["last_timestamp"]) - 1}]
+    client = CheckpointFakeClient({"p-tg": regressed, "p-max": []}, messages)
+
+    report = run_wappi_history_import(config, client=client)
+
+    stats = report["profiles"]["p-tg"]
+    assert report["validation_ok"] is False
+    assert stats["message_page_drift_reason"] == "boundary_not_found_max_pages"
+    assert stats["message_page_drift_pages"] == 3
+    assert stats["message_page_drift_offset"] == 198
+    assert stats["message_page_drift_cursor_kind"] == "message_digest"
+    assert stats["message_page_drift_marker_relation"] == "regressed"
+    assert len(stats["message_page_drift_first_signature"]) == 64
+    assert stats["message_page_drift_head_signature"] == ""
+    assert client.message_request_calls == [
+        ("p-tg", "c0000", 0, 100, "desc"),
+        ("p-tg", "c0000", 99, 100, "desc"),
+        ("p-tg", "c0000", 198, 100, "desc"),
+    ]
+    assert wappi_row_count(db_path) == original_rows
+
+
+def test_reconciliation_gap_commits_only_proven_other_chat_progress(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    baseline = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert baseline["validation_ok"] is True
+    before = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    safe_token = wappi_checkpoint_token("c0000")
+    gap_token = wappi_checkpoint_token("c0001")
+    gap_marker = before["chat_markers"][gap_token]
+    gap_cursor = before["chat_cursors"][gap_token]
+    messages[("telegram", "p-tg", "c0000")].append(
+        {
+            "id": "c0000-new", "chat_id": "c0000", "type": "text",
+            "body": "Доказанное новое сообщение", "time": 1_753_000_001,
+        }
+    )
+    chats[0] = {**dict(chats[0]), "last_timestamp": 1_753_000_001}
+    chats[1] = {**dict(chats[1]), "last_timestamp": int(chats[1]["last_timestamp"]) + 1}
+
+    report = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+
+    assert report["validation_ok"] is False
+    assert report["mode"] == "apply"
+    assert report["checkpoint"]["committed"] is True
+    assert report["checkpoint"]["complete"] is False
+    assert report["checkpoint"]["deferred_limit_hits"] == [
+        "p-tg:message_reconciliation_gap"
+    ]
+    assert wappi_row_count(db_path) == 3
+    after = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert after["chat_markers"][safe_token] == 1_753_000_001
+    assert after["chat_markers"][gap_token] == gap_marker
+    assert after["chat_cursors"][gap_token] == gap_cursor

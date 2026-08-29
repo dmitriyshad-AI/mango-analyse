@@ -40,6 +40,58 @@ def test_brand_evidence_is_deterministic_single_both_none() -> None:
     assert producer.detect_brand_evidence("Обсудили занятия") == ("none", ())
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("inbound", "inbound"),
+        ("входящий", "inbound"),
+        ("outbound", "outbound"),
+        ("исходящий", "outbound"),
+        ("internal", "internal"),
+        ("unknown", "system"),
+        ("garbage", "system"),
+        (None, "system"),
+        ("", "system"),
+    ],
+)
+def test_normalize_direction_maps_unknown_and_missing_to_system(raw: str | None, expected: str) -> None:
+    assert producer.normalize_direction(raw) == expected
+
+
+@pytest.mark.parametrize("nullish_match_class", ("ambiguous", "strong_unique"))
+def test_resolve_phone_identity_keeps_nullish_link_as_blocker(nullish_match_class: str) -> None:
+    with sqlite3.connect(":memory:") as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            "CREATE TABLE identity_links ("
+            "tenant_id TEXT, link_type TEXT, link_value TEXT, customer_id TEXT, match_class TEXT)"
+        )
+        con.executemany(
+            "INSERT INTO identity_links VALUES (?, ?, ?, ?, ?)",
+            (
+                ("foton", "phone", "+79990001122", "None", nullish_match_class),
+                ("foton", "phone", "+79990001122", "customer:valid", "strong_unique"),
+            ),
+        )
+
+        resolved = producer.resolve_phone_identity(con, "foton", "+79990001122")
+        assert resolved == producer.IdentityResolution(
+            match_class="ambiguous",
+            customer_id=None,
+            reason="invalid_existing_link_owner",
+            candidate_count=1,
+        )
+
+        con.execute("DELETE FROM identity_links WHERE customer_id = 'customer:valid'")
+        unresolved = producer.resolve_phone_identity(con, "foton", "+79990001122")
+        assert unresolved == producer.IdentityResolution(
+            match_class="ambiguous",
+            customer_id=None,
+            reason="invalid_existing_link_owner",
+            candidate_count=0,
+        )
+
+
 def seed_customer_with_phone(db_path: Path, allowed_root: Path, *, customer_id: str, phone: str) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
         store.upsert_customer(

@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence, cast
 from mango_mvp.customer_timeline.derived_signals import (
     backfill_sg_v1_signals_on_store,
 )
+from mango_mvp.customer_timeline.contracts import IdentityLink
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.mail_stage2_ingest import MAIL_STAGE2_INGEST_SOURCE_SYSTEM
 from mango_mvp.customer_timeline.mail_stage2_visibility import (
@@ -28,10 +29,12 @@ from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_writable_path,
 )
 from mango_mvp.customer_timeline.store import (
+    CUSTOMER_ID_OWNER_COLUMNS,
     CustomerTimelineSQLiteStore,
     MAIL_IDENTITY_SENTINEL_MAX,
     customer_timeline_integrity_report,
     customer_timeline_integrity_report_ok,
+    customer_id_literal_invalid_sql,
     customer_timeline_run_lock,
     is_mail_identity_sentinel_date,
     json_dumps,
@@ -119,6 +122,19 @@ def _run_stage3_maintenance_unlocked(
     with store_context as store:
         con = store._con  # noqa: SLF001 - staging maintenance uses store-owned connection and FTS helpers.
         report["before"] = _metrics(con)
+        nullish_customer_plan = _load_nullish_customer_id_repair_plan(
+            con,
+            tenant_id=config.tenant_id,
+        )
+        report["nullish_customer_id_repair_plan"] = nullish_customer_plan["summary"]
+        report["nullish_customer_id_repair"] = (
+            _apply_nullish_customer_id_repair_plan(
+                store,
+                nullish_customer_plan,
+            )
+            if config.apply
+            else {"dry_run": True, "writes": 0}
+        )
         identity_date_plan = _load_mail_identity_date_repair_plan(
             con,
             tenant_id=config.tenant_id,
@@ -260,6 +276,423 @@ def _run_stage3_maintenance_unlocked(
     report["elapsed_seconds"] = round(time.monotonic() - started, 3)
     (config.out_dir / "stage3_maintenance_report.json").write_text(json_dumps(report), encoding="utf-8")
     return report
+
+
+_NULLISH_REPAIRABLE_OWNER_TABLES = frozenset(
+    {
+        "bot_context_chunks",
+        "customer_identities",
+        "customer_opportunities",
+        "derived_signals",
+        "family_members_v1",
+        "identity_links",
+        "timeline_events",
+    }
+)
+_NULLISH_FTS_TABLES = frozenset({"bot_context_chunk_fts", "timeline_event_fts"})
+_NULLISH_REPAIR_REASON = "textual_null_customer_id"
+
+
+def _load_nullish_customer_id_repair_plan(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+) -> Mapping[str, Any]:
+    tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    columns = {
+        table: {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
+        for table in sorted(tables & {table for table, _column in CUSTOMER_ID_OWNER_COLUMNS})
+    }
+    literal_counts: dict[str, int] = {}
+    bad_values: set[str] = set()
+    for table, column in CUSTOMER_ID_OWNER_COLUMNS:
+        if table in _NULLISH_FTS_TABLES or column not in columns.get(table, set()):
+            continue
+        tenant_clause = "tenant_id=? AND " if "tenant_id" in columns[table] else ""
+        params: tuple[Any, ...] = (tenant_id,) if tenant_clause else ()
+        rows = con.execute(
+            f"SELECT {column},COUNT(*) FROM {table} WHERE {tenant_clause}"
+            f"{customer_id_literal_invalid_sql(column)} GROUP BY {column}",
+            params,
+        ).fetchall()
+        literal_counts[f"{table}.{column}"] = sum(int(row[1]) for row in rows)
+        bad_values.update(str(row[0]) for row in rows)
+
+    values = tuple(sorted(bad_values))
+    unexpected = {
+        key: count
+        for key, count in literal_counts.items()
+        if count and key.split(".", 1)[0] not in _NULLISH_REPAIRABLE_OWNER_TABLES
+    }
+    empty_plan = {
+        "summary": {
+            "bad_literal_values": len(values),
+            "literal_counts": {key: value for key, value in literal_counts.items() if value},
+            "active_events": 0,
+            "identity_links": 0,
+            "opportunities": 0,
+            "derived_signals": 0,
+            "bot_context_chunks": 0,
+            "family_members": 0,
+            "customer_identities": 0,
+            "stop_counts": {f"unexpected_projection:{key}": value for key, value in unexpected.items()},
+        },
+        "bad_values": values,
+        "tenant_id": tenant_id,
+        "event_pairs": (),
+        "event_ids": (),
+        "link_rows": (),
+        "opportunity_rows": (),
+        "signal_ids": (),
+        "chunk_ids": (),
+    }
+    if not values:
+        return empty_plan
+
+    placeholders = ",".join("?" for _ in values)
+    owner_params = (tenant_id, *values)
+    event_rows = con.execute(
+        f"SELECT event_id,source_system,source_id FROM timeline_events "
+        f"WHERE tenant_id=? AND customer_id IN ({placeholders}) AND superseded_by IS NULL "
+        "ORDER BY source_system,source_id,event_id",
+        owner_params,
+    ).fetchall()
+    event_ids = tuple(str(row["event_id"]) for row in event_rows)
+    event_pairs = tuple(
+        dict.fromkeys((str(row["source_system"]), str(row["source_id"])) for row in event_rows)
+    )
+    link_rows = tuple(
+        con.execute(
+            f"SELECT * FROM identity_links WHERE tenant_id=? AND customer_id IN ({placeholders}) "
+            "ORDER BY link_id",
+            owner_params,
+        ).fetchall()
+    )
+    opportunity_rows = tuple(
+        con.execute(
+            f"SELECT opportunity_id,source_system FROM customer_opportunities "
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders}) ORDER BY opportunity_id",
+            owner_params,
+        ).fetchall()
+    )
+    opportunity_ids = tuple(str(row["opportunity_id"]) for row in opportunity_rows)
+
+    signal_clauses = [f"customer_id IN ({placeholders})"]
+    signal_params: list[Any] = [tenant_id, *values]
+    if event_ids:
+        event_placeholders = ",".join("?" for _ in event_ids)
+        signal_clauses.extend(
+            (
+                f"event_id IN ({event_placeholders})",
+                "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(derived_signals.record_json)=1 "
+                "THEN derived_signals.record_json ELSE '{}' END,'$.source_event_ids') source_event "
+                f"WHERE CAST(source_event.value AS TEXT) IN ({event_placeholders}))",
+            )
+        )
+        signal_params.extend(event_ids)
+        signal_params.extend(event_ids)
+    if opportunity_ids:
+        opportunity_placeholders = ",".join("?" for _ in opportunity_ids)
+        signal_clauses.append(f"opportunity_id IN ({opportunity_placeholders})")
+        signal_params.extend(opportunity_ids)
+    signal_ids = tuple(
+        str(row[0])
+        for row in con.execute(
+            "SELECT signal_id FROM derived_signals WHERE tenant_id=? AND ("
+            + " OR ".join(signal_clauses)
+            + ") ORDER BY signal_id",
+            tuple(signal_params),
+        ).fetchall()
+    )
+
+    chunk_clauses = [f"customer_id IN ({placeholders})"]
+    chunk_params: list[Any] = [tenant_id, *values]
+    if event_ids:
+        chunk_clauses.append(f"event_id IN ({event_placeholders})")
+        chunk_params.extend(event_ids)
+    if opportunity_ids:
+        chunk_clauses.append(f"opportunity_id IN ({opportunity_placeholders})")
+        chunk_params.extend(opportunity_ids)
+    chunk_ids = tuple(
+        str(row[0])
+        for row in con.execute(
+            "SELECT chunk_id FROM bot_context_chunks WHERE tenant_id=? AND ("
+            + " OR ".join(chunk_clauses)
+            + ") ORDER BY chunk_id",
+            tuple(chunk_params),
+        ).fetchall()
+    )
+
+    stop_counts = {f"unexpected_projection:{key}": value for key, value in unexpected.items()}
+    stop_counts["superseded_bad_events"] = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM timeline_events WHERE tenant_id=? "
+            f"AND customer_id IN ({placeholders}) AND superseded_by IS NOT NULL",
+            owner_params,
+        ).fetchone()[0]
+    )
+    stop_counts["mixed_active_source_pairs"] = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT bad.source_system,bad.source_id FROM timeline_events bad "
+            "JOIN timeline_events other ON other.tenant_id=bad.tenant_id "
+            "AND other.source_system=bad.source_system AND other.source_id=bad.source_id "
+            f"WHERE bad.tenant_id=? AND bad.customer_id IN ({placeholders}) "
+            "AND bad.superseded_by IS NULL AND other.superseded_by IS NULL "
+            "AND other.event_id!=bad.event_id "
+            f"AND (other.customer_id IS NULL OR other.customer_id NOT IN ({placeholders})))",
+            (tenant_id, *values, *values),
+        ).fetchone()[0]
+    )
+    foreign_dependency_queries: list[tuple[str, str, tuple[Any, ...]]] = []
+    if event_ids:
+        foreign_dependency_queries.extend(
+            (
+                (
+                    "event_signal_foreign_owner",
+                    f"SELECT COUNT(*) FROM derived_signals WHERE tenant_id=? AND event_id IN ({event_placeholders}) "
+                    f"AND customer_id IS NOT NULL AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *event_ids, *values),
+                ),
+                (
+                    "event_chunk_foreign_owner",
+                    f"SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id=? AND event_id IN ({event_placeholders}) "
+                    f"AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *event_ids, *values),
+                ),
+            )
+        )
+    if opportunity_ids:
+        foreign_dependency_queries.extend(
+            (
+                (
+                    "opportunity_event_foreign_owner",
+                    f"SELECT COUNT(*) FROM timeline_events WHERE tenant_id=? "
+                    f"AND opportunity_id IN ({opportunity_placeholders}) "
+                    f"AND (customer_id IS NULL OR customer_id NOT IN ({placeholders}))",
+                    (tenant_id, *opportunity_ids, *values),
+                ),
+                (
+                    "opportunity_signal_foreign_owner",
+                    f"SELECT COUNT(*) FROM derived_signals WHERE tenant_id=? "
+                    f"AND opportunity_id IN ({opportunity_placeholders}) "
+                    f"AND customer_id IS NOT NULL AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *opportunity_ids, *values),
+                ),
+                (
+                    "opportunity_chunk_foreign_owner",
+                    f"SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id=? "
+                    f"AND opportunity_id IN ({opportunity_placeholders}) "
+                    f"AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *opportunity_ids, *values),
+                ),
+            )
+        )
+    for code, sql, params in foreign_dependency_queries:
+        stop_counts[code] = int(con.execute(sql, params).fetchone()[0])
+    stop_counts = {key: value for key, value in stop_counts.items() if value}
+
+    family_members = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM family_members_v1 WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            owner_params,
+        ).fetchone()[0]
+    )
+    customer_identities = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM customer_identities WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            owner_params,
+        ).fetchone()[0]
+    )
+    summary = {
+        "bad_literal_values": len(values),
+        "literal_counts": {key: value for key, value in literal_counts.items() if value},
+        "active_events": len(event_ids),
+        "identity_links": len(link_rows),
+        "opportunities": len(opportunity_rows),
+        "derived_signals": len(signal_ids),
+        "bot_context_chunks": len(chunk_ids),
+        "family_members": family_members,
+        "customer_identities": customer_identities,
+        "stop_counts": stop_counts,
+    }
+    return {
+        "summary": summary,
+        "bad_values": values,
+        "tenant_id": tenant_id,
+        "event_pairs": event_pairs,
+        "event_ids": event_ids,
+        "link_rows": link_rows,
+        "opportunity_rows": opportunity_rows,
+        "signal_ids": signal_ids,
+        "chunk_ids": chunk_ids,
+        "before_hash": stable_digest(summary),
+    }
+
+
+def _apply_nullish_customer_id_repair_plan(
+    store: CustomerTimelineSQLiteStore,
+    plan: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    summary = dict(plan["summary"])
+    bad_values = tuple(str(value) for value in plan["bad_values"])
+    if summary.get("stop_counts"):
+        raise RuntimeError(
+            "nullish customer identity repair blocked: "
+            + ", ".join(sorted(str(key) for key in summary["stop_counts"]))
+        )
+    if not bad_values:
+        return {
+            "writes": 0,
+            "events_quarantined": 0,
+            "links_detached": 0,
+            "opportunities_deleted": 0,
+            "signals_deleted": 0,
+            "chunks_deleted": 0,
+            "family_members_deleted": 0,
+            "customer_identities_deleted": 0,
+        }
+
+    con = store._con  # noqa: SLF001 - one existing Stage3 transaction owns the repair.
+    placeholders = ",".join("?" for _ in bad_values)
+    tenant_id = str(plan["tenant_id"])
+    event_ids = tuple(str(value) for value in plan["event_ids"])
+    chunk_ids = tuple(str(value) for value in plan["chunk_ids"])
+    signal_ids = tuple(str(value) for value in plan["signal_ids"])
+    actor = "stage3_nullish_customer_id_repair"
+    events_quarantined = 0
+    links_detached = 0
+    opportunities_deleted = 0
+    with store.bulk_write():
+        for source_system, source_id in plan["event_pairs"]:
+            result = store.quarantine_timeline_events_identity_conflict(
+                tenant_id,
+                source_system=str(source_system),
+                source_id=str(source_id),
+                reason=_NULLISH_REPAIR_REASON,
+                actor=actor,
+            )
+            events_quarantined += int(result["existing_event_quarantined"])
+        if events_quarantined != int(summary["active_events"]):
+            raise RuntimeError("nullish customer identity repair event balance changed during apply")
+
+        for row in plan["link_rows"]:
+            payload = dict(json_loads(str(row["record_json"])))
+            evidence = dict(payload.get("evidence") or {})
+            evidence["stage3_nullish_customer_id_repair"] = {
+                "reason": _NULLISH_REPAIR_REASON,
+                "previous_owner_sha256": stable_digest({"customer_id": str(row["customer_id"])}),
+            }
+            link = IdentityLink(
+                tenant_id=str(row["tenant_id"]),
+                customer_id=None,
+                link_id=str(row["link_id"]),
+                link_type=str(row["link_type"]),
+                link_value=str(row["link_value"]),
+                source_system=str(row["source_system"]),
+                source_ref=str(row["source_ref"]),
+                match_class="ambiguous",
+                confidence=0.0,
+                evidence=evidence,
+                first_seen_at=parse_aware_utc(row["first_seen_at"]),
+                last_seen_at=parse_aware_utc(row["last_seen_at"]),
+            )
+            store.upsert_identity_link(link, actor=actor)
+            links_detached += 1
+
+        if chunk_ids:
+            store._delete_bot_context_fts_for_chunk_ids(chunk_ids)  # noqa: SLF001
+            chunk_placeholders = ",".join("?" for _ in chunk_ids)
+            chunks_deleted = int(
+                con.execute(
+                    f"DELETE FROM bot_context_chunks WHERE chunk_id IN ({chunk_placeholders})",
+                    chunk_ids,
+                ).rowcount
+            )
+        else:
+            chunks_deleted = 0
+        if signal_ids:
+            signal_placeholders = ",".join("?" for _ in signal_ids)
+            signals_deleted = int(
+                con.execute(
+                    f"DELETE FROM derived_signals WHERE signal_id IN ({signal_placeholders})",
+                    signal_ids,
+                ).rowcount
+            )
+        else:
+            signals_deleted = 0
+
+        family_members_deleted = int(
+            con.execute(
+                f"DELETE FROM family_members_v1 WHERE tenant_id=? AND customer_id IN ({placeholders})",
+                (tenant_id, *bad_values),
+            ).rowcount
+        )
+        for row in plan["opportunity_rows"]:
+            result = store.delete_unreferenced_opportunity(
+                str(row["source_system"]),
+                str(row["opportunity_id"]),
+                actor=actor,
+            )
+            if result.status != "deleted":
+                raise RuntimeError("nullish customer identity repair could not delete an opportunity")
+            opportunities_deleted += 1
+        customer_identities_deleted = int(
+            con.execute(
+                f"DELETE FROM customer_identities WHERE tenant_id=? AND customer_id IN ({placeholders})",
+                (tenant_id, *bad_values),
+            ).rowcount
+        )
+        remaining = sum(
+            int(
+                con.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE tenant_id=? AND {column} IN ({placeholders})",
+                    (tenant_id, *bad_values),
+                ).fetchone()[0]
+            )
+            for table, column in CUSTOMER_ID_OWNER_COLUMNS
+            if table in _NULLISH_REPAIRABLE_OWNER_TABLES
+        )
+        if remaining:
+            raise RuntimeError("nullish customer identity repair left owner references")
+        store.append_audit_log(
+            tenant_id,
+            action="nullish_customer_identity_repaired",
+            entity_type="customer_identity",
+            entity_id=f"nullish:{stable_digest({'tenant_id': tenant_id, 'values': bad_values})[:16]}",
+            actor=actor,
+            before_hash=str(plan["before_hash"]),
+            after_hash=stable_digest({"tenant_id": tenant_id, "remaining": 0}),
+            metadata={
+                "reason": _NULLISH_REPAIR_REASON,
+                "events_quarantined": events_quarantined,
+                "links_detached": links_detached,
+                "opportunities_deleted": opportunities_deleted,
+                "signals_deleted": signals_deleted,
+                "chunks_deleted": chunks_deleted,
+                "family_members_deleted": family_members_deleted,
+                "customer_identities_deleted": customer_identities_deleted,
+            },
+        )
+        store._commit()  # noqa: SLF001 - marks the surrounding Store batch dirty.
+
+    return {
+        "writes": (
+            events_quarantined
+            + links_detached
+            + opportunities_deleted
+            + signals_deleted
+            + chunks_deleted
+            + family_members_deleted
+            + customer_identities_deleted
+        ),
+        "events_quarantined": events_quarantined,
+        "links_detached": links_detached,
+        "opportunities_deleted": opportunities_deleted,
+        "signals_deleted": signals_deleted,
+        "chunks_deleted": chunks_deleted,
+        "family_members_deleted": family_members_deleted,
+        "customer_identities_deleted": customer_identities_deleted,
+    }
 
 
 def _load_mail_identity_date_repair_plan(

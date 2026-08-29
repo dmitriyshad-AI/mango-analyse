@@ -663,6 +663,64 @@ def test_customer_timeline_writable_path_rejects_hard_link(tmp_path: Path) -> No
     assert guard_customer_timeline_writable_path(tmp_path) == tmp_path
 
 
+@pytest.mark.parametrize("bad_customer_id", ("None", " null ", "NaN", "undefined", "<NA>", "N/A"))
+def test_all_customer_owner_contracts_reject_textual_null_ids(bad_customer_id: str) -> None:
+    constructors = (
+        lambda: CustomerIdentity(
+            tenant_id="foton",
+            customer_id=bad_customer_id,
+            identity_status="strong",
+            primary_phone="+79161234567",
+            created_at=NOW,
+            updated_at=NOW,
+        ),
+        lambda: IdentityLink(
+            tenant_id="foton",
+            customer_id=bad_customer_id,
+            link_type="amo_contact_id",
+            link_value="contact-1",
+            source_system="amocrm_snapshot",
+            source_ref="contact:1",
+        ),
+        lambda: CustomerOpportunity(
+            tenant_id="foton",
+            customer_id=bad_customer_id,
+            opportunity_type="amo_deal",
+            source_system="amocrm_snapshot",
+            source_id="lead-1",
+        ),
+        lambda: TimelineEvent(
+            tenant_id="foton",
+            customer_id=bad_customer_id,
+            event_type="system_note",
+            event_at=NOW,
+            source_system="amocrm_snapshot",
+            source_id="event-1",
+            direction="system",
+        ),
+        lambda: DerivedSignal(
+            tenant_id="foton",
+            customer_id=bad_customer_id,
+            signal_type="follow_up",
+            severity="low",
+            evidence_text="Проверка",
+            created_at=NOW,
+        ),
+        lambda: BotContextChunk(
+            tenant_id="foton",
+            customer_id=bad_customer_id,
+            source_ref="test:1",
+            chunk_type="summary",
+            text="Проверка",
+            created_at=NOW,
+        ),
+    )
+
+    for constructor in constructors:
+        with pytest.raises(ValueError, match="null placeholder"):
+            constructor()
+
+
 def test_contract_inventory_lists_core_types_and_safety() -> None:
     inventory = customer_timeline_contract_inventory()
 

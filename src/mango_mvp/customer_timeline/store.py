@@ -24,8 +24,12 @@ from mango_mvp.customer_timeline.contracts import (
     UNIQUE_IDENTITY_LINK_TYPES,
 )
 from mango_mvp.customer_timeline.ids import (
+    NULLISH_CUSTOMER_ID_VALUES,
+    is_nullish_customer_id,
     normalize_key,
+    optional_customer_id,
     optional_text,
+    require_customer_id,
     require_text,
     require_timezone,
     stable_digest,
@@ -67,6 +71,54 @@ MAIL_IDENTITY_UNKNOWN_REASONS = frozenset(
         "missing_exact_evidence",
     }
 )
+
+CUSTOMER_ID_OWNER_COLUMNS = (
+    ("a2v3_customer_brand_profiles", "customer_id"),
+    ("a2v3_mail_event_facts", "customer_id"),
+    ("bot_context_chunk_fts", "customer_id"),
+    ("bot_context_chunks", "customer_id"),
+    ("customer_id_mappings", "old_customer_id"),
+    ("customer_id_mappings", "new_customer_id"),
+    ("customer_identities", "customer_id"),
+    ("customer_objection_summary_v1", "customer_id"),
+    ("customer_objections_v1", "customer_id"),
+    ("customer_opportunities", "customer_id"),
+    ("customer_purchases_v1", "customer_id"),
+    ("derived_signals", "customer_id"),
+    ("event_child_attribution_v1", "customer_id"),
+    ("family_links_v1", "customer_id"),
+    ("family_members_v1", "customer_id"),
+    ("identity_links", "customer_id"),
+    ("opportunity_child_attribution_v1", "customer_id"),
+    ("timeline_event_fts", "customer_id"),
+    ("timeline_events", "customer_id"),
+)
+_NULLISH_CUSTOMER_ID_SQL = ",".join(f"'{value}'" for value in sorted(NULLISH_CUSTOMER_ID_VALUES))
+_CUSTOMER_ID_TRIM_SQL = (
+    "char(9,10,11,12,13,28,29,30,31,32,133,160,5760,"
+    "8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)"
+)
+
+
+def _trimmed_customer_id_sql(column: str) -> str:
+    # ponytail: mirror Python str.strip() at the persisted SQL boundary once.
+    return f"trim(CAST({column} AS TEXT),{_CUSTOMER_ID_TRIM_SQL})"
+
+
+def customer_id_present_sql(column: str) -> str:
+    normalized = _trimmed_customer_id_sql(column)
+    return (
+        f"{column} IS NOT NULL AND {normalized}!='' AND "
+        f"lower({normalized}) NOT IN ({_NULLISH_CUSTOMER_ID_SQL})"
+    )
+
+
+def customer_id_literal_invalid_sql(column: str) -> str:
+    normalized = _trimmed_customer_id_sql(column)
+    return (
+        f"{column} IS NOT NULL AND ({normalized}='' OR "
+        f"lower({normalized}) IN ({_NULLISH_CUSTOMER_ID_SQL}))"
+    )
 
 
 def is_mail_identity_sentinel_date(value: object) -> bool:
@@ -218,7 +270,7 @@ def customer_timeline_writer_lock(
 
 
 def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
-    customer = require_text(customer_id, "customer_id")
+    customer = require_customer_id(customer_id)
     return tuple(dict.fromkeys((customer, f"customer:{customer}")))
 
 
@@ -573,9 +625,9 @@ def timeline_email_content_key(
     subject: Optional[str],
     summary: Optional[str],
 ) -> Optional[str]:
-    customer = optional_text(customer_id)
-    if not customer:
+    if is_nullish_customer_id(customer_id):
         return None
+    customer = require_customer_id(customer_id)
     if str(event_type or "") != _EMAIL_CONTENT_DEDUP_EVENT_TYPE:
         return None
     normalized_summary = normalize_email_content_text(summary)
@@ -2347,6 +2399,173 @@ class CustomerTimelineSQLiteStore:
             "bot_context_chunk", chunk, False, "updated", after_hash, audit.audit_id
         )
 
+    def set_timeline_source_records_active(
+        self,
+        tenant_id: str,
+        *,
+        source_records: Mapping[str, Sequence[str]],
+        active: bool,
+        retirement_marker: str,
+        retirement_reason: str,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> Mapping[str, int]:
+        """Soft-retire or restore positively classified Wappi source records."""
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        marker = require_text(retirement_marker, "retirement_marker")
+        marker_suffix = marker.removeprefix(_WAPPI_EVENT_RETIREMENT_PREFIX)
+        if (
+            len(marker_suffix) != 16
+            or any(char not in "0123456789abcdef" for char in marker_suffix)
+        ):
+            raise ValueError("unsupported source lifecycle marker")
+        reason = normalize_key(retirement_reason, "retirement_reason")
+        rows: list[sqlite3.Row] = []
+        for raw_source_system, raw_ids in sorted(source_records.items()):
+            source_system = normalize_key(raw_source_system, "source_system")
+            if source_system not in {"wappi_telegram", "wappi_max"}:
+                raise ValueError("source lifecycle is restricted to Wappi history")
+            source_ids = tuple(
+                dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip())
+            )
+            for offset in range(0, len(source_ids), 400):
+                batch = source_ids[offset : offset + 400]
+                placeholders = ",".join("?" for _ in batch)
+                lifecycle_clause = (
+                    f"length(superseded_by)={len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 16} "
+                    f"AND substr(superseded_by,1,{len(_WAPPI_EVENT_RETIREMENT_PREFIX)})="
+                    f"'{_WAPPI_EVENT_RETIREMENT_PREFIX}' "
+                    f"AND substr(superseded_by,{len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 1}) "
+                    "NOT GLOB '*[^0-9a-f]*'"
+                    if active
+                    else "coalesce(superseded_by,'')=''"
+                )
+                rows.extend(
+                    self._con.execute(
+                        "SELECT event_id,record_json,record_hash FROM timeline_events "
+                        f"WHERE tenant_id=? AND source_system=? AND source_id IN ({placeholders}) "
+                        f"AND {lifecycle_clause}",
+                        (tenant, source_system, *batch),
+                    ).fetchall()
+                )
+        changed_ids: list[str] = []
+        dependency_changes = 0
+        rewritten_events = 0
+        for row in rows:
+            event_id = str(row["event_id"])
+            if active:
+                payload = json.loads(str(row["record_json"] or "{}"))
+                metadata = (
+                    dict(payload.get("metadata") or {})
+                    if isinstance(payload.get("metadata"), Mapping)
+                    else {}
+                )
+                pending_reason = "wappi_catalog_reclassified_personal_pending_attribution"
+                metadata.update(
+                    {
+                        "identity_authority": "pending_attribution",
+                        "pending_attribution": True,
+                        "resolution_reason": pending_reason,
+                        "requires_manager_review": True,
+                    }
+                )
+                payload.update(
+                    {
+                        "customer_id": None,
+                        "opportunity_id": None,
+                        "match_status": IdentityMatchClass.UNMATCHED.value,
+                        "confidence": 0.0,
+                        "resolution_status": "pending",
+                        "resolution_reason": pending_reason,
+                        "allowed_for_bot": False,
+                        "requires_manager_review": True,
+                        "metadata": metadata,
+                    }
+                )
+                safe_payload = scrub_timeline_persisted_json(payload)
+                record_hash = stable_digest(safe_payload)
+                cursor = self._con.execute(
+                    "UPDATE timeline_events SET superseded_by=NULL,customer_id=NULL,"
+                    "opportunity_id=NULL,match_status=?,confidence=0.0,"
+                    "record_json=?,record_hash=? "
+                    "WHERE tenant_id=? AND event_id=? "
+                    f"AND length(superseded_by)={len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 16} "
+                    f"AND substr(superseded_by,1,{len(_WAPPI_EVENT_RETIREMENT_PREFIX)})="
+                    f"'{_WAPPI_EVENT_RETIREMENT_PREFIX}' "
+                    f"AND substr(superseded_by,{len(_WAPPI_EVENT_RETIREMENT_PREFIX) + 1}) "
+                    "NOT GLOB '*[^0-9a-f]*'",
+                    (
+                        IdentityMatchClass.UNMATCHED.value,
+                        json_dumps(safe_payload),
+                        record_hash,
+                        tenant,
+                        event_id,
+                    ),
+                )
+                rewritten_events += int(bool(cursor.rowcount))
+            else:
+                before = self._con.total_changes
+                self._retire_dependencies(
+                    tenant,
+                    event_id,
+                    reference_column="event_id",
+                    keep_customer_id=None,
+                    reason=reason,
+                    actor=actor,
+                    ingestion_run_id=ingestion_run_id,
+                    source_record_hash=str(row["record_hash"]),
+                )
+                dependency_changes += self._con.total_changes - before
+                cursor = self._con.execute(
+                    "UPDATE timeline_events SET superseded_by=? "
+                    "WHERE tenant_id=? AND event_id=? AND coalesce(superseded_by,'')=''",
+                    (marker, tenant, event_id),
+                )
+            if cursor.rowcount:
+                changed_ids.append(event_id)
+        if active:
+            for event_id in changed_ids:
+                self._sync_event_fts(event_id)
+        else:
+            self._delete_superseded_from_fts(changed_ids)
+        if changed_ids:
+            changed_digest = stable_digest(sorted(changed_ids))
+            self._append_audit_log(
+                tenant_id=tenant,
+                action=(
+                    "timeline_source_records_restored"
+                    if active
+                    else "timeline_source_records_retired"
+                ),
+                entity_type="timeline_event_batch",
+                entity_id=f"wappi-lifecycle:{changed_digest[:20]}",
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                before_hash=changed_digest,
+                after_hash=stable_digest(
+                    {"active": active, "marker": marker, "ids": changed_digest}
+                ),
+                metadata={
+                    "active": active,
+                    "marker": marker,
+                    "reason": reason,
+                    "requested_source_records": sum(
+                        len(set(values)) for values in source_records.values()
+                    ),
+                    "changed_events": len(changed_ids),
+                    "dependency_changes": dependency_changes,
+                },
+                now=self._now(),
+            )
+        self._commit()
+        return {
+            "matched_events": len(rows),
+            "changed_events": len(changed_ids),
+            "dependency_changes": dependency_changes,
+            "rewritten_events": rewritten_events,
+        }
+
     def quarantine_timeline_events_identity_conflict(
         self,
         tenant_id: str,
@@ -3074,7 +3293,7 @@ class CustomerTimelineSQLiteStore:
         return self._get_record(
             "customer_identities",
             "tenant_id = ? AND customer_id = ?",
-            (normalize_key(tenant_id, "tenant_id"), require_text(customer_id, "customer_id")),
+            (normalize_key(tenant_id, "tenant_id"), require_customer_id(customer_id)),
         )
 
     def get_opportunity_by_source(
@@ -3117,7 +3336,7 @@ class CustomerTimelineSQLiteStore:
         cursor: Optional[str] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
-        clauses = ["tenant_id = ?"]
+        clauses = ["tenant_id = ?", customer_id_present_sql("customer_id")]
         params: list[Any] = [tenant]
         if identity_status:
             clauses.append("identity_status = ?")
@@ -3156,7 +3375,7 @@ class CustomerTimelineSQLiteStore:
         params: list[Any] = [tenant]
         if customer_id:
             clauses.append("customer_id = ?")
-            params.append(require_text(customer_id, "customer_id"))
+            params.append(require_customer_id(customer_id))
         if link_type:
             clauses.append("link_type = ?")
             params.append(normalize_key(link_type, "link_type"))
@@ -3339,7 +3558,7 @@ class CustomerTimelineSQLiteStore:
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
         clauses = ["tenant_id = ?", "customer_id = ?"]
-        params: list[Any] = [tenant, require_text(customer_id, "customer_id")]
+        params: list[Any] = [tenant, require_customer_id(customer_id)]
         self._append_active_filter("timeline_events", clauses)
         if opportunity_id:
             clauses.append("opportunity_id = ?")
@@ -3394,7 +3613,7 @@ class CustomerTimelineSQLiteStore:
     ) -> tuple[Mapping[str, Any], ...]:
         tenant = normalize_key(tenant_id, "tenant_id")
         clauses = ["tenant_id = ?", "customer_id = ?"]
-        params: list[Any] = [tenant, require_text(customer_id, "customer_id")]
+        params: list[Any] = [tenant, require_customer_id(customer_id)]
         append_in_clause(clauses, params, "signal_type", signal_types, normalizer=lambda item: normalize_key(item, "signal_type"))
         append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "signal_status"))
         if active_at is not None:
@@ -3430,7 +3649,7 @@ class CustomerTimelineSQLiteStore:
         limit: int = 500,
     ) -> tuple[Mapping[str, Any], ...]:
         tenant = normalize_key(tenant_id, "tenant_id")
-        customer = require_text(customer_id, "customer_id")
+        customer = require_customer_id(customer_id)
         clauses = ["tenant_id = ?"]
         params: list[Any] = [tenant]
         append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "conflict_status"))
@@ -3469,7 +3688,7 @@ class CustomerTimelineSQLiteStore:
     ) -> tuple[str, ...]:
         """Exact conflict refs proven to belong to one known customer."""
         tenant = normalize_key(tenant_id, "tenant_id")
-        customer = require_text(customer_id, "customer_id")
+        customer = require_customer_id(customer_id)
         refs = set(customer_entity_ref_values(customer))
         for row in self._con.execute(
             "SELECT link_type,link_value,source_ref FROM identity_links "
@@ -4095,7 +4314,7 @@ class CustomerTimelineSQLiteStore:
     ) -> None:
         tenant = normalize_key(tenant_id, "tenant_id")
         opportunity = require_text(opportunity_id, "opportunity_id")
-        customer = optional_text(customer_id)
+        customer = optional_customer_id(customer_id)
         row = self._fetch_one(
             "SELECT tenant_id,customer_id FROM customer_opportunities WHERE opportunity_id=?",
             (opportunity,),
@@ -4120,7 +4339,7 @@ class CustomerTimelineSQLiteStore:
     def _assert_event_owner(self, tenant_id: str, event_id: str, customer_id: Optional[str]) -> None:
         tenant = normalize_key(tenant_id, "tenant_id")
         event = require_text(event_id, "event_id")
-        customer = optional_text(customer_id)
+        customer = optional_customer_id(customer_id)
         row = self._fetch_one(
             "SELECT tenant_id,customer_id FROM timeline_events WHERE event_id=?",
             (event,),
@@ -4283,24 +4502,26 @@ class CustomerTimelineSQLiteStore:
         self._con.execute("DROP TABLE IF EXISTS timeline_event_fts_keys")
         self._con.execute("DROP TABLE IF EXISTS bot_context_chunk_fts_keys")
         self._bootstrap_fts()
+        event_where = self._active_where("timeline_events") or " WHERE 1=1"
         for row in self._con.execute(
             f"""
             SELECT
               tenant_id, event_id, customer_id, opportunity_id, event_type,
               source_system, event_at, subject, text_preview, summary, record_json, record_hash
             FROM timeline_events
-            {self._active_where("timeline_events")}
+            {event_where} AND {customer_id_present_sql("customer_id")}
             ORDER BY event_at, event_id
             """
         ):
             self._insert_event_fts_row(row)
+        chunk_where = self._active_where("bot_context_chunks") or " WHERE 1=1"
         for row in self._con.execute(
             f"""
             SELECT
               tenant_id, chunk_id, customer_id, opportunity_id, event_id,
               event_at, record_json, record_hash
             FROM bot_context_chunks
-            {self._active_where("bot_context_chunks")}
+            {chunk_where} AND {customer_id_present_sql("customer_id")}
             ORDER BY event_at, chunk_id
             """
         ):
@@ -4308,6 +4529,8 @@ class CustomerTimelineSQLiteStore:
         self._fts_enabled = True
 
     def _insert_event_fts_row(self, row: Mapping[str, Any]) -> None:
+        if is_nullish_customer_id(row["customer_id"]):
+            return
         payload = json_loads(row["record_json"])
         cursor = self._con.execute(
             "INSERT INTO timeline_event_fts (tenant_id,event_id,customer_id,opportunity_id,event_type,"
@@ -4325,6 +4548,8 @@ class CustomerTimelineSQLiteStore:
         )
 
     def _insert_chunk_fts_row(self, row: Mapping[str, Any]) -> None:
+        if is_nullish_customer_id(row["customer_id"]):
+            return
         payload = json_loads(row["record_json"])
         cursor = self._con.execute(
             "INSERT INTO bot_context_chunk_fts (tenant_id,chunk_id,customer_id,opportunity_id,event_id,"
@@ -4370,8 +4595,10 @@ class CustomerTimelineSQLiteStore:
             "subject,text_preview,summary,record_json,record_hash FROM timeline_events WHERE event_id=?",
             (event_id,),
         )
-        if row is not None:
+        if row is not None and not is_nullish_customer_id(row["customer_id"]):
             self._insert_event_fts_row(row)
+        else:
+            self._con.execute("DELETE FROM timeline_event_fts_keys WHERE event_id = ?", (event_id,))
         self._fts_enabled = True
 
     def _sync_chunk_fts(self, chunk_id: str, *, created: bool = False) -> None:
@@ -4406,8 +4633,10 @@ class CustomerTimelineSQLiteStore:
             "FROM bot_context_chunks WHERE chunk_id=?",
             (chunk_id,),
         )
-        if row is not None:
+        if row is not None and not is_nullish_customer_id(row["customer_id"]):
             self._insert_chunk_fts_row(row)
+        else:
+            self._con.execute("DELETE FROM bot_context_chunk_fts_keys WHERE chunk_id = ?", (chunk_id,))
         self._fts_enabled = True
 
     def _search_fts(
@@ -4578,7 +4807,7 @@ class CustomerTimelineSQLiteStore:
             params = [tenant, pattern, active_at]
             if customer_id:
                 clauses.append("customer_id = ?")
-                params.append(require_text(customer_id, "customer_id"))
+                params.append(require_customer_id(customer_id))
             if opportunity_id:
                 clauses.append("opportunity_id = ?")
                 params.append(require_text(opportunity_id, "opportunity_id"))
@@ -4610,9 +4839,10 @@ class CustomerTimelineSQLiteStore:
     ) -> None:
         prefix = f"{table_alias}." if table_alias else ""
         self._append_active_filter("timeline_events", clauses, table_alias=table_alias)
+        clauses.append(customer_id_present_sql(f"{prefix}customer_id"))
         if customer_id:
             clauses.append(f"{prefix}customer_id = ?")
-            params.append(require_text(customer_id, "customer_id"))
+            params.append(require_customer_id(customer_id))
         if opportunity_id:
             clauses.append(f"{prefix}opportunity_id = ?")
             params.append(require_text(opportunity_id, "opportunity_id"))
@@ -4654,9 +4884,10 @@ class CustomerTimelineSQLiteStore:
         prefix = f"{table_alias}." if table_alias else ""
         outer_prefix = prefix or "bot_context_chunks."
         self._append_active_filter("bot_context_chunks", clauses, table_alias=table_alias)
+        clauses.append(customer_id_present_sql(f"{prefix}customer_id"))
         if customer_id:
             clauses.append(f"{prefix}customer_id = ?")
-            params.append(require_text(customer_id, "customer_id"))
+            params.append(require_customer_id(customer_id))
         if opportunity_id:
             clauses.append(f"{prefix}opportunity_id = ?")
             params.append(require_text(opportunity_id, "opportunity_id"))
@@ -5050,11 +5281,15 @@ def customer_timeline_integrity_report(con: sqlite3.Connection) -> Mapping[str, 
     try:
         tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         schema["missing_tables"] = sorted(set(INTEGRITY_REQUIRED_TABLES) - tables)
-        for table in sorted(set(INTEGRITY_REQUIRED_TABLES) & tables):
+        table_columns: dict[str, set[str]] = {}
+        inspected_tables = set(INTEGRITY_REQUIRED_TABLES) | {table for table, _column in CUSTOMER_ID_OWNER_COLUMNS}
+        for table in sorted(tables & inspected_tables):
             actual = {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
-            missing = sorted(set(_INTEGRITY_REQUIRED_COLUMNS[table].split()) - actual)
-            if missing:
-                schema["missing_columns"][table] = missing
+            table_columns[table] = actual
+            if table in _INTEGRITY_REQUIRED_COLUMNS:
+                missing = sorted(set(_INTEGRITY_REQUIRED_COLUMNS[table].split()) - actual)
+                if missing:
+                    schema["missing_columns"][table] = missing
         counts["schema_missing_tables"] = len(schema["missing_tables"])
         counts["schema_missing_columns"] = sum(map(len, schema["missing_columns"].values()))
         if not counts["schema_missing_tables"] and not counts["schema_missing_columns"]:
@@ -5094,6 +5329,30 @@ def customer_timeline_integrity_report(con: sqlite3.Connection) -> Mapping[str, 
                 if owner_policy != "none":
                     counts[f"{code}_owner_mismatch"] = int(row[2])
             counts.update(_record_json_consistency_counts(con))
+            for table, column in CUSTOMER_ID_OWNER_COLUMNS:
+                if table not in table_columns or column not in table_columns[table]:
+                    continue
+                code = f"nullish_customer_id_{table}_{column}"
+                counts[code] = int(
+                    con.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE {customer_id_literal_invalid_sql(column)}"
+                    ).fetchone()[0]
+                )
+            if "timeline_event_fts" in table_columns:
+                counts["timeline_event_fts_unattributed"] = int(
+                    con.execute(
+                        "SELECT COUNT(*) FROM timeline_event_fts WHERE NOT ("
+                        + customer_id_present_sql("customer_id")
+                        + ")"
+                    ).fetchone()[0]
+                )
+                counts["timeline_event_fts_owner_mismatch"] = int(
+                    con.execute(
+                        "SELECT COUNT(*) FROM timeline_event_fts f LEFT JOIN timeline_events e "
+                        "ON e.event_id=f.event_id WHERE e.event_id IS NULL OR e.tenant_id IS NOT f.tenant_id "
+                        "OR e.customer_id IS NOT f.customer_id OR e.superseded_by IS NOT NULL"
+                    ).fetchone()[0]
+                )
             counts["mail_identity_legacy_sentinel_dates"] = int(
                 con.execute(
                     "SELECT COUNT(*) FROM identity_links WHERE source_system='mail_archive_stage2' "
@@ -5400,6 +5659,7 @@ def search_hit_from_row(scope: str, row: sqlite3.Row) -> Mapping[str, Any]:
 
 
 __all__ = [
+    "CUSTOMER_ID_OWNER_COLUMNS",
     "CUSTOMER_TIMELINE_INTEGRITY_SCHEMA_VERSION",
     "CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID",
     "CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION",
@@ -5410,6 +5670,8 @@ __all__ = [
     "CustomerTimelineSQLiteStore",
     "CustomerTimelineStoreWriteResult",
     "build_fts_query",
+    "customer_id_literal_invalid_sql",
+    "customer_id_present_sql",
     "customer_timeline_run_lock",
     "customer_timeline_run_lock_path",
     "customer_timeline_writer_lock",

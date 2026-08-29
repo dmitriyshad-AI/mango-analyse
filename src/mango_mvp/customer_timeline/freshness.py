@@ -4,6 +4,12 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from mango_mvp.customer_timeline.source_policy import (
+    MAIL_STAGE2_SOURCE_SYSTEM,
+    WAPPI_MAX_SOURCE_SYSTEM,
+    WAPPI_TELEGRAM_SOURCE_SYSTEM,
+)
+
 
 _CURSOR_GROUPS = {
     "amocrm_snapshot": (
@@ -28,6 +34,13 @@ MANAGER_REQUIRED_SOURCE_SYSTEMS = (
     "tallanto_attendance_api",
     "wappi_telegram",
     "wappi_max",
+)
+MANAGER_DEGRADED_SOURCE_SYSTEMS = frozenset(
+    {
+        MAIL_STAGE2_SOURCE_SYSTEM,
+        WAPPI_TELEGRAM_SOURCE_SYSTEM,
+        WAPPI_MAX_SOURCE_SYSTEM,
+    }
 )
 
 
@@ -160,51 +173,54 @@ def manager_freshness_gate(
 ) -> Mapping[str, Any]:
     checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     blockers: list[Mapping[str, str]] = []
+    degraded: list[Mapping[str, str]] = []
     for row in rows:
         if not row.get("expected"):
             continue
         source = str(row.get("source_system") or "unknown")
+        findings = degraded if source in MANAGER_DEGRADED_SOURCE_SYSTEMS else blockers
         if row.get("missing"):
-            blockers.append({"source_system": source, "reason": "missing"})
+            findings.append({"source_system": source, "reason": "missing"})
             continue
         if source in _CURSOR_GROUPS and not row.get("cursor_complete"):
-            blockers.append({"source_system": source, "reason": "cursor_incomplete"})
+            findings.append({"source_system": source, "reason": "cursor_incomplete"})
         elif source in _CURSOR_GROUPS:
             cursor_updated_at = _parse_datetime(row.get("cursor_updated_at"))
             if cursor_updated_at is None:
-                blockers.append({"source_system": source, "reason": "cursor_check_missing"})
+                findings.append({"source_system": source, "reason": "cursor_check_missing"})
             elif cursor_updated_at > checked_at + timedelta(minutes=5):
-                blockers.append({"source_system": source, "reason": "cursor_check_in_future"})
+                findings.append({"source_system": source, "reason": "cursor_check_in_future"})
             elif checked_at - cursor_updated_at > timedelta(hours=max_cursor_check_age_hours):
-                blockers.append({"source_system": source, "reason": "cursor_check_stale"})
+                findings.append({"source_system": source, "reason": "cursor_check_stale"})
         imported_at = _parse_datetime(row.get("imported_at"))
         latest_import_status = str(row.get("latest_import_status") or "")
         if latest_import_status and latest_import_status != "completed":
-            blockers.append(
+            findings.append(
                 {"source_system": source, "reason": "latest_import_not_completed", "status": latest_import_status}
             )
         if imported_at is None:
-            blockers.append({"source_system": source, "reason": "successful_import_missing"})
+            findings.append({"source_system": source, "reason": "successful_import_missing"})
             continue
         if imported_at > checked_at + timedelta(minutes=5):
-            blockers.append({"source_system": source, "reason": "imported_at_in_future"})
+            findings.append({"source_system": source, "reason": "imported_at_in_future"})
         elif checked_at - imported_at > timedelta(hours=max_import_age_hours):
-            blockers.append({"source_system": source, "reason": "successful_import_stale"})
+            findings.append({"source_system": source, "reason": "successful_import_stale"})
         max_event_at = _parse_datetime(row.get("max_event_at"))
         if (
             source not in _FUTURE_EVENT_AT_ALLOWED
             and max_event_at is not None
             and max_event_at > checked_at + timedelta(minutes=5)
         ):
-            blockers.append({"source_system": source, "reason": "max_event_at_in_future"})
+            findings.append({"source_system": source, "reason": "max_event_at_in_future"})
         if source in _REQUIRED_DATA_BOUNDARY and max_event_at is None:
-            blockers.append({"source_system": source, "reason": "data_boundary_missing"})
+            findings.append({"source_system": source, "reason": "data_boundary_missing"})
     return {
         "passed": not blockers,
         "checked_at": checked_at.isoformat(),
         "max_import_age_hours": max_import_age_hours,
         "max_cursor_check_age_hours": max_cursor_check_age_hours,
         "blockers": blockers,
+        "degraded": degraded,
     }
 
 
@@ -234,4 +250,9 @@ def _column_exists(con: sqlite3.Connection, table: str, column: str) -> bool:
     return any(str(row[1]) == column for row in con.execute(f"PRAGMA table_info({table})"))
 
 
-__all__ = ["MANAGER_REQUIRED_SOURCE_SYSTEMS", "manager_freshness_gate", "source_freshness_rows"]
+__all__ = [
+    "MANAGER_DEGRADED_SOURCE_SYSTEMS",
+    "MANAGER_REQUIRED_SOURCE_SYSTEMS",
+    "manager_freshness_gate",
+    "source_freshness_rows",
+]

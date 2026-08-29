@@ -1459,7 +1459,7 @@ def test_manager_dossier_does_not_show_step_with_open_brand_conflict(tmp_path: P
     assert dossier.no_action_reason_code == "identity_conflict_open"
 
 
-def test_manager_freshness_gate_blocks_missing_or_stale_sources() -> None:
+def test_manager_freshness_gate_blocks_stale_amo_and_degrades_missing_mail() -> None:
     rows = [
         {
             "source_system": "amocrm_snapshot",
@@ -1483,35 +1483,67 @@ def test_manager_freshness_gate_blocks_missing_or_stale_sources() -> None:
     assert {item["reason"] for item in gate["blockers"]} == {
         "cursor_incomplete",
         "successful_import_stale",
-        "missing",
     }
-
-
-def test_manager_freshness_gate_blocks_missing_and_future_import_times() -> None:
-    rows = [
-        {
-            "source_system": "wappi_max",
-            "expected": True,
-            "missing": False,
-            "cursor_complete": True,
-            "imported_at": None,
-        },
-        {
-            "source_system": "wappi_telegram",
-            "expected": True,
-            "missing": False,
-            "cursor_complete": True,
-            "imported_at": "2026-07-22T00:06:00+00:00",
-        },
+    assert gate["degraded"] == [
+        {"source_system": "mail_archive_stage2", "reason": "missing"}
     ]
 
-    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    (
+        (
+            {
+                "source_system": "wappi_max",
+                "expected": True,
+                "missing": False,
+                "cursor_complete": True,
+                "imported_at": None,
+            },
+            "successful_import_missing",
+        ),
+        (
+            {
+                "source_system": "wappi_telegram",
+                "expected": True,
+                "missing": False,
+                "cursor_complete": True,
+                "imported_at": "2026-07-22T00:06:00+00:00",
+            },
+            "imported_at_in_future",
+        ),
+        (
+            {
+                "source_system": "wappi_max",
+                "expected": True,
+                "missing": False,
+                "cursor_complete": True,
+                "imported_at": "2026-07-20T00:00:00+00:00",
+            },
+            "successful_import_stale",
+        ),
+    ),
+)
+def test_manager_freshness_gate_degrades_wappi_import_issues(
+    row: dict[str, object], reason: str
+) -> None:
+    gate = manager_freshness_gate([row], now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["degraded"] == [{"source_system": row["source_system"], "reason": reason}]
+
+
+@pytest.mark.parametrize("source", ("mango_processed_summary", "unexpected_expected_source"))
+def test_manager_freshness_gate_keeps_calls_and_unknown_sources_blocking(source: str) -> None:
+    gate = manager_freshness_gate(
+        [{"source_system": source, "expected": True, "missing": True}],
+        now=datetime(2026, 7, 22, tzinfo=timezone.utc),
+    )
 
     assert gate["passed"] is False
-    assert {item["reason"] for item in gate["blockers"]} == {
-        "successful_import_missing",
-        "imported_at_in_future",
-    }
+    assert gate["blockers"] == [{"source_system": source, "reason": "missing"}]
+    assert gate["degraded"] == []
 
 
 def test_manager_freshness_requires_tallanto_payments_and_attendance_data() -> None:
@@ -1685,7 +1717,7 @@ def test_manager_freshness_gate_does_not_accept_local_amo_reindex() -> None:
     ]
 
 
-def test_manager_freshness_gate_blocks_future_but_accepts_old_contact_after_fresh_scan() -> None:
+def test_manager_freshness_gate_degrades_future_wappi_but_accepts_old_contact_after_fresh_scan() -> None:
     rows = [
         {
             "source_system": "wappi_max",
@@ -1709,7 +1741,11 @@ def test_manager_freshness_gate_blocks_future_but_accepts_old_contact_after_fres
 
     gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
 
-    assert gate["blockers"] == [{"source_system": "wappi_max", "reason": "max_event_at_in_future"}]
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["degraded"] == [
+        {"source_system": "wappi_max", "reason": "max_event_at_in_future"}
+    ]
 
 
 def test_manager_freshness_gate_allows_future_tallanto_business_dates() -> None:

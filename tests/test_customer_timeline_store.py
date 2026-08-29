@@ -66,6 +66,31 @@ def test_customer_timeline_readonly_uri_never_uses_immutable(tmp_path: Path) -> 
     assert "immutable" not in customer_timeline_readonly_uri(db_path)
 
 
+@pytest.mark.parametrize(
+    ("value", "present", "invalid_literal"),
+    (
+        (None, 0, 0),
+        ("\t\n", 0, 1),
+        ("\tNone\n", 0, 1),
+        ("\u00a0NULL\u2003", 0, 1),
+        ("customer:none", 1, 0),
+    ),
+)
+def test_customer_id_sql_policy_matches_python_whitespace(
+    value: str | None,
+    present: int,
+    invalid_literal: int,
+) -> None:
+    with sqlite3.connect(":memory:") as con:
+        row = con.execute(
+            "WITH candidate(value) AS (VALUES (?)) "
+            f"SELECT {store_module.customer_id_present_sql('value')}, "
+            f"{store_module.customer_id_literal_invalid_sql('value')} FROM candidate",
+            (value,),
+        ).fetchone()
+    assert row == (present, invalid_literal)
+
+
 class StepClock:
     def __init__(self) -> None:
         self.value = NOW
@@ -3267,4 +3292,45 @@ def test_reconcile_event_dependency_owners_rebuilds_missing_fts_once(
     assert store.reconcile_event_dependency_owners("foton", actor="test") == 2
     assert rebuilds == 1
     assert store.search_timeline("foton", "стоимость", mode="fts")["backend"] == "fts5"
+    store.close()
+
+
+def test_unattributed_event_stays_hidden_after_full_fts_rebuild_and_fallback(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    hidden = replace(
+        event(customer, source_id="nullish-owner"),
+        subject="нулевойвладелец",
+        text_preview="нулевойвладелец нельзя выдавать",
+        summary="нулевойвладелец скрыт",
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(hidden)
+
+    result = store.quarantine_timeline_events_identity_conflict(
+        "foton",
+        source_system=hidden.source_system,
+        source_id=hidden.source_id,
+        reason="textual_null_customer_id",
+        previous_customer_id=customer.customer_id,
+        actor="test",
+    )
+    assert result["existing_event_quarantined"] == 1
+    assert store.search_timeline("foton", "нулевойвладелец", mode="fts")["items"] == []
+    assert store.search_timeline("foton", "нулевойвладелец", mode="fallback")["items"] == []
+
+    store._rebuild_fts_indexes()  # noqa: SLF001 - regression covers a full service rebuild.
+    assert store.search_timeline("foton", "нулевойвладелец", mode="fts")["items"] == []
+    assert store.search_timeline("foton", "нулевойвладелец", mode="fallback")["items"] == []
+
+    payload = customer.to_json_dict()
+    payload["customer_id"] = "None"
+    store._con.execute(  # noqa: SLF001 - historical corruption fixture.
+        "UPDATE customer_identities SET customer_id='None',record_json=? WHERE customer_id=?",
+        (json.dumps(payload, ensure_ascii=False), customer.customer_id),
+    )
+    store._commit()  # noqa: SLF001
+    assert store.list_customers("foton")["items"] == []
+    integrity = store_module.customer_timeline_integrity_report(store._con)  # noqa: SLF001
+    assert integrity["violations"]["nullish_customer_id_customer_identities_customer_id"] == 1
     store.close()

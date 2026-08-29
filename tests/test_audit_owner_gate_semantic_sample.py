@@ -553,3 +553,45 @@ def test_human_review_student_classes_use_current_family_scope_contract(tmp_path
     assert finished == "8"
     assert next_grade == "9"
     assert graduate == "нет"
+
+
+def test_human_review_active_deals_reuses_family_scope_and_canonical_status(tmp_path: Path) -> None:
+    con = sqlite3.connect(tmp_path / "human-review-active-deals.sqlite")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE family_members_v1 (
+          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT
+        );
+        CREATE TABLE customer_opportunities (
+          tenant_id TEXT, customer_id TEXT, opportunity_id TEXT, opportunity_type TEXT,
+          source_system TEXT, source_id TEXT, title TEXT, status TEXT,
+          opened_at TEXT, closed_at TEXT
+        );
+        INSERT INTO family_members_v1 VALUES
+          ('foton','family:1','customer:1','confident'),
+          ('foton','family:1','customer:2','confident');
+        INSERT INTO customer_opportunities VALUES
+          ('foton','customer:1','opportunity:1','amo_deal','amocrm_snapshot','101','Курс','open','2026-08-01',NULL),
+          ('foton','customer:2','opportunity:2','amo_deal','amocrm_snapshot','102','Лагерь','won','2026-08-02',NULL),
+          ('foton','customer:2','opportunity:3','amo_deal','amocrm_snapshot','103','Архив','open','2026-08-03','2026-08-20'),
+          ('foton','customer:2','opportunity:4','amo_deal','amocrm_snapshot','104','Будущая','open','2026-09-01',NULL),
+          ('foton','customer:2','opportunity:5','amo_deal','amocrm_snapshot','105','Терминальная','142','2026-08-04',NULL);
+        """
+    )
+
+    rows = MODULE._human_review_active_deals(
+        con,
+        tenant_id="foton",
+        customer_id="customer:1",
+        as_of=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+
+    assert len(rows) == 1
+    assert "Курс" in rows[0]
+    assert "amocrm_snapshot:101" in rows[0]
+    assert all(
+        marker not in row
+        for row in rows
+        for marker in ("Лагерь", "Архив", "Будущая", "Терминальная")
+    )

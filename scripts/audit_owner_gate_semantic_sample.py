@@ -88,6 +88,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+from mango_mvp.customer_timeline.bot_safe_runtime_context import _is_active_amo_deal  # noqa: E402
 from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
     OWNER50_CONTROL_COLUMNS,
     _family_scope_customer_ids,
@@ -1232,6 +1233,45 @@ def _student_classes(
     )
 
 
+def _human_review_active_deals(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> tuple[str, ...]:
+    """Render active AMO deals for the private review without widening CustomerDossier."""
+    members = _family_scope_customer_ids(
+        con, tenant_id=tenant_id, customer_id=customer_id,
+    )
+    placeholders = ",".join("?" for _ in members)
+    rows = con.execute(
+        f"""
+        SELECT opportunity_id, opportunity_type, source_system, source_id,
+               title, status, opened_at, closed_at
+        FROM customer_opportunities
+        WHERE tenant_id=? AND customer_id IN ({placeholders})
+          AND opportunity_type='amo_deal'
+          AND (opened_at IS NULL OR julianday(opened_at)<=julianday(?))
+          AND (closed_at IS NULL OR TRIM(closed_at)='')
+        ORDER BY opened_at DESC, opportunity_id
+        """,
+        (tenant_id, *members, as_of.isoformat()),
+    ).fetchall()
+    result: list[str] = []
+    for row in rows:
+        if not _is_active_amo_deal(dict(row)):
+            continue
+        title = str(row["title"] or "").strip() or f"Сделка #{row['source_id']}"
+        status = str(row["status"] or "").strip() or "открыта"
+        parts = [title, f"статус: {status}"]
+        if row["opened_at"]:
+            parts.append(f"открыта: {row['opened_at']}")
+        parts.append(f"источник: {row['source_system']}:{row['source_id']}")
+        result.append("; ".join(parts))
+    return tuple(result)
+
+
 def _human_review_row(
     con: sqlite3.Connection,
     *,
@@ -1260,7 +1300,12 @@ def _human_review_row(
         "Класс закончен": finished_class,
         "Следующий класс": next_class,
         "Статус выпускника": graduate,
-        "Активные сделки": "\n".join(row.text for row in dossier.active_deals),
+        "Активные сделки": "\n".join(_human_review_active_deals(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            as_of=as_of,
+        )),
         "Следующий шаг": dossier.next_step,
         "Источник шага": dossier.next_step_source,
         "Последняя история": "\n".join(row.text for row in dossier.chronology),

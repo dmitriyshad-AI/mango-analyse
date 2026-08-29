@@ -53,8 +53,10 @@ from mango_mvp.customer_timeline.wappi_history_import import (
 )
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    checkpoint_customer_timeline_wal,
     customer_timeline_integrity_report,
     customer_timeline_integrity_report_ok,
+    customer_timeline_writer_lock,
 )
 from mango_mvp.customer_timeline.temporal import normalize_aware_utc, parse_aware_utc
 
@@ -1072,7 +1074,26 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         # sources check below so that check can use real DB-observed counts
         # and cursors (manifest["source_counts"]/["ingestion_cursors"]) as
         # proof, instead of trusting each step's self-reported status alone.
-        manifest = build_snapshot_manifest(timeline_db, tenant_id=config.tenant_id)
+        # Freeze the WAL before SQLite scans FTS and keep the low-level writer
+        # barrier through the full manifest read.  A large live WAL may be
+        # truncated by a closing writer while another connection still has its
+        # WAL index mapped; on macOS that race can terminate SQLite with SIGBUS
+        # instead of raising a Python exception.
+        with customer_timeline_writer_lock(
+            timeline_db,
+            timeout_seconds=config.lock_timeout_seconds,
+        ) as final_writer_lock:
+            wal_checkpoint = checkpoint_customer_timeline_wal(
+                timeline_db,
+                timeout_seconds=config.lock_timeout_seconds,
+            )
+            manifest = build_snapshot_manifest(timeline_db, tenant_id=config.tenant_id)
+        final_snapshot_barrier = {
+            "writer_lock": dict(final_writer_lock),
+            "wal_checkpoint": dict(wal_checkpoint),
+        }
+        report["final_snapshot_barrier"] = final_snapshot_barrier
+        manifest["final_snapshot_barrier"] = final_snapshot_barrier
         # B4 fail-loud: every declared business source is checked against
         # *proof* -- real timeline_events counts/ingestion_cursors freshness
         # and each step's own reported numbers -- not merely whether a

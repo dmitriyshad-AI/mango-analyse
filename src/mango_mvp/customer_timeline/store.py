@@ -282,6 +282,43 @@ def customer_timeline_writer_lock(
         handle.close()
 
 
+def checkpoint_customer_timeline_wal(
+    path: Path | str,
+    *,
+    timeout_seconds: float = 30.0,
+) -> Mapping[str, Any]:
+    """Checkpoint one writer-excluded Timeline DB before a stable read/copy.
+
+    The caller must exclude writers.  For the mutable staging database this is
+    the high-level run lock followed by the low-level writer lock; immutable
+    snapshot/backup callers may prove exclusion through their publish gate.
+    Lock ownership stays outside so the same barrier can cover the subsequent
+    integrity scan or snapshot copy.
+    """
+
+    if timeout_seconds < 0:
+        raise ValueError("checkpoint timeout must not be negative")
+    db_path = Path(path).expanduser().resolve(strict=True)
+    if not db_path.is_file():
+        raise ValueError(f"customer timeline SQLite path is not a file: {db_path}")
+    con = sqlite3.connect(str(db_path), timeout=timeout_seconds)
+    try:
+        row = tuple(con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() or ())
+    finally:
+        con.close()
+    wal_path = Path(str(db_path) + "-wal")
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    if len(row) != 3 or int(row[0]) != 0 or wal_size != 0:
+        raise RuntimeError(
+            f"customer timeline WAL checkpoint failed: row={row}, wal_size={wal_size}"
+        )
+    return {
+        "row": row,
+        "wal_path": str(wal_path),
+        "wal_size": wal_size,
+    }
+
+
 def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
     customer = require_customer_id(customer_id)
     return tuple(dict.fromkeys((customer, f"customer:{customer}")))

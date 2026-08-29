@@ -1942,6 +1942,76 @@ def test_full_history_malformed_message_payload_is_blocking() -> None:
     assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
 
 
+def test_full_history_accepts_proven_terminal_null_message_page() -> None:
+    class TerminalNullClient(CheckpointFakeClient):
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            return {"status": "done", "has_more": False, "messages": None}
+
+    rows = wappi_history_module.fetch_chat_messages(
+        TerminalNullClient({"p-max": []}, {}),
+        profile=WappiProfileSpec(profile_id="p-max", brand="unpk", channel="max"),
+        chat_id="empty-chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+    )
+
+    assert rows == ()
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is False
+
+
+def test_full_history_semantically_deduplicates_identical_ids() -> None:
+    message = {
+        "id": "m-1",
+        "chat_id": "chat",
+        "type": "text",
+        "body": "Текст",
+        "time": 1,
+    }
+
+    class DuplicateClient(CheckpointFakeClient):
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            return {"messages": [message, {**message, "transport_only": "ignored"}]}
+
+    rows = wappi_history_module.fetch_chat_messages(
+        DuplicateClient({"p-tg": []}, {}),
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=3,
+    )
+
+    assert [row.message_id for row in rows] == ["m-1"]
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is False
+
+
+def test_empty_baseline_tail_accepts_proven_terminal_null_with_head_proof() -> None:
+    class TerminalNullClient(CheckpointFakeClient):
+        calls = 0
+
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return {"status": "done", "has_more": False, "messages": None}
+
+    client = TerminalNullClient({"p-max": []}, {})
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-max", brand="unpk", channel="max"),
+        chat_id="empty-chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        allow_empty_tail=True,
+        empty_baseline_tail=True,
+    )
+
+    assert rows == ()
+    assert client.calls == 2
+    assert wappi_history_module.fetch_chat_messages.last_boundary_found is True
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is False
+
+
 def test_regressed_marker_missing_boundary_stops_after_three_tail_pages(
     tmp_path: Path,
 ) -> None:

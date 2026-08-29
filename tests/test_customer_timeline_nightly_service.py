@@ -17,6 +17,7 @@ import pytest
 
 import mango_mvp.customer_timeline.family_graph as family_graph_module
 import mango_mvp.customer_timeline.nightly_service as nightly_service_module
+import mango_mvp.customer_timeline.store as timeline_store_module
 from mango_mvp.customer_timeline import (
     BotContextChunk,
     CustomerIdentity,
@@ -610,6 +611,141 @@ def test_nightly_service_keeps_service_lock_through_manifest_publish(tmp_path: P
 
     assert report["snapshot_manifest"]["counts"]["timeline_events"] == 1
     assert state["locked"] is False
+
+
+def test_canonical_wal_checkpoint_fails_closed_while_reader_holds_wal(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "checkpoint.sqlite"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("PRAGMA wal_autocheckpoint=0")
+    setup.execute("CREATE TABLE probe(value INTEGER NOT NULL)")
+    setup.execute("INSERT INTO probe VALUES (1)")
+    setup.commit()
+    reader = sqlite3.connect(db_path)
+    reader.execute("BEGIN")
+    assert reader.execute("SELECT count(*) FROM probe").fetchone() == (1,)
+    setup.execute("INSERT INTO probe VALUES (2)")
+    setup.commit()
+
+    try:
+        with timeline_store_module.customer_timeline_run_lock(
+            db_path,
+            timeout_seconds=1,
+        ):
+            with timeline_store_module.customer_timeline_writer_lock(
+                db_path,
+                timeout_seconds=1,
+            ):
+                with pytest.raises(RuntimeError, match="WAL checkpoint failed"):
+                    timeline_store_module.checkpoint_customer_timeline_wal(
+                        db_path,
+                        timeout_seconds=0,
+                    )
+    finally:
+        reader.close()
+
+    with timeline_store_module.customer_timeline_run_lock(db_path, timeout_seconds=1):
+        with timeline_store_module.customer_timeline_writer_lock(db_path, timeout_seconds=1):
+            checkpoint = timeline_store_module.checkpoint_customer_timeline_wal(db_path)
+    setup.close()
+
+    assert checkpoint["row"][0] == 0
+    assert checkpoint["wal_size"] == 0
+
+
+def test_nightly_service_checkpoints_wal_under_writer_lock_before_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+    writer = sqlite3.connect(db_path)
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE final_wal_probe(value INTEGER NOT NULL)")
+    writer.execute("INSERT INTO final_wal_probe VALUES (1)")
+    writer.commit()
+    wal_path = Path(str(db_path) + "-wal")
+    assert wal_path.stat().st_size > 0
+
+    real_writer_lock = nightly_service_module.customer_timeline_writer_lock
+    real_checkpoint = nightly_service_module.checkpoint_customer_timeline_wal
+    real_manifest = nightly_service_module.build_snapshot_manifest
+    state = {"writer_locked": False}
+    calls: list[str] = []
+
+    @contextmanager
+    def observed_writer_lock(*args, **kwargs):
+        with real_writer_lock(*args, **kwargs) as info:
+            state["writer_locked"] = True
+            try:
+                yield info
+            finally:
+                state["writer_locked"] = False
+
+    def observed_checkpoint(*args, **kwargs):
+        assert state["writer_locked"] is True
+        calls.append("checkpoint")
+        return real_checkpoint(*args, **kwargs)
+
+    def observed_manifest(*args, **kwargs):
+        assert state["writer_locked"] is True
+        assert wal_path.stat().st_size == 0
+        calls.append("manifest")
+        return real_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(
+        nightly_service_module,
+        "customer_timeline_writer_lock",
+        observed_writer_lock,
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "checkpoint_customer_timeline_wal",
+        observed_checkpoint,
+    )
+    monkeypatch.setattr(nightly_service_module, "build_snapshot_manifest", observed_manifest)
+    try:
+        report = run_nightly_service(config)
+    finally:
+        writer.close()
+
+    assert calls == ["checkpoint", "manifest"]
+    assert report["final_snapshot_barrier"]["wal_checkpoint"]["wal_size"] == 0
+    assert report["snapshot_manifest"]["latest_published"] is True
+    assert state["writer_locked"] is False
+
+
+def test_nightly_service_checkpoint_failure_does_not_replace_latest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+    first = run_nightly_service(config)
+    latest = Path(first["snapshot_manifest"]["latest_path"])
+    latest_before = latest.read_bytes()
+    manifest_called = False
+
+    def failed_checkpoint(*_args, **_kwargs):
+        raise RuntimeError("test checkpoint busy")
+
+    def forbidden_manifest(*_args, **_kwargs):
+        nonlocal manifest_called
+        manifest_called = True
+        raise AssertionError("manifest must not run after checkpoint failure")
+
+    monkeypatch.setattr(nightly_service_module, "checkpoint_customer_timeline_wal", failed_checkpoint)
+    monkeypatch.setattr(nightly_service_module, "build_snapshot_manifest", forbidden_manifest)
+
+    with pytest.raises(RuntimeError, match="checkpoint busy"):
+        run_nightly_service(config)
+
+    assert manifest_called is False
+    assert latest.read_bytes() == latest_before
 
 
 def test_service_and_standalone_incremental_share_one_run_lock(tmp_path: Path) -> None:

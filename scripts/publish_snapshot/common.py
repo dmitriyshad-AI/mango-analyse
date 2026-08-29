@@ -14,6 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+SRC = Path(__file__).resolve().parents[2] / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.customer_timeline.store import checkpoint_customer_timeline_wal
+
 
 SCHEMA_VERSION = "customer_timeline_publish_snapshot_v3"
 DEFAULT_COUNT_TABLES = (
@@ -398,17 +404,10 @@ def replace_sqlite_verified(
 
 
 def wal_checkpoint_truncate(db_path: Path) -> Mapping[str, Any]:
-    con = sqlite3.connect(str(db_path), timeout=30)
     try:
-        row = tuple(con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() or ())
-    finally:
-        con.close()
-    wal = Path(str(db_path) + "-wal")
-    wal_size = wal.stat().st_size if wal.exists() else 0
-    ok = len(row) >= 1 and int(row[0]) == 0 and wal_size == 0
-    if not ok:
-        raise PublishSnapshotError(f"wal checkpoint failed: row={row}, wal_size={wal_size}")
-    return {"row": row, "wal_path": str(wal), "wal_size": wal_size}
+        return checkpoint_customer_timeline_wal(db_path)
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        raise PublishSnapshotError(f"wal checkpoint failed: {exc}") from exc
 
 
 def disk_report(path: Path, required_bytes: int) -> Mapping[str, Any]:

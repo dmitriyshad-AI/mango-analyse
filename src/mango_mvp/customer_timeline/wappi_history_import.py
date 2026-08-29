@@ -88,6 +88,7 @@ from mango_mvp.integrations.draft_loop import (
     _is_deferred_fetch_exception,
     build_draft_loop_code_identity,
     load_pairs_file,
+    normalize_wappi_message_page,
     wappi_message_from_raw,
 )
 from mango_mvp.utils.phone import normalize_phone
@@ -5037,14 +5038,16 @@ def fetch_chat_messages(
             anchor_payload = None
         request_count += 1
         request_counter.requests += 1
-        anchor_proven, anchor_items = _extract_wappi_items_with_shape_proof(
-            anchor_payload, "messages", "items", "data"
+        anchor_page = normalize_wappi_message_page(
+            anchor_payload,
+            profile_id=profile.profile_id,
+            expected_chat_id=chat_id,
         )
-        if not anchor_proven:
+        if not anchor_page.valid:
             pagination_drift_detected = True
         else:
             current_anchor = wappi_checkpoint_anchor(
-                tuple(str(item.get("id") or item.get("message_id") or "") for item in anchor_items)
+                anchor_page.message_ids
             )
             if current_anchor != resume_anchor:
                 offset = 0
@@ -5081,29 +5084,26 @@ def fetch_chat_messages(
         request_count += 1
         request_counter.requests += 1
         sleep_if_needed(limits.sleep_seconds)
-        payload_is_proven, raw_messages = _extract_wappi_items_with_shape_proof(
-            payload, "messages", "items", "data"
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id=profile.profile_id,
+            expected_chat_id=chat_id,
         )
-        if not payload_is_proven:
+        if not page.valid:
             pagination_drift_detected = True
             break
-        if not raw_messages:
+        if not page.raw_count:
             break
-        page_ids = tuple(
-            str(item.get("id") or item.get("message_id") or "").strip()
-            for item in raw_messages
-        )
-        if not all(page_ids) or len(page_ids) != len(set(page_ids)):
-            pagination_drift_detected = True
-            break
+        raw_messages = page.items
+        page_ids = page.message_ids
         if seen_message_ids.intersection(page_ids):
             pagination_drift_detected = True
             break
         seen_message_ids.update(page_ids)
-        page_signatures.append((offset, page_limit, page_ids))
+        page_signatures.append((offset, page_limit, page.semantic_signatures))
         page_anchor_value = wappi_checkpoint_anchor(page_ids)
         page_anchor_offset = offset
-        next_offset = offset + len(raw_messages)
+        next_offset = offset + page.raw_count
         for raw in raw_messages:
             item = wappi_message_from_raw(profile.profile_id, {**dict(raw), "chat_id": chat_id})
             if item is None:
@@ -5114,7 +5114,7 @@ def fetch_chat_messages(
             )
             head_message_timestamp = max(0, int(item.timestamp))
             messages.append(item)
-        if len(raw_messages) < page_limit:
+        if page.raw_count < page_limit:
             break
         offset += page_limit
         if not limits.complete_message_history and len(messages) >= limits.messages_per_chat:
@@ -5143,14 +5143,15 @@ def fetch_chat_messages(
         request_count += 1
         request_counter.requests += 1
         sleep_if_needed(limits.sleep_seconds)
-        verification_is_proven, verification_items = _extract_wappi_items_with_shape_proof(
-            verification_payload, "messages", "items", "data"
+        verification_page = normalize_wappi_message_page(
+            verification_payload,
+            profile_id=profile.profile_id,
+            expected_chat_id=chat_id,
         )
-        if not verification_is_proven:
+        if not verification_page.valid:
             pagination_drift_detected = True
             break
-        verification_ids = tuple(str(item.get("id") or item.get("message_id") or "") for item in verification_items)
-        if verification_ids[: len(expected_ids)] != expected_ids:
+        if verification_page.semantic_signatures[: len(expected_ids)] != expected_ids:
             pagination_drift_detected = True
     setattr(fetch_chat_messages, "last_request_count", request_count)
     setattr(fetch_chat_messages, "last_limit_hit", limit_hit)
@@ -5193,6 +5194,7 @@ def _fetch_chat_message_tail(
     previous_anchor = ""
     seen_page_signatures: set[tuple[str, ...]] = set()
     raw_by_id: dict[str, Mapping[str, Any]] = {}
+    semantic_by_id: dict[str, str] = {}
     head_message_token = ""
     head_message_timestamp = 0
     while (
@@ -5219,26 +5221,19 @@ def _fetch_chat_message_tail(
         page_count += 1
         request_counter.requests += 1
         sleep_if_needed(limits.sleep_seconds)
-        payload_is_proven, page_rows = _extract_wappi_items_with_shape_proof(
-            payload, "messages", "items", "data"
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id=profile.profile_id,
+            expected_chat_id=chat_id,
         )
-        if not payload_is_proven:
+        if not page.valid:
             pagination_drift_detected = True
             drift_reason = "malformed_page"
             break
-        page_ids = tuple(
-            str(item.get("id") or item.get("message_id") or "").strip()
-            for item in page_rows
-        )
-        if page_rows and not all(page_ids):
-            pagination_drift_detected = True
-            drift_reason = "missing_message_id"
-            break
-        if page_rows and len(page_ids) != len(set(page_ids)):
-            pagination_drift_detected = True
-            drift_reason = "duplicate_message_id"
-            break
-        if page_rows and page_ids in seen_page_signatures:
+        page_rows = page.items
+        page_ids = page.message_ids
+        page_signature = page.semantic_signatures
+        if page_rows and page_signature in seen_page_signatures:
             pagination_drift_detected = True
             drift_reason = "repeated_page"
             break
@@ -5260,9 +5255,9 @@ def _fetch_chat_message_tail(
             else:
                 drift_reason = "boundary_not_found_short_page"
             break
-        seen_page_signatures.add(page_ids)
+        seen_page_signatures.add(page_signature)
         if not first_signature:
-            first_signature = page_ids
+            first_signature = page_signature
             head_id = page_ids[0]
             head_message_token = wappi_message_checkpoint_token(
                 profile.profile_id, chat_id, head_id
@@ -5272,19 +5267,31 @@ def _fetch_chat_message_tail(
             )
             if head_item is not None:
                 head_message_timestamp = max(0, int(head_item.timestamp))
-        for raw, message_id in zip(page_rows, page_ids):
+        for raw, message_id, semantic_signature in zip(
+            page_rows,
+            page_ids,
+            page.semantic_signatures,
+        ):
+            previous_signature = semantic_by_id.get(message_id)
+            if previous_signature is not None and previous_signature != semantic_signature:
+                pagination_drift_detected = True
+                drift_reason = "overlap_semantic_conflict"
+                break
             token = wappi_message_checkpoint_token(profile.profile_id, chat_id, message_id)
             if boundary_token and token == boundary_token:
                 boundary_found = True
                 break
             raw_by_id.setdefault(message_id, raw)
-        if empty_baseline and len(page_rows) < page_limit:
-            boundary_found = True
-        elif not boundary_found and len(page_rows) < page_limit:
-            drift_reason = "boundary_not_found_short_page"
-        if boundary_found or len(page_rows) < page_limit:
+            semantic_by_id.setdefault(message_id, semantic_signature)
+        if pagination_drift_detected:
             break
-        previous_anchor = page_ids[-1]
+        if empty_baseline and page.raw_count < page_limit:
+            boundary_found = True
+        elif not boundary_found and page.raw_count < page_limit:
+            drift_reason = "boundary_not_found_short_page"
+        if boundary_found or page.raw_count < page_limit:
+            break
+        previous_anchor = page.raw_message_ids[-1]
         offset += page_limit - 1
         if not limits.complete_message_history and len(raw_by_id) >= limits.messages_per_chat:
             request_limit_hit = True
@@ -5325,17 +5332,15 @@ def _fetch_chat_message_tail(
                 request_count += 1
                 request_counter.requests += 1
                 sleep_if_needed(limits.sleep_seconds)
-                head_is_proven, head_rows = _extract_wappi_items_with_shape_proof(
-                    head_payload, "messages", "items", "data"
+                head = normalize_wappi_message_page(
+                    head_payload,
+                    profile_id=profile.profile_id,
+                    expected_chat_id=chat_id,
                 )
-                if not head_is_proven:
+                if not head.valid:
                     pagination_drift_detected = True
                     drift_reason = "malformed_head"
-                    head_rows = ()
-                head_signature = tuple(
-                    str(item.get("id") or item.get("message_id") or "").strip()
-                    for item in head_rows
-                )
+                head_signature = head.semantic_signatures if head.valid else ()
                 if head_signature != first_signature:
                     pagination_drift_detected = True
                     if not drift_reason:

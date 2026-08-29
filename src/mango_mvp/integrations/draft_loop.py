@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -233,6 +234,29 @@ class WappiHistoryMessage:
     @property
     def is_inbound_actionable(self) -> bool:
         return not self.from_me
+
+
+@dataclass(frozen=True)
+class WappiMessagePage:
+    """Strict, privacy-safe normalization result for one Wappi message page."""
+
+    items: tuple[Mapping[str, Any], ...] = ()
+    raw_count: int = 0
+    terminal_null: bool = False
+    semantic_signatures: tuple[str, ...] = ()
+    raw_message_ids: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def valid(self) -> bool:
+        return not self.reason
+
+    @property
+    def message_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(item.get("id") or item.get("message_id") or "").strip()
+            for item in self.items
+        )
 
 
 class DraftBotProvider(Protocol):
@@ -658,6 +682,109 @@ def wappi_message_from_raw(profile_id: str, raw: Mapping[str, Any]) -> WappiHist
     )
 
 
+def normalize_wappi_message_page(
+    payload: Any,
+    *,
+    profile_id: str,
+    expected_chat_id: str,
+) -> WappiMessagePage:
+    """Normalize one Wappi page without confusing source duplicates with drift.
+
+    Wappi may return an explicitly terminal ``messages=null`` envelope and may
+    repeat a byte-semantically identical message id inside one page. Both are
+    source shapes, not pagination movement. Missing ids, foreign chat ids, and
+    conflicting payloads for one id remain blocking.
+    """
+
+    expected_chat = str(expected_chat_id or "").strip()
+    if not isinstance(payload, Mapping):
+        return WappiMessagePage(reason="message_payload_not_mapping")
+    missing = object()
+
+    def locate_rows(container: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
+        for key in ("messages", "items", "data"):
+            if key not in container:
+                continue
+            value = container[key]
+            if key == "data" and isinstance(value, Mapping):
+                return locate_rows(value)
+            return value, container
+        return missing, container
+
+    raw_rows, envelope = locate_rows(payload)
+    if raw_rows is missing:
+        return WappiMessagePage(reason="message_list_missing")
+    if raw_rows is None:
+        status = str(envelope.get("status") or payload.get("status") or "").strip().casefold()
+        has_more = envelope.get("has_more", payload.get("has_more"))
+        if status == "done" and has_more is False:
+            return WappiMessagePage(terminal_null=True)
+        return WappiMessagePage(reason="message_null_not_terminal")
+    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
+        return WappiMessagePage(reason="message_list_not_sequence")
+
+    rows = tuple(raw_rows)
+    if not all(isinstance(item, Mapping) for item in rows):
+        return WappiMessagePage(raw_count=len(rows), reason="message_row_not_mapping")
+
+    items_by_id: dict[str, Mapping[str, Any]] = {}
+    signatures_by_id: dict[str, str] = {}
+    raw_message_ids: list[str] = []
+    for raw_item in rows:
+        raw = dict(raw_item)
+        message_id = str(raw.get("id") or raw.get("message_id") or "").strip()
+        if not message_id:
+            return WappiMessagePage(raw_count=len(rows), reason="message_id_missing")
+        raw_message_ids.append(message_id)
+        explicit_chat_ids = {
+            str(raw.get(key)).strip()
+            for key in ("chatId", "chat_id")
+            if raw.get(key) not in (None, "")
+        }
+        if expected_chat and any(chat_id != expected_chat for chat_id in explicit_chat_ids):
+            return WappiMessagePage(raw_count=len(rows), reason="message_foreign_chat")
+        if not explicit_chat_ids and expected_chat:
+            raw["chat_id"] = expected_chat
+        parsed = wappi_message_from_raw(profile_id, raw)
+        if parsed is None:
+            return WappiMessagePage(raw_count=len(rows), reason="message_semantic_parse_failed")
+        semantic_payload = {
+            "message_id": parsed.message_id,
+            "chat_id": parsed.chat_id,
+            "text": parsed.text,
+            "message_type": parsed.message_type,
+            "timestamp": parsed.timestamp,
+            "from_me": parsed.from_me,
+            "contact_name": parsed.contact_name,
+            "from_where": parsed.from_where,
+        }
+        semantic_signature = hashlib.sha256(
+            json.dumps(
+                semantic_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        previous_signature = signatures_by_id.get(message_id)
+        if previous_signature is not None:
+            if previous_signature != semantic_signature:
+                return WappiMessagePage(
+                    raw_count=len(rows),
+                    reason="message_duplicate_semantic_conflict",
+                )
+            continue
+        items_by_id[message_id] = raw
+        signatures_by_id[message_id] = semantic_signature
+
+    return WappiMessagePage(
+        items=tuple(items_by_id.values()),
+        raw_count=len(rows),
+        semantic_signatures=tuple(signatures_by_id.values()),
+        raw_message_ids=tuple(raw_message_ids),
+    )
+
+
 class AmoWappiDraftLoop:
     def __init__(
         self,
@@ -962,7 +1089,8 @@ class AmoWappiDraftLoop:
     def _fetch_messages(self, profile: DraftLoopProfile, chat_id: str) -> list[WappiHistoryMessage]:
         page_limit = 100
         offset = 0
-        raw_messages: list[Mapping[str, Any]] = []
+        raw_by_id: dict[str, Mapping[str, Any]] = {}
+        semantic_by_id: dict[str, str] = {}
         first_signature: tuple[str, ...] = ()
         previous_anchor = ""
         seen_page_signatures: set[tuple[str, ...]] = set()
@@ -982,19 +1110,44 @@ class AmoWappiDraftLoop:
                 order="desc",
                 mark_all=False,
             )
-            page = payload.get("messages") if isinstance(payload, Mapping) else []
-            if not isinstance(page, Sequence) or isinstance(page, (str, bytes, bytearray)):
-                break
-            page_rows = [item for item in page if isinstance(item, Mapping)]
-            page_ids = tuple(str(item.get("id") or item.get("message_id") or "").strip() for item in page_rows)
-            if page_rows and (not all(page_ids) or page_ids in seen_page_signatures):
+            page = normalize_wappi_message_page(
+                payload,
+                profile_id=profile.profile_id,
+                expected_chat_id=chat_id,
+            )
+            if not page.valid:
+                raise DraftLoopPaginationChanged(
+                    f"Wappi message page is invalid ({page.reason}); retry the chat next cycle"
+                )
+            page_rows = page.items
+            page_ids = page.message_ids
+            page_signature = page.semantic_signatures
+            if page_rows and page_signature in seen_page_signatures:
                 raise DraftLoopPaginationChanged("Wappi message pagination is not stable; retry the chat next cycle")
             if previous_anchor and previous_anchor not in page_ids:
                 raise DraftLoopPaginationChanged("Wappi message pagination boundary changed; retry the chat next cycle")
-            seen_page_signatures.add(page_ids)
+            if (
+                previous_anchor
+                and set(page_ids).intersection(raw_by_id) != {previous_anchor}
+            ):
+                raise DraftLoopPaginationChanged(
+                    "Wappi message pagination has unexpected overlap; retry the chat next cycle"
+                )
+            seen_page_signatures.add(page_signature)
             if not first_signature:
-                first_signature = page_ids
-            raw_messages.extend(page_rows)
+                first_signature = page_signature
+            for message_id, semantic_signature, raw in zip(
+                page_ids,
+                page.semantic_signatures,
+                page_rows,
+            ):
+                previous_signature = semantic_by_id.get(message_id)
+                if previous_signature is not None and previous_signature != semantic_signature:
+                    raise DraftLoopPaginationChanged(
+                        "Wappi message changed across pages; retry the chat next cycle"
+                    )
+                raw_by_id.setdefault(message_id, raw)
+                semantic_by_id.setdefault(message_id, semantic_signature)
             parsed_page = [wappi_message_from_raw(profile.profile_id, item) for item in page_rows]
             parsed_page = [item for item in parsed_page if item is not None]
             reached_known = any(item.key in processed for item in parsed_page)
@@ -1003,9 +1156,9 @@ class AmoWappiDraftLoop:
                 and parsed_page
                 and min(item.timestamp for item in parsed_page) <= stop_before_ts
             )
-            if len(page_rows) < page_limit or reached_known or reached_start:
+            if page.raw_count < page_limit or reached_known or reached_start:
                 break
-            previous_anchor = page_ids[-1]
+            previous_anchor = page.raw_message_ids[-1]
             offset += page_limit - 1
         if offset:
             head_payload = self.wappi_client.get_chat_messages(
@@ -1017,19 +1170,15 @@ class AmoWappiDraftLoop:
                 order="desc",
                 mark_all=False,
             )
-            head = head_payload.get("messages") if isinstance(head_payload, Mapping) else []
-            head_signature = tuple(
-                str(item.get("id") or item.get("message_id") or "").strip()
-                for item in head
-                if isinstance(item, Mapping)
+            head = normalize_wappi_message_page(
+                head_payload,
+                profile_id=profile.profile_id,
+                expected_chat_id=chat_id,
             )
-            if head_signature != first_signature:
+            if not head.valid or head.semantic_signatures != first_signature:
                 raise DraftLoopPaginationChanged("Wappi message list changed during pagination; retry the chat next cycle")
         messages: list[WappiHistoryMessage] = []
-        deduplicated_raw = {
-            str(raw.get("id") or raw.get("message_id") or "").strip(): raw for raw in raw_messages
-        }
-        for raw in deduplicated_raw.values():
+        for raw in raw_by_id.values():
             item = wappi_message_from_raw(profile.profile_id, raw)
             if item is not None:
                 messages.append(item)

@@ -5,6 +5,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -37,6 +38,7 @@ from mango_mvp.integrations.draft_loop import (
     classify_manager_edit_windows,
     load_pairs_file,
     load_profiles_file,
+    normalize_wappi_message_page,
     persist_auto_pair,
 )
 
@@ -66,6 +68,79 @@ class FakeWappi:
         offset = int(kwargs.get("offset") or 0)
         limit = int(kwargs.get("limit") or 50)
         return {"messages": rows[offset : offset + limit]}
+
+
+def test_wappi_message_page_normalizer_accepts_only_proven_terminal_null() -> None:
+    accepted = normalize_wappi_message_page(
+        {"status": "done", "has_more": False, "messages": None},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert accepted.valid is True
+    assert accepted.terminal_null is True
+    assert accepted.items == ()
+    assert accepted.raw_count == 0
+    for payload in (
+        {"messages": None},
+        {"status": "queued", "has_more": False, "messages": None},
+        {"status": "done", "has_more": True, "messages": None},
+        {"status": "done", "has_more": 0, "messages": None},
+    ):
+        rejected = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert rejected.valid is False
+        assert rejected.reason == "message_null_not_terminal"
+
+
+def test_wappi_message_page_normalizer_semantically_deduplicates_first_wins() -> None:
+    first = _message("m-1")
+    duplicate = {**first, "transport_only": "ignored"}
+
+    page = normalize_wappi_message_page(
+        {"messages": [first, duplicate]},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert page.valid is True
+    assert page.raw_count == 2
+    assert page.items == (first,)
+    assert page.message_ids == ("m-1",)
+    assert len(page.semantic_signatures) == 1
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    (
+        (
+            [
+                {"id": "m-1", "chatId": "chat-1", "type": "text", "body": "Цена?", "time": 1000},
+                {"id": "m-1", "chatId": "chat-1", "type": "text", "body": "Изменено", "time": 1000},
+            ],
+            "message_duplicate_semantic_conflict",
+        ),
+        (
+            [{"id": "m-1", "chatId": "foreign-chat", "type": "text", "body": "Цена?", "time": 1000}],
+            "message_foreign_chat",
+        ),
+    ),
+)
+def test_wappi_message_page_normalizer_blocks_semantic_conflict_and_foreign_chat(
+    rows: list[Mapping[str, Any]],
+    reason: str,
+) -> None:
+    page = normalize_wappi_message_page(
+        {"messages": rows},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert page.valid is False
+    assert page.reason == reason
 
 
 class FakeAmo:
@@ -1402,6 +1477,51 @@ def test_draft_loop_defers_chat_when_message_page_boundary_moves(tmp_path: Path)
             )
 
     wappi = ShiftedBoundaryOnceWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "private"}]},
+        {("profile-foton", "chat-1"): messages},
+    )
+    bot = FakeBot()
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path, pairs={key: pair}),
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    first = loop.run_once(dry_run=False)
+    second = loop.run_once(dry_run=False)
+
+    assert first["deferred_fetch"] == 1
+    assert first["processed"] == 0
+    assert second["processed"] == 205
+    assert len(bot.calls) == 1
+
+
+def test_draft_loop_defers_chat_on_extra_message_page_overlap(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    messages = [_message(f"m-{idx}", ts=idx + 1) for idx in range(205)]
+
+    class ExtraOverlapOnceWappi(FakeWappi):
+        overlapped = False
+
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            offset = int(kwargs.get("offset") or 0)
+            limit = int(kwargs.get("limit") or 50)
+            if offset == 99 and not self.overlapped:
+                self.overlapped = True
+                rows = self.messages_by_chat[(profile_id, chat_id)]
+                return {"messages": [rows[98], *rows[offset : offset + limit - 1]]}
+            return super().get_chat_messages(
+                channel=channel,
+                profile_id=profile_id,
+                chat_id=chat_id,
+                **kwargs,
+            )
+
+    wappi = ExtraOverlapOnceWappi(
         {"profile-foton": [{"id": "chat-1", "type": "private"}]},
         {("profile-foton", "chat-1"): messages},
     )

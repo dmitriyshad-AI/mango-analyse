@@ -84,6 +84,7 @@ _OMITTED_READER_INDEXES = frozenset(
     {
         "ix_bot_context_chunks_active_customer_time",
         "ix_timeline_events_active_customer_time",
+        "ix_timeline_events_type_time",
     }
 )
 _OMITTED_READER_INDEX_EVIDENCE = {
@@ -96,6 +97,11 @@ _OMITTED_READER_INDEX_EVIDENCE = {
         "retained_prefix_index": "ix_timeline_events_customer_time",
         "retained_prefix": ["tenant_id", "customer_id", "event_at"],
         "reason": "reader_active_filter_keeps_customer_scoped_prefix",
+    },
+    "ix_timeline_events_type_time": {
+        "retained_prefix_index": "ix_timeline_events_customer_time",
+        "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+        "reason": "compact_primary_reader_queries_keep_customer_scoped_index",
     },
 }
 

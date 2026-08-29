@@ -124,6 +124,7 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
     assert manifest["compaction"]["indexes_omitted"] == [
         "ix_bot_context_chunks_active_customer_time",
         "ix_timeline_events_active_customer_time",
+        "ix_timeline_events_type_time",
     ]
     assert manifest["compaction"]["indexes_omitted_source_bytes"] > 0
     assert manifest["compaction"]["index_omission_evidence"] == {
@@ -136,6 +137,11 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
             "retained_prefix_index": "ix_timeline_events_customer_time",
             "retained_prefix": ["tenant_id", "customer_id", "event_at"],
             "reason": "reader_active_filter_keeps_customer_scoped_prefix",
+        },
+        "ix_timeline_events_type_time": {
+            "retained_prefix_index": "ix_timeline_events_customer_time",
+            "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+            "reason": "compact_primary_reader_queries_keep_customer_scoped_index",
         },
     }
     assert manifest["compaction"]["within_size_limit"] is True
@@ -166,6 +172,7 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
         assert "ix_timeline_events_customer_time" in snapshot_indexes
         assert "ix_chunks_customer_event_time" in snapshot_indexes
         assert "ix_timeline_events_source" in snapshot_indexes
+        assert "ix_identity_links_lookup" in snapshot_indexes
         assert not set(manifest["compaction"]["indexes_omitted"]) & snapshot_indexes
         event_plan = " ".join(
             str(row[3])
@@ -187,6 +194,17 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
         )
         assert "ix_timeline_events_customer_time" in event_plan
         assert "ix_chunks_customer_event_time" in chunk_plan
+        typed_event_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT event_id FROM timeline_events "
+                "WHERE tenant_id=? AND customer_id=? AND event_type=? "
+                "AND superseded_by IS NULL "
+                "ORDER BY event_at DESC,event_id DESC LIMIT 50",
+                ("foton", staging_customer, "call"),
+            )
+        )
+        assert "ix_timeline_events_customer_time" in typed_event_plan
         source_lookup_plan = " ".join(
             str(row[3])
             for row in con.execute(

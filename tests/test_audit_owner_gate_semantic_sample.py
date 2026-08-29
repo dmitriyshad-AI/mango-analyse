@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -537,3 +538,18 @@ def test_human_review_workbook_is_one_private_owner_sheet(tmp_path: Path) -> Non
     assert "Досье экономит время?" in headers
     assert "Действие верно сейчас?" in headers
     assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_human_review_student_classes_use_current_family_scope_contract(tmp_path: Path) -> None:
+    con = _review_db(tmp_path / "human-review-current-contract.sqlite")
+
+    finished, next_grade, graduate = MODULE._student_classes(
+        con,
+        tenant_id="foton",
+        customer_id="customer:1",
+        as_of=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+
+    assert finished == "8"
+    assert next_grade == "9"
+    assert graduate == "нет"

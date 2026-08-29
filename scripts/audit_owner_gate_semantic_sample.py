@@ -1202,7 +1202,7 @@ def _student_classes(
     as_of: datetime,
 ) -> tuple[str, str, str]:
     members = _family_scope_customer_ids(
-        con, tenant_id=tenant_id, customer_id=customer_id, as_of=as_of,
+        con, tenant_id=tenant_id, customer_id=customer_id,
     )
     placeholders = ",".join("?" for _ in members)
     rows = con.execute(

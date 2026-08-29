@@ -7,6 +7,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -1591,17 +1592,18 @@ def _token_option_sets_match(left: frozenset[str], right: frozenset[str]) -> boo
 def _token_spelling_variant(left: str, right: str) -> bool:
     if len(left) < 4 or len(right) < 4:
         return False
-    distance = _levenshtein_distance(left, right)
     if left[:3] == right[:3]:
-        return distance <= 2
-    if left[:2] == right[:2] and (left.endswith(_RUSSIAN_SURNAME_ENDINGS) or right.endswith(_RUSSIAN_SURNAME_ENDINGS)):
-        return distance <= 3
+        return _levenshtein_distance(left, right) <= 2
+    left_is_surname = left.endswith(_RUSSIAN_SURNAME_ENDINGS)
+    right_is_surname = right.endswith(_RUSSIAN_SURNAME_ENDINGS)
+    if left[:2] == right[:2] and (left_is_surname or right_is_surname):
+        return _levenshtein_distance(left, right) <= 3
     if (
         left[0] == right[0]
-        and left.endswith(_RUSSIAN_SURNAME_ENDINGS)
-        and right.endswith(_RUSSIAN_SURNAME_ENDINGS)
+        and left_is_surname
+        and right_is_surname
     ):
-        return distance <= 2
+        return _levenshtein_distance(left, right) <= 2
     return False
 
 
@@ -1911,10 +1913,14 @@ def _attribute_text(
         return None
     identity_risks = _identity_risks(context)
     normalized = _normalize_match_text(text)
+    match_index = _prepare_text_match(normalized)
     matches = [
         group
         for group in usable
-        if any(_name_mentioned(normalized, value) for value in [group.get("canonical_name", ""), *group.get("name_variants", [])])
+        if any(
+            _name_mentioned_prepared(match_index, value)
+            for value in [group.get("canonical_name", ""), *group.get("name_variants", [])]
+        )
     ]
     if identity_risks:
         return {
@@ -2168,23 +2174,43 @@ def _child_relevant_text(text: str, *, event_type: str, object_kind: str) -> boo
     return event_type in {"mango_call", "email_message", "amo_deal_stage", "tallanto_payment", "tallanto_abonement"}
 
 
-def _name_mentioned(normalized_text: str, name: Any) -> bool:
-    keys = _safe_name_keys(str(name or ""))
-    if not keys:
-        return False
+_NameMatchIndex = tuple[frozenset[str], tuple[frozenset[str], ...]]
+
+
+@lru_cache(maxsize=65_536)
+def _prepared_name_match(value: str) -> tuple[frozenset[str], tuple[frozenset[str], ...]]:
+    return frozenset(_safe_name_keys(value)), tuple(_name_token_options(value))
+
+
+def _prepare_text_match(normalized_text: str) -> _NameMatchIndex:
     text_tokens = set(normalized_name_tokens(normalized_text))
     canonical_text_tokens = set(text_tokens)
-    for token in tuple(text_tokens):
+    for token in text_tokens:
         canonical_text_tokens.update(_safe_name_keys(token))
-    if any(key in canonical_text_tokens for key in keys):
+    text_options = tuple(
+        options[0]
+        for token in text_tokens
+        if (options := _name_token_options(token))
+    )
+    return frozenset(canonical_text_tokens), text_options
+
+
+def _name_mentioned_prepared(index: _NameMatchIndex, name: Any) -> bool:
+    keys, name_options = _prepared_name_match(str(name or ""))
+    if not keys:
+        return False
+    canonical_text_tokens, text_options = index
+    if keys & canonical_text_tokens:
         return True
-    name_options = _name_token_options(str(name or ""))
-    text_options = [options[0] for token in text_tokens if (options := _name_token_options(token))]
     return any(
         _token_option_sets_match(name_token, text_token)
         for name_token in name_options
         for text_token in text_options
     )
+
+
+def _name_mentioned(normalized_text: str, name: Any) -> bool:
+    return _name_mentioned_prepared(_prepare_text_match(normalized_text), name)
 
 
 def _name_key(value: str) -> str:

@@ -23,6 +23,93 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize(
+    ("text", "name", "expected"),
+    [
+        ("Обсудили расписание для Анны", "Анна", True),
+        ("Написала Даня", "Даниил", True),
+        ("Дениил написал сообщение", "Даниил", True),
+        ("Поездка в Орел", "Орёл", True),
+        ("Школа для Тимофея", "Филипп", False),
+        ("Школа для Тимофея", "", False),
+    ],
+)
+def test_prepared_name_match_preserves_name_semantics(text: str, name: str, expected: bool) -> None:
+    normalized = family_graph_module._normalize_match_text(text)
+    prepared = family_graph_module._prepare_text_match(normalized)
+
+    assert family_graph_module._name_mentioned_prepared(prepared, name) is expected
+    assert family_graph_module._name_mentioned(normalized, name) is expected
+
+
+def test_name_spelling_variant_skips_distance_for_impossible_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = family_graph_module._levenshtein_distance
+    calls = 0
+
+    def counted(left: str, right: str) -> int:
+        nonlocal calls
+        calls += 1
+        return original(left, right)
+
+    monkeypatch.setattr(family_graph_module, "_levenshtein_distance", counted)
+
+    assert family_graph_module._token_spelling_variant("филипп", "расписание") is False
+    assert calls == 0
+    assert family_graph_module._token_spelling_variant("филипп", "филиппа") is True
+    assert calls == 1
+
+
+def test_attribute_text_prepares_event_text_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = family_graph_module._prepare_text_match
+    calls = 0
+
+    def counted(value: str):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(family_graph_module, "_prepare_text_match", counted)
+    groups = [
+        {
+            "status": "confident",
+            "confidence": "high",
+            "customer_id": "customer:one",
+            "child_key": "child:one",
+            "canonical_name": "Филипп",
+            "name_variants": ["Филя", "Филиппа"],
+        },
+        {
+            "status": "needs_review",
+            "confidence": "medium",
+            "customer_id": "customer:one",
+            "child_key": "child:two",
+            "canonical_name": "Анна",
+            "name_variants": ["Аня", "Анны"],
+        },
+    ]
+    context = family_graph_module.CustomerContext(
+        customer_id="customer:one",
+        tenant_id="foton",
+        identity_status="strong",
+        display_name="",
+        primary_phone="",
+        primary_email="",
+        shared_family_phone=False,
+        parent_name_keys=frozenset(),
+        family_id="family:one",
+    )
+
+    family_graph_module._attribute_text(
+        groups,
+        "Обсудили занятия для Филиппа",
+        context=context,
+        object_kind="event",
+        event_type="mango_call",
+    )
+
+    assert calls == 1
+
+
 def test_family_graph_keeps_child_relevant_single_child_event_ambiguous_without_name(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")

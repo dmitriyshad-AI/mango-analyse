@@ -5189,6 +5189,8 @@ def _fetch_chat_message_tail(
     boundary_found = False
     drift_reason = ""
     first_signature: tuple[str, ...] = ()
+    first_page_terminal = False
+    first_page_raw_count = 0
     head_signature: tuple[str, ...] = ()
     last_requested_offset = 0
     previous_anchor = ""
@@ -5258,6 +5260,8 @@ def _fetch_chat_message_tail(
         seen_page_signatures.add(page_signature)
         if not first_signature:
             first_signature = page_signature
+            first_page_terminal = page.terminal
+            first_page_raw_count = page.raw_count
             head_id = page_ids[0]
             head_message_token = wappi_message_checkpoint_token(
                 profile.profile_id, chat_id, head_id
@@ -5296,7 +5300,18 @@ def _fetch_chat_message_tail(
         if not limits.complete_message_history and len(raw_by_id) >= limits.messages_per_chat:
             request_limit_hit = True
             break
-    if not boundary_found:
+    terminal_rebase_needs_head_proof = bool(
+        not boundary_found
+        and not pagination_drift_detected
+        and page_count == 1
+        and last_requested_offset == 0
+        and bool(boundary_token)
+        and bool(raw_by_id)
+        and first_page_raw_count < page_limit
+        and first_page_terminal
+        and drift_reason == "boundary_not_found_short_page"
+    )
+    if not boundary_found and not terminal_rebase_needs_head_proof:
         pagination_drift_detected = True
         if not drift_reason:
             drift_reason = (
@@ -5315,9 +5330,14 @@ def _fetch_chat_message_tail(
     )
     empty_delta_head_proven = False
     if (
-        boundary_found
+        (boundary_found or terminal_rebase_needs_head_proof)
         and not pagination_drift_detected
-        and (offset or empty_baseline or empty_delta_needs_head_proof)
+        and (
+            offset
+            or empty_baseline
+            or empty_delta_needs_head_proof
+            or terminal_rebase_needs_head_proof
+        )
     ):
         last_requested_offset = 0
         if request_count >= request_budget:
@@ -5351,13 +5371,22 @@ def _fetch_chat_message_tail(
                 if not head.valid:
                     pagination_drift_detected = True
                     drift_reason = "malformed_head"
-                head_signature = head.semantic_signatures if head.valid else ()
-                if head_signature != first_signature:
-                    pagination_drift_detected = True
-                    if not drift_reason:
-                        drift_reason = "head_changed"
-                elif empty_delta_needs_head_proof:
-                    empty_delta_head_proven = True
+                    head_signature = ()
+                else:
+                    head_signature = head.semantic_signatures
+                    if terminal_rebase_needs_head_proof and not head.terminal:
+                        pagination_drift_detected = True
+                        drift_reason = "head_not_terminal"
+                    elif head_signature != first_signature:
+                        pagination_drift_detected = True
+                        if terminal_rebase_needs_head_proof or not drift_reason:
+                            drift_reason = "head_changed"
+                    elif terminal_rebase_needs_head_proof:
+                        boundary_found = True
+                        drift_reason = ""
+                        request_counter.incremental_tail_fallbacks += 1
+                    elif empty_delta_needs_head_proof:
+                        empty_delta_head_proven = True
     if empty_delta_needs_head_proof and not empty_delta_head_proven:
         pagination_drift_detected = True
         if not drift_reason:

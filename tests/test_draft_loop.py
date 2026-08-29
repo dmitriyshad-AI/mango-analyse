@@ -78,6 +78,7 @@ def test_wappi_message_page_normalizer_accepts_only_proven_terminal_null() -> No
     )
 
     assert accepted.valid is True
+    assert accepted.terminal is True
     assert accepted.terminal_null is True
     assert accepted.items == ()
     assert accepted.raw_count == 0
@@ -94,6 +95,31 @@ def test_wappi_message_page_normalizer_accepts_only_proven_terminal_null() -> No
         )
         assert rejected.valid is False
         assert rejected.reason == "message_null_not_terminal"
+
+
+def test_wappi_message_page_normalizer_marks_only_strict_terminal_lists() -> None:
+    message = _message("m-1")
+    accepted = normalize_wappi_message_page(
+        {"status": "done", "has_more": False, "messages": [message]},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert accepted.valid is True
+    assert accepted.terminal is True
+    for payload in (
+        {"messages": [message]},
+        {"status": "queued", "has_more": False, "messages": [message]},
+        {"status": "done", "has_more": True, "messages": [message]},
+        {"status": "done", "has_more": 0, "messages": [message]},
+    ):
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert page.valid is True
+        assert page.terminal is False
 
 
 def test_wappi_message_page_normalizer_semantically_deduplicates_first_wins() -> None:

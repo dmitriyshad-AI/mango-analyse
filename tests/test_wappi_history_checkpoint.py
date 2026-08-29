@@ -1995,6 +1995,216 @@ def test_delta_tail_blocks_empty_append_when_head_changes_during_proof() -> None
     )
 
 
+def test_delta_tail_rebases_stable_terminal_snapshot_when_boundary_disappears() -> None:
+    visible = [
+        {
+            "id": "m2",
+            "chat_id": "chat",
+            "type": "text",
+            "body": "Новое видимое сообщение",
+            "time": 102,
+        },
+        {
+            "id": "m1",
+            "chat_id": "chat",
+            "type": "text",
+            "body": "Старое видимое сообщение",
+            "time": 101,
+        },
+    ]
+
+    class StableTerminalClient:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.offsets.append(int(kwargs["offset"]))
+            return {"status": "done", "has_more": False, "messages": visible}
+
+    client = StableTerminalClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "deleted-boundary"
+        ),
+    )
+
+    assert [row.message_id for row in rows] == ["m1", "m2"]
+    assert client.offsets == [0, 0]
+    assert wappi_history_module.fetch_chat_messages.last_boundary_found is True
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is False
+    assert wappi_history_module.fetch_chat_messages.last_head_message_token == (
+        wappi_history_module.wappi_message_checkpoint_token("p-tg", "chat", "m2")
+    )
+
+
+def test_delta_tail_terminal_rebase_fails_closed_when_head_changes() -> None:
+    first = {
+        "id": "m1", "chat_id": "chat", "type": "text", "body": "Первый", "time": 101,
+    }
+    changed = {
+        "id": "m2", "chat_id": "chat", "type": "text", "body": "Новый", "time": 102,
+    }
+
+    class MovingTerminalClient:
+        calls = 0
+
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            rows = [first] if self.calls == 1 else [changed, first]
+            return {"status": "done", "has_more": False, "messages": rows}
+
+    client = MovingTerminalClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "deleted-boundary"
+        ),
+    )
+
+    assert rows == ()
+    assert client.calls == 2
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "head_changed"
+
+
+@pytest.mark.parametrize(
+    ("second_payload", "reason"),
+    (
+        ({}, "malformed_head"),
+        (
+            {
+                "status": "queued",
+                "has_more": False,
+                "messages": [
+                    {"id": "m1", "chat_id": "chat", "type": "text", "body": "x", "time": 1}
+                ],
+            },
+            "head_not_terminal",
+        ),
+    ),
+)
+def test_delta_tail_terminal_rebase_requires_valid_terminal_head(
+    second_payload: Mapping[str, Any],
+    reason: str,
+) -> None:
+    first_payload = {
+        "status": "done",
+        "has_more": False,
+        "messages": [
+            {"id": "m1", "chat_id": "chat", "type": "text", "body": "x", "time": 1}
+        ],
+    }
+
+    class InvalidProofClient:
+        calls = 0
+
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return first_payload if self.calls == 1 else second_payload
+
+    client = InvalidProofClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "deleted-boundary"
+        ),
+    )
+
+    assert rows == ()
+    assert client.calls == 2
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == reason
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"messages": [{"id": "m1", "chat_id": "chat", "type": "text", "body": "x", "time": 1}]},
+        {"status": "queued", "has_more": False, "messages": [{"id": "m1", "chat_id": "chat", "type": "text", "body": "x", "time": 1}]},
+        {"status": "done", "has_more": True, "messages": [{"id": "m1", "chat_id": "chat", "type": "text", "body": "x", "time": 1}]},
+    ),
+)
+def test_delta_tail_missing_boundary_requires_proven_terminal_page(
+    payload: Mapping[str, Any],
+) -> None:
+    class UnprovenClient:
+        calls = 0
+
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return payload
+
+    client = UnprovenClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=2,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "deleted-boundary"
+        ),
+    )
+
+    assert rows == ()
+    assert client.calls == 1
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert (
+        wappi_history_module.fetch_chat_messages.last_tail_drift_reason
+        == "boundary_not_found_short_page"
+    )
+
+
+def test_delta_tail_terminal_rebase_requires_head_proof_budget() -> None:
+    class TerminalClient:
+        calls = 0
+
+        def get_chat_messages(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return {
+                "status": "done",
+                "has_more": False,
+                "messages": [
+                    {"id": "m1", "chat_id": "chat", "type": "text", "body": "x", "time": 1}
+                ],
+            }
+
+    client = TerminalClient()
+    rows = wappi_history_module.fetch_chat_messages(
+        client,
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="chat",
+        limits=WappiFetchLimits(page_size=10, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(),
+        request_budget=1,
+        stop_after_message_token=wappi_history_module.wappi_message_checkpoint_token(
+            "p-tg", "chat", "deleted-boundary"
+        ),
+    )
+
+    assert rows == ()
+    assert client.calls == 1
+    assert wappi_history_module.fetch_chat_messages.last_pagination_drift_detected is True
+    assert wappi_history_module.fetch_chat_messages.last_tail_drift_reason == "head_proof_budget"
+
+
 @pytest.mark.parametrize(
     "malformed_payload",
     ({}, {"messages": "not-a-list"}, {"messages": ["not-an-object"]}, {"data": {}}),
@@ -2225,6 +2435,67 @@ def test_metadata_only_marker_append_commits_after_head_proof(tmp_path: Path) ->
         ("p-tg", "c0001", 0, 10, "desc"),
         ("p-tg", "c0001", 0, 10, "desc"),
     ]
+
+
+def test_deleted_boundary_rebases_terminal_chat_without_losing_history(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1, messages_per_chat=2)
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+    baseline = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert baseline["validation_ok"] is True
+    assert wappi_row_count(db_path) == 2
+
+    source_key = ("telegram", "p-tg", "c0000")
+    messages[source_key] = [
+        dict(messages[source_key][0]),
+        {
+            "id": "c0000-new",
+            "chat_id": "c0000",
+            "type": "text",
+            "body": "Новое после удаления прежней границы",
+            "time": 1_753_000_002,
+        },
+    ]
+    chats[0] = {**dict(chats[0]), "last_timestamp": 1_753_000_002}
+
+    class TerminalSnapshotClient(CheckpointFakeClient):
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            payload = super().get_chat_messages(**kwargs)
+            return {**payload, "status": "done", "has_more": False}
+
+    client = TerminalSnapshotClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=client)
+
+    assert report["validation_ok"] is True
+    assert report["publish_ready"] is True
+    assert report["checkpoint"]["committed"] is True
+    assert report["checkpoint"]["complete"] is True
+    assert "p-tg" not in report["summary"]["empty_profiles"]
+    assert report["profiles"]["p-tg"]["incremental_tail_fallbacks"] == 1
+    assert wappi_row_count(db_path) == 3
+    assert [
+        request
+        for request in client.message_request_calls
+        if request[1] == "c0000"
+    ] == [
+        ("p-tg", "c0000", 0, 10, "desc"),
+        ("p-tg", "c0000", 0, 10, "desc"),
+    ]
+    checkpoint = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    cursor = checkpoint["chat_cursors"][wappi_checkpoint_token("c0000")]
+    assert cursor["message_digest"] == wappi_history_module.wappi_message_checkpoint_token(
+        "p-tg", "c0000", "c0000-new"
+    )
 
 
 def test_moving_head_blocks_all_writes_and_checkpoint_progress(tmp_path: Path) -> None:

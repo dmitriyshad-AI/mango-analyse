@@ -242,6 +242,7 @@ class WappiMessagePage:
 
     items: tuple[Mapping[str, Any], ...] = ()
     raw_count: int = 0
+    terminal: bool = False
     terminal_null: bool = False
     semantic_signatures: tuple[str, ...] = ()
     raw_message_ids: tuple[str, ...] = ()
@@ -714,11 +715,12 @@ def normalize_wappi_message_page(
     raw_rows, envelope = locate_rows(payload)
     if raw_rows is missing:
         return WappiMessagePage(reason="message_list_missing")
+    status = str(envelope.get("status") or payload.get("status") or "").strip().casefold()
+    has_more = envelope.get("has_more", payload.get("has_more"))
+    terminal = status == "done" and has_more is False
     if raw_rows is None:
-        status = str(envelope.get("status") or payload.get("status") or "").strip().casefold()
-        has_more = envelope.get("has_more", payload.get("has_more"))
-        if status == "done" and has_more is False:
-            return WappiMessagePage(terminal_null=True)
+        if terminal:
+            return WappiMessagePage(terminal=True, terminal_null=True)
         return WappiMessagePage(reason="message_null_not_terminal")
     if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
         return WappiMessagePage(reason="message_list_not_sequence")
@@ -780,6 +782,7 @@ def normalize_wappi_message_page(
     return WappiMessagePage(
         items=tuple(items_by_id.values()),
         raw_count=len(rows),
+        terminal=terminal,
         semantic_signatures=tuple(signatures_by_id.values()),
         raw_message_ids=tuple(raw_message_ids),
     )

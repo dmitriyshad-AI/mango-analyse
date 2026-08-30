@@ -2752,7 +2752,9 @@ def mango_sweep_manifest(
 
 def mango_processed_cursor(db_path: Path, *, tenant_id: str) -> Mapping[str, Any]:
     row = None
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
+    # A restored WAL database may legitimately have no -wal/-shm sidecars.
+    # mode=rw lets SQLite recreate them; query_only still forbids SQL writes.
+    with sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=30) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
         row = con.execute(

@@ -2466,6 +2466,21 @@ def test_nightly_service_sweeps_explicit_ready_package_db_before_import(tmp_path
     assert [item["db_path"] for item in inventory] == [str(ready_db.resolve())]
 
 
+def test_mango_processed_cursor_opens_restored_wal_db_without_sidecars(tmp_path: Path) -> None:
+    db_path = tmp_path / "restored.sqlite"
+    seed_customer(db_path, tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("PRAGMA journal_mode=WAL")
+    sidecars = tuple(Path(str(db_path) + suffix) for suffix in ("-wal", "-shm"))
+    for path in sidecars:
+        path.unlink(missing_ok=True)
+    assert not any(path.exists() for path in sidecars)
+
+    cursor = nightly_service_module.mango_processed_cursor(db_path, tenant_id="foton")
+
+    assert cursor["source_system"] == "mango_processed_summary"
+
+
 def test_nightly_service_imports_late_analyzed_old_call_once(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)

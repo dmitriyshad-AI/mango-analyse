@@ -1429,10 +1429,34 @@ def test_family_conflict_gate_reconstructs_created_and_resolved_cutoff(tmp_path:
         after = store_module.open_family_identity_conflict_customer_ids(
             con, "foton", as_of=(NOW + timedelta(hours=4)).isoformat(),
         )
+        scoped_before = store_module.has_open_family_identity_conflict(
+            con,
+            "foton",
+            family_id="",
+            customer_ids=(customer.customer_id,),
+            as_of=NOW.isoformat(),
+        )
+        scoped_during = store_module.has_open_family_identity_conflict(
+            con,
+            "foton",
+            family_id="",
+            customer_ids=(customer.customer_id,),
+            as_of=(NOW + timedelta(hours=2)).isoformat(),
+        )
+        scoped_after = store_module.has_open_family_identity_conflict(
+            con,
+            "foton",
+            family_id="",
+            customer_ids=(customer.customer_id,),
+            as_of=(NOW + timedelta(hours=4)).isoformat(),
+        )
 
     assert customer.customer_id not in before
     assert customer.customer_id in during
     assert customer.customer_id not in after
+    assert scoped_before is False
+    assert scoped_during is True
+    assert scoped_after is False
 
 
 def test_trusted_family_scope_uses_atomic_snapshot_not_materialization_time(tmp_path: Path) -> None:

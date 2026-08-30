@@ -367,20 +367,24 @@ class CustomerTimelineReadApi:
             and normalized_customer_id
             in self._operational_out_of_scope_customer_ids(tenant, (normalized_customer_id,))
         )
-        clauses = ["tenant_id = ?"]
-        params: list[Any] = [tenant]
+        allowed_clauses = ["tenant_id = ?"]
+        allowed_params: list[Any] = [tenant]
+        self.store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
+            allowed_clauses,
+            allowed_params,
+            tenant_id=tenant,
+            customer_id=normalized_customer_id,
+            opportunity_id=None,
+            since=None,
+            until=evaluated_at,
+            allowed_for_bot=True,
+        )
         if allowed_only:
-            self.store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
-                clauses,
-                params,
-                tenant_id=tenant,
-                customer_id=normalized_customer_id,
-                opportunity_id=None,
-                since=None,
-                until=evaluated_at,
-                allowed_for_bot=True,
-            )
+            clauses = list(allowed_clauses)
+            params = list(allowed_params)
         else:
+            clauses = ["tenant_id = ?"]
+            params = [tenant]
             clauses.append("customer_id = ?")
             params.append(normalized_customer_id)
         page_limit = bounded_limit(limit, default=50, max_limit=200)
@@ -394,18 +398,6 @@ class CustomerTimelineReadApi:
         )
         visible_items = _dedupe_bot_context_items(raw_items)[:page_limit] if allowed_only else raw_items
         total_chunks = self._count("bot_context_chunks", "tenant_id = ? AND customer_id = ?", (tenant, normalized_customer_id))
-        allowed_clauses = ["tenant_id = ?"]
-        allowed_params: list[Any] = [tenant]
-        self.store._append_chunk_filters(  # noqa: SLF001 - summary uses the same bot-safe boundary.
-            allowed_clauses,
-            allowed_params,
-            tenant_id=tenant,
-            customer_id=normalized_customer_id,
-            opportunity_id=None,
-            since=None,
-            until=evaluated_at,
-            allowed_for_bot=True,
-        )
         allowed_chunks = 0 if out_of_scope else self._count(
             "bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params)
         )
@@ -582,15 +574,17 @@ class CustomerTimelineReadApi:
         normalized_status = normalize_key(status, "status") if status else None
         normalized_conflict_type = normalize_key(conflict_type, "conflict_type") if conflict_type else None
         if customer_id:
-            items = list(
+            page_limit = bounded_limit(limit, default=50, max_limit=200)
+            complete_window = list(
                 self.store.list_conflicts_by_customer(
                     tenant,
                     normalized_customer_id,
                     statuses=(normalized_status,) if normalized_status else (),
                     conflict_types=(normalized_conflict_type,) if normalized_conflict_type else (),
-                    limit=bounded_limit(limit, default=50, max_limit=200),
+                    limit=page_limit + 1,
                 )
             )
+            items = complete_window[:page_limit]
         else:
             clauses = ["tenant_id = ?", "json_valid(record_json)"]
             params: list[Any] = [tenant]
@@ -607,12 +601,15 @@ class CustomerTimelineReadApi:
                 order_by="created_at DESC, conflict_id",
                 limit=bounded_limit(limit, default=50, max_limit=200),
             )
-        summary = self._global_conflict_summary(
-            tenant,
-            customer_id=normalized_customer_id,
-            status=normalized_status,
-            conflict_type=normalized_conflict_type,
-        )
+        if normalized_customer_id and len(complete_window) <= page_limit:
+            summary = conflict_summary_from_complete_customer_items(items)
+        else:
+            summary = self._global_conflict_summary(
+                tenant,
+                customer_id=normalized_customer_id,
+                status=normalized_status,
+                conflict_type=normalized_conflict_type,
+            )
         summary["recent_window"] = {
             "returned": len(items),
             "by_type": count_by(items, "conflict_type"),
@@ -645,9 +642,8 @@ class CustomerTimelineReadApi:
             clauses.append(
                 "json_valid(conflict.record_json) AND EXISTS ("
                 "SELECT 1 FROM json_each(conflict.record_json, '$.entity_refs') AS ref "
-                "JOIN json_each(?) AS expected "
-                "ON _mango_canonical_identity_ref(CAST(ref.value AS TEXT))="
-                "CAST(expected.value AS TEXT)"
+                "WHERE _mango_canonical_identity_ref(CAST(ref.value AS TEXT)) "
+                "IN (SELECT CAST(value AS TEXT) FROM json_each(?))"
                 ")"
             )
             params.append(json.dumps(refs, ensure_ascii=False, separators=(",", ":")))
@@ -1014,6 +1010,30 @@ def count_by(items: Sequence[Mapping[str, Any]], key: str) -> Mapping[str, int]:
         value = str(item.get(key) or "unknown")
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def conflict_summary_from_complete_customer_items(
+    items: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build the exact customer summary after a limit+1 query proved completeness."""
+    by_type = dict(sorted(count_by(items, "conflict_type").items()))
+    by_status = dict(sorted(count_by(items, "status").items()))
+    by_severity = dict(sorted(count_by(items, "severity").items()))
+    open_items = [item for item in items if str(item.get("status") or "unknown") in UNRESOLVED_CONFLICT_STATUSES]
+    open_by_severity = dict(sorted(count_by(open_items, "severity").items()))
+    total = len(items)
+    open_conflicts = len(open_items)
+    return {
+        "total": total,
+        "open_conflicts": open_conflicts,
+        "affected_customer_count": int(total > 0),
+        "open_affected_customer_count": int(open_conflicts > 0),
+        "malformed_conflict_payload_count": 0,
+        "by_type": by_type,
+        "by_status": by_status,
+        "by_severity": by_severity,
+        "open_by_severity": open_by_severity,
+    }
 
 
 def project_customer(item: Mapping[str, Any]) -> Mapping[str, Any]:

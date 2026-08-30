@@ -216,3 +216,15 @@ def test_current_regrade_rejects_database_sha_change() -> None:
     assert result["checks"]["runtime"]["database_unchanged"] is False
     assert result["verdicts"]["runtime"] == "FAIL"
     assert result["verdict"] == "FAIL"
+
+
+def test_current_report_body_removes_contradictory_legacy_summary() -> None:
+    report = _report()
+    report["summary"]["overall_go"] = False
+    report["summary"]["verdicts"] = {"semantic": "FAIL", "business": "FAIL"}
+
+    result = MODULE._current_report_body(report, SAFETY)
+
+    assert result["schema_version"].endswith("_v2")
+    assert "summary" not in result
+    assert result["s100_current_tz_verdict"]["verdict"] == "PASS"

@@ -217,6 +217,12 @@ def build_compact_reader(source_db: Path, snapshot_db: Path) -> dict[str, object
         con.execute(f"PRAGMA user_version = {user_version_value}")
         con.execute(f"PRAGMA application_id = {application_id}")
         con.commit()
+        # The compact is rebuilt from bulk inserts, so it has no planner
+        # statistics even though the customer-scoped indexes are present.
+        # Without ANALYZE SQLite chose tenant-only indexes and scanned hundreds
+        # of thousands of rows for a single customer card.
+        con.execute("ANALYZE main")
+        con.commit()
         con.execute("DETACH DATABASE source")
     except Exception:
         con.rollback()
@@ -240,6 +246,7 @@ def build_compact_reader(source_db: Path, snapshot_db: Path) -> dict[str, object
             "global_search": True,
             "global_search_performance_slo": False,
             "explicit_fts_search": False,
+            "planner_statistics": True,
         },
         "business_counts_match": business_counts_match,
         "table_counts": copied_counts,
@@ -451,6 +458,7 @@ def build_snapshot(
             "source_freshness": {
                 "source_counts": list(nightly_gate.get("source_counts") or ()),
                 "ingestion_cursors": list(nightly_gate.get("ingestion_cursors") or ()),
+                "identity_integrity": dict(nightly_gate.get("identity_integrity") or {}),
                 "required_sources_check": dict(
                     nightly_gate.get("required_sources_check") or {}
                 ),

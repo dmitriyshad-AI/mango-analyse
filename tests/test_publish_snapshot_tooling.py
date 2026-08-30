@@ -82,6 +82,9 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
             "ok": True,
             "staging_sha256": publish_common.sha256_file(staging),
             "staging_size_bytes": staging.stat().st_size,
+            "source_counts": [{"source_system": "sentinel", "count": 7}],
+            "ingestion_cursors": [{"source_system": "sentinel", "last_cursor_ts": "2026-08-29T00:00:00+00:00"}],
+            "identity_integrity": {"sentinel_exact_links": 11},
         },
     )
     quick_check_calls: list[Path] = []
@@ -108,6 +111,15 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
     manifest = json.loads((snapshot_db.parent / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["integrity_check"] == "ok"
     assert manifest["quick_check"] == "ok"
+    assert manifest["source_freshness"]["source_counts"] == [
+        {"source_system": "sentinel", "count": 7}
+    ]
+    assert manifest["source_freshness"]["ingestion_cursors"] == [
+        {"source_system": "sentinel", "last_cursor_ts": "2026-08-29T00:00:00+00:00"}
+    ]
+    assert manifest["source_freshness"]["identity_integrity"] == {
+        "sentinel_exact_links": 11
+    }
     assert manifest["counts"]["timeline_events"] >= 1
     assert manifest["compaction"]["business_counts_match"] is True
     assert manifest["compaction"]["audit_log_source_rows"] > 0
@@ -174,6 +186,8 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
         assert "ix_timeline_events_source" in snapshot_indexes
         assert "ix_identity_links_lookup" in snapshot_indexes
         assert not set(manifest["compaction"]["indexes_omitted"]) & snapshot_indexes
+        assert con.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0] > 0
+        assert manifest["compaction"]["capabilities"]["planner_statistics"] is True
         event_plan = " ".join(
             str(row[3])
             for row in con.execute(
@@ -815,6 +829,13 @@ def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(tmp
     assert nightly["fresh"] is True
     assert nightly["future_dated"] is False
     assert nightly["count_mismatches"] == {}
+    published_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert nightly["source_counts"] == published_manifest["source_counts"]
+    assert nightly["ingestion_cursors"] == published_manifest["ingestion_cursors"]
+    assert nightly["mail_link_enrich"] == published_manifest["mail_link_enrich"]
+    assert nightly["identity_integrity"] == published_manifest["identity_integrity"]
+    assert nightly["required_sources_check"] == published_manifest["required_sources_check"]
+    assert nightly["source_degradation"] == published_manifest["source_degradation"]
     # Находка 4/5а: WAL/SHM sidecars checkpointed and schema matches prod --
     # a clean night must not be blocked by either new gate.
     assert report["wal_sidecars"]["prod"]["ok"] is True

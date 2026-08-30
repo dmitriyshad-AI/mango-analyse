@@ -680,6 +680,7 @@ def has_open_family_identity_conflict(
     *,
     family_id: str,
     customer_ids: Sequence[str],
+    as_of: Optional[str] = None,
 ) -> bool:
     """Fast per-family form of the same conflict gate used by the batch opener."""
     tenant = normalize_key(tenant_id, "tenant_id")
@@ -705,18 +706,37 @@ def has_open_family_identity_conflict(
             )
         )
     if "identity_links" in tables:
+        link_cutoff_sql = (
+            " AND (first_seen_at IS NULL OR julianday(first_seen_at) IS NULL "
+            "OR julianday(first_seen_at)<=julianday(?))"
+            if as_of is not None
+            else ""
+        )
+        link_params: tuple[str, ...] = (tenant, *members)
+        if as_of is not None:
+            link_params = (*link_params, as_of)
         for row in con.execute(
             f"SELECT link_type,link_value,source_ref FROM identity_links "
-            f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
-            (tenant, *members),
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders}){link_cutoff_sql}",
+            link_params,
         ):
             refs.add(_canonical_identity_conflict_ref(f"{row[0]}:{row[1]}"))
             if row[2]:
                 refs.add(str(row[2]))
+    conflict_cutoff_sql = (
+        "AND (julianday(created_at) IS NULL OR julianday(created_at)<=julianday(?)) "
+        "AND (resolved_at IS NULL OR julianday(resolved_at) IS NULL "
+        "OR julianday(resolved_at)>julianday(?))"
+        if as_of is not None
+        else "AND status IN ('open','active')"
+    )
+    conflict_params: tuple[str, ...] = (tenant,)
+    if as_of is not None:
+        conflict_params = (tenant, as_of, as_of)
     for row in con.execute(
-        "SELECT record_json FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
-        f"AND {_BLOCKING_FAMILY_CONFLICT_TYPE_SQL}",
-        (tenant,),
+        "SELECT record_json FROM timeline_conflicts WHERE tenant_id=? "
+        f"{conflict_cutoff_sql} AND {_BLOCKING_FAMILY_CONFLICT_TYPE_SQL}",
+        conflict_params,
     ):
         payload = json_loads(row[0])
         entity_refs = payload.get("entity_refs") if isinstance(payload, Mapping) else ()
@@ -3849,9 +3869,8 @@ class CustomerTimelineSQLiteStore:
         clauses.append(
             "json_valid(record_json) AND EXISTS ("
             "SELECT 1 FROM json_each(record_json, '$.entity_refs') AS ref "
-            "JOIN json_each(?) AS expected "
-            "ON _mango_canonical_identity_ref(CAST(ref.value AS TEXT))="
-            "CAST(expected.value AS TEXT)"
+            "WHERE _mango_canonical_identity_ref(CAST(ref.value AS TEXT)) "
+            "IN (SELECT CAST(value AS TEXT) FROM json_each(?))"
             ")"
         )
         params.append(json.dumps(refs, ensure_ascii=False, separators=(",", ":")))
@@ -4236,6 +4255,11 @@ class CustomerTimelineSQLiteStore:
         if self.read_only:
             con = sqlite3.connect(customer_timeline_readonly_uri(self.db_path), uri=True, timeout=15)
             con.execute("PRAGMA query_only = ON")
+            # Keep the single compact reader fast without any persistent cache or
+            # sidecar files. mmap is capped by the bundled SQLite build.
+            con.execute("PRAGMA cache_size = -131072")
+            con.execute("PRAGMA mmap_size = 2147418112")
+            con.execute("PRAGMA temp_store = MEMORY")
         else:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             con = sqlite3.connect(self.db_path, timeout=30)
@@ -4943,8 +4967,13 @@ class CustomerTimelineSQLiteStore:
         pattern = f"%{query.strip()}%"
         hits: list[Mapping[str, Any]] = []
         if "events" in scopes:
-            clauses = ["tenant_id = ?", "(subject LIKE ? OR text_preview LIKE ? OR summary LIKE ? OR record_json LIKE ?)"]
-            params: list[Any] = [tenant, pattern, pattern, pattern, pattern]
+            if customer_id:
+                searchable = "record_json LIKE ?"
+                params: list[Any] = [tenant, pattern]
+            else:
+                searchable = "(subject LIKE ? OR summary LIKE ? OR text_preview LIKE ?)"
+                params = [tenant, pattern, pattern, pattern]
+            clauses = ["tenant_id = ?", searchable]
             self._append_event_filters(
                 clauses,
                 params,
@@ -4958,7 +4987,7 @@ class CustomerTimelineSQLiteStore:
             rows = self._con.execute(
                 f"""
                 SELECT event_id, event_at, record_json, NULL AS highlight
-                FROM timeline_events
+                FROM timeline_events{' NOT INDEXED' if not customer_id else ''}
                 WHERE {' AND '.join(clauses)}
                 ORDER BY event_at DESC, event_id DESC
                 LIMIT ? OFFSET ?
@@ -4971,7 +5000,12 @@ class CustomerTimelineSQLiteStore:
                 "(CASE WHEN json_valid(record_json)=1 THEN json_extract(record_json, '$.text') END LIKE ? "
                 "OR CASE WHEN json_valid(record_json)=1 THEN json_extract(record_json, '$.summary') END LIKE ?)"
                 if allowed_for_bot is True
-                else "record_json LIKE ?"
+                else (
+                    "record_json LIKE ?"
+                    if customer_id
+                    else "CASE WHEN json_valid(record_json)=1 THEN "
+                    "json_extract(record_json, '$.text', '$.summary') ELSE '' END LIKE ?"
+                )
             )
             clauses = ["tenant_id = ?", searchable]
             params = [tenant, pattern, pattern] if allowed_for_bot is True else [tenant, pattern]
@@ -4988,7 +5022,7 @@ class CustomerTimelineSQLiteStore:
             rows = self._con.execute(
                 f"""
                 SELECT chunk_id AS event_id, COALESCE(event_at, created_at) AS event_at, record_json, NULL AS highlight
-                FROM bot_context_chunks
+                FROM bot_context_chunks{' NOT INDEXED' if not customer_id else ''}
                 WHERE {' AND '.join(clauses)}
                 ORDER BY COALESCE(event_at, created_at) DESC, chunk_id DESC
                 LIMIT ? OFFSET ?
@@ -4998,9 +5032,16 @@ class CustomerTimelineSQLiteStore:
             hits.extend(search_hit_from_row("bot_context", row) for row in rows)
         if "signals" in scopes:
             active_at = self._now().isoformat()
+            signal_searchable = (
+                "record_json LIKE ?"
+                if customer_id
+                else "CASE WHEN json_valid(record_json)=1 THEN "
+                "json_extract(record_json, '$.evidence_text', '$.recommended_action', '$.signal_type') "
+                "ELSE '' END LIKE ?"
+            )
             clauses = [
                 "tenant_id = ?",
-                "record_json LIKE ?",
+                signal_searchable,
                 "status = 'active'",
                 "(expires_at IS NULL OR expires_at > ?)",
             ]
@@ -5014,7 +5055,7 @@ class CustomerTimelineSQLiteStore:
             rows = self._con.execute(
                 f"""
                 SELECT signal_id AS event_id, created_at AS event_at, record_json, NULL AS highlight
-                FROM derived_signals
+                FROM derived_signals{' NOT INDEXED' if not customer_id else ''}
                 WHERE {' AND '.join(clauses)}
                 ORDER BY created_at DESC, signal_id DESC
                 LIMIT ? OFFSET ?
@@ -5039,10 +5080,15 @@ class CustomerTimelineSQLiteStore:
     ) -> None:
         prefix = f"{table_alias}." if table_alias else ""
         self._append_active_filter("timeline_events", clauses, table_alias=table_alias)
-        clauses.append(customer_id_present_sql(f"{prefix}customer_id"))
         if customer_id:
+            clauses.append(customer_id_present_sql(f"{prefix}customer_id"))
             clauses.append(f"{prefix}customer_id = ?")
             params.append(require_customer_id(customer_id))
+        else:
+            # Persisted customer IDs are contract-validated. The simple predicate
+            # prevents SQLite from choosing a customer-sorted index and sorting the
+            # entire tenant for every global fallback search.
+            clauses.append(f"{prefix}customer_id IS NOT NULL AND {prefix}customer_id != ''")
         if opportunity_id:
             clauses.append(f"{prefix}opportunity_id = ?")
             params.append(require_text(opportunity_id, "opportunity_id"))
@@ -5085,10 +5131,12 @@ class CustomerTimelineSQLiteStore:
         prefix = f"{table_alias}." if table_alias else ""
         outer_prefix = prefix or "bot_context_chunks."
         self._append_active_filter("bot_context_chunks", clauses, table_alias=table_alias)
-        clauses.append(customer_id_present_sql(f"{prefix}customer_id"))
         if customer_id:
+            clauses.append(customer_id_present_sql(f"{prefix}customer_id"))
             clauses.append(f"{prefix}customer_id = ?")
             params.append(require_customer_id(customer_id))
+        else:
+            clauses.append(f"{prefix}customer_id IS NOT NULL AND {prefix}customer_id != ''")
         if opportunity_id:
             clauses.append(f"{prefix}opportunity_id = ?")
             params.append(require_text(opportunity_id, "opportunity_id"))

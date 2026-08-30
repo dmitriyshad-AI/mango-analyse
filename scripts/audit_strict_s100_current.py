@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 HARNESS_SHA256 = "446b61cd968d8dd6d7ac47f02978d9751cf428e59af718992d654dc604139e57"
 POOL_SHA256 = "988c8a05c41eb8f9b9f2080d16424c8c3cd7932b8218b45916c9e3550ab3590a"
-SCHEMA_VERSION = "customer_timeline_strict_s100_current_tz_v1"
+SCHEMA_VERSION = "customer_timeline_strict_s100_current_tz_v2"
 
 
 def _sha_file(path: Path) -> str:
@@ -388,6 +388,19 @@ def _current_regrade(report: Mapping[str, Any], safety: Mapping[str, Any]) -> Ma
     }
 
 
+def _current_report_body(
+    report: Mapping[str, Any],
+    safety: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Publish one authoritative verdict; the frozen legacy summary is obsolete."""
+    return {
+        **{key: value for key, value in report.items() if key != "summary"},
+        "schema_version": SCHEMA_VERSION,
+        "safety": dict(safety),
+        "s100_current_tz_verdict": _current_regrade(report, safety),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
@@ -482,13 +495,10 @@ def main() -> int:
         "report_write_only": True,
     }
     final = {
-        **dict(report),
-        "schema_version": SCHEMA_VERSION,
+        **_current_report_body(report, safety),
         "audit_harness_sha256": HARNESS_SHA256,
         "adapter_sha256": adapter_sha,
         "database_sha256": actual_db_sha,
-        "safety": safety,
-        "s100_current_tz_verdict": _current_regrade(report, safety),
         "limitations": [
             *(report.get("limitations") or ()),
             "Business usefulness is evaluated separately on 30 human-reviewed dossiers.",

@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from mango_mvp.customer_timeline.derived_signals import _is_active_deal_at
 from mango_mvp.customer_timeline.store import (
+    has_open_family_identity_conflict,
     open_family_identity_conflict_customer_ids,
     trusted_family_customer_ids_by_customer,
 )
@@ -748,6 +749,26 @@ def load_manager_action_read_snapshot(
             ),
         ):
             lead_owners[str(row["link_value"])].add(str(row["customer_id"]))
+    if not selected_customer_ids:
+        conflict_customer_ids = frozenset()
+    elif len(selected_customer_ids) == 1:
+        selected_customer_id = selected_customer_ids[0]
+        has_conflict = has_open_family_identity_conflict(
+            con,
+            tenant_id,
+            family_id="",
+            customer_ids=family_scopes.get(selected_customer_id, selected_customer_ids),
+            as_of=as_of.isoformat(),
+        )
+        conflict_customer_ids = (
+            frozenset((selected_customer_id,)) if has_conflict else frozenset()
+        )
+    else:
+        conflict_customer_ids = open_family_identity_conflict_customer_ids(
+            con,
+            tenant_id,
+            as_of=as_of.isoformat(),
+        )
     return ManagerActionReadSnapshot(
         task_rows_by_customer={key: tuple(value) for key, value in task_rows_by_customer.items()},
         opportunities_by_id=opportunities_by_id,
@@ -755,11 +776,7 @@ def load_manager_action_read_snapshot(
             lead_id: tuple(sorted(lead_owners.get(lead_id, ())))
             for lead_id in referenced_lead_ids
         },
-        conflict_customer_ids=open_family_identity_conflict_customer_ids(
-            con,
-            tenant_id,
-            as_of=as_of.isoformat(),
-        ),
+        conflict_customer_ids=conflict_customer_ids,
         freshness_failures=_amo_tasks_freshness_failures(con, tenant_id=tenant_id, as_of=as_of),
         family_customer_ids_by_customer=family_scopes,
         contact_restrictions_by_customer=contact_restrictions,

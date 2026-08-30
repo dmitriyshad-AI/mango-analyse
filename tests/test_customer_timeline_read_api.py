@@ -1325,6 +1325,82 @@ def test_read_api_active_exact_link_conflict_blocks_customer_safety(tmp_path: Pa
     assert profile["readiness"]["safe_for_automatic_bot"] is False
 
 
+def test_read_api_customer_conflict_summary_reuses_complete_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("DELETE FROM timeline_conflicts")
+        con.commit()
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="single_customer_probe",
+            entity_refs=(customer_id,),
+            severity="high",
+            status="active",
+            actor="test",
+        )
+
+    def unexpected_global_scan(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("complete customer conflict window must not be scanned twice")
+
+    monkeypatch.setattr(CustomerTimelineReadApi, "_global_conflict_summary", unexpected_global_scan)
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        result = api.list_conflicts("foton", customer_id=customer_id, limit=100)
+
+    assert len(result["items"]) == 1
+    assert result["summary"]["total"] == 1
+    assert result["summary"]["open_conflicts"] == 1
+    assert result["summary"]["open_by_severity"] == {"high": 1}
+
+
+def test_read_api_profile_uses_scoped_manager_conflict_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mango_mvp.customer_timeline import next_step_resolver
+
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    monkeypatch.setattr(
+        next_step_resolver,
+        "open_family_identity_conflict_customer_ids",
+        lambda *_args, **_kwargs: pytest.fail("single-customer card must not scan all conflicts"),
+    )
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        assert api.customer_profile("foton", customer_id)["found"] is True
+
+
+def test_read_api_bot_context_builds_conflict_gate_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mango_mvp.customer_timeline import store as store_module
+
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    calls = 0
+    original = store_module.has_open_family_identity_conflict
+
+    def counted(*args: object, **kwargs: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store_module, "has_open_family_identity_conflict", counted)
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        api.bot_context("foton", customer_id, allowed_only=True)
+
+    assert calls == 1
+
+
 def test_read_api_reports_malformed_conflict_without_crashing(tmp_path: Path) -> None:
     db_path, _ = seed_timeline_db(tmp_path)
     with sqlite3.connect(db_path) as con:

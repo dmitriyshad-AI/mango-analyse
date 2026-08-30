@@ -134,12 +134,24 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
         "forensic_audit_rows_not_required_by_reader"
     )
     assert manifest["compaction"]["indexes_omitted"] == [
+        "idx_customer_purchases_v1_computability",
+        "ix_artifacts_sha256",
         "ix_bot_context_chunks_active_customer_time",
         "ix_timeline_events_active_customer_time",
         "ix_timeline_events_type_time",
     ]
     assert manifest["compaction"]["indexes_omitted_source_bytes"] > 0
     assert manifest["compaction"]["index_omission_evidence"] == {
+        "idx_customer_purchases_v1_computability": {
+            "retained_reader_index": "idx_customer_purchases_v1_customer",
+            "reader_query": "customer_scoped_purchase_lookup",
+            "reason": "writer_reconciliation_index_not_used_by_immutable_reader",
+        },
+        "ix_artifacts_sha256": {
+            "retained_reader_index": "ix_artifacts_event",
+            "reader_query": "event_artifact_projection",
+            "reason": "writer_dedup_index_not_used_by_immutable_reader",
+        },
         "ix_bot_context_chunks_active_customer_time": {
             "retained_prefix_index": "ix_chunks_customer_event_time",
             "retained_prefix": ["tenant_id", "customer_id", "event_at"],
@@ -185,6 +197,17 @@ def test_build_snapshot_compacts_atomically_then_reader_smoke(
         assert "ix_chunks_customer_event_time" in snapshot_indexes
         assert "ix_timeline_events_source" in snapshot_indexes
         assert "ix_identity_links_lookup" in snapshot_indexes
+        with sqlite3.connect(staging) as source_con:
+            source_indexes = {
+                str(row[0])
+                for row in source_con.execute("SELECT name FROM sqlite_master WHERE type='index'")
+            }
+        for retained_reader_index in (
+            "idx_customer_purchases_v1_customer",
+            "ix_artifacts_event",
+        ):
+            if retained_reader_index in source_indexes:
+                assert retained_reader_index in snapshot_indexes
         assert not set(manifest["compaction"]["indexes_omitted"]) & snapshot_indexes
         assert con.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0] > 0
         assert manifest["compaction"]["capabilities"]["planner_statistics"] is True

@@ -82,12 +82,24 @@ _SCHEMA_ONLY_TECHNICAL_TABLES = {
 _EMPTY_READER_TABLES = frozenset(_SCHEMA_ONLY_TECHNICAL_TABLES)
 _OMITTED_READER_INDEXES = frozenset(
     {
+        "idx_customer_purchases_v1_computability",
+        "ix_artifacts_sha256",
         "ix_bot_context_chunks_active_customer_time",
         "ix_timeline_events_active_customer_time",
         "ix_timeline_events_type_time",
     }
 )
 _OMITTED_READER_INDEX_EVIDENCE = {
+    "idx_customer_purchases_v1_computability": {
+        "retained_reader_index": "idx_customer_purchases_v1_customer",
+        "reader_query": "customer_scoped_purchase_lookup",
+        "reason": "writer_reconciliation_index_not_used_by_immutable_reader",
+    },
+    "ix_artifacts_sha256": {
+        "retained_reader_index": "ix_artifacts_event",
+        "reader_query": "event_artifact_projection",
+        "reason": "writer_dedup_index_not_used_by_immutable_reader",
+    },
     "ix_bot_context_chunks_active_customer_time": {
         "retained_prefix_index": "ix_chunks_customer_event_time",
         "retained_prefix": ["tenant_id", "customer_id", "event_at"],

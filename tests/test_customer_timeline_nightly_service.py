@@ -2430,7 +2430,10 @@ def test_nightly_service_imports_late_analyzed_old_call_once(tmp_path: Path) -> 
     with sqlite3.connect(ready_db) as con:
         con.execute(
             "UPDATE call_records SET analysis_status = 'done', updated_at = ? WHERE id = 'old-pending'",
-            ("2026-07-05T10:00:00+00:00",),
+            # The live Calls service stores SQLite timestamps with a space while
+            # Timeline cursors are ISO-8601 strings with ``T`` and a UTC offset.
+            # Comparing those encodings as text silently loses same-day rows.
+            ("2026-07-04 11:00:00.000000",),
         )
         con.commit()
     second = run_nightly_service(

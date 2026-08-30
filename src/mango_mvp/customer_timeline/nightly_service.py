@@ -2634,7 +2634,13 @@ def inspect_mango_call_db(root: Path, db_path: Path, *, since_dt: datetime | Non
                   MAX(CASE WHEN {done_predicate} THEN {date_col} END) AS max_started_at,
                   MIN(CASE WHEN {done_predicate} THEN updated_at END) AS min_updated_at,
                   MAX(CASE WHEN {done_predicate} THEN updated_at END) AS max_updated_at,
-                  SUM(CASE WHEN {done_predicate} AND (? IS NULL OR updated_at >= ?) THEN 1 ELSE 0 END) AS selected
+                  SUM(
+                    CASE
+                      WHEN {done_predicate}
+                       AND (? IS NULL OR julianday(updated_at) >= julianday(?))
+                      THEN 1 ELSE 0
+                    END
+                  ) AS selected
                 FROM call_records
                 """,
                 (since_dt.isoformat() if since_dt else None, since_dt.isoformat() if since_dt else None),

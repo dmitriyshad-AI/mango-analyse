@@ -40,11 +40,6 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     _sha16,
 )
 from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
-from mango_mvp.customer_timeline.purchases import (
-    PURCHASE_MONEY_KIND_PLAN,
-    ensure_customer_purchases_v1_table,
-    upsert_customer_purchase_rows,
-)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     existing_timeline_email_content_signatures,
@@ -60,7 +55,6 @@ A2V3_MAIL_SOURCE_SYSTEM = "mail_archive_stage2"
 A2V3_DEDUPE_SOURCE_SYSTEMS = ("mail_archive", "mail_archive_stage2")
 CLIENT_SAFE_POLICY_VERSION = "cs_v1"
 A2V3_CUSTOMER_BRAND_PROFILE_CODE_VERSION = "a2v3_customer_brand_profile_v1"
-CUSTOMER_PURCHASES_V1_CODE_VERSION = "customer_purchases_v1_not_computable"
 DEFAULT_BRAND_DOMINANCE_RATIO = 4.0
 CHUNK_RICH_TEXT_LIMIT = 6000
 EMAIL_OR_DOMAIN_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}|\b(?:https?://)?[\w.-]+\.[a-zа-я]{2,}(?:/\S*)?", re.I)
@@ -142,7 +136,6 @@ class A2V3MailIngestConfig:
     enrich_existing: bool = False
     brand_dominance_ratio: float = DEFAULT_BRAND_DOMINANCE_RATIO
     chunk_rich_text: bool = True
-    refresh_purchases: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_jsonl", Path(self.input_jsonl).expanduser())
@@ -642,19 +635,8 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
                 connection=store._con,
                 allowed_root=config.allowed_root,
             )
-            purchases_upserted = (
-                _refresh_customer_purchases_v1(
-                    config.timeline_db_path,
-                    tenant_id=config.tenant_id,
-                    connection=store._con,
-                    allowed_root=config.allowed_root,
-                )
-                if config.refresh_purchases
-                else 0
-            )
             counters["upserted_a2v3_event_facts"] += facts_upserted
             counters["upserted_a2v3_customer_brand_profiles"] += brand_profiles_upserted
-            counters["upserted_customer_purchases_v1"] += purchases_upserted
             counters["reconciled_a2v3_event_facts"] += max(0, facts_upserted - len(accepted_plans))
         store.finish_ingestion_run(
             run.run_id,
@@ -964,74 +946,6 @@ def _ensure_a2v3_customer_brand_profiles_table(
     finally:
         if owns_connection:
             con.close()
-
-
-def _refresh_customer_purchases_v1(
-    db_path: Path,
-    *,
-    tenant_id: str,
-    allowed_root: Path,
-    connection: sqlite3.Connection | None = None,
-) -> int:
-    ensure_not_prod_apply_path(db_path, allowed_root=allowed_root)
-    owns_connection = connection is None
-    con = connection or sqlite3.connect(Path(db_path))
-    con.row_factory = sqlite3.Row
-    try:
-        ensure_customer_purchases_v1_table(con)
-        tenant = normalize_key(tenant_id, "tenant_id")
-        rows = con.execute(
-            """
-            SELECT
-              c.tenant_id,
-              c.customer_id,
-              COUNT(o.opportunity_id) AS deals_cnt,
-              MAX(COALESCE(o.closed_at, o.opened_at, '')) AS last_purchase_at
-            FROM customer_identities c
-            LEFT JOIN customer_opportunities o
-              ON o.tenant_id = c.tenant_id
-             AND o.customer_id = c.customer_id
-             AND o.opportunity_type = 'amo_deal'
-             AND (
-               COALESCE(o.status, '') IN ('Оплата получена', 'Успешно')
-               OR LOWER(COALESCE(o.status, '')) IN ('won', 'success', 'paid')
-             )
-            WHERE c.tenant_id = ?
-            GROUP BY c.tenant_id, c.customer_id
-            """,
-            (tenant,),
-        ).fetchall()
-        payloads = [
-            {
-                "tenant_id": str(row["tenant_id"]),
-                "customer_id": str(row["customer_id"]),
-                "period": "all_time",
-                "money_kind": PURCHASE_MONEY_KIND_PLAN,
-                "total_in": None,
-                "total_out": None,
-                "deals_cnt": int(row["deals_cnt"] or 0),
-                "last_purchase_at": str(row["last_purchase_at"] or "") or None,
-                "sources_json": json.dumps(
-                    {
-                        "source": "customer_opportunities",
-                        "money_source": "not_computable_from_a2_mail",
-                        "email_amounts_used": False,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                "computability": "not_computable_missing_primary_amounts",
-                "code_version": CUSTOMER_PURCHASES_V1_CODE_VERSION,
-            }
-            for row in rows
-        ]
-        upsert_customer_purchase_rows(con, payloads, protect_computed_plan=True)
-        if owns_connection:
-            con.commit()
-    finally:
-        if owns_connection:
-            con.close()
-    return len(payloads)
 
 
 def reconcile_a2v3_event_facts(
@@ -1504,21 +1418,6 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
                     )
                 },
             }
-        purchases_counts: Mapping[str, Any] = {}
-        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer_purchases_v1'").fetchone():
-            purchases_counts = {
-                "rows": int(con.execute("SELECT count(*) FROM customer_purchases_v1").fetchone()[0]),
-                "with_deals": int(con.execute("SELECT count(*) FROM customer_purchases_v1 WHERE deals_cnt > 0").fetchone()[0]),
-                "non_null_amounts": int(
-                    con.execute(
-                        """
-                        SELECT count(*)
-                        FROM customer_purchases_v1
-                        WHERE total_in IS NOT NULL OR total_out IS NOT NULL
-                        """
-                    ).fetchone()[0]
-                ),
-            }
         chunk_gate_counts = [
             {
                 "allowed_for_bot": int(row["allowed_for_bot"]),
@@ -1542,7 +1441,6 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
         "match_status_counts": match_status_counts,
         "a2_fact_counts": a2_fact_counts,
         "brand_profile_counts": brand_profile_counts,
-        "purchases_counts": purchases_counts,
         "chunk_gate_counts": chunk_gate_counts,
     }
     write_json(config.out_dir / "test_db_verification.json", report)
@@ -1564,7 +1462,6 @@ def write_foton_report(
     counts = first_apply_report.get("counts", {})
     a2_fact_counts = test_db_verification.get("a2_fact_counts") or {}
     brand_profile_counts = test_db_verification.get("brand_profile_counts") or {}
-    purchases_counts = test_db_verification.get("purchases_counts") or {}
     lines = [
         "# A2-v3: тестовое вливание 100 писем в customer_timeline",
         "",
@@ -1610,8 +1507,7 @@ def write_foton_report(
         "",
         "## Side-таблицы E1.3",
         f"- a2v3_customer_brand_profiles: `{brand_profile_counts}`",
-        f"- customer_purchases_v1: `{purchases_counts}`",
-        "- `customer_purchases_v1.total_in/total_out` остаются `NULL`: email-суммы не являются первичным реестром денег.",
+        "- A2 не пишет `customer_purchases_v1`: единственный владелец проекции — Stage5.",
         "",
         "## Apply в тест-БД",
         f"- selected events first apply: `{first_apply_report.get('selected_events')}`",

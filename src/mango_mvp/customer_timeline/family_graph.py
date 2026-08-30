@@ -7,6 +7,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -18,6 +19,12 @@ from mango_mvp.customer_timeline.store import (
     authoritative_tallanto_student_owners,
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
+)
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    finished_grade_from_student_type,
+    is_explicit_graduate_student_type,
+    next_grade_from_student_type,
+    student_type_in_timeline_scope,
 )
 from mango_mvp.utils.phone import normalize_phone
 
@@ -65,6 +72,7 @@ class ChildEvidence:
     tallanto_student_id: str = ""
     name: str = ""
     grade: str = ""
+    student_type: str = ""
     subject: str = ""
     brand: str = "unknown"
     quote: str = ""
@@ -184,6 +192,8 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             event_record = _json_loads(row["record_json"]).get("record") or {}
             payload = event_record.get("payload") or {}
             name = str(payload.get("display_name") or "").strip()
+            student_type = str(payload.get("student_type") or "").strip()
+            target_grade = next_grade_from_student_type(student_type)
             if not name or customer_id not in contexts:
                 continue
             tallanto_snapshot_customers.add(customer_id)
@@ -194,7 +204,8 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                     event_at=str(row["event_at"] or ""),
                     tallanto_student_id=student_id,
                     name=name,
-                    grade=str(payload.get("student_type") or ""),
+                    grade=str(target_grade) if target_grade is not None else "",
+                    student_type=student_type,
                     subject=str(payload.get("subjects") or ""),
                     brand=str(event_record.get("brand") or "unknown"),
                 )
@@ -216,6 +227,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                         tallanto_student_id=(next(iter(group_student_ids)) if len(group_student_ids) == 1 else ""),
                         name=str(group["canonical_name"]),
                         grade="; ".join(group["grades"]),
+                        student_type="; ".join(group.get("student_types", ())),
                         subject="; ".join(group["subjects"]),
                         brand=str(group["brand"]),
                     )
@@ -1202,6 +1214,17 @@ def _build_family_rows(
                 else _child_key(context.family_id, group.name_key)
             )
             status, confidence, reason = _family_confidence(group, valid_groups=valid_groups, identity_risks=identity_risks)
+            student_types = sorted({item.student_type for item in group.evidence if item.student_type})
+            finished_grades = sorted({
+                grade
+                for value in student_types
+                if (grade := finished_grade_from_student_type(value)) is not None
+            })
+            target_grades = sorted({
+                grade
+                for value in student_types
+                if (grade := next_grade_from_student_type(value)) is not None
+            })
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
                 "tenant_id": context.tenant_id,
@@ -1211,6 +1234,15 @@ def _build_family_rows(
                 "canonical_name": group.canonical_name,
                 "name_variants": sorted(group.names),
                 "grades": sorted(group.grades),
+                "student_types": student_types,
+                "finished_grades": finished_grades,
+                "target_grades": target_grades,
+                "explicit_graduate": any(
+                    is_explicit_graduate_student_type(value) for value in student_types
+                ),
+                "timeline_scope_eligible": any(
+                    student_type_in_timeline_scope(value) for value in student_types
+                ),
                 "subjects": sorted(group.subjects),
                 "brand": group.brand,
                 "status": status,
@@ -1263,6 +1295,7 @@ def _load_persisted_family_groups(
         """,
         (tenant_id,),
     ):
+        record = _json_loads(row["record_json"])
         groups[str(row["customer_id"])].append(
             {
                 "family_id": str(row["family_id"]),
@@ -1278,8 +1311,9 @@ def _load_persisted_family_groups(
                 "reason": str(row["reason"] or "persisted_family_graph"),
                 "source_refs": _json_list(row["source_refs_json"]),
                 "tallanto_student_ids": _json_list(
-                    _json_loads(row["record_json"]).get("tallanto_student_ids", [])
+                    record.get("tallanto_student_ids", [])
                 ),
+                "student_types": _json_list(record.get("student_types", [])),
             }
         )
     return groups
@@ -1558,17 +1592,18 @@ def _token_option_sets_match(left: frozenset[str], right: frozenset[str]) -> boo
 def _token_spelling_variant(left: str, right: str) -> bool:
     if len(left) < 4 or len(right) < 4:
         return False
-    distance = _levenshtein_distance(left, right)
     if left[:3] == right[:3]:
-        return distance <= 2
-    if left[:2] == right[:2] and (left.endswith(_RUSSIAN_SURNAME_ENDINGS) or right.endswith(_RUSSIAN_SURNAME_ENDINGS)):
-        return distance <= 3
+        return _levenshtein_distance(left, right) <= 2
+    left_is_surname = left.endswith(_RUSSIAN_SURNAME_ENDINGS)
+    right_is_surname = right.endswith(_RUSSIAN_SURNAME_ENDINGS)
+    if left[:2] == right[:2] and (left_is_surname or right_is_surname):
+        return _levenshtein_distance(left, right) <= 3
     if (
         left[0] == right[0]
-        and left.endswith(_RUSSIAN_SURNAME_ENDINGS)
-        and right.endswith(_RUSSIAN_SURNAME_ENDINGS)
+        and left_is_surname
+        and right_is_surname
     ):
-        return distance <= 2
+        return _levenshtein_distance(left, right) <= 2
     return False
 
 
@@ -1878,10 +1913,14 @@ def _attribute_text(
         return None
     identity_risks = _identity_risks(context)
     normalized = _normalize_match_text(text)
+    match_index = _prepare_text_match(normalized)
     matches = [
         group
         for group in usable
-        if any(_name_mentioned(normalized, value) for value in [group.get("canonical_name", ""), *group.get("name_variants", [])])
+        if any(
+            _name_mentioned_prepared(match_index, value)
+            for value in [group.get("canonical_name", ""), *group.get("name_variants", [])]
+        )
     ]
     if identity_risks:
         return {
@@ -1916,6 +1955,14 @@ def _attribute_text(
             "reason": "multiple_child_name_mentions",
             "matched_names": [str(group.get("canonical_name") or "") for group in matches],
         }
+    if _child_relevant_text(normalized, event_type=event_type, object_kind=object_kind):
+        return {
+            "child_key": "",
+            "status": "ambiguous",
+            "confidence": "low",
+            "reason": "child_relevant_but_no_unique_name",
+            "matched_names": [],
+        }
     if len(usable) == 1 and usable[0].get("confidence") == "high":
         return {
             "child_customer_id": str(usable[0].get("customer_id") or context.customer_id),
@@ -1923,14 +1970,6 @@ def _attribute_text(
             "status": "matched",
             "confidence": "high",
             "reason": "single_child_family",
-            "matched_names": [],
-        }
-    if _child_relevant_text(normalized, event_type=event_type, object_kind=object_kind):
-        return {
-            "child_key": "",
-            "status": "ambiguous",
-            "confidence": "low",
-            "reason": "child_relevant_but_no_unique_name",
             "matched_names": [],
         }
     return None
@@ -2135,15 +2174,43 @@ def _child_relevant_text(text: str, *, event_type: str, object_kind: str) -> boo
     return event_type in {"mango_call", "email_message", "amo_deal_stage", "tallanto_payment", "tallanto_abonement"}
 
 
-def _name_mentioned(normalized_text: str, name: Any) -> bool:
-    keys = _safe_name_keys(str(name or ""))
-    if not keys:
-        return False
+_NameMatchIndex = tuple[frozenset[str], tuple[frozenset[str], ...]]
+
+
+@lru_cache(maxsize=65_536)
+def _prepared_name_match(value: str) -> tuple[frozenset[str], tuple[frozenset[str], ...]]:
+    return frozenset(_safe_name_keys(value)), tuple(_name_token_options(value))
+
+
+def _prepare_text_match(normalized_text: str) -> _NameMatchIndex:
     text_tokens = set(normalized_name_tokens(normalized_text))
     canonical_text_tokens = set(text_tokens)
-    for token in tuple(text_tokens):
+    for token in text_tokens:
         canonical_text_tokens.update(_safe_name_keys(token))
-    return any(key in canonical_text_tokens for key in keys)
+    text_options = tuple(
+        options[0]
+        for token in text_tokens
+        if (options := _name_token_options(token))
+    )
+    return frozenset(canonical_text_tokens), text_options
+
+
+def _name_mentioned_prepared(index: _NameMatchIndex, name: Any) -> bool:
+    keys, name_options = _prepared_name_match(str(name or ""))
+    if not keys:
+        return False
+    canonical_text_tokens, text_options = index
+    if keys & canonical_text_tokens:
+        return True
+    return any(
+        _token_option_sets_match(name_token, text_token)
+        for name_token in name_options
+        for text_token in text_options
+    )
+
+
+def _name_mentioned(normalized_text: str, name: Any) -> bool:
+    return _name_mentioned_prepared(_prepare_text_match(normalized_text), name)
 
 
 def _name_key(value: str) -> str:

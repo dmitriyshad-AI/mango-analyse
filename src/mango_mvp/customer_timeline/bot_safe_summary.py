@@ -26,14 +26,15 @@ from mango_mvp.customer_timeline.store import (
     open_family_identity_conflict_customer_ids,
     scrub_timeline_persisted_json,
 )
-from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
+from mango_mvp.customer_timeline.source_policy import (
+    BOT_SAFE_SUMMARY_ACTOR,
+    BOT_SAFE_SUMMARY_CHUNK_TYPE,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+    BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+    is_non_contentful_call_record,
+)
 from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE as INSIGHTS_COMMON_SINGLE_NAME_RE
 
-
-BOT_SAFE_SUMMARY_SCHEMA_VERSION = "customer_timeline_bot_safe_summary_v1"
-BOT_SAFE_SUMMARY_CHUNK_TYPE = "bot_safe_summary"
-BOT_SAFE_SUMMARY_SOURCE_SYSTEM = "customer_timeline_bot_safe_summary"
-BOT_SAFE_SUMMARY_ACTOR = "customer_timeline_bot_safe_summary_builder"
 
 KNOWN_BRANDS = {"foton", "unpk"}
 GENERIC_TITLE_PATTERNS = (
@@ -123,6 +124,13 @@ DIRECT_DIGIT_CLASS_RANGE_RE = re.compile(
 )
 DIRECT_DIGIT_COORDINATED_CLASS_RE = re.compile(
     r"(?<!\d)(?P<first>1[01]|[1-9])\s*(?:,|/|\+|и)\s*(?P<second>1[01]|[1-9])\s*"
+    r"(?:класс\w*|кл\.?)\b",
+    re.IGNORECASE,
+)
+FINISHED_DIGIT_CLASS_RE = re.compile(
+    r"\b(?:закончил(?:а|и)?|окончил(?:а|и)?|завершил(?:а|и)?)\w*\s+"
+    r"(?P<class>1[01]|[1-9])\s*"
+    r"(?:[-–—]?\s*(?:й|ый|ой|го|ого|му|ому|м|ом|е|х|ых))?\s*"
     r"(?:класс\w*|кл\.?)\b",
     re.IGNORECASE,
 )
@@ -432,6 +440,7 @@ def _build_customer_draft(
         conflicts=conflicts,
         customer_id=customer_id,
     )
+    next_step_metadata = _safe_next_step_metadata(next_step)
     safe_next_step = _safe_next_step(next_step)
     text = _render_safe_text(brand=brand, slots=slots, safe_next_step=safe_next_step)
     if not text:
@@ -458,11 +467,23 @@ def _build_customer_draft(
             "schema_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
             "raw_text_used": False,
             "brand_context_authorized": brand_authorized,
+            "client_safe": brand_authorized,
+            "client_safe_reason": (
+                "canonical_bot_safe_summary_projection"
+                if brand_authorized
+                else "brand_context_not_authorized"
+            ),
+            "client_safe_policy_version": "cs_v1",
+            "client_safe_provenance": BOT_SAFE_SUMMARY_ACTOR,
+            "projection_owner": BOT_SAFE_SUMMARY_ACTOR,
+            "projection_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+            "memory_status": "usable_memory" if brand_authorized else "manager_review_required",
+            "content_brand": brand,
             "brand_source": brand_source,
             "opportunity_count": len(opportunities),
             "event_count": len(events),
             "source_chunk_count": len(source_chunks),
-            "next_step": _safe_next_step_metadata(next_step),
+            "next_step": next_step_metadata,
             "safe_next_step": safe_next_step,
             "safe_slots": {
                 "child_class": slots.child_class,
@@ -482,7 +503,7 @@ def _build_customer_draft(
         source_opportunity_count=len(opportunities),
         source_event_count=len(events),
         source_chunk_count=len(source_chunks),
-        next_step_status=next_step.status,
+        next_step_status=next_step_metadata["status"],
     )
 
 
@@ -774,7 +795,8 @@ def _confirmed_child_class(
 
 def _child_class_candidates(text_sources: Sequence[str]) -> frozenset[str]:
     values: set[str] = set()
-    values.update(_direct_digit_child_class_candidates(text_sources))
+    values.update(_direct_digit_child_class_candidates(text_sources, exclude_finished=True))
+    values.update(_next_class_after_finished_candidates(text_sources))
     for text in text_sources:
         for match in M_CLASS_RE.finditer(text):
             values.add(match.group("class"))
@@ -794,6 +816,7 @@ def _direct_digit_child_class_candidates(
     text_sources: Sequence[str],
     *,
     include_lower_grades: bool = False,
+    exclude_finished: bool = False,
 ) -> frozenset[str]:
     values: set[str] = set()
     range_re = DIRECT_DIGIT_CLASS_RANGE_RE if include_lower_grades else CLASS_RANGE_RE
@@ -801,6 +824,7 @@ def _direct_digit_child_class_candidates(
     class_re = DIRECT_DIGIT_CLASS_RE if include_lower_grades else CLASS_RE
     minimum_class = 1 if include_lower_grades else 5
     for text in text_sources:
+        finished_spans = tuple(match.span() for match in FINISHED_DIGIT_CLASS_RE.finditer(text)) if exclude_finished else ()
         for match in range_re.finditer(text):
             start = int(match.group("start"))
             end = int(match.group("end"))
@@ -810,8 +834,29 @@ def _direct_digit_child_class_candidates(
             values.add(match.group("first"))
             values.add(match.group("second"))
         for match in class_re.finditer(text):
+            if any(match.start() < end and match.end() > start for start, end in finished_spans):
+                continue
             values.add(match.group("class"))
     return frozenset(values)
+
+
+def _next_class_after_finished_candidates(text_sources: Sequence[str]) -> frozenset[str]:
+    return frozenset(
+        str(int(match.group("class")) + 1)
+        for text in text_sources
+        for match in _finished_class_matches(text)
+        if int(match.group("class")) < 11
+    )
+
+
+def _finished_class_matches(text: str) -> tuple[re.Match[str], ...]:
+    matches: list[re.Match[str]] = []
+    for match in FINISHED_DIGIT_CLASS_RE.finditer(text):
+        prefix = text[max(0, match.start() - 4) : match.start()].casefold().replace("ё", "е")
+        if re.search(r"\bне\s*$", prefix):
+            continue
+        matches.append(match)
+    return tuple(matches)
 
 
 def _has_multi_child_context(text_sources: Sequence[str]) -> bool:
@@ -902,7 +947,7 @@ def _known_field_names(slots: BotSafeExtractedSlots) -> tuple[str, ...]:
 
 
 def _safe_next_step(next_step: NextStepResolution) -> str:
-    if next_step.status != "active":
+    if next_step.resolution_kind != "proven_manager_action" or next_step.status != "active":
         return ""
     value = _safe_fragment(next_step.display_text, max_len=180)
     if not value:
@@ -924,11 +969,15 @@ def _safe_next_step(next_step: NextStepResolution) -> str:
 
 
 def _safe_next_step_metadata(next_step: NextStepResolution) -> Mapping[str, str]:
+    informational = next_step.to_informational_json_dict()
     return {
         "schema_version": CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
-        "status": next_step.status,
+        "resolution_kind": next_step.resolution_kind,
+        "status": str(informational["status"]),
         "confidence": next_step.confidence,
-        "reason_code": next_step.reason_code,
+        "reason_code": str(informational["reason_code"]),
+        "historical_status": str(informational["historical_status"]),
+        "historical_reason_code": str(informational["historical_reason_code"]),
         "source_event_id": next_step.source_event_id,
         "source_event_at": next_step.source_event_at,
         "source_event_type": next_step.source_event_type,
@@ -1108,7 +1157,7 @@ def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
         pending_attribution = pending_attribution.strip().casefold()
     if pending_attribution not in (None, False, 0, "", "false"):
         return False
-    authorization = metadata.get("brand_context_authorized")
+    brand_authorized = metadata.get("brand_context_authorized")
     if str(event.get("source_system") or "") in {
         "mail_archive",
         "mail_archive_stage2",
@@ -1117,8 +1166,8 @@ def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
         "telegram_history",
         "channel_snapshot",
     }:
-        return authorization is True
-    if authorization is False:
+        return brand_authorized is True
+    if brand_authorized is False:
         return False
     record = _mapping(event.get("record"))
     return not (

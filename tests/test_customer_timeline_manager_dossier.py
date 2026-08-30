@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 from openpyxl import load_workbook
@@ -29,6 +29,7 @@ from mango_mvp.customer_timeline.manager_dossier import (
     OWNER50_CONTROL_COLUMNS,
     _owner50_event_p0_is_stale_and_resolved,
     _owner50_family_rows,
+    _owner50_tallanto_grade_contract,
     _product_interest_values,
     _season_purchase_matches,
     build_customer_dossier,
@@ -42,6 +43,8 @@ from mango_mvp.customer_timeline.manager_dossier import (
     owner50_action_text,
     resolve_evidence_source,
 )
+from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.next_step_resolver import event_has_explicit_contact_opt_out
 from mango_mvp.customer_timeline.freshness import (
     MANAGER_REQUIRED_SOURCE_SYSTEMS,
     manager_freshness_gate,
@@ -122,10 +125,47 @@ def test_manager_dossier_names_tallanto_attendance_without_overclaiming_presence
     with sqlite3.connect(db) as con:
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
-    text = "\n".join(row.text for row in dossier.chronology)
+    text = "\n".join(row.text for row in dossier.attendance)
     assert "Запись Tallanto о занятии: Физика 8 класс" in text
     assert "посетил" not in text.casefold()
     assert "списание" not in text.casefold()
+    assert not any("Физика 8 класс" in row.text for row in dossier.chronology)
+
+
+def test_open_identity_conflict_suppresses_all_business_sections(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+            event_at=NOW,
+            source_system="tallanto_attendance_api",
+            source_id="attendance-under-conflict",
+            direction=TimelineDirection.SYSTEM,
+            subject="Физика 8 класс",
+            match_status="strong_unique",
+            created_at=NOW,
+        ))
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:1",),
+        )
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert "identity_conflict_open" in dossier.manager_action.readiness_reason_codes
+    assert dossier.brand == ""
+    assert dossier.next_step == ""
+    for section in (
+        "family", "money", "active_deals", "attendance", "signals", "objections",
+        "chronology", "interests", "pains",
+    ):
+        assert getattr(dossier, section) == ()
 
 
 def test_manager_dossier_reuses_normalized_event_brand_when_identity_has_none(tmp_path: Path) -> None:
@@ -322,6 +362,51 @@ def test_manager_dossier_excludes_ambiguous_calls(tmp_path: Path) -> None:
     )
     assert summary["full_dossier_segment_total"] == 1
     assert summary["customers"] == 1
+
+
+def test_manager_chronology_excludes_ambiguous_client_messages(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        for event_type, source_system, source_id in (
+            (TimelineEventType.TELEGRAM_MESSAGE, "wappi_telegram", "ambiguous-wappi"),
+            (TimelineEventType.EMAIL_MESSAGE, "mail_archive_stage2", "ambiguous-email"),
+        ):
+            store.upsert_event(TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=event_type,
+                event_at=NOW + timedelta(minutes=1),
+                source_system=source_system,
+                source_id=source_id,
+                direction=TimelineDirection.INBOUND,
+                summary=f"Чужая неоднозначная история {source_id}.",
+                match_status="ambiguous",
+                created_at=NOW + timedelta(minutes=1),
+            ))
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.TELEGRAM_MESSAGE,
+            event_at=NOW + timedelta(minutes=2),
+            source_system="wappi_telegram",
+            source_id="manual-wappi",
+            direction=TimelineDirection.INBOUND,
+            summary="Ручная подтверждённая история.",
+            match_status="manual",
+            created_at=NOW + timedelta(minutes=2),
+        ))
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        )
+    chronology = "\n".join(row.text for row in dossier.chronology)
+    assert "Чужая неоднозначная история" not in chronology
+    assert "Ручная подтверждённая история" in chronology
 
 
 def test_manager_outreach_eligibility_blocks_safety_risks(tmp_path: Path) -> None:
@@ -672,10 +757,96 @@ def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tm
         )
 
 
+def test_manager_dossier_workbook_batches_tasks_and_detects_unselected_task_id_poison(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = _timeline_db(tmp_path)
+    selected_customer_ids = ("customer:a",) + tuple(
+        f"customer:batch-{index:02d}" for index in range(8)
+    )
+    for customer_id in (*selected_customer_ids, "customer:poison"):
+        _seed_owner50_member(
+            db,
+            tmp_path,
+            family_id=f"family:{customer_id}",
+            customer_id=customer_id,
+            signal_type="callback_due",
+        )
+    with sqlite3.connect(db) as con:
+        row = con.execute(
+            "SELECT event_id,record_json FROM timeline_events "
+            "WHERE customer_id='customer:poison' AND event_type='amo_task'"
+        ).fetchone()
+        record = json.loads(row[1])
+        record["record"]["provenance"]["task_id"] = "task-customer:a"
+        con.execute(
+            "UPDATE timeline_events SET source_id=?,source_ref=?,record_json=? WHERE event_id=?",
+            (
+                "task-customer:a",
+                "amo:task:task-customer:a",
+                json.dumps(record, ensure_ascii=False),
+                row[0],
+            ),
+        )
+        con.commit()
+
+    queries: list[str] = []
+    original_connect_ro = manager_dossier_module._connect_ro
+
+    def traced_connect_ro(path: Path) -> sqlite3.Connection:
+        con = original_connect_ro(path)
+        con.set_trace_callback(
+            lambda sql: queries.append(sql)
+            if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+            else None
+        )
+        return con
+
+    monkeypatch.setattr(manager_dossier_module, "_connect_ro", traced_connect_ro)
+    out = tmp_path / ".codex_local" / "manager_action_batch.xlsx"
+    summary = build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        customer_ids=selected_customer_ids,
+        enforce_freshness=False,
+    )
+
+    assert summary["customers"] == len(selected_customer_ids)
+    normalized_queries = [" ".join(sql.upper().split()) for sql in queries]
+    assert sum(
+        "ROW_NUMBER() OVER" in sql and "TIMELINE_EVENTS AS TASK" in sql
+        for sql in normalized_queries
+    ) == 1
+    assert sum(
+        "COUNT(*) AS GLOBAL_TASK_ID_COUNT" in sql and "GROUP BY TASK.SOURCE_ID" in sql
+        for sql in normalized_queries
+    ) == 1
+    first_customer_rows = list(
+        load_workbook(out, read_only=True)["Клиент 1"].iter_rows(values_only=True)
+    )
+    action_status = next(row for row in first_customer_rows if row[0] == "Статус действия")
+    assert action_status[2] == "duplicate_task_id"
+    assert not any(row[0] == "Кандидат действия (REVIEW)" for row in first_customer_rows)
+
+
 def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
     _seed_full_dossier_tables(db)
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+    assert dossier.family[0].source == 'family_links_v1:["customer:1","child:1"]'
+    assert {row.source for row in dossier.money} == {
+        'customer_purchases_v1:["customer:1","all_time","fact"]',
+        'customer_purchases_v1:["customer:1","all_time","plan"]',
+    }
+    assert dossier.signals[0].source == 'derived_signals:["signal:1"]'
+    assert dossier.objections[0].source == (
+        'customer_objections_v1:["customer:1","event:email","price"]'
+    )
+    assert all(row.source.startswith("timeline_events:[") for row in dossier.chronology)
     reconcile = tmp_path / ".codex_local" / "reconcile.json"
     reconcile.parent.mkdir(parents=True)
     reconcile.write_text(
@@ -709,8 +880,9 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     assert summary["money_rows_total"] == 2
     assert summary["signals_total"] == 1
     assert summary["objections_total"] == 1
-    assert summary["next_step_rows_total"] == 1
-    assert summary["missing_next_step_rows_total"] == 0
+    assert summary["next_step_rows_total"] == 0
+    assert summary["missing_next_step_rows_total"] == 1
+    assert summary["manager_action_readiness_counts"] == {"review": 1}
     wb = load_workbook(out, read_only=True)
     values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
     joined = "\n".join(str(cell) for row in values for cell in row if cell)
@@ -722,7 +894,12 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     assert "списания/расход" in joined
     assert "возвраты/исход" not in joined
     assert "сделка зависла" in joined
-    assert ("Следующий шаг", "Позвонить в понедельник по оплате", "Сигнал Customer Timeline") in values
+    assert (
+        "Следующий шаг",
+        "Не определён: менеджеру нужно выбрать действие после проверки истории.",
+        "Требует решения менеджера",
+    ) in values
+    assert any(row[0] == "Сигналы" and "Позвонить в понедельник" in str(row[1]) for row in values)
     assert values[0] == ("Раздел", "Значение", "Откуда")
     assert "family_links_v1" not in joined
     assert "derived_signals" not in joined
@@ -841,7 +1018,7 @@ def test_manager_dossier_omits_generic_history_next_step(tmp_path: Path) -> None
     assert "Посмотреть историю" not in joined
 
 
-def test_manager_dossier_prefers_resolved_active_timeline_step(tmp_path: Path) -> None:
+def test_manager_dossier_keeps_call_next_step_informational_not_ready(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
     _seed_full_dossier_tables(db)
@@ -874,10 +1051,887 @@ def test_manager_dossier_prefers_resolved_active_timeline_step(tmp_path: Path) -
     with sqlite3.connect(db) as con:
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
-    assert dossier.next_step.startswith("Отправить материалы клиенту (")
-    assert dossier.next_step_source == "timeline_events"
-    assert dossier.action_status == "active"
-    assert dossier.no_action_reason_code == ""
+    assert dossier.next_step == ""
+    assert dossier.next_step_source == ""
+    assert dossier.action_status == "needs_manager_review"
+    assert dossier.manager_action.readiness_state == "review"
+    assert "amo_task_missing" in dossier.manager_action.readiness_reason_codes
+
+
+def test_manager_action_ready_only_from_exact_open_amo_task(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    event_id, opportunity_id = _seed_manager_amo_task(db, tmp_path)
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    action = dossier.manager_action
+    assert action.status == "active"
+    assert action.readiness_state == "ready"
+    assert action.action == "Позвонить и согласовать расписание"
+    assert action.responsible_ref == "amo:user:17"
+    assert action.due_at == (NOW + timedelta(days=1)).isoformat()
+    assert action.action_provenance == {
+        "customer_id": "customer:1",
+        "event_id": event_id,
+        "event_at": (NOW + timedelta(minutes=1)).isoformat(),
+        "source_system": "amocrm_snapshot",
+        "task_id": "task-1",
+        "lead_id": "lead-1",
+        "opportunity_id": opportunity_id,
+    }
+    assert dossier.next_step == action.action
+    assert dossier.next_step_source == "amo_task:task-1"
+
+
+def test_dossier_projects_only_exact_active_deals_and_past_attendance(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton",
+            customer_id="customer:1",
+            link_type=IdentityLinkType.AMO_LEAD_ID,
+            link_value="lead-1",
+            source_system="amocrm_snapshot",
+            source_ref="amo:lead:lead-1",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+        ))
+        for source_id, event_at in (
+            ("attendance-past", NOW - timedelta(days=1)),
+            ("attendance-future", NOW + timedelta(days=1)),
+        ):
+            store.upsert_event(TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=event_at,
+                source_system="tallanto_attendance_api",
+                source_id=source_id,
+                direction=TimelineDirection.SYSTEM,
+                subject="Математика",
+                summary="Посещение занятия",
+                match_status="strong_unique",
+                created_at=NOW,
+            ))
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+            event_at=NOW - timedelta(hours=1),
+            source_system="tallanto_attendance_api",
+            source_id="attendance-ambiguous",
+            direction=TimelineDirection.SYSTEM,
+            subject="Чужое неоднозначное занятие",
+            summary="Не должно стать фактом.",
+            match_status="ambiguous",
+            created_at=NOW,
+        ))
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        )
+        attendance_event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE source_id='attendance-past'"
+        ).fetchone()[0]
+
+    assert len(dossier.active_deals) == 1
+    assert dossier.active_deals[0].source.startswith("customer_opportunities:")
+    assert "Летняя школа" in dossier.active_deals[0].text
+    assert len(dossier.attendance) == 1
+    assert dossier.attendance[0].source == f'timeline_events:["{attendance_event_id}"]'
+    assert "Запись Tallanto о занятии: Математика" in dossier.attendance[0].text
+    assert "Чужое неоднозначное" not in dossier.attendance[0].text
+    assert all("2026-07-04" not in row.text for row in dossier.chronology)
+
+
+def test_call_quality_opt_out_hint_does_not_become_durable_contact_ban(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.MANGO_CALL,
+            event_at=NOW + timedelta(minutes=2),
+            source_system="mango_processed_summary",
+            source_id="outbound-live-opt-out",
+            direction=TimelineDirection.OUTBOUND,
+            summary="Итог звонка сохранён в структурном анализе.",
+            record={
+                "call": {
+                    "analysis_json": {
+                        "quality_flags": {
+                            "transcript_quality_reason_codes": [
+                                "transcript_live_evidence",
+                                "safeguard_live_opt_out",
+                            ],
+                        },
+                    },
+                },
+            },
+            match_status="strong_unique",
+            created_at=NOW + timedelta(minutes=2),
+        ))
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.next_step == "Позвонить и согласовать расписание"
+    assert dossier.manager_action.readiness_state == "ready"
+    assert "durable_opt_out" not in dossier.manager_action.readiness_reason_codes
+
+
+def test_full_wappi_message_opt_out_beyond_preview_blocks_action(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    preview = "Обсуждение программы. " * 12
+    full_text = preview + " Всё понятно. Пожалуйста, больше не пишите."
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.TELEGRAM_MESSAGE,
+            event_at=NOW + timedelta(minutes=2),
+            source_system="wappi_telegram",
+            source_id="long-wappi-opt-out",
+            direction=TimelineDirection.INBOUND,
+            text_preview=preview[:240],
+            summary=preview[:240],
+            record={"message": {"text": full_text}},
+            match_status="strong_unique",
+            created_at=NOW + timedelta(minutes=2),
+        ))
+
+    with sqlite3.connect(db) as con:
+        action = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.reason == "durable_opt_out"
+    assert action.action == ""
+
+
+def test_direct_contact_opt_out_blocks_ready_action_only_after_cutoff(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.TELEGRAM_MESSAGE,
+            event_at=NOW + timedelta(minutes=10),
+            source_system="wappi_telegram",
+            source_id="direct-opt-out",
+            direction=TimelineDirection.INBOUND,
+            text_preview="Пожалуйста, больше не пишите.",
+            match_status="strong_unique",
+            created_at=NOW + timedelta(minutes=10),
+        ))
+
+    with sqlite3.connect(db) as con:
+        before = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+        after = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=15),
+        )
+
+    assert before.manager_action.readiness_state == "ready"
+    assert after.manager_action.readiness_state == "review"
+    assert after.manager_action.reason == "durable_opt_out"
+    assert after.manager_action.action == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("Прошу больше со мной не связываться.", True),
+        ("Спасибо, но больше не звоните.", True),
+        ("Не хочу получать рассылку.", True),
+        ("Перестаньте мне писать.", True),
+        ("Мы уже занимаемся в другом месте, не пишите нам.", True),
+        ("Больше мне не звоните.", True),
+        ("Просьба не звонить.", True),
+        ("Не надо больше писать нам.", True),
+        ("Не нужно мне больше звонить.", True),
+        ("Удалите меня из рассылки.", True),
+        ("Удалите мои данные.", True),
+        ("Мы сейчас не занимаемся, не пишите нам больше.", True),
+        ("Сегодня уехали, больше не звоните нам никогда.", True),
+        ("Сейчас не звоните. Вообще больше не звоните.", True),
+        ("Менеджер сказал, что скидок нет, больше не звоните.", True),
+        ("Оператор просил уточнить, удалите меня из рассылки.", True),
+        ("Сотрудник написал вам вчера, я не хочу больше получать рассылку.", True),
+        ("Не звоните, я сейчас на работе.", False),
+        ("Сегодня не звоните, вообще неудобно говорить.", False),
+        ("Не звоните сейчас, я вообще занят до вечера.", False),
+        ("Не звоните сегодня, я сама напишу завтра.", False),
+        ("Пока не пишите, я вернусь через неделю.", False),
+        ("Не звоните до 15 сентября, я напишу сама.", False),
+        ("Менеджер сказал: «больше не звоните», но я хочу продолжить.", False),
+    ),
+)
+def test_explicit_contact_opt_out_requires_direct_durable_request(
+    text: str,
+    expected: bool,
+) -> None:
+    assert event_has_explicit_contact_opt_out({
+        "direction": "inbound",
+        "event_type": "wappi_message",
+        "source_system": "wappi_telegram",
+        "text_preview": text,
+    }) is expected
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ("email_message", "telegram_message", "whatsapp_message", "max_message", "web_chat_message"),
+)
+def test_contact_opt_out_supports_all_canonical_direct_message_types(event_type: str) -> None:
+    assert event_has_explicit_contact_opt_out({
+        "direction": "inbound",
+        "event_type": event_type,
+        "source_system": "canonical_channel",
+        "text_preview": "Прошу не беспокоить.",
+    })
+
+
+def test_contact_opt_out_does_not_infer_from_amo_note_or_call() -> None:
+    for event_type in ("amo_note", "mango_call", "call_transcript", "call_analysis"):
+        assert not event_has_explicit_contact_opt_out({
+            "direction": "inbound",
+            "event_type": event_type,
+            "source_system": "internal_or_call",
+            "text_preview": "Менеджер записал: клиент просил не звонить.",
+        })
+
+
+@pytest.mark.parametrize("task_state", ("review", "missing"))
+def test_durable_opt_out_suppresses_review_task_and_surfaces_without_task(
+    tmp_path: Path,
+    task_state: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    if task_state == "review":
+        event_id, _ = _seed_manager_amo_task(db, tmp_path)
+        with sqlite3.connect(db) as con:
+            stored = json.loads(con.execute(
+                "SELECT record_json FROM timeline_events WHERE event_id=?",
+                (event_id,),
+            ).fetchone()[0])
+            stored["record"].pop("complete_till", None)
+            con.execute(
+                "UPDATE timeline_events SET record_json=? WHERE event_id=?",
+                (json.dumps(stored, ensure_ascii=False), event_id),
+            )
+            con.commit()
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:1",
+            event_type=TimelineEventType.TELEGRAM_MESSAGE,
+            event_at=NOW + timedelta(minutes=2),
+            source_system="wappi_telegram",
+            source_id=f"direct-opt-out-{task_state}",
+            direction=TimelineDirection.INBOUND,
+            text_preview="Прошу больше со мной не связываться.",
+            match_status="strong_unique",
+            created_at=NOW + timedelta(minutes=2),
+        ))
+
+    with sqlite3.connect(db) as con:
+        action = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.reason == "durable_opt_out"
+    assert "durable_opt_out" in action.readiness_reason_codes
+    assert action.action == ""
+    assert action.responsible_ref == ""
+    assert action.due_at == ""
+
+
+def test_structured_identity_contact_ban_blocks_ready_action(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        record = json.loads(con.execute(
+            "SELECT record_json FROM customer_identities WHERE customer_id='customer:1'"
+        ).fetchone()[0])
+        record.setdefault("metadata", {})["do_not_contact"] = True
+        con.execute(
+            "UPDATE customer_identities SET record_json=?,updated_at=? WHERE customer_id='customer:1'",
+            (json.dumps(record, ensure_ascii=False), NOW.isoformat()),
+        )
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.manager_action.readiness_state == "review"
+    assert dossier.manager_action.reason == "durable_opt_out"
+    assert dossier.manager_action.action == ""
+
+
+def test_current_structured_contact_ban_blocks_even_if_identity_changed_after_cutoff(
+    tmp_path: Path,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        record = json.loads(con.execute(
+            "SELECT record_json FROM customer_identities WHERE customer_id='customer:1'"
+        ).fetchone()[0])
+        record.setdefault("metadata", {})["do_not_contact"] = True
+        con.execute(
+            "UPDATE customer_identities SET record_json=?,updated_at=? WHERE customer_id='customer:1'",
+            (json.dumps(record, ensure_ascii=False), (NOW + timedelta(days=30)).isoformat()),
+        )
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.manager_action.reason == "durable_opt_out"
+    assert dossier.manager_action.action == ""
+
+
+def test_current_family_snapshot_propagates_durable_contact_ban(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_customer(CustomerIdentity(
+            tenant_id="foton",
+            customer_id="customer:family-opt-out",
+            identity_status=IdentityStatus.STRONG,
+            display_name="Член семьи",
+            metadata={"do_not_contact": True},
+        ))
+    materialized_at = NOW + timedelta(days=30)
+    with sqlite3.connect(db) as con:
+        con.executemany(
+            """
+            INSERT OR REPLACE INTO family_members_v1
+            (tenant_id,family_id,customer_id,membership_status,confidence,reason,
+             created_at,updated_at,record_hash,record_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                ("foton", "family:safety", "customer:1", "confident", "high", "fixture",
+                 materialized_at.isoformat(), materialized_at.isoformat(), "hash:root", "{}"),
+                ("foton", "family:safety", "customer:family-opt-out", "confident", "high", "fixture",
+                 materialized_at.isoformat(), materialized_at.isoformat(), "hash:member", "{}"),
+            ),
+        )
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.manager_action.reason == "durable_opt_out"
+    assert dossier.manager_action.action == ""
+
+
+@pytest.mark.parametrize("location", ("record", "metadata"))
+def test_structured_contact_allowed_boolean_false_blocks_ready_action(
+    tmp_path: Path,
+    location: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        record = json.loads(con.execute(
+            "SELECT record_json FROM customer_identities WHERE customer_id='customer:1'"
+        ).fetchone()[0])
+        if location == "metadata":
+            record.setdefault("metadata", {})["contact_allowed"] = False
+        else:
+            record["contact_allowed"] = False
+        con.execute(
+            "UPDATE customer_identities SET record_json=?,updated_at=? WHERE customer_id='customer:1'",
+            (json.dumps(record, ensure_ascii=False), NOW.isoformat()),
+        )
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.manager_action.reason == "durable_opt_out"
+    assert dossier.manager_action.action == ""
+
+
+def test_manager_action_uses_exact_task_and_deal_cutoff(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        before_task = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW,
+        )
+        con.execute(
+            "UPDATE customer_opportunities SET status='closed',closed_at=? WHERE source_id='lead-1'",
+            ((NOW + timedelta(minutes=10)).isoformat(),),
+        )
+        before_close = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+        after_close = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=15),
+        )
+
+    assert before_task.manager_action.reason == "amo_task_missing"
+    assert before_task.manager_action.action == ""
+    assert before_close.manager_action.readiness_state == "ready"
+    assert after_close.manager_action.readiness_state == "review"
+    assert "task_opportunity_not_active" in after_close.manager_action.readiness_reason_codes
+
+
+def test_manager_action_accepts_exact_lead_link_without_first_seen_at(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET first_seen_at=NULL "
+            "WHERE tenant_id='foton' AND link_type='amo_lead_id' AND link_value='lead-1'"
+        )
+        con.commit()
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.active_deals
+    assert dossier.manager_action.readiness_state == "ready"
+    assert dossier.manager_action.action == "Позвонить и согласовать расписание"
+
+
+def test_manager_action_rejects_lead_link_with_invalid_first_seen_at(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET first_seen_at='not-a-date' "
+            "WHERE tenant_id='foton' AND link_type='amo_lead_id' AND link_value='lead-1'"
+        )
+        con.commit()
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.active_deals == ()
+    assert dossier.manager_action.reason == "task_lead_owner_missing"
+    assert dossier.manager_action.action == ""
+
+
+@pytest.mark.parametrize("action", ("Сделать что-нибудь сегодня", "Уточнить интерес к"))
+def test_manager_action_vague_or_incomplete_task_is_review(tmp_path: Path, action: str) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path, action=action)
+
+    with sqlite3.connect(db) as con:
+        resolved = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert resolved.readiness_state == "review"
+    assert "task_action_not_concrete" in resolved.readiness_reason_codes
+
+
+def test_manager_action_rejects_task_id_duplicated_cross_source_for_another_customer(
+    tmp_path: Path,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    event_id, _opportunity_id = _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            """
+            INSERT INTO timeline_events
+            (event_id,dedupe_key,tenant_id,customer_id,opportunity_id,event_type,event_at,
+             source_system,source_id,source_ref,direction,match_status,content_key,superseded_by,
+             confidence,importance,subject,text_preview,summary,created_at,record_hash,record_json)
+            SELECT 'event:duplicate-task-poison','dedupe:duplicate-task-poison',tenant_id,
+                   'customer:foreign',opportunity_id,event_type,event_at,'foreign_amo_task_owner',source_id,
+                   source_ref,direction,match_status,NULL,superseded_by,confidence,importance,
+                   subject,text_preview,summary,created_at,'hash:duplicate-task-poison',record_json
+            FROM timeline_events WHERE event_id=?
+            """,
+            (event_id,),
+        )
+        con.commit()
+        action = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.readiness_state == "review"
+    assert "duplicate_task_id" in action.readiness_reason_codes
+    assert action.action == ""
+    assert action.action_provenance == {}
+
+
+def test_manager_action_ignores_duplicate_task_created_after_cutoff(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    event_id, _opportunity_id = _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            """
+            INSERT INTO timeline_events
+            (event_id,dedupe_key,tenant_id,customer_id,opportunity_id,event_type,event_at,
+             source_system,source_id,source_ref,direction,match_status,content_key,superseded_by,
+             confidence,importance,subject,text_preview,summary,created_at,record_hash,record_json)
+            SELECT 'event:future-duplicate-task','dedupe:future-duplicate-task',tenant_id,
+                   'customer:foreign',opportunity_id,event_type,?,'foreign_amo_task_owner',source_id,
+                   source_ref,direction,match_status,NULL,superseded_by,confidence,importance,
+                   subject,text_preview,summary,created_at,'hash:future-duplicate-task',record_json
+            FROM timeline_events WHERE event_id=?
+            """,
+            ((NOW + timedelta(days=1)).isoformat(), event_id),
+        )
+        con.commit()
+        action = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.readiness_state == "ready"
+    assert "duplicate_task_id" not in action.readiness_reason_codes
+
+
+def test_manager_action_rejects_amo_lead_owned_by_foreign_customer(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET customer_id='customer:foreign' "
+            "WHERE tenant_id='foton' AND link_type='amo_lead_id' AND link_value='lead-1'"
+        )
+        con.commit()
+        action = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.reason == "task_lead_owner_foreign"
+    assert action.action == ""
+    assert action.action_provenance == {}
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db, allowed_root=tmp_path)
+    ) as api:
+        api_action = api.customer_profile(
+            "foton", "customer:1", as_of=NOW + timedelta(minutes=5),
+        )["manager_projection"]["manager_action"]
+    assert api_action["reason"] == "task_lead_owner_foreign"
+    assert api_action["action"] == ""
+
+
+@pytest.mark.parametrize(
+    ("status", "closed_at", "expected_state", "expected_reason"),
+    (
+        ("123456", None, "ready", ""),
+        ("142", None, "review", "task_opportunity_not_active"),
+        ("143", None, "review", "task_opportunity_not_active"),
+        ("123456", NOW, "review", "task_opportunity_not_active"),
+        ("not_open", None, "review", "task_opportunity_status_missing"),
+    ),
+)
+def test_manager_action_uses_exact_real_amo_status_contract(
+    tmp_path: Path,
+    status: str,
+    closed_at: datetime | None,
+    expected_state: str,
+    expected_reason: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE customer_opportunities SET status=?,closed_at=? WHERE source_id='lead-1'",
+            (status, closed_at.isoformat() if closed_at else None),
+        )
+        con.commit()
+        action = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.readiness_state == expected_state
+    if expected_reason:
+        assert expected_reason in action.readiness_reason_codes
+    else:
+        assert action.readiness_reason_codes == ()
+
+
+@pytest.mark.parametrize("poison", ("foreign_customer", "weak_match", "task_id_mismatch"))
+def test_unsafe_manager_action_candidate_is_redacted_everywhere(
+    tmp_path: Path,
+    poison: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    event_id, opportunity_id = _seed_manager_amo_task(
+        db,
+        tmp_path,
+        provenance_task_id="foreign-task" if poison == "task_id_mismatch" else None,
+    )
+    with sqlite3.connect(db) as con:
+        if poison == "foreign_customer":
+            con.execute(
+                "UPDATE customer_opportunities SET customer_id='customer:foreign' WHERE opportunity_id=?",
+                (opportunity_id,),
+            )
+        elif poison == "weak_match":
+            con.execute("UPDATE timeline_events SET match_status='ambiguous' WHERE event_id=?", (event_id,))
+        con.commit()
+        action = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.readiness_state == "review"
+    assert action.action == ""
+    assert action.responsible_ref == ""
+    assert action.responsible_name == ""
+    assert action.due_at == ""
+    assert action.action_provenance == {}
+    assert action.owner_provenance == {}
+    assert action.due_provenance == {}
+
+    out = tmp_path / ".codex_local" / f"manager_action_{poison}.xlsx"
+    build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        customer_ids=("customer:1",),
+        enforce_freshness=False,
+    )
+    workbook_rows = list(load_workbook(out, read_only=True)["Клиент 1"].iter_rows(values_only=True))
+    assert not any(row[0] == "Кандидат действия (REVIEW)" for row in workbook_rows)
+    assert next(row for row in workbook_rows if row[0] == "Ответственный")[1] == "Не доказан"
+    assert next(row for row in workbook_rows if row[0] == "Срок")[1] == "Не доказан"
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db, allowed_root=tmp_path)
+    ) as api:
+        projected = api.customer_profile(
+            "foton", "customer:1", as_of=NOW + timedelta(minutes=5),
+        )["manager_projection"]["manager_action"]
+    assert projected["action"] == ""
+    assert projected["responsible_name"] == ""
+    assert projected["due_at"] == ""
+    assert projected["action_provenance"] == {}
+
+
+@pytest.mark.parametrize(
+    ("poison", "reason"),
+    (
+        ("completed", "task_completed"),
+        ("unknown_completion", "task_completion_unknown"),
+        ("owner", "task_owner_actor_mismatch"),
+        ("past_due", "task_due_not_future"),
+        ("provenance", "task_id_provenance_mismatch"),
+        ("ambiguous", "task_match_not_strong"),
+        ("superseded", "task_superseded"),
+        ("terminal_deal", "task_opportunity_not_active"),
+        ("blank_status", "task_opportunity_status_missing"),
+        ("unknown_status", "task_opportunity_status_missing"),
+        ("source_ref", "task_source_ref_mismatch"),
+        ("missing_due", "task_due_missing"),
+        ("invalid_due", "task_due_not_absolute"),
+    ),
+)
+def test_manager_action_poison_rows_are_review(
+    tmp_path: Path,
+    poison: str,
+    reason: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    event_id, opportunity_id = _seed_manager_amo_task(
+        db,
+        tmp_path,
+        completed=True if poison == "completed" else "unknown" if poison == "unknown_completion" else False,
+        actor_ref="amo:user:99" if poison == "owner" else None,
+        due=NOW - timedelta(minutes=1) if poison == "past_due" else None,
+        provenance_task_id="task-other" if poison == "provenance" else None,
+        match_status="ambiguous" if poison == "ambiguous" else "strong_unique",
+    )
+    with sqlite3.connect(db) as con:
+        if poison == "superseded":
+            con.execute("UPDATE timeline_events SET superseded_by='event:newer' WHERE event_id=?", (event_id,))
+        if poison == "terminal_deal":
+            con.execute(
+                "UPDATE customer_opportunities SET status='won',closed_at=? WHERE opportunity_id=?",
+                (NOW.isoformat(), opportunity_id),
+            )
+        if poison in {"blank_status", "unknown_status"}:
+            con.execute(
+                "UPDATE customer_opportunities SET status=? WHERE opportunity_id=?",
+                ("" if poison == "blank_status" else "неизвестный этап", opportunity_id),
+            )
+        if poison == "source_ref":
+            con.execute("UPDATE timeline_events SET source_ref='amo:task:foreign' WHERE event_id=?", (event_id,))
+        if poison in {"missing_due", "invalid_due"}:
+            stored = json.loads(con.execute(
+                "SELECT record_json FROM timeline_events WHERE event_id=?", (event_id,),
+            ).fetchone()[0])
+            if poison == "missing_due":
+                stored["record"].pop("complete_till", None)
+            else:
+                stored["record"]["complete_till"] = "завтра"
+            con.execute(
+                "UPDATE timeline_events SET record_json=? WHERE event_id=?",
+                (json.dumps(stored, ensure_ascii=False), event_id),
+            )
+        con.commit()
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.next_step == ""
+    assert dossier.manager_action.readiness_state == "review"
+    assert reason in dossier.manager_action.readiness_reason_codes
+
+
+@pytest.mark.parametrize(
+    ("poison", "reason"),
+    (
+        ("bootstrap", "amo_tasks_cursor_incomplete"),
+        ("last_status", "amo_tasks_cursor_not_ok"),
+        ("foreign_run", "amo_tasks_import_missing"),
+    ),
+)
+def test_manager_action_requires_proven_complete_tasks_read(
+    tmp_path: Path,
+    poison: str,
+    reason: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        if poison in {"bootstrap", "last_status"}:
+            metadata = {
+                "metadata": {
+                    "bootstrap_complete": poison != "bootstrap",
+                    "last_status": "blocked" if poison == "last_status" else "ok",
+                }
+            }
+            con.execute(
+                "UPDATE ingestion_cursors SET metadata_json=? WHERE source_system='amo_tasks_updated_at'",
+                (json.dumps(metadata),),
+            )
+        else:
+            con.execute("UPDATE ingestion_runs SET source_system='foreign_source'")
+        con.commit()
+        action = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.readiness_state == "review"
+    assert reason in action.readiness_reason_codes
+
+
+@pytest.mark.parametrize(
+    ("table", "reason"),
+    (
+        ("ingestion_cursors", "amo_tasks_cursor_stale"),
+        ("ingestion_runs", "amo_tasks_import_stale"),
+    ),
+)
+def test_manager_action_stale_tasks_read_is_review(
+    tmp_path: Path,
+    table: str,
+    reason: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        column = "updated_at" if table == "ingestion_cursors" else "finished_at"
+        con.execute(f"UPDATE {table} SET {column}=?", ((NOW - timedelta(days=3)).isoformat(),))
+        con.commit()
+        dossier = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        )
+
+    assert dossier.manager_action.readiness_state == "review"
+    assert reason in dossier.manager_action.readiness_reason_codes
+
+
+def test_manager_action_selects_nearest_due_then_task_id(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path, task_id="task-z", due=NOW + timedelta(days=2))
+    _seed_manager_amo_task(db, tmp_path, task_id="task-b", due=NOW + timedelta(days=1))
+    _seed_manager_amo_task(db, tmp_path, task_id="task-a", due=NOW + timedelta(days=1))
+
+    with sqlite3.connect(db) as con:
+        action = build_customer_dossier(
+            con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(minutes=5),
+        ).manager_action
+
+    assert action.readiness_state == "ready"
+    assert action.action_provenance["task_id"] == "task-a"
+
+
+def test_manager_workbook_shows_review_candidate_and_russian_reason(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_manager_amo_task(db, tmp_path, completed=True)
+    out = tmp_path / ".codex_local" / "manager_action_review.xlsx"
+
+    build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        customer_ids=("customer:1",),
+        enforce_freshness=False,
+    )
+    values = list(load_workbook(out, read_only=True)["Клиент 1"].iter_rows(values_only=True))
+
+    assert (
+        "Кандидат действия (REVIEW)",
+        "Позвонить и согласовать расписание",
+        "AMO task_id=task-1; lead_id=lead-1",
+    ) in values
+    readiness = next(row for row in values if row[0] == "Готовность")
+    assert readiness[1] == "review"
+    assert readiness[2] == "Проверка AMO Tasks устарела"
+    assert "amo_tasks_cursor_stale" not in readiness[2]
 
 
 def test_manager_dossier_ignores_pending_wappi_attribution(tmp_path: Path) -> None:
@@ -947,8 +2001,9 @@ def test_manager_dossier_does_not_fall_back_to_signal_after_step_closed(tmp_path
 
     assert dossier.next_step == ""
     assert dossier.next_step_source == ""
-    assert dossier.action_status == "closed"
-    assert dossier.no_action_reason_code == "documents_closed_by_later_event"
+    assert dossier.action_status == "needs_manager_review"
+    assert dossier.manager_action.readiness_state == "review"
+    assert "amo_task_missing" in dossier.manager_action.readiness_reason_codes
 
 
 def test_manager_dossier_does_not_show_step_with_open_ambiguous_identity(tmp_path: Path) -> None:
@@ -994,7 +2049,8 @@ def test_manager_dossier_does_not_show_step_with_open_ambiguous_identity(tmp_pat
     assert dossier.next_step == ""
     assert dossier.next_step_source == ""
     assert dossier.action_status == "needs_manager_review"
-    assert dossier.no_action_reason_code == "ambiguous_identity_open"
+    assert dossier.no_action_reason_code == "identity_conflict_open"
+    assert dossier.active_deals == ()
 
 
 def test_manager_dossier_does_not_show_step_with_open_brand_conflict(tmp_path: Path) -> None:
@@ -1021,10 +2077,10 @@ def test_manager_dossier_does_not_show_step_with_open_brand_conflict(tmp_path: P
 
     assert dossier.next_step == ""
     assert dossier.action_status == "needs_manager_review"
-    assert dossier.no_action_reason_code == "ambiguous_identity_open"
+    assert dossier.no_action_reason_code == "identity_conflict_open"
 
 
-def test_manager_freshness_gate_blocks_missing_or_stale_sources() -> None:
+def test_manager_freshness_gate_blocks_stale_amo_and_degrades_missing_mail() -> None:
     rows = [
         {
             "source_system": "amocrm_snapshot",
@@ -1048,35 +2104,67 @@ def test_manager_freshness_gate_blocks_missing_or_stale_sources() -> None:
     assert {item["reason"] for item in gate["blockers"]} == {
         "cursor_incomplete",
         "successful_import_stale",
-        "missing",
     }
-
-
-def test_manager_freshness_gate_blocks_missing_and_future_import_times() -> None:
-    rows = [
-        {
-            "source_system": "wappi_max",
-            "expected": True,
-            "missing": False,
-            "cursor_complete": True,
-            "imported_at": None,
-        },
-        {
-            "source_system": "wappi_telegram",
-            "expected": True,
-            "missing": False,
-            "cursor_complete": True,
-            "imported_at": "2026-07-22T00:06:00+00:00",
-        },
+    assert gate["degraded"] == [
+        {"source_system": "mail_archive_stage2", "reason": "missing"}
     ]
 
-    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    (
+        (
+            {
+                "source_system": "wappi_max",
+                "expected": True,
+                "missing": False,
+                "cursor_complete": True,
+                "imported_at": None,
+            },
+            "successful_import_missing",
+        ),
+        (
+            {
+                "source_system": "wappi_telegram",
+                "expected": True,
+                "missing": False,
+                "cursor_complete": True,
+                "imported_at": "2026-07-22T00:06:00+00:00",
+            },
+            "imported_at_in_future",
+        ),
+        (
+            {
+                "source_system": "wappi_max",
+                "expected": True,
+                "missing": False,
+                "cursor_complete": True,
+                "imported_at": "2026-07-20T00:00:00+00:00",
+            },
+            "successful_import_stale",
+        ),
+    ),
+)
+def test_manager_freshness_gate_degrades_wappi_import_issues(
+    row: dict[str, object], reason: str
+) -> None:
+    gate = manager_freshness_gate([row], now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["degraded"] == [{"source_system": row["source_system"], "reason": reason}]
+
+
+@pytest.mark.parametrize("source", ("mango_processed_summary", "unexpected_expected_source"))
+def test_manager_freshness_gate_keeps_calls_and_unknown_sources_blocking(source: str) -> None:
+    gate = manager_freshness_gate(
+        [{"source_system": source, "expected": True, "missing": True}],
+        now=datetime(2026, 7, 22, tzinfo=timezone.utc),
+    )
 
     assert gate["passed"] is False
-    assert {item["reason"] for item in gate["blockers"]} == {
-        "successful_import_missing",
-        "imported_at_in_future",
-    }
+    assert gate["blockers"] == [{"source_system": source, "reason": "missing"}]
+    assert gate["degraded"] == []
 
 
 def test_manager_freshness_requires_tallanto_payments_and_attendance_data() -> None:
@@ -1118,6 +2206,47 @@ def test_source_freshness_reads_attendance_increment_and_cursor() -> None:
     assert row["imported_at"] == "2026-07-22T00:02:00+00:00"
     assert row["cursor_complete"] is True
     assert row["events"] == 1
+
+
+@pytest.mark.parametrize("include_tasks,expected_complete", [(False, False), (True, True)])
+def test_source_freshness_requires_fourth_amo_tasks_cursor(
+    include_tasks: bool,
+    expected_complete: bool,
+) -> None:
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE timeline_events (tenant_id TEXT, source_system TEXT, event_at TEXT);
+        CREATE TABLE ingestion_cursors (tenant_id TEXT, source_system TEXT, last_cursor_ts TEXT, updated_at TEXT);
+        CREATE TABLE ingestion_runs (tenant_id TEXT, source_system TEXT, source_ref TEXT, run_kind TEXT, status TEXT, finished_at TEXT);
+        INSERT INTO timeline_events VALUES ('foton','amocrm_snapshot','2026-07-21T12:00:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','amo_leads_updated_at','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','amo_contacts_updated_at','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','amo_events_created_at','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','amocrm_snapshot','amocrm:cards','timeline_import','completed','2026-07-22T00:02:00+00:00');
+        """
+    )
+    if include_tasks:
+        con.execute(
+            "INSERT INTO ingestion_cursors VALUES (?,?,?,?)",
+            (
+                "foton",
+                "amo_tasks_updated_at",
+                "2026-07-22T00:00:00+00:00",
+                "2026-07-22T00:01:00+00:00",
+            ),
+        )
+
+    row = next(
+        item
+        for item in source_freshness_rows(con, expected_sources=("amocrm_snapshot",))
+        if item["source_system"] == "amocrm_snapshot"
+    )
+
+    assert row["cursor_complete"] is expected_complete
+    assert ("amo_tasks_updated_at" in row["cursor_sources"]) is include_tasks
+    assert row["imported_at"] == "2026-07-22T00:02:00+00:00"
 
 
 def test_source_freshness_rejects_newer_partial_after_completed_import() -> None:
@@ -1209,7 +2338,7 @@ def test_manager_freshness_gate_does_not_accept_local_amo_reindex() -> None:
     ]
 
 
-def test_manager_freshness_gate_blocks_future_but_accepts_old_contact_after_fresh_scan() -> None:
+def test_manager_freshness_gate_degrades_future_wappi_but_accepts_old_contact_after_fresh_scan() -> None:
     rows = [
         {
             "source_system": "wappi_max",
@@ -1233,7 +2362,11 @@ def test_manager_freshness_gate_blocks_future_but_accepts_old_contact_after_fres
 
     gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
 
-    assert gate["blockers"] == [{"source_system": "wappi_max", "reason": "max_event_at_in_future"}]
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["degraded"] == [
+        {"source_system": "wappi_max", "reason": "max_event_at_in_future"}
+    ]
 
 
 def test_manager_freshness_gate_allows_future_tallanto_business_dates() -> None:
@@ -1457,6 +2590,26 @@ def test_manager_dossier_reads_family_chronology_without_merging_customer_record
                 created_at=NOW,
             )
         )
+        sibling_opportunity = CustomerOpportunity(
+            tenant_id="foton",
+            customer_id="customer:2",
+            opportunity_type=OpportunityType.AMO_DEAL,
+            source_system="amocrm_snapshot",
+            source_id="lead-family-2",
+            title="Физика второго ученика",
+            status="active",
+            opened_at=NOW - timedelta(days=2),
+        )
+        store.upsert_opportunity(sibling_opportunity)
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton",
+            customer_id="customer:2",
+            link_type=IdentityLinkType.AMO_LEAD_ID,
+            link_value="lead-family-2",
+            source_system="amocrm_snapshot",
+            source_ref="amo:lead:lead-family-2",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+        ))
     with sqlite3.connect(db) as con:
         con.execute("DELETE FROM family_members_v1 WHERE tenant_id='foton'")
         con.executemany(
@@ -1486,15 +2639,22 @@ def test_manager_dossier_reads_family_chronology_without_merging_customer_record
                 "2026-05-01", "[]", "computed", "test",
             ),
         )
+        family_event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE source_id='family-mail'"
+        ).fetchone()[0]
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
     chronology = "\n".join(row.text for row in dossier.chronology)
     assert dossier.customer_id == "customer:1"
     assert "второго ребёнка" in chronology
     assert "карточка: Второй ученик" in chronology
-    assert any(row.source.endswith(":customer:2") for row in dossier.chronology)
+    assert f'timeline_events:["{family_event_id}"]' in {row.source for row in dossier.chronology}
     assert any("Второй ученик" in row.text for row in dossier.family)
     assert any("22 222" in row.text and "карточка: Второй ученик" in row.text for row in dossier.money)
+    assert any(
+        "Физика второго ученика" in row.text and "карточка: Второй ученик" in row.text
+        for row in dossier.active_deals
+    )
 
 
 @pytest.fixture
@@ -1528,10 +2688,15 @@ def test_owner50_deduplicates_family_and_uses_best_family_signal(owner50_workboo
     assert rows[1][6] == "customer-b@example.com"
     assert rows[1][7] == "Email"
     assert rows[1][8] == (NOW - timedelta(days=10)).isoformat()
-    assert rows[1][11] == "Проверить историю и написать клиенту."
+    assert rows[1][11] == "Позвонить и согласовать расписание"
     assert rows[1][16] == "tier=0; due=1; fresh_intent=0; specific_offer=1; child_fit=1; payment_history=1"
-    assert "customer:a" in rows[1][-1]
-    assert "customer:b" in rows[1][-1]
+    family_members_index = OWNER50_REQUIRED_COLUMNS.index("Члены семьи")
+    assert "customer:a" in rows[1][family_members_index]
+    assert "customer:b" in rows[1][family_members_index]
+    assert rows[1][OWNER50_REQUIRED_COLUMNS.index("Ответственный задачи")] == "Анна Менеджер"
+    assert rows[1][OWNER50_REQUIRED_COLUMNS.index("Срок задачи")] == (NOW + timedelta(days=1)).isoformat()
+    assert rows[1][OWNER50_REQUIRED_COLUMNS.index("AMO task_id")] == "task-customer:b"
+    assert rows[1][OWNER50_REQUIRED_COLUMNS.index("AMO lead_id")] == "lead-customer:b"
 
 
 def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
@@ -1554,7 +2719,7 @@ def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Pa
     # теперь честно отражает разрешение в known_records, а не просто "поля не пустые" -- у
     # этой READY-семьи signal/event/offer резолвятся в реальные строки БД.
     resolvable_kinds = {row[2] for row in evidence if row[8] is True}
-    assert {"signal", "event", "offer"}.issubset(resolvable_kinds)
+    assert {"signal", "event", "offer", "amo_task"}.issubset(resolvable_kinds)
 
 
 def test_owner50_workbook_has_exactly_five_owner_sheets(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
@@ -1622,7 +2787,7 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         family_id="family:optout",
         customer_id="customer:f",
         signal_type="client_returned",
-        event_summary="Прошу больше со мной не связываться.",
+        event_summary="Пожалуйста, больше не пишите.",
     )
     _seed_owner50_member(
         db,
@@ -1772,6 +2937,10 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         store.close()
     with sqlite3.connect(db) as con:
         con.execute(
+            "UPDATE timeline_events SET event_type='telegram_message', source_system='wappi_telegram' "
+            "WHERE source_id='event-customer:f'"
+        )
+        con.execute(
             "UPDATE family_members_v1 SET membership_status='conflict', confidence='low' WHERE customer_id='customer:d'"
         )
         con.execute(
@@ -1918,6 +3087,51 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
     assert ("family:empty-event", "candidate", "signal_evidence_text_missing") in {row[:3] for row in candidate_rows}
 
 
+def test_owner50_does_not_treat_call_quality_hint_as_contact_ban(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:structured-optout",
+        customer_id="customer:structured-optout",
+        signal_type="client_returned",
+    )
+    with sqlite3.connect(db) as con:
+        stored = json.loads(con.execute(
+            "SELECT record_json FROM timeline_events WHERE source_id='event-customer:structured-optout'"
+        ).fetchone()[0])
+        stored["record"] = {
+            "call": {
+                "analysis_json": {
+                    "quality_flags": {
+                        "transcript_quality_guardrails": {
+                            "reason_codes": ["safeguard_live_opt_out"],
+                        },
+                    },
+                },
+            },
+        }
+        con.execute(
+            "UPDATE timeline_events SET event_type='mango_call', source_system='mango_processed_summary', "
+            "direction='outbound', record_json=? WHERE source_id='event-customer:structured-optout'",
+            (json.dumps(stored, ensure_ascii=False),),
+        )
+        con.commit()
+
+    out = tmp_path / ".codex_local" / "owner50_structured_optout.xlsx"
+    build_owner50_family_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        as_of=NOW,
+        enforce_freshness=False,
+    )
+    workbook = load_workbook(out, read_only=True)
+    excluded = list(workbook["EXCLUDED"].iter_rows(values_only=True))[1:]
+
+    assert not any(row[0] == "family:structured-optout" for row in excluded)
+
+
 def test_owner50_bulk_selection_has_constant_query_count(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     for index in range(20):
@@ -1939,9 +3153,53 @@ def test_owner50_bulk_selection_has_constant_query_count(tmp_path: Path) -> None
         candidates, _ = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert len(candidates) == 20
-    # Conflict ownership is resolved once for the whole batch; the bound must
-    # remain constant as families grow, not exclude the two shared safety queries.
-    assert len(queries) <= 14
+    # Identity, DNC, tasks freshness, tasks and opportunities are each read once for the
+    # batch; strict safety validation must not add one query per family.
+    assert len(queries) <= 30
+
+
+def test_owner50_bulk_rejects_globally_duplicated_task_id_without_n_plus_one(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    for suffix in ("a", "b"):
+        _seed_owner50_member(
+            db,
+            tmp_path,
+            family_id=f"family:{suffix}",
+            customer_id=f"customer:{suffix}",
+            signal_type="callback_due",
+        )
+    with sqlite3.connect(db) as con:
+        row = con.execute(
+            "SELECT event_id,record_json FROM timeline_events "
+            "WHERE customer_id='customer:b' AND event_type='amo_task'"
+        ).fetchone()
+        record = json.loads(row[1])
+        record["record"]["provenance"]["task_id"] = "task-customer:a"
+        con.execute(
+            "UPDATE timeline_events SET source_id=?,source_ref=?,record_json=? WHERE event_id=?",
+            (
+                "task-customer:a",
+                "amo:task:task-customer:a",
+                json.dumps(record, ensure_ascii=False),
+                row[0],
+            ),
+        )
+        con.commit()
+        queries: list[str] = []
+        con.row_factory = sqlite3.Row
+        con.set_trace_callback(
+            lambda sql: queries.append(sql)
+            if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+            else None
+        )
+        ready, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert ready == []
+    assert {
+        ("family:a", "candidate", "duplicate_task_id"),
+        ("family:b", "candidate", "duplicate_task_id"),
+    } <= {row[:3] for row in control}
+    assert len(queries) <= 30
 
 
 def test_owner50_signal_budget_ignores_unlinked_signal_noise(tmp_path: Path, monkeypatch) -> None:
@@ -1997,7 +3255,9 @@ def test_owner50_accepts_only_evidence_backed_brand_child_and_channels(tmp_path:
         # deal_stalling НЕ входит в OWNER50_PRODUCT_OPTIONAL_SIGNALS -- продукт решает
         # READY/CANDIDATE. Требование архитектора #10 (по итогам ревью 25.07): без явных
         # маркеров формата/периода в тексте продукт больше не резолвится догадкой.
-        offer_title="Курс математики 8 класс, онлайн, годовой курс",
+        # Tallanto хранит законченный 8 класс; предложение должно относиться
+        # к следующему учебному классу, то есть к 9.
+        offer_title="Курс математики 9 класс, онлайн, годовой курс",
     )
     _seed_owner50_member(
         db,
@@ -2057,6 +3317,9 @@ def test_owner50_accepts_only_evidence_backed_brand_child_and_channels(tmp_path:
         allowed_root=tmp_path,
         out_xlsx=out,
         as_of=NOW,
+        # Этот тест проверяет brand/child/channel, а не свежесть реального KB.
+        # Фиксированный каталог не даёт тесту протухнуть по календарю.
+        price_axes_catalog=_synthetic_price_axes_catalog(),
         enforce_freshness=False,
     )
     rows = {
@@ -2394,13 +3657,24 @@ def test_owner50_signal_expiry_is_not_manager_due_date(tmp_path: Path) -> None:
             "UPDATE derived_signals SET record_json=? WHERE signal_id=?",
             (json.dumps(record, ensure_ascii=False), signal_row[0]),
         )
+        task_row = con.execute(
+            "SELECT event_id,record_json FROM timeline_events "
+            "WHERE customer_id='customer:no-manager-due' AND event_type='amo_task'",
+        ).fetchone()
+        task_record = json.loads(task_row[1])
+        task_record["record"].pop("complete_till", None)
+        task_record["record"].get("next_step", {}).pop("due", None)
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE event_id=?",
+            (json.dumps(task_record, ensure_ascii=False), task_row[0]),
+        )
         assert signal_row[2]  # срок жизни сигнала остался, но это не deadline менеджера
         con.commit()
         con.row_factory = sqlite3.Row
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert "family:no-manager-due" not in {row["family_id"] for row in candidates}
-    assert ("family:no-manager-due", "candidate", "next_step_missing_or_vague") in {
+    assert ("family:no-manager-due", "candidate", "task_due_missing") in {
         row[:3] for row in control
     }
 
@@ -2546,7 +3820,7 @@ def test_owner50_does_not_retarget_an_older_child_signal_to_a_younger_sibling(tm
     # архитектора #10: продукт больше не резолвится догадкой по каноническим комбинациям.
     _seed_owner50_member(
         db, tmp_path, family_id="family:mixed", customer_id="customer:mixed-a",
-        signal_type="deal_stalling", grade="11",
+        signal_type="deal_stalling", grade="Выпускник",
         offer_title="Курс математики, онлайн, годовой курс",
     )
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
@@ -3359,9 +4633,13 @@ def _owner50_golden_family(**overrides: Any) -> dict[str, Any]:
             "event_id": "evt:signal-golden",
             "source_system": "amocrm_event",
         },
-        "next_step": {
+        "manager_action": {
+            "readiness_state": "ready",
+            "readiness_reason_codes": (),
+            "reason": "",
             "action": "Выполнить обещанный звонок от 22.07, срок сегодня-завтра",
-            "due": "2026-07-25",
+            "due_at": "2026-07-25",
+            "action_provenance": {"task_id": "task:golden", "lead_id": "lead:golden"},
         },
         "product": None,  # callback_due -- продукт не обязателен (OWNER50_PRODUCT_OPTIONAL_SIGNALS)
         "last_objection": None,
@@ -3438,6 +4716,138 @@ def test_graduate_and_younger_sibling_not_excluded_but_all_graduates_are() -> No
     # SQL-предфильтре _owner50_family_rows -- один источник правды на обоих слоях.
     assert graduate_result["status"] == "EXCLUDED"
     assert "grade_11_or_graduate" in graduate_result["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("student_type", "expected"),
+    (
+        ("8_klass", (True, True, False, {9})),
+        ("8 класс", (True, True, False, {9})),
+        ("10_klass", (True, True, False, {11})),
+        ("10 класс", (True, True, False, {11})),
+        ("vypusknik", (True, False, True, set())),
+        ("Выпускник", (True, False, True, set())),
+        ("11_klass", (True, False, False, set())),
+        ("Listener", (True, False, False, set())),
+    ),
+)
+def test_owner50_tallanto_finished_grade_contract(
+    student_type: str,
+    expected: tuple[bool, bool, bool, set[int]],
+) -> None:
+    assert _owner50_tallanto_grade_contract({
+        "record_json": json.dumps({"grades": [student_type]})
+    }) == expected
+
+
+def test_owner50_finished_ten_target_eleven_is_not_graduate() -> None:
+    result = classify_family(
+        _owner50_golden_family(
+            children=[{
+                "child_key": "child:finished-ten",
+                "name": "Игорь",
+                "grade_current": 11,
+                "grade_semantics": "tallanto_finished_grade",
+                "is_graduate": False,
+            }]
+        ),
+        as_of=OWNER50_CLASSIFY_NOW,
+    )
+
+    assert result["status"] == "READY"
+    assert "grade_11_or_graduate" not in result["reasons"]
+
+
+def test_owner50_explicit_graduate_does_not_hide_canonical_younger_sibling() -> None:
+    graduate = {
+        "child_key": "child:graduate",
+        "name": "Игорь",
+        "grade_semantics": "tallanto_finished_grade",
+        "is_graduate": True,
+    }
+    younger = {
+        "child_key": "child:younger",
+        "name": "Соня",
+        "grade_current": 9,
+        "grade_semantics": "tallanto_finished_grade",
+        "is_graduate": False,
+    }
+
+    assert classify_family(
+        _owner50_golden_family(children=[graduate, younger]), as_of=OWNER50_CLASSIFY_NOW,
+    )["status"] == "READY"
+    assert classify_family(
+        _owner50_golden_family(children=[graduate]), as_of=OWNER50_CLASSIFY_NOW,
+    )["status"] == "EXCLUDED"
+
+
+@pytest.mark.parametrize("other_type", ("11_klass", "Listener"))
+def test_owner50_terminal_tallanto_family_is_excluded(
+    tmp_path: Path,
+    other_type: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:terminal", customer_id="customer:terminal-a",
+        signal_type="callback_due", grade="vypusknik",
+    )
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:terminal", customer_id="customer:terminal-b",
+        signal_type="callback_due", grade=other_type,
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET record_json=? WHERE customer_id='customer:terminal-a'",
+            (json.dumps({"grades": ["vypusknik"]}),),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET record_json=? WHERE customer_id='customer:terminal-b'",
+            (json.dumps({"grades": [other_type]}),),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(
+            con,
+            tenant_id="foton",
+            as_of=NOW,
+            family_ids=("family:terminal",),
+            price_axes_catalog=_synthetic_price_axes_catalog(),
+        )
+
+    assert candidates == []
+    assert ("family:terminal", "excluded", "grade_11_or_graduate") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_unknown_tallanto_type_requires_review_without_guessing(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:unknown-grade", customer_id="customer:unknown-grade",
+        signal_type="callback_due", grade="8_klass",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET record_json=? WHERE customer_id='customer:unknown-grade'",
+            (json.dumps({"grades": ["arbitrary_unknown"]}),),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(
+            con,
+            tenant_id="foton",
+            as_of=NOW,
+            family_ids=("family:unknown-grade",),
+            price_axes_catalog=_synthetic_price_axes_catalog(),
+        )
+
+    assert candidates == []
+    assert ("family:unknown-grade", "candidate", "child_grade_unproven") in {
+        row[:3] for row in control
+    }
+    assert ("family:unknown-grade", "excluded", "grade_11_or_graduate") not in {
+        row[:3] for row in control
+    }
 
 
 def test_unknown_brand_is_candidate_conflicting_brand_is_excluded() -> None:
@@ -3544,12 +4954,16 @@ def test_product_must_be_kb_verified_not_from_history() -> None:
         "source_system": "amocrm_event",
     }
     stalling_events = {"evt:deal": {"source_system": "amocrm_event"}}
-    stalling_next_step = {"action": "Вернуться к зависшей сделке: счёт по курсу физики", "due": "2026-07-26"}
+    stalling_manager_action = {
+        **_owner50_golden_family()["manager_action"],
+        "action": "Вернуться к зависшей сделке: счёт по курсу физики",
+        "due_at": "2026-07-26",
+    }
 
     from_history = _owner50_golden_family(
         signal=dict(stalling_signal),
         events_by_id=dict(stalling_events),
-        next_step=dict(stalling_next_step),
+        manager_action=dict(stalling_manager_action),
         product={
             "name": "Курс физики (упомянут в переписке 2024 года)",
             "brand": "foton",
@@ -3564,7 +4978,7 @@ def test_product_must_be_kb_verified_not_from_history() -> None:
     from_kb = _owner50_golden_family(
         signal=dict(stalling_signal),
         events_by_id=dict(stalling_events),
-        next_step=dict(stalling_next_step),
+        manager_action=dict(stalling_manager_action),
         product={
             "name": "Курс физики, 8 класс",
             "brand": "foton",
@@ -3582,7 +4996,7 @@ def test_product_must_be_kb_verified_not_from_history() -> None:
     sold_out = _owner50_golden_family(
         signal=dict(stalling_signal),
         events_by_id=dict(stalling_events),
-        next_step=dict(stalling_next_step),
+        manager_action=dict(stalling_manager_action),
         product={
             "name": "ЛВШ лето-2026",
             "brand": "foton",
@@ -3598,7 +5012,7 @@ def test_product_must_be_kb_verified_not_from_history() -> None:
     wrong_brand = _owner50_golden_family(
         signal=dict(stalling_signal),
         events_by_id=dict(stalling_events),
-        next_step=dict(stalling_next_step),
+        manager_action=dict(stalling_manager_action),
         product={
             "name": "Смена Подлипки (август)",
             "brand": "unpk",
@@ -3878,7 +5292,36 @@ def test_owner50_action_text_combines_action_who_and_deadline() -> None:
     assert "до 2026-07-25" in text
     assert "Родитель Голден" in text
 
-    assert owner50_action_text(_owner50_golden_family(next_step=None)) == ""
+    assert owner50_action_text(_owner50_golden_family(manager_action={})) == ""
+
+
+@pytest.mark.parametrize(
+    ("manager_action", "reason"),
+    (
+        ({}, "amo_task_missing"),
+        (
+            {
+                "readiness_state": "review",
+                "reason": "task_owner_missing",
+                "readiness_reason_codes": ("task_owner_missing",),
+            },
+            "task_owner_missing",
+        ),
+    ),
+)
+def test_owner50_generic_next_step_without_ready_amo_task_stays_candidate(
+    manager_action: Mapping[str, Any], reason: str,
+) -> None:
+    family = _owner50_golden_family(
+        manager_action=manager_action,
+        next_step={"action": "Позвонить клиенту", "due": "2026-07-25"},
+    )
+
+    result = classify_family(family, as_of=OWNER50_CLASSIFY_NOW)
+
+    assert result["status"] == "CANDIDATE"
+    assert reason in result["missing"]
+    assert result["action_text"] == ""
 
 
 def test_owner50_rebuild_is_deterministic_same_rows_and_order(tmp_path: Path) -> None:
@@ -3938,6 +5381,96 @@ def _timeline_db(tmp_path: Path) -> Path:
     return db
 
 
+def _seed_manager_amo_task(
+    db: Path,
+    tmp_path: Path,
+    *,
+    task_id: str = "task-1",
+    due: datetime | None = None,
+    completed: Any = False,
+    action: str = "Позвонить и согласовать расписание",
+    responsible_user_id: str = "17",
+    actor_ref: str | None = None,
+    provenance_task_id: str | None = None,
+    match_status: str = "strong_unique",
+    as_of: datetime = NOW + timedelta(minutes=5),
+) -> tuple[str, str]:
+    due_at = due or NOW + timedelta(days=1)
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            "UPDATE customer_opportunities SET source_system='amocrm_snapshot',status='open',closed_at=NULL "
+            "WHERE customer_id='customer:1' AND source_id='lead-1'"
+        )
+        opportunity_id = str(con.execute(
+            "SELECT opportunity_id FROM customer_opportunities "
+            "WHERE customer_id='customer:1' AND source_id='lead-1'"
+        ).fetchone()["opportunity_id"])
+        con.execute(
+            "INSERT OR REPLACE INTO ingestion_cursors "
+            "(tenant_id,source_system,last_cursor_ts,updated_at,metadata_json) VALUES (?,?,?,?,?)",
+            (
+                "foton", "amo_tasks_updated_at", (as_of - timedelta(minutes=2)).isoformat(),
+                (as_of - timedelta(minutes=1)).isoformat(),
+                json.dumps({"metadata": {"bootstrap_complete": True, "last_status": "ok"}}),
+            ),
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO ingestion_runs
+            (run_id,tenant_id,source_system,source_ref,run_kind,idempotency_key,status,
+             started_at,finished_at,input_hash,accepted_count,rejected_count,output_ref,error,
+             record_hash,record_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "run:amo-tasks", "foton", "amocrm_snapshot", "amocrm:tasks:updated_at",
+                "amo_tasks_incremental", "fixture", "completed",
+                (as_of - timedelta(minutes=3)).isoformat(), (as_of - timedelta(minutes=1)).isoformat(),
+                "fixture", 1, 0, None, None, "fixture", "{}",
+            ),
+        )
+        con.commit()
+    next_step = {"action": action, "due": due_at.isoformat()} if completed is False else None
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        result = store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                opportunity_id=opportunity_id,
+                event_type=TimelineEventType.AMO_TASK,
+                event_at=NOW + timedelta(minutes=1),
+                source_system="amocrm_snapshot",
+                source_id=task_id,
+                source_ref=f"amo:task:{task_id}",
+                direction=TimelineDirection.INTERNAL,
+                actor_name="Анна Менеджер",
+                actor_ref=actor_ref if actor_ref is not None else f"amo:user:{responsible_user_id}",
+                summary="Open AMO task",
+                text_preview=action,
+                record={
+                    "action_text": action,
+                    **({"next_step": next_step} if next_step else {}),
+                    "responsible_user_id": responsible_user_id,
+                    "responsible_user_name": "Анна Менеджер",
+                    "complete_till": due_at.isoformat(),
+                    "completed": completed,
+                    "provenance": {
+                        "task_id": provenance_task_id or task_id,
+                        "entity_type": "leads",
+                        "entity_id": "lead-1",
+                        "opportunity_source_system": "amocrm_snapshot",
+                        "opportunity_source_id": "lead-1",
+                    },
+                },
+                metadata={"actor_role": "manager"},
+                match_status=match_status,
+                created_at=NOW,
+            )
+        )
+    return result.record_id, opportunity_id
+
+
 def _seed_customer_with_call_and_opportunity(db: Path, tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
     try:
@@ -3965,6 +5498,17 @@ def _seed_customer_with_call_and_opportunity(db: Path, tmp_path: Path) -> None:
                 opened_at=NOW,
             )
         )
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton",
+            customer_id="customer:1",
+            link_type=IdentityLinkType.AMO_LEAD_ID,
+            link_value="lead-1",
+            source_system="amocrm_snapshot",
+            source_ref="amo:lead:lead-1",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        ))
         store.upsert_opportunity(
             CustomerOpportunity(
                 tenant_id="foton",
@@ -4096,7 +5640,7 @@ def _seed_owner50_member(
         tenant_id="foton",
         customer_id=customer_id,
         opportunity_type=OpportunityType.AMO_DEAL,
-        source_system="amo",
+        source_system="amocrm_snapshot",
         source_id=f"lead-{customer_id}",
         title=offer_title,
         status="active",
@@ -4122,7 +5666,58 @@ def _seed_owner50_member(
                 store, customer_id=customer_id, display_name=resolved_display_name,
             )
         store.upsert_opportunity(opportunity)
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton",
+            customer_id=customer_id,
+            link_type=IdentityLinkType.AMO_LEAD_ID,
+            link_value=opportunity.source_id,
+            source_system="amocrm_snapshot",
+            source_ref=f"amo:lead:{opportunity.source_id}",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            first_seen_at=NOW - timedelta(days=30),
+            last_seen_at=NOW,
+        ))
         store.upsert_event(event)
+        task_id = f"task-{customer_id}"
+        task_due = NOW + timedelta(days=1)
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                opportunity_id=opportunity.opportunity_id,
+                event_type=TimelineEventType.AMO_TASK,
+                event_at=NOW - timedelta(minutes=2),
+                source_system="amocrm_snapshot",
+                source_id=task_id,
+                source_ref=f"amo:task:{task_id}",
+                direction=TimelineDirection.INTERNAL,
+                actor_name="Анна Менеджер",
+                actor_ref="amo:user:17",
+                summary="Open AMO task",
+                text_preview="Позвонить и согласовать расписание",
+                record={
+                    "action_text": "Позвонить и согласовать расписание",
+                    "next_step": {
+                        "action": "Позвонить и согласовать расписание",
+                        "due": task_due.isoformat(),
+                    },
+                    "responsible_user_id": "17",
+                    "responsible_user_name": "Анна Менеджер",
+                    "complete_till": task_due.isoformat(),
+                    "completed": False,
+                    "provenance": {
+                        "task_id": task_id,
+                        "entity_type": "leads",
+                        "entity_id": opportunity.source_id,
+                        "opportunity_source_system": "amocrm_snapshot",
+                        "opportunity_source_id": opportunity.source_id,
+                    },
+                },
+                metadata={"actor_role": "manager"},
+                match_status="strong_unique",
+                created_at=NOW - timedelta(minutes=2),
+            )
+        )
         store.upsert_signal(
             DerivedSignal(
                 tenant_id="foton",
@@ -4140,6 +5735,30 @@ def _seed_owner50_member(
     finally:
         store.close()
     with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO ingestion_cursors "
+            "(tenant_id,source_system,last_cursor_ts,updated_at,metadata_json) VALUES (?,?,?,?,?)",
+            (
+                "foton", "amo_tasks_updated_at", (NOW - timedelta(minutes=2)).isoformat(),
+                (NOW - timedelta(minutes=1)).isoformat(),
+                json.dumps({"metadata": {"bootstrap_complete": True, "last_status": "ok"}}),
+            ),
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO ingestion_runs
+            (run_id,tenant_id,source_system,source_ref,run_kind,idempotency_key,status,
+             started_at,finished_at,input_hash,accepted_count,rejected_count,output_ref,error,
+             record_hash,record_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "run:owner50-amo-tasks", "foton", "amocrm_snapshot", "amocrm:tasks:updated_at",
+                "amo_tasks_incremental", "owner50-fixture", "completed",
+                (NOW - timedelta(minutes=3)).isoformat(), (NOW - timedelta(minutes=1)).isoformat(),
+                "fixture", 1, 0, None, None, "fixture", "{}",
+            ),
+        )
         signal_row = con.execute(
             "SELECT signal_id, record_json FROM derived_signals WHERE customer_id=?",
             (customer_id,),

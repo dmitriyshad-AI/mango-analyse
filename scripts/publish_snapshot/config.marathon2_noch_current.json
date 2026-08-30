@@ -8,6 +8,21 @@
   "backup_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/prod_backups",
   "backup_async_copy_root": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/prod_backups",
   "required_free_copies": 3,
+  "compact_reader_max_bytes": 8589934592,
+  "bot_visibility_policy": {
+    "min_effective_chunks": 1,
+    "max_effective_chunks": 100000,
+    "allowed_effective_pairs": [
+      {
+        "source_system": "customer_purchases_v1",
+        "chunk_type": "purchase_history"
+      },
+      {
+        "source_system": "customer_timeline_bot_safe_summary",
+        "chunk_type": "bot_safe_summary"
+      }
+    ]
+  },
   "ignored_lsof_command_prefixes": [
     "com.apple"
   ],

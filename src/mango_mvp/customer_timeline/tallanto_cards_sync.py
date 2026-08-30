@@ -14,10 +14,16 @@ from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
+    merge_cursor_metadata,
     run_nightly_incremental,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
-from mango_mvp.customer_timeline.tallanto_attendance_import import _api_datetime, _build_tallanto_client
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.tallanto_attendance_import import (
+    _api_datetime,
+    _build_tallanto_client,
+    _parse_tallanto_datetime,
+)
 
 
 # Read-only Tallanto Contact adapter. The first run is complete; later runs
@@ -52,6 +58,7 @@ DEFAULT_SELECT_FIELDS = (
     "assigned_user_id",
     "assigned_user_name",
 )
+_MAX_CURSOR_FUTURE_SKEW = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -241,6 +248,100 @@ def _first_nonempty(raw: Mapping[str, Any], keys: Sequence[str]) -> Optional[str
     return None
 
 
+def _canonical_tallanto_timestamp(value: Optional[str], *, fallback: str) -> str:
+    """Keeps Tallanto wall-clock timestamps timezone-aware before generic ingestion.
+
+    Tallanto returns naive SugarCRM datetimes in Europe/Moscow.  The shared
+    Tallanto parser is the canonical interpretation; serialising its result
+    here prevents the generic incremental loader from treating the same value
+    as UTC and advancing a cursor three hours into the future.
+    """
+    return _parse_tallanto_datetime(value or fallback).isoformat()
+
+
+def _latest_tallanto_snapshot_at(db_path: Path, *, tenant_id: str) -> Optional[datetime]:
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        row = con.execute(
+            "SELECT event_at FROM timeline_events "
+            "WHERE tenant_id=? AND source_system='tallanto_snapshot' "
+            "AND event_type='tallanto_student_snapshot' AND superseded_by IS NULL "
+            "ORDER BY julianday(event_at) DESC LIMIT 1",
+            (tenant_id,),
+        ).fetchone()
+    if not row:
+        return None
+    parsed = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def _repair_proven_future_cursor(
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    source: IncrementalSourceConfig,
+    now: datetime,
+    safety_margin_seconds: int,
+    actor: str,
+) -> Mapping[str, Any]:
+    """Repairs the one known pre-fix timezone cursor from persisted source facts.
+
+    The repair is deliberately narrow: it can only move a cursor that is more
+    than five minutes ahead of the latest persisted Tallanto snapshot, and
+    only when that snapshot itself is not in the future.  Normal cursor
+    monotonicity is untouched.
+    """
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+        existing = store.get_ingestion_cursor(source.tenant_id, source.source_system)
+        if existing is None:
+            return {"applied": False, "reason": "cursor_missing"}
+        latest_event_at = _latest_tallanto_snapshot_at(timeline_db, tenant_id=source.tenant_id)
+        if latest_event_at is None:
+            return {"applied": False, "reason": "no_persisted_tallanto_snapshot"}
+        if latest_event_at - now > _MAX_CURSOR_FUTURE_SKEW:
+            return {
+                "applied": False,
+                "reason": "persisted_tallanto_snapshot_is_future",
+                "latest_event_at": latest_event_at.isoformat(),
+            }
+        if existing.last_cursor_ts - latest_event_at <= _MAX_CURSOR_FUTURE_SKEW:
+            return {"applied": False, "reason": "cursor_consistent_with_persisted_events"}
+        repaired_cursor = latest_event_at - timedelta(seconds=safety_margin_seconds)
+        metadata = merge_cursor_metadata(
+            existing.metadata,
+            source,
+            last_status="timezone_cursor_repaired",
+            last_cursor_ts=repaired_cursor,
+            max_source_ts=latest_event_at,
+        )
+        metadata.update(
+            {
+                "max_source_ts": latest_event_at.isoformat(),
+                "cursor_repair": {
+                    "reason": "legacy_naive_tallanto_datetime_was_interpreted_as_utc",
+                    "previous_cursor_ts": existing.last_cursor_ts.isoformat(),
+                    "repaired_cursor_ts": repaired_cursor.isoformat(),
+                    "evidence_max_event_at": latest_event_at.isoformat(),
+                },
+            }
+        )
+        store.upsert_ingestion_cursor(
+            source.tenant_id,
+            source.source_system,
+            last_cursor_ts=repaired_cursor,
+            metadata=metadata,
+            actor=actor,
+        )
+    return {
+        "applied": True,
+        "reason": "legacy_naive_tallanto_datetime_was_interpreted_as_utc",
+        "previous_cursor_ts": existing.last_cursor_ts.isoformat(),
+        "repaired_cursor_ts": repaired_cursor.isoformat(),
+        "evidence_max_event_at": latest_event_at.isoformat(),
+    }
+
+
 def map_raw_contact_to_snapshot_payload(raw: Mapping[str, Any], *, snapshot_at: str) -> Optional[Mapping[str, Any]]:
     """Adapts one raw Tallanto (SugarCRM-style) Contact record -- as returned
     by TallantoApiClient.get_entry_list(module="Contact") -- into the exact
@@ -288,8 +389,14 @@ def map_raw_contact_to_snapshot_payload(raw: Mapping[str, Any], *, snapshot_at: 
     first_name = _first_nonempty(raw, ("first_name",))
     last_name = _first_nonempty(raw, ("last_name",))
     display_name = " ".join(part for part in (first_name, last_name) if part) or None
-    updated_at = _first_nonempty(raw, ("date_modified",)) or snapshot_at
-    created_at = _first_nonempty(raw, ("date_entered",)) or updated_at
+    updated_at = _canonical_tallanto_timestamp(
+        _first_nonempty(raw, ("date_modified",)),
+        fallback=snapshot_at,
+    )
+    created_at = _canonical_tallanto_timestamp(
+        _first_nonempty(raw, ("date_entered",)),
+        fallback=updated_at,
+    )
     return {
         "tallanto_id": entity_id,
         "display_name": display_name,
@@ -549,6 +656,24 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
     tallanto_ids = [str(row["tallanto_id"]) for row in mapped_rows]
     before_hashes = _tallanto_event_hashes(timeline_db, tenant_id=config.tenant_id, tallanto_ids=tallanto_ids)
 
+    source_config = IncrementalSourceConfig(
+        name="tallanto_cards_daily",
+        source_system=TALLANTO_CARDS_SOURCE_SYSTEM,
+        path=source_path,
+        tenant_id=config.tenant_id,
+        source_ref="tallanto:contacts:daily",
+        normalizer="tallanto_snapshot",
+        # The API already applied the date_modified overlap window.
+        ignore_cursor=True,
+    )
+    cursor_repair = _repair_proven_future_cursor(
+        timeline_db=timeline_db,
+        allowed_root=allowed_root,
+        source=source_config,
+        now=datetime.now(timezone.utc),
+        safety_margin_seconds=config.safety_margin_seconds,
+        actor=config.actor,
+    )
     nightly_config = NightlyIncrementalConfig(
         timeline_db=timeline_db,
         allowed_root=allowed_root,
@@ -556,18 +681,7 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
         journal_path=out_root / "tallanto_cards_sync_journal.jsonl",
         safety_margin_seconds=config.safety_margin_seconds,
         actor=config.actor,
-        sources=(
-            IncrementalSourceConfig(
-                name="tallanto_cards_daily",
-                source_system=TALLANTO_CARDS_SOURCE_SYSTEM,
-                path=source_path,
-                tenant_id=config.tenant_id,
-                source_ref="tallanto:contacts:daily",
-                normalizer="tallanto_snapshot",
-                # The API already applied the date_modified overlap window.
-                ignore_cursor=True,
-            ),
-        ),
+        sources=(source_config,),
     )
     import_started = time.monotonic()
     imported = run_nightly_incremental(nightly_config)
@@ -605,6 +719,7 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
             "unmatched": unmatched,
             "conflict": conflict_count,
             "cursor_time": finished.isoformat() if validation_ok else None,
+            "cursor_repair": cursor_repair,
             "total_pages_read": total_pages,
             "performance": {
                 "mode": mode,

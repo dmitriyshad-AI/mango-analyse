@@ -3,19 +3,33 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, require_timezone
-from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
+from mango_mvp.customer_timeline.next_step_resolver import (
+    resolve_customer_manager_action,
+    resolve_customer_next_step,
+)
 from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.source_policy import (
+    PURCHASE_HISTORY_BOT_TEXT,
+    PURCHASE_HISTORY_CHUNK_TYPE,
+    PURCHASE_HISTORY_SOURCE_SYSTEM,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    UNRESOLVED_CONFLICT_STATUSES,
     customer_timeline_sqlite_safety_contract,
     guard_customer_timeline_sqlite_path,
+)
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    FAMILY_LINK_SCOPE_OUT,
+    family_link_timeline_scope_state,
+    family_timeline_scope_decision,
 )
 
 
@@ -101,7 +115,11 @@ class CustomerTimelineReadApi:
                 "events_without_customer": store_summary.get("soft_integrity", {}).get("events_without_customer", 0),
                 "event_customer_missing": store_summary.get("soft_integrity", {}).get("event_customer_missing", 0),
                 "bot_chunks_blocked_for_bot": store_summary.get("soft_integrity", {}).get("bot_chunks_blocked_for_bot", 0),
-                "open_conflicts": recent_conflicts["summary"]["open_conflicts"],
+                "open_conflicts": self._count(
+                    "timeline_conflicts",
+                    "tenant_id = ? AND status IN (?, ?)",
+                    (tenant, *sorted(UNRESOLVED_CONFLICT_STATUSES)),
+                ),
                 "recent_ingestion_runs": len(recent_runs["items"]),
             },
             "store": store_summary,
@@ -121,12 +139,21 @@ class CustomerTimelineReadApi:
         cursor: Optional[str] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
-        result = self.store.list_customers(
-            tenant,
-            q=q,
-            identity_status=identity_status,
-            updated_since=updated_since,
-            limit=bounded_limit(limit, default=50, max_limit=200),
+        page_limit = bounded_limit(limit, default=50, max_limit=200)
+        result = _operational_visible_page(
+            fetch_page=lambda page_cursor: self.store.list_customers(
+                tenant,
+                q=q,
+                identity_status=identity_status,
+                updated_since=updated_since,
+                limit=max(page_limit, 50),
+                cursor=page_cursor,
+            ),
+            customer_id_of=lambda item: str(item.get("customer_id") or ""),
+            out_of_scope_for_customer_ids=lambda customer_ids: (
+                self._operational_out_of_scope_customer_ids(tenant, customer_ids)
+            ),
+            limit=page_limit,
             cursor=cursor,
         )
         return {
@@ -147,6 +174,7 @@ class CustomerTimelineReadApi:
         event_limit: int = 25,
         bot_context_limit: int = 25,
         include_children: bool = True,
+        as_of: Optional[datetime] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
         customer = self.store.get_customer(tenant, customer_id)
@@ -181,6 +209,7 @@ class CustomerTimelineReadApi:
             tenant,
             customer["customer_id"],
             allowed_only=False,
+            as_of=as_of,
             limit=bounded_limit(bot_context_limit, default=25, max_limit=200),
         )
         conflicts = self.list_conflicts(tenant, customer_id=customer["customer_id"], limit=100)
@@ -215,7 +244,16 @@ class CustomerTimelineReadApi:
             readiness=readiness,
             conflicts=conflicts["items"],
             customer_id=customer["customer_id"],
-        ).to_json_dict()
+        ).to_informational_json_dict()
+        manager_action = asdict(
+            resolve_customer_manager_action(
+                self.store._con,  # noqa: SLF001 - the read facade owns this read-only connection.
+                tenant_id=tenant,
+                customer_id=customer["customer_id"],
+                as_of=as_of or self.store._clock(),  # noqa: SLF001 - one store clock owns the cutoff.
+            )
+        )
+        manager_action["readiness_reason_codes"] = list(manager_action["readiness_reason_codes"])
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "endpoint": "GET /customer",
@@ -234,6 +272,7 @@ class CustomerTimelineReadApi:
                 opportunities=opportunities,
                 events=events["items"],
                 next_step_resolution=next_step_resolution,
+                manager_action=manager_action,
             ),
             "timeline": {
                 **events,
@@ -316,28 +355,41 @@ class CustomerTimelineReadApi:
         customer_id: str,
         *,
         allowed_only: bool = True,
+        as_of: Optional[datetime] = None,
         limit: int = 50,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
         normalized_customer_id = require_text(customer_id, "customer_id")
-        clauses = ["tenant_id = ?"]
-        params: list[Any] = [tenant]
+        evaluated_at = as_of or self.store._clock()  # noqa: SLF001 - one store clock owns the read cutoff.
+        require_timezone(evaluated_at, "as_of")
+        out_of_scope = (
+            allowed_only
+            and normalized_customer_id
+            in self._operational_out_of_scope_customer_ids(tenant, (normalized_customer_id,))
+        )
+        allowed_clauses = ["tenant_id = ?"]
+        allowed_params: list[Any] = [tenant]
+        self.store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
+            allowed_clauses,
+            allowed_params,
+            tenant_id=tenant,
+            customer_id=normalized_customer_id,
+            opportunity_id=None,
+            since=None,
+            until=evaluated_at,
+            allowed_for_bot=True,
+        )
         if allowed_only:
-            self.store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
-                clauses,
-                params,
-                customer_id=normalized_customer_id,
-                opportunity_id=None,
-                since=None,
-                until=None,
-                allowed_for_bot=True,
-            )
+            clauses = list(allowed_clauses)
+            params = list(allowed_params)
         else:
+            clauses = ["tenant_id = ?"]
+            params = [tenant]
             clauses.append("customer_id = ?")
             params.append(normalized_customer_id)
         page_limit = bounded_limit(limit, default=50, max_limit=200)
         raw_limit = min(page_limit * 4, 500) if allowed_only else page_limit
-        raw_items = self._records(
+        raw_items = [] if out_of_scope else self._records(
             "bot_context_chunks",
             " AND ".join(clauses),
             tuple(params),
@@ -346,18 +398,9 @@ class CustomerTimelineReadApi:
         )
         visible_items = _dedupe_bot_context_items(raw_items)[:page_limit] if allowed_only else raw_items
         total_chunks = self._count("bot_context_chunks", "tenant_id = ? AND customer_id = ?", (tenant, normalized_customer_id))
-        allowed_clauses = ["tenant_id = ?"]
-        allowed_params: list[Any] = [tenant]
-        self.store._append_chunk_filters(  # noqa: SLF001 - summary uses the same bot-safe boundary.
-            allowed_clauses,
-            allowed_params,
-            customer_id=normalized_customer_id,
-            opportunity_id=None,
-            since=None,
-            until=None,
-            allowed_for_bot=True,
+        allowed_chunks = 0 if out_of_scope else self._count(
+            "bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params)
         )
-        allowed_chunks = self._count("bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params))
         review_required_chunks = self._count(
             "bot_context_chunks",
             "tenant_id = ? AND customer_id = ? AND requires_manager_review = 1",
@@ -368,9 +411,12 @@ class CustomerTimelineReadApi:
             "endpoint": "GET /customer/bot-context",
             "tenant_id": tenant,
             "customer_id": customer_id,
+            "as_of": evaluated_at.isoformat(),
             "allowed_only": allowed_only,
+            "out_of_scope": out_of_scope,
             "items": [project_bot_context(item, audience="bot" if allowed_only else "ui") for item in visible_items],
             "summary": {
+                "out_of_scope": out_of_scope,
                 "visible_chunks": len(visible_items),
                 "total_chunks": total_chunks,
                 "allowed_chunks": allowed_chunks,
@@ -389,19 +435,32 @@ class CustomerTimelineReadApi:
         customer_id: Optional[str] = None,
         scopes: Sequence[str] = ("events", "bot_context", "signals"),
         allowed_for_bot: Optional[bool] = None,
+        as_of: Optional[datetime] = None,
         limit: int = 25,
         cursor: Optional[str] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
+        evaluated_at = as_of or self.store._clock()  # noqa: SLF001 - one store clock owns the read cutoff.
+        require_timezone(evaluated_at, "as_of")
         if allowed_for_bot is True:
             scopes = ("bot_context",)
-        result = self.store.search_timeline(
-            tenant,
-            query,
-            customer_id=customer_id,
-            scopes=scopes,
-            allowed_for_bot=allowed_for_bot,
-            limit=bounded_limit(limit, default=25, max_limit=100),
+        page_limit = bounded_limit(limit, default=25, max_limit=100)
+        result = _operational_visible_page(
+            fetch_page=lambda page_cursor: self.store.search_timeline(
+                tenant,
+                query,
+                customer_id=customer_id,
+                scopes=scopes,
+                allowed_for_bot=allowed_for_bot,
+                until=evaluated_at if allowed_for_bot is True else None,
+                limit=max(page_limit, 50),
+                cursor=page_cursor,
+            ),
+            customer_id_of=search_hit_customer_id,
+            out_of_scope_for_customer_ids=lambda customer_ids: (
+                self._operational_out_of_scope_customer_ids(tenant, customer_ids)
+            ),
+            limit=page_limit,
             cursor=cursor,
         )
         return {
@@ -409,13 +468,97 @@ class CustomerTimelineReadApi:
             "endpoint": "GET /search",
             "tenant_id": tenant,
             "customer_id": customer_id,
+            "as_of": evaluated_at.isoformat(),
             "result": {
                 **result,
-                "items": [project_search_hit(item) for item in result["items"]],
+                "items": [
+                    project_search_hit(item, bot_safe=allowed_for_bot is True)
+                    for item in result["items"]
+                ],
             },
             "redaction": redaction_summary(bot_safe=allowed_for_bot is True),
             "safety": customer_timeline_read_api_safety_contract(),
         }
+
+    def _operational_out_of_scope_customer_ids(
+        self,
+        tenant_id: str,
+        customer_ids: Sequence[str],
+    ) -> frozenset[str]:
+        """Resolve scope only for the requested page/profile, never the whole tenant."""
+        selected_customer_ids = tuple(
+            sorted({str(value) for value in customer_ids if str(value)})
+        )
+        if not selected_customer_ids:
+            return frozenset()
+        tables = {
+            str(row[0])
+            for row in self.store._con.execute(  # noqa: SLF001 - read-only facade schema check.
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('family_members_v1','family_links_v1')"
+            )
+        }
+        if tables != {"family_members_v1", "family_links_v1"}:
+            return frozenset()
+        families_by_customer: dict[str, set[str]] = {}
+        for row in self.store._con.execute(  # noqa: SLF001 - one local read boundary.
+            "SELECT family_id,customer_id FROM family_members_v1 WHERE tenant_id=? "
+            "AND customer_id IN (SELECT value FROM json_each(?))",
+            (tenant_id, json.dumps(selected_customer_ids, ensure_ascii=False)),
+        ):
+            families_by_customer.setdefault(str(row["customer_id"]), set()).add(str(row["family_id"]))
+        selected_family_ids = tuple(
+            sorted({family_id for values in families_by_customer.values() for family_id in values})
+        )
+        if not selected_family_ids:
+            return frozenset()
+        family_customer_ids = tuple(
+            sorted({
+                str(row["customer_id"])
+                for row in self.store._con.execute(  # noqa: SLF001 - indexed family boundary.
+                    "SELECT customer_id FROM family_members_v1 WHERE tenant_id=? "
+                    "AND family_id IN (SELECT value FROM json_each(?))",
+                    (tenant_id, json.dumps(selected_family_ids, ensure_ascii=False)),
+                )
+            })
+        )
+        if not family_customer_ids:
+            return frozenset()
+        states_by_family: dict[str, list[str]] = {}
+        for row in self.store._con.execute(  # noqa: SLF001 - one local read boundary.
+            "SELECT family_id,record_json,grades_json FROM family_links_v1 WHERE tenant_id=? "
+            "AND customer_id IN (SELECT value FROM json_each(?))",
+            (tenant_id, json.dumps(family_customer_ids, ensure_ascii=False)),
+        ):
+            family_id = str(row["family_id"])
+            if family_id not in selected_family_ids:
+                continue
+            try:
+                record = json.loads(str(row["record_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record = {}
+            if not isinstance(record, Mapping):
+                record = {}
+            if not isinstance(record.get("student_types"), list) and not isinstance(record.get("grades"), list):
+                try:
+                    grades = json.loads(str(row["grades_json"] or "[]"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    grades = None
+                if isinstance(grades, list):
+                    record = {**record, "grades": grades}
+            states_by_family.setdefault(family_id, []).append(
+                family_link_timeline_scope_state(record)
+            )
+        excluded: set[str] = set()
+        for customer_id, family_ids in families_by_customer.items():
+            states = [
+                state
+                for family_id in family_ids
+                for state in states_by_family.get(family_id, ())
+            ]
+            if states and family_timeline_scope_decision(states) == FAMILY_LINK_SCOPE_OUT:
+                excluded.add(customer_id)
+        return frozenset(excluded)
 
     def list_conflicts(
         self,
@@ -427,25 +570,30 @@ class CustomerTimelineReadApi:
         limit: int = 50,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
+        normalized_customer_id = require_text(customer_id, "customer_id") if customer_id else None
+        normalized_status = normalize_key(status, "status") if status else None
+        normalized_conflict_type = normalize_key(conflict_type, "conflict_type") if conflict_type else None
         if customer_id:
-            items = list(
+            page_limit = bounded_limit(limit, default=50, max_limit=200)
+            complete_window = list(
                 self.store.list_conflicts_by_customer(
                     tenant,
-                    require_text(customer_id, "customer_id"),
-                    statuses=(status,) if status else (),
-                    conflict_types=(conflict_type,) if conflict_type else (),
-                    limit=bounded_limit(limit, default=50, max_limit=200),
+                    normalized_customer_id,
+                    statuses=(normalized_status,) if normalized_status else (),
+                    conflict_types=(normalized_conflict_type,) if normalized_conflict_type else (),
+                    limit=page_limit + 1,
                 )
             )
+            items = complete_window[:page_limit]
         else:
-            clauses = ["tenant_id = ?"]
+            clauses = ["tenant_id = ?", "json_valid(record_json)"]
             params: list[Any] = [tenant]
-            if status:
+            if normalized_status:
                 clauses.append("status = ?")
-                params.append(normalize_key(status, "status"))
-            if conflict_type:
+                params.append(normalized_status)
+            if normalized_conflict_type:
                 clauses.append("conflict_type = ?")
-                params.append(normalize_key(conflict_type, "conflict_type"))
+                params.append(normalized_conflict_type)
             items = self._records(
                 "timeline_conflicts",
                 " AND ".join(clauses),
@@ -453,20 +601,121 @@ class CustomerTimelineReadApi:
                 order_by="created_at DESC, conflict_id",
                 limit=bounded_limit(limit, default=50, max_limit=200),
             )
+        if normalized_customer_id and len(complete_window) <= page_limit:
+            summary = conflict_summary_from_complete_customer_items(items)
+        else:
+            summary = self._global_conflict_summary(
+                tenant,
+                customer_id=normalized_customer_id,
+                status=normalized_status,
+                conflict_type=normalized_conflict_type,
+            )
+        summary["recent_window"] = {
+            "returned": len(items),
+            "by_type": count_by(items, "conflict_type"),
+            "by_status": count_by(items, "status"),
+            "by_severity": count_by(items, "severity"),
+        }
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "endpoint": "GET /conflicts",
             "tenant_id": tenant,
             "customer_id": customer_id,
             "items": [project_conflict(item) for item in items],
-            "summary": {
-                "total": len(items),
-                "open_conflicts": sum(1 for item in items if item.get("status") == "open"),
-                "by_type": count_by(items, "conflict_type"),
-                "by_status": count_by(items, "status"),
-            },
+            "summary": summary,
             "redaction": redaction_summary(bot_safe=False),
             "safety": customer_timeline_read_api_safety_contract(),
+        }
+
+    def _global_conflict_summary(
+        self,
+        tenant_id: str,
+        *,
+        customer_id: Optional[str],
+        status: Optional[str],
+        conflict_type: Optional[str],
+    ) -> dict[str, Any]:
+        clauses = ["conflict.tenant_id = ?"]
+        params: list[Any] = [tenant_id]
+        if customer_id:
+            refs = self.store.conflict_entity_refs_for_customer(tenant_id, customer_id)
+            clauses.append(
+                "json_valid(conflict.record_json) AND EXISTS ("
+                "SELECT 1 FROM json_each(conflict.record_json, '$.entity_refs') AS ref "
+                "WHERE _mango_canonical_identity_ref(CAST(ref.value AS TEXT)) "
+                "IN (SELECT CAST(value AS TEXT) FROM json_each(?))"
+                ")"
+            )
+            params.append(json.dumps(refs, ensure_ascii=False, separators=(",", ":")))
+        if status:
+            clauses.append("conflict.status = ?")
+            params.append(status)
+        if conflict_type:
+            clauses.append("conflict.conflict_type = ?")
+            params.append(conflict_type)
+        where_sql = " AND ".join(clauses)
+        grouped_rows = self.store._con.execute(  # noqa: SLF001 - one read-only aggregate boundary.
+            f"SELECT conflict.conflict_type, conflict.severity, conflict.status, COUNT(*) AS count, "
+            "SUM(CASE WHEN json_valid(conflict.record_json) THEN 0 ELSE 1 END) AS invalid_count "
+            f"FROM timeline_conflicts AS conflict WHERE {where_sql} "
+            "GROUP BY conflict.conflict_type, conflict.severity, conflict.status",
+            tuple(params),
+        ).fetchall()
+        total = 0
+        open_conflicts = 0
+        malformed_conflict_payload_count = 0
+        by_type: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        by_severity: dict[str, int] = {}
+        open_by_severity: dict[str, int] = {}
+        for item in grouped_rows:
+            count = int(item["count"])
+            conflict_type_key = str(item["conflict_type"] or "unknown")
+            severity_key = str(item["severity"] or "unknown")
+            status_key = str(item["status"] or "unknown")
+            total += count
+            malformed_conflict_payload_count += int(item["invalid_count"] or 0)
+            by_type[conflict_type_key] = by_type.get(conflict_type_key, 0) + count
+            by_status[status_key] = by_status.get(status_key, 0) + count
+            by_severity[severity_key] = by_severity.get(severity_key, 0) + count
+            if status_key in UNRESOLVED_CONFLICT_STATUSES:
+                open_conflicts += count
+                open_by_severity[severity_key] = open_by_severity.get(severity_key, 0) + count
+        if customer_id:
+            affected_customer_count = int(total > 0)
+            open_affected_customer_count = int(open_conflicts > 0)
+        else:
+            ref_rows = self.store._con.execute(  # noqa: SLF001 - exact read-only refs.
+                f"SELECT DISTINCT conflict.status, CAST(ref.value AS TEXT) AS entity_ref "
+                "FROM timeline_conflicts AS conflict "
+                "CROSS JOIN json_each(CASE WHEN json_valid(conflict.record_json) "
+                "THEN conflict.record_json ELSE '{\"entity_refs\":[]}' END, '$.entity_refs') AS ref "
+                f"WHERE {where_sql}",
+                tuple(params),
+            ).fetchall()
+            refs_by_status: dict[str, list[str]] = {}
+            for item in ref_rows:
+                refs_by_status.setdefault(str(item["status"]), []).append(str(item["entity_ref"]))
+            affected_by_status = self.store.conflict_affected_customer_ids_by_status(
+                tenant_id,
+                refs_by_status,
+            )
+            affected_customer_count = len(set().union(*affected_by_status.values())) if affected_by_status else 0
+            open_affected_customer_count = len(
+                set().union(
+                    *(affected_by_status.get(status, frozenset()) for status in UNRESOLVED_CONFLICT_STATUSES)
+                )
+            )
+        return {
+            "total": total,
+            "open_conflicts": open_conflicts,
+            "affected_customer_count": affected_customer_count,
+            "open_affected_customer_count": open_affected_customer_count,
+            "malformed_conflict_payload_count": malformed_conflict_payload_count,
+            "by_type": dict(sorted(by_type.items())),
+            "by_status": dict(sorted(by_status.items())),
+            "by_severity": dict(sorted(by_severity.items())),
+            "open_by_severity": dict(sorted(open_by_severity.items())),
         }
 
     def _tenant_counts(self, tenant_id: str) -> Mapping[str, int]:
@@ -582,6 +831,7 @@ def route_customer_timeline_request(api: CustomerTimelineReadApi, method: str, r
                 required_query(query, "customer_id"),
                 event_limit=query_int(query, "event_limit", 25),
                 bot_context_limit=query_int(query, "bot_context_limit", 25),
+                as_of=parse_datetime(query_scalar(query, "as_of")),
             )
         if route == "/customer/timeline":
             return 200, api.customer_timeline(
@@ -602,6 +852,7 @@ def route_customer_timeline_request(api: CustomerTimelineReadApi, method: str, r
                 required_query(query, "tenant_id"),
                 required_query(query, "customer_id"),
                 allowed_only=query_bool(query, "allowed_only", True),
+                as_of=parse_datetime(query_scalar(query, "as_of")),
                 limit=query_int(query, "limit", 50),
             )
         if route == "/search":
@@ -611,6 +862,7 @@ def route_customer_timeline_request(api: CustomerTimelineReadApi, method: str, r
                 customer_id=query_scalar(query, "customer_id"),
                 scopes=tuple(query_list(query, "scope")) or ("events", "bot_context", "signals"),
                 allowed_for_bot=query_bool_or_none(query, "allowed_for_bot"),
+                as_of=parse_datetime(query_scalar(query, "as_of")),
                 limit=query_int(query, "limit", 25),
             )
         if route == "/conflicts":
@@ -649,15 +901,24 @@ def build_customer_timeline_read_report(
     generated_at: Optional[datetime] = None,
 ) -> Mapping[str, Any]:
     out = guard_customer_timeline_output_path(out_path, config.allowed_root) if out_path else None
+    report_as_of = generated_at or datetime.now(timezone.utc)
     with CustomerTimelineReadApi.open(config) as api:
         report: dict[str, Any] = {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "report_kind": "customer_timeline_read_report",
-            "generated_at": (generated_at or datetime.now(timezone.utc)).isoformat(),
+            "generated_at": report_as_of.isoformat(),
             "health": api.health(),
             "summary": api.summary(tenant_id, recent_limit=limit),
-            "customer_profile": api.customer_profile(tenant_id, customer_id, event_limit=limit) if customer_id else None,
-            "search": api.search(tenant_id, query, customer_id=customer_id, limit=limit) if query else None,
+            "customer_profile": (
+                api.customer_profile(tenant_id, customer_id, event_limit=limit, as_of=report_as_of)
+                if customer_id
+                else None
+            ),
+            "search": (
+                api.search(tenant_id, query, customer_id=customer_id, limit=limit, as_of=report_as_of)
+                if query
+                else None
+            ),
             "safety": customer_timeline_read_api_safety_contract(),
         }
     report["validation_ok"] = bool(report["health"].get("validation_ok")) and bool(report["summary"]["summary"].get("validation_ok"))
@@ -751,6 +1012,30 @@ def count_by(items: Sequence[Mapping[str, Any]], key: str) -> Mapping[str, int]:
     return counts
 
 
+def conflict_summary_from_complete_customer_items(
+    items: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build the exact customer summary after a limit+1 query proved completeness."""
+    by_type = dict(sorted(count_by(items, "conflict_type").items()))
+    by_status = dict(sorted(count_by(items, "status").items()))
+    by_severity = dict(sorted(count_by(items, "severity").items()))
+    open_items = [item for item in items if str(item.get("status") or "unknown") in UNRESOLVED_CONFLICT_STATUSES]
+    open_by_severity = dict(sorted(count_by(open_items, "severity").items()))
+    total = len(items)
+    open_conflicts = len(open_items)
+    return {
+        "total": total,
+        "open_conflicts": open_conflicts,
+        "affected_customer_count": int(total > 0),
+        "open_affected_customer_count": int(open_conflicts > 0),
+        "malformed_conflict_payload_count": 0,
+        "by_type": by_type,
+        "by_status": by_status,
+        "by_severity": by_severity,
+        "open_by_severity": open_by_severity,
+    }
+
+
 def project_customer(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return {
         "customer_id": item.get("customer_id"),
@@ -814,6 +1099,7 @@ def project_manager_projection(
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
     next_step_resolution: Mapping[str, Any] | None = None,
+    manager_action: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     phone_values = sorted(
         {
@@ -851,7 +1137,7 @@ def project_manager_projection(
         if lead_id:
             amo_lead_ids.add(lead_id)
     return {
-        "schema_version": "customer_profile_manager_projection_v1",
+        "schema_version": "customer_profile_manager_projection_v2",
         "audience": "manager_internal",
         "primary_phone": str(customer.get("primary_phone") or ""),
         "primary_email": str(customer.get("primary_email") or ""),
@@ -865,6 +1151,7 @@ def project_manager_projection(
         ],
         "opportunities": [project_opportunity_manager(item) for item in opportunities if item.get("source_system") == "amocrm_snapshot"],
         "next_step_resolution": dict(next_step_resolution or {}),
+        "manager_action": dict(manager_action or {}),
     }
 
 
@@ -986,6 +1273,10 @@ def project_signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[str, Any]:
+    neutral_purchase = audience == "bot" and (
+        item.get("source_system") == PURCHASE_HISTORY_SOURCE_SYSTEM
+        and item.get("chunk_type") == PURCHASE_HISTORY_CHUNK_TYPE
+    )
     payload = {
         "chunk_id": item.get("chunk_id"),
         "customer_id": item.get("customer_id") if audience != "bot" else None,
@@ -993,9 +1284,9 @@ def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[st
         "event_id": item.get("event_id") if audience != "bot" else None,
         "source_system": item.get("source_system"),
         "chunk_type": item.get("chunk_type"),
-        "text": item.get("text"),
-        "summary": item.get("summary"),
-        "event_at": item.get("event_at"),
+        "text": PURCHASE_HISTORY_BOT_TEXT if neutral_purchase else item.get("text"),
+        "summary": PURCHASE_HISTORY_BOT_TEXT if neutral_purchase else item.get("summary"),
+        "event_at": None if neutral_purchase else item.get("event_at"),
         "freshness_score": item.get("freshness_score"),
         "relevance_tags": list(item.get("relevance_tags") or ()),
         "allowed_for_bot": bool(item.get("allowed_for_bot")),
@@ -1078,7 +1369,7 @@ def project_customer_id_mapping(item: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
-def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
+def project_search_hit(item: Mapping[str, Any], *, bot_safe: bool = False) -> Mapping[str, Any]:
     scope = item.get("scope")
     record = item.get("record") or {}
     if scope == "event":
@@ -1092,10 +1383,57 @@ def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return {
         "scope": scope,
         "id": item.get("id"),
-        "event_at": item.get("event_at"),
+        "event_at": (
+            None
+            if bot_safe
+            and scope == "bot_context"
+            and record.get("source_system") == PURCHASE_HISTORY_SOURCE_SYSTEM
+            and record.get("chunk_type") == PURCHASE_HISTORY_CHUNK_TYPE
+            else item.get("event_at")
+        ),
         "record": projected,
-        "highlight": item.get("highlight"),
+        "highlight": None if bot_safe else item.get("highlight"),
     }
+
+
+def _operational_visible_page(
+    *,
+    fetch_page: Callable[[Optional[str]], Mapping[str, Any]],
+    customer_id_of: Callable[[Mapping[str, Any]], str],
+    out_of_scope_for_customer_ids: Callable[[Sequence[str]], frozenset[str]],
+    limit: int,
+    cursor: Optional[str],
+) -> Mapping[str, Any]:
+    """Apply the operational scope before the public page limit and cursor boundary."""
+    visible: list[Mapping[str, Any]] = []
+    page_cursor = cursor
+    while True:
+        page = fetch_page(page_cursor)
+        raw_items = list(page.get("items") or ())
+        out_of_scope = out_of_scope_for_customer_ids(
+            tuple(customer_id_of(item) for item in raw_items)
+        )
+        raw_offset = int(page_cursor or "0")  # fetch_page validates the cursor first.
+        for index, item in enumerate(raw_items):
+            if customer_id_of(item) in out_of_scope:
+                continue
+            visible.append(item)
+            if len(visible) == limit:
+                has_more = index + 1 < len(raw_items) or page.get("next_cursor") is not None
+                return {
+                    **page,
+                    "items": visible,
+                    "next_cursor": str(raw_offset + index + 1) if has_more else None,
+                }
+        next_cursor = page.get("next_cursor")
+        if next_cursor is None:
+            return {**page, "items": visible, "next_cursor": None}
+        page_cursor = str(next_cursor)
+
+
+def search_hit_customer_id(item: Mapping[str, Any]) -> str:
+    record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
+    return str(record.get("customer_id") or "")
 
 
 def first_text(item: Mapping[str, Any], keys: Sequence[str]) -> Optional[str]:

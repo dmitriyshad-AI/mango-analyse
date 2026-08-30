@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -233,6 +234,32 @@ class WappiHistoryMessage:
     @property
     def is_inbound_actionable(self) -> bool:
         return not self.from_me
+
+
+@dataclass(frozen=True)
+class WappiMessagePage:
+    """Strict, privacy-safe normalization result for one Wappi message page."""
+
+    items: tuple[Mapping[str, Any], ...] = ()
+    raw_count: int = 0
+    terminal: bool = False
+    terminal_null: bool = False
+    has_more: bool | None = None
+    pagination_metadata_well_formed: bool = True
+    semantic_signatures: tuple[str, ...] = ()
+    raw_message_ids: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def valid(self) -> bool:
+        return not self.reason
+
+    @property
+    def message_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(item.get("id") or item.get("message_id") or "").strip()
+            for item in self.items
+        )
 
 
 class DraftBotProvider(Protocol):
@@ -658,6 +685,161 @@ def wappi_message_from_raw(profile_id: str, raw: Mapping[str, Any]) -> WappiHist
     )
 
 
+def normalize_wappi_message_page(
+    payload: Any,
+    *,
+    profile_id: str,
+    expected_chat_id: str,
+    require_ready_status: bool = True,
+) -> WappiMessagePage:
+    """Normalize one Wappi page without confusing source duplicates with drift.
+
+    Wappi may return an explicitly terminal ``messages=null`` envelope and may
+    repeat a byte-semantically identical message id inside one page. Both are
+    source shapes, not pagination movement. Missing ids, foreign chat ids, and
+    conflicting payloads for one id remain blocking.
+    """
+
+    expected_chat = str(expected_chat_id or "").strip()
+    if not isinstance(payload, Mapping):
+        return WappiMessagePage(reason="message_payload_not_mapping")
+    pending_envelopes: list[tuple[Mapping[str, Any], bool]] = [(payload, True)]
+    envelopes: list[Mapping[str, Any]] = []
+    visited_envelopes: set[int] = set()
+    row_candidates: list[Any] = []
+    envelope_cycle = False
+    while pending_envelopes:
+        envelope, rows_allowed = pending_envelopes.pop()
+        if id(envelope) in visited_envelopes:
+            envelope_cycle = True
+            continue
+        visited_envelopes.add(id(envelope))
+        envelopes.append(envelope)
+        if rows_allowed:
+            row_candidates.extend(
+                envelope[key] for key in ("messages", "items") if key in envelope
+            )
+        for key in ("data", "meta", "pagination"):
+            if key not in envelope:
+                continue
+            value = envelope[key]
+            if isinstance(value, Mapping):
+                pending_envelopes.append((value, rows_allowed and key == "data"))
+            elif rows_allowed and key == "data":
+                row_candidates.append(value)
+    if envelope_cycle:
+        return WappiMessagePage(reason="message_envelope_cycle")
+    if not row_candidates:
+        return WappiMessagePage(reason="message_list_missing")
+    if len(row_candidates) != 1:
+        return WappiMessagePage(reason="message_list_ambiguous")
+    raw_rows = row_candidates[0]
+    statuses = tuple(
+        status
+        for envelope in envelopes
+        if (status := str(envelope.get("status") or "").strip().casefold())
+    )
+    has_more_values = tuple(
+        envelope["has_more"]
+        for envelope in envelopes
+        if "has_more" in envelope
+    )
+    has_more_flag = (
+        has_more_values[0]
+        if has_more_values and type(has_more_values[0]) is bool
+        else None
+    )
+    pagination_metadata_well_formed = bool(
+        all(type(value) is bool for value in has_more_values)
+        and len(set(has_more_values)) <= 1
+        and len(set(statuses)) <= 1
+    )
+    status = statuses[0] if statuses else ""
+    if not pagination_metadata_well_formed:
+        return WappiMessagePage(reason="message_pagination_metadata_malformed")
+    if require_ready_status and status and status != "done":
+        return WappiMessagePage(reason="message_page_not_ready")
+    terminal = bool(
+        status == "done"
+        and has_more_flag is False
+    )
+    if raw_rows is None:
+        if terminal:
+            return WappiMessagePage(
+                terminal=True,
+                terminal_null=True,
+                has_more=has_more_flag,
+                pagination_metadata_well_formed=pagination_metadata_well_formed,
+            )
+        return WappiMessagePage(reason="message_null_not_terminal")
+    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
+        return WappiMessagePage(reason="message_list_not_sequence")
+
+    rows = tuple(raw_rows)
+    if not all(isinstance(item, Mapping) for item in rows):
+        return WappiMessagePage(raw_count=len(rows), reason="message_row_not_mapping")
+
+    items_by_id: dict[str, Mapping[str, Any]] = {}
+    signatures_by_id: dict[str, str] = {}
+    raw_message_ids: list[str] = []
+    for raw_item in rows:
+        raw = dict(raw_item)
+        message_id = str(raw.get("id") or raw.get("message_id") or "").strip()
+        if not message_id:
+            return WappiMessagePage(raw_count=len(rows), reason="message_id_missing")
+        raw_message_ids.append(message_id)
+        explicit_chat_ids = {
+            str(raw.get(key)).strip()
+            for key in ("chatId", "chat_id")
+            if raw.get(key) not in (None, "")
+        }
+        if expected_chat and any(chat_id != expected_chat for chat_id in explicit_chat_ids):
+            return WappiMessagePage(raw_count=len(rows), reason="message_foreign_chat")
+        if not explicit_chat_ids and expected_chat:
+            return WappiMessagePage(raw_count=len(rows), reason="message_chat_id_missing")
+        parsed = wappi_message_from_raw(profile_id, raw)
+        if parsed is None:
+            return WappiMessagePage(raw_count=len(rows), reason="message_semantic_parse_failed")
+        semantic_payload = {
+            "message_id": parsed.message_id,
+            "chat_id": parsed.chat_id,
+            "text": parsed.text,
+            "message_type": parsed.message_type,
+            "timestamp": parsed.timestamp,
+            "from_me": parsed.from_me,
+            "contact_name": parsed.contact_name,
+            "from_where": parsed.from_where,
+        }
+        semantic_signature = hashlib.sha256(
+            json.dumps(
+                semantic_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        previous_signature = signatures_by_id.get(message_id)
+        if previous_signature is not None:
+            if previous_signature != semantic_signature:
+                return WappiMessagePage(
+                    raw_count=len(rows),
+                    reason="message_duplicate_semantic_conflict",
+                )
+            continue
+        items_by_id[message_id] = raw
+        signatures_by_id[message_id] = semantic_signature
+
+    return WappiMessagePage(
+        items=tuple(items_by_id.values()),
+        raw_count=len(rows),
+        terminal=terminal,
+        has_more=has_more_flag,
+        pagination_metadata_well_formed=pagination_metadata_well_formed,
+        semantic_signatures=tuple(signatures_by_id.values()),
+        raw_message_ids=tuple(raw_message_ids),
+    )
+
+
 class AmoWappiDraftLoop:
     def __init__(
         self,
@@ -897,10 +1079,39 @@ class AmoWappiDraftLoop:
             self.state.save()
         elif manager_edit_count or previous_auth_error_count:
             self.state.save()
-        self._write_heartbeat("stop" if stop_active else "ok", summary)
+        heartbeat_status = "stop" if stop_active else ("degraded" if deferred_fetch_count else "ok")
+        self._write_heartbeat(heartbeat_status, summary)
         return summary
 
     def _iter_dialogs(self, profile: DraftLoopProfile) -> Iterable[Mapping[str, Any]]:
+        dialogs_by_id: dict[str, Mapping[str, Any]] = {}
+
+        def remember_page(payload: Any) -> tuple[tuple[str, ...], bool | None]:
+            if not isinstance(payload, Mapping):
+                raise DraftLoopPaginationChanged("Wappi dialog payload is not an object")
+            status = str(payload.get("status") or "").strip().casefold()
+            dialogs = payload.get("dialogs")
+            if status and status not in {"done", "ok"}:
+                raise DraftLoopPaginationChanged("Wappi dialog page is not ready")
+            has_more = payload.get("has_more") if "has_more" in payload else None
+            if has_more is not None and type(has_more) is not bool:
+                raise DraftLoopPaginationChanged("Wappi dialog pagination metadata is malformed")
+            if not isinstance(dialogs, Sequence) or isinstance(dialogs, (str, bytes, bytearray)):
+                raise DraftLoopPaginationChanged("Wappi dialog list is malformed")
+            page_ids: list[str] = []
+            for dialog in dialogs:
+                if not isinstance(dialog, Mapping):
+                    raise DraftLoopPaginationChanged("Wappi dialog page contains a malformed row")
+                dialog_id = str(dialog.get("id") or "").strip()
+                if not dialog_id:
+                    raise DraftLoopPaginationChanged("Wappi dialog page contains a row without id")
+                previous = dialogs_by_id.get(dialog_id)
+                if previous is not None and dict(previous) != dict(dialog):
+                    raise DraftLoopPaginationChanged("Wappi dialog changed across pages; retry the profile next cycle")
+                dialogs_by_id.setdefault(dialog_id, dialog)
+                page_ids.append(dialog_id)
+            return tuple(page_ids), has_more
+
         configured_limit = int(self.config.chat_limit)
         if configured_limit > 0:
             dialogs_payload = self.wappi_client.list_chats(
@@ -908,15 +1119,15 @@ class AmoWappiDraftLoop:
                 profile_id=profile.profile_id,
                 limit=max(1, min(configured_limit, 100)),
             )
-            dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
-            if isinstance(dialogs, Sequence) and not isinstance(dialogs, (str, bytes, bytearray)):
-                yield from (dialog for dialog in dialogs if isinstance(dialog, Mapping))
+            remember_page(dialogs_payload)
+            yield from dialogs_by_id.values()
             return
         page_limit = 100
         offset = 0
         first_signature: tuple[str, ...] = ()
+        first_has_more: bool | None = None
         previous_anchor = ""
-        dialogs_by_id: dict[str, Mapping[str, Any]] = {}
+        continuation_expected = False
         while True:
             dialogs_payload = self.wappi_client.list_chats(
                 channel=profile.channel,
@@ -924,24 +1135,21 @@ class AmoWappiDraftLoop:
                 limit=page_limit,
                 offset=offset,
             )
-            dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
-            if not isinstance(dialogs, Sequence) or isinstance(dialogs, (str, bytes, bytearray)):
-                return
-            page = [dialog for dialog in dialogs if isinstance(dialog, Mapping)]
-            if not page:
+            page_ids, has_more = remember_page(dialogs_payload)
+            if not page_ids:
+                if has_more is True or continuation_expected:
+                    raise DraftLoopPaginationChanged("Wappi dialog continuation ended before the promised rows")
                 break
-            page_ids = tuple(str(dialog.get("id") or "").strip() for dialog in page)
-            if not all(page_ids):
-                raise DraftLoopPaginationChanged("Wappi dialog page contains a row without id")
             if not first_signature:
                 first_signature = page_ids
+                first_has_more = has_more
             if previous_anchor and previous_anchor not in page_ids:
                 raise DraftLoopPaginationChanged("Wappi dialog pagination boundary changed; retry the profile next cycle")
-            dialogs_by_id.update((dialog_id, dialog) for dialog_id, dialog in zip(page_ids, page))
-            if len(page) < page_limit:
+            if has_more is False or (has_more is None and len(page_ids) < page_limit):
                 break
-            previous_anchor = page_ids[-1]
-            offset += page_limit - 1
+            continuation_expected = has_more is True
+            previous_anchor = page_ids[-1] if len(page_ids) > 1 else ""
+            offset += max(1, len(page_ids) - 1)
         if offset:
             head_payload = self.wappi_client.list_chats(
                 channel=profile.channel,
@@ -949,22 +1157,19 @@ class AmoWappiDraftLoop:
                 limit=page_limit,
                 offset=0,
             )
-            head = head_payload.get("dialogs") if isinstance(head_payload, Mapping) else []
-            head_signature = tuple(
-                str(item.get("id") or "").strip()
-                for item in head
-                if isinstance(item, Mapping)
-            )
-            if head_signature != first_signature:
+            head_signature, head_has_more = remember_page(head_payload)
+            if head_signature != first_signature or head_has_more != first_has_more:
                 raise DraftLoopPaginationChanged("Wappi dialog list changed during pagination; retry next cycle")
         yield from dialogs_by_id.values()
 
     def _fetch_messages(self, profile: DraftLoopProfile, chat_id: str) -> list[WappiHistoryMessage]:
         page_limit = 100
         offset = 0
-        raw_messages: list[Mapping[str, Any]] = []
+        raw_by_id: dict[str, Mapping[str, Any]] = {}
+        semantic_by_id: dict[str, str] = {}
         first_signature: tuple[str, ...] = ()
         previous_anchor = ""
+        continuation_expected = False
         seen_page_signatures: set[tuple[str, ...]] = set()
         key = DraftLoopKey(profile.profile_id, chat_id)
         pair = self.config.pair_for(key)
@@ -982,19 +1187,50 @@ class AmoWappiDraftLoop:
                 order="desc",
                 mark_all=False,
             )
-            page = payload.get("messages") if isinstance(payload, Mapping) else []
-            if not isinstance(page, Sequence) or isinstance(page, (str, bytes, bytearray)):
+            page = normalize_wappi_message_page(
+                payload,
+                profile_id=profile.profile_id,
+                expected_chat_id=chat_id,
+            )
+            if not page.valid:
+                raise DraftLoopPaginationChanged(
+                    f"Wappi message page is invalid ({page.reason}); retry the chat next cycle"
+                )
+            if page.terminal_null and (previous_anchor or continuation_expected):
+                raise DraftLoopPaginationChanged(
+                    "Wappi message pagination lost the overlap anchor; retry the chat next cycle"
+                )
+            if page.terminal_null:
                 break
-            page_rows = [item for item in page if isinstance(item, Mapping)]
-            page_ids = tuple(str(item.get("id") or item.get("message_id") or "").strip() for item in page_rows)
-            if page_rows and (not all(page_ids) or page_ids in seen_page_signatures):
+            page_rows = page.items
+            page_ids = page.message_ids
+            page_signature = page.semantic_signatures
+            if page_rows and page_signature in seen_page_signatures:
                 raise DraftLoopPaginationChanged("Wappi message pagination is not stable; retry the chat next cycle")
             if previous_anchor and previous_anchor not in page_ids:
                 raise DraftLoopPaginationChanged("Wappi message pagination boundary changed; retry the chat next cycle")
-            seen_page_signatures.add(page_ids)
+            if (
+                previous_anchor
+                and set(page_ids).intersection(raw_by_id) != {previous_anchor}
+            ):
+                raise DraftLoopPaginationChanged(
+                    "Wappi message pagination has unexpected overlap; retry the chat next cycle"
+                )
+            seen_page_signatures.add(page_signature)
             if not first_signature:
-                first_signature = page_ids
-            raw_messages.extend(page_rows)
+                first_signature = page_signature
+            for message_id, semantic_signature, raw in zip(
+                page_ids,
+                page.semantic_signatures,
+                page_rows,
+            ):
+                previous_signature = semantic_by_id.get(message_id)
+                if previous_signature is not None and previous_signature != semantic_signature:
+                    raise DraftLoopPaginationChanged(
+                        "Wappi message changed across pages; retry the chat next cycle"
+                    )
+                raw_by_id.setdefault(message_id, raw)
+                semantic_by_id.setdefault(message_id, semantic_signature)
             parsed_page = [wappi_message_from_raw(profile.profile_id, item) for item in page_rows]
             parsed_page = [item for item in parsed_page if item is not None]
             reached_known = any(item.key in processed for item in parsed_page)
@@ -1003,10 +1239,24 @@ class AmoWappiDraftLoop:
                 and parsed_page
                 and min(item.timestamp for item in parsed_page) <= stop_before_ts
             )
-            if len(page_rows) < page_limit or reached_known or reached_start:
+            if reached_known or reached_start or page.terminal:
                 break
-            previous_anchor = page_ids[-1]
-            offset += page_limit - 1
+            if page.has_more is False:
+                raise DraftLoopPaginationChanged(
+                    "Wappi message page is non-terminal despite has_more=false; retry the chat next cycle"
+                )
+            if page.has_more is not True and page.raw_count < page_limit:
+                break
+            if not page.raw_message_ids:
+                raise DraftLoopPaginationChanged("Wappi message page claims more rows but is empty")
+            if page.raw_count < page_limit:
+                previous_anchor = ""
+                continuation_expected = True
+                offset += page.raw_count
+            else:
+                previous_anchor = page.raw_message_ids[-1]
+                continuation_expected = False
+                offset += page_limit - 1
         if offset:
             head_payload = self.wappi_client.get_chat_messages(
                 channel=profile.channel,
@@ -1017,19 +1267,15 @@ class AmoWappiDraftLoop:
                 order="desc",
                 mark_all=False,
             )
-            head = head_payload.get("messages") if isinstance(head_payload, Mapping) else []
-            head_signature = tuple(
-                str(item.get("id") or item.get("message_id") or "").strip()
-                for item in head
-                if isinstance(item, Mapping)
+            head = normalize_wappi_message_page(
+                head_payload,
+                profile_id=profile.profile_id,
+                expected_chat_id=chat_id,
             )
-            if head_signature != first_signature:
+            if not head.valid or head.semantic_signatures != first_signature:
                 raise DraftLoopPaginationChanged("Wappi message list changed during pagination; retry the chat next cycle")
         messages: list[WappiHistoryMessage] = []
-        deduplicated_raw = {
-            str(raw.get("id") or raw.get("message_id") or "").strip(): raw for raw in raw_messages
-        }
-        for raw in deduplicated_raw.values():
+        for raw in raw_by_id.values():
             item = wappi_message_from_raw(profile.profile_id, raw)
             if item is not None:
                 messages.append(item)

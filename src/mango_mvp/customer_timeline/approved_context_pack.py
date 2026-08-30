@@ -469,7 +469,23 @@ def empty_conflicts(tenant_id: str, customer_id: str) -> Mapping[str, Any]:
         "tenant_id": tenant_id,
         "customer_id": customer_id,
         "items": [],
-        "summary": {"total": 0, "open_conflicts": 0, "by_type": {}, "by_status": {}},
+        "summary": {
+            "total": 0,
+            "open_conflicts": 0,
+            "affected_customer_count": 0,
+            "open_affected_customer_count": 0,
+            "malformed_conflict_payload_count": 0,
+            "by_type": {},
+            "by_status": {},
+            "by_severity": {},
+            "open_by_severity": {},
+            "recent_window": {
+                "returned": 0,
+                "by_type": {},
+                "by_status": {},
+                "by_severity": {},
+            },
+        },
     }
 
 

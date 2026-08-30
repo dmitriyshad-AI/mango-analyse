@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,7 +28,9 @@ def _review_db(path: Path) -> sqlite3.Connection:
           canonical_name TEXT, grades_json TEXT, subjects_json TEXT, status TEXT, brand TEXT
         );
         CREATE TABLE family_members_v1 (
-          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT
+          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT,
+          confidence TEXT, reason TEXT, created_at TEXT, updated_at TEXT,
+          record_hash TEXT, record_json TEXT
         );
         CREATE TABLE customer_opportunities (
           tenant_id TEXT, customer_id TEXT, opportunity_id TEXT, title TEXT,
@@ -118,13 +121,14 @@ def test_acceptance_workbook_has_five_raw_review_sheets(tmp_path: Path, monkeypa
     assert "customer_identities" in [value for row in wb["Доказательства"].iter_rows(values_only=True) for value in row]
     assert "conflict:1" in [value for row in wb["Конфликты"].iter_rows(values_only=True) for value in row]
     assert out.stat().st_mode & 0o777 == 0o600
+    assert len(MODULE._ACCEPTANCE_BUSINESS_REVIEW_COLUMNS) == 5
 
 
 def test_acceptance_owner50_keeps_candidate_and_excluded_families() -> None:
     control = [
-        ("family:1", "candidate", "brand_unproven", "Бренд не подтвержден", *("",) * 14),
-        ("family:1", "candidate", "product_missing", "Нет продукта", *("",) * 14),
-        ("family:2", "excluded", "opt_out", "Просили не писать", *("",) * 14),
+        ("family:1", "candidate", "brand_unproven", "Бренд не подтвержден", *("",) * (len(MODULE.OWNER50_CONTROL_COLUMNS) - 4)),
+        ("family:1", "candidate", "product_missing", "Нет продукта", *("",) * (len(MODULE.OWNER50_CONTROL_COLUMNS) - 4)),
+        ("family:2", "excluded", "opt_out", "Просили не писать", *("",) * (len(MODULE.OWNER50_CONTROL_COLUMNS) - 4)),
     ]
 
     rows = MODULE._acceptance_owner50_rows([], control, {"family:1", "family:2"})
@@ -212,10 +216,10 @@ def test_population_is_unique_by_family_and_conflicts_match_exact_refs(tmp_path:
         ("foton", "family:1", "customer:1b", "child:2", "Второй ребёнок", '["6"]', '["физика"]', "confident", "foton"),
     )
     con.executemany(
-        "INSERT INTO family_members_v1 VALUES (?,?,?,?)",
+        "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
         [
-            ("foton", "family:1", "customer:1", "confident"),
-            ("foton", "family:1", "customer:1b", "confident"),
+            ("foton", "family:1", "customer:1", "confident", "high", "test", "2026-07-01", "2026-07-01", "hash:1", "{}"),
+            ("foton", "family:1", "customer:1b", "confident", "high", "test", "2026-07-01", "2026-07-01", "hash:1b", "{}"),
         ],
     )
     con.execute("DELETE FROM timeline_conflicts")
@@ -261,8 +265,8 @@ def test_population_includes_canonical_family_without_child_link(tmp_path: Path)
     con = _review_db(tmp_path / "population-without-child.sqlite")
     con.execute("DELETE FROM family_links_v1")
     con.execute(
-        "INSERT INTO family_members_v1 VALUES (?,?,?,?)",
-        ("foton", "family:without-child", "customer:1", "confident"),
+        "INSERT INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("foton", "family:without-child", "customer:1", "confident", "high", "test", "2026-07-01", "2026-07-01", "hash:without-child", "{}"),
     )
     con.commit()
 
@@ -322,7 +326,7 @@ def test_acceptance_does_not_report_unconfirmed_or_absent_lesson_as_visit(
 
 @pytest.mark.parametrize(
     ("student_type", "expected"),
-    (("Listener", True), ("1_klass", True), ("10_klass", True), ("11_klass", False), ("vypusknik", False)),
+    (("Listener", False), ("1_klass", True), ("10_klass", True), ("11_klass", False), ("vypusknik", False)),
 )
 def test_business_population_is_anchored_in_current_tallanto_students(
     tmp_path: Path,
@@ -339,3 +343,266 @@ def test_business_population_is_anchored_in_current_tallanto_students(
     population = MODULE._dossier_population(con, tenant_id="foton")
 
     assert bool(population) is expected
+
+def test_human_review_active_input_requires_exact_eight_unique_hashes(tmp_path: Path) -> None:
+    rows = [
+        {"customer_sha256": f"{index:064x}", "position": index, "reason_code": "no_explicit_next_step"}
+        for index in range(8)
+    ]
+    path = tmp_path / "exam.json"
+    path.write_text(json.dumps({"cards": {"active_deal_closed_or_empty": rows}}), encoding="utf-8")
+
+    assert len(MODULE._active_no_step_refs(path, expected_count=8)) == 8
+
+    rows[-1]["customer_sha256"] = rows[0]["customer_sha256"]
+    path.write_text(json.dumps({"cards": {"active_deal_closed_or_empty": rows}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE._active_no_step_refs(path, expected_count=8)
+
+
+def _ambiguous_case(index: int) -> dict[str, object]:
+    return {
+        "customer_sha256": f"{index + 1:064x}",
+        "case_event_sha256": f"{1000 + index:064x}",
+        "reason_codes": ["multiple_amo_contacts"],
+        "candidate_amo_contact_sha256s": [f"{2000 + index:064x}"],
+        "candidate_amo_lead_sha256s": [],
+        "resolution_status": "unresolved_no_authoritative_lead",
+        "resolved_amo_lead_sha256": None,
+    }
+
+
+def test_human_review_ambiguous_input_requires_primary_exact_nineteen(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[1]["candidate_amo_contact_sha256s"] = [f"{3001:064x}", f"{3002:064x}"]
+    rows[1]["candidate_amo_lead_sha256s"] = [f"{4001:064x}", f"{4002:064x}"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    refs = MODULE._ambiguous_link_refs(path, expected_count=19)
+    assert len(refs) == 19
+    assert "AMO leads=0" in refs[0]["position"]
+    assert "AMO contacts=2" in refs[1]["position"]
+    assert "AMO leads=2" in refs[1]["position"]
+    assert refs[1]["candidate_amo_contact_sha256s"] == rows[1]["candidate_amo_contact_sha256s"]
+    assert refs[1]["candidate_amo_lead_sha256s"] == rows[1]["candidate_amo_lead_sha256s"]
+    assert refs[1]["resolution_status"] == "unresolved_no_authoritative_lead"
+
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows[:-1]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly 19"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_duplicate_case(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[-1]["case_event_sha256"] = rows[0]["case_event_sha256"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate cases"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_duplicate_customer_and_non_string_hash(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[-1]["customer_sha256"] = rows[0]["customer_sha256"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate customers"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0]["customer_sha256"] = 123
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a SHA256 string"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_raw_amo_ids_and_invalid_candidate_hashes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0]["amo_lead_id"] = "raw-lead-1"
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="only hashed AMO candidates"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+    del rows[0]["amo_lead_id"]
+    rows[0]["candidate_amo_contact_sha256s"] = ["not-a-sha256"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="64-character SHA256"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("reason_codes", ["multiple_amo_contacts:contact_id=123"], "allowed codes"),
+        ("resolution_status", "unresolved:lead_id=456", "allowed code"),
+        ("case_ref", "amo:lead:456", "only hashed AMO candidates"),
+        ("customer_id", "customer:raw", "only hashed AMO candidates"),
+    ),
+)
+def test_human_review_ambiguous_input_rejects_freeform_identity_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0][field] = value
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_unknown_top_level_field(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    path.write_text(json.dumps({
+        "schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA,
+        "rows": rows,
+        "raw_note": "lead_id=456",
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected top-level fields"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_duplicate_candidate_hash(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    candidate = f"{6001:064x}"
+    rows[0]["candidate_amo_lead_sha256s"] = [candidate, candidate]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate SHA256"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_rejects_unresolved_singleton_lead(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    rows[0]["candidate_amo_lead_sha256s"] = [f"{7001:064x}"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="zero or multiple"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+    rows[0]["candidate_amo_lead_sha256s"] = []
+    rows[0]["resolution_status"] = "ambiguous_multiple_authoritative_leads"
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="requires multiple"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_ambiguous_input_allows_resolved_lead_only_for_authoritative_singleton(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    rows = [_ambiguous_case(index) for index in range(19)]
+    resolved = f"{5001:064x}"
+    rows[0].update({
+        "candidate_amo_lead_sha256s": [resolved],
+        "resolution_status": "resolved_authoritative_singleton",
+        "resolved_amo_lead_sha256": resolved,
+    })
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    assert len(MODULE._ambiguous_link_refs(path, expected_count=19)) == 19
+
+    rows[0]["candidate_amo_lead_sha256s"] = [resolved, f"{5002:064x}"]
+    path.write_text(json.dumps({"schema_version": MODULE._AMBIGUOUS_INPUT_SCHEMA, "rows": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="authoritative singleton"):
+        MODULE._ambiguous_link_refs(path, expected_count=19)
+
+
+def test_human_review_workbook_is_one_private_owner_sheet(tmp_path: Path) -> None:
+    out = tmp_path / "human.xlsx"
+    MODULE._write_human_review_workbook(
+        out,
+        [{
+            "Когорта": "8 active/no-step",
+            "customer_id": "customer:1",
+            "Клиент": "Клиент с ПД",
+            "История верна и полна?": "",
+            "Досье экономит время?": "",
+            "Действие верно сейчас?": "",
+        }],
+    )
+
+    wb = load_workbook(out, read_only=True)
+    assert wb.sheetnames == ["Human review"]
+    headers = [cell.value for cell in next(wb["Human review"].iter_rows())]
+    assert "Владелец/семья верны?" in headers
+    assert "История верна и полна?" in headers
+    assert "Досье экономит время?" in headers
+    assert "Действие верно сейчас?" in headers
+    assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_human_review_student_classes_use_current_family_scope_contract(tmp_path: Path) -> None:
+    con = _review_db(tmp_path / "human-review-current-contract.sqlite")
+
+    finished, next_grade, graduate = MODULE._student_classes(
+        con,
+        tenant_id="foton",
+        customer_id="customer:1",
+        as_of=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+
+    assert finished == "8"
+    assert next_grade == "9"
+    assert graduate == "нет"
+
+
+def test_human_review_quarantines_ambiguous_amo_candidates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    con = _review_db(tmp_path / "human-review-ambiguous.sqlite")
+    monkeypatch.setattr(
+        MODULE,
+        "build_customer_dossier",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            display_name="Родитель",
+            phone="+70000000000",
+            email="parent@example.com",
+            brand="foton",
+            family=(),
+            active_deals=(SimpleNamespace(text="Сделка, которую нельзя приписать"),),
+            next_step="Позвонить клиенту",
+            next_step_source="amo_task:1",
+            no_action_reason_code="",
+            chronology=(),
+        ),
+    )
+    contact_sha = "a" * 64
+    lead_sha = "b" * 64
+
+    row = MODULE._human_review_row(
+        con,
+        tenant_id="foton",
+        customer_id="customer:1",
+        cohort="19 AMO ambiguous",
+        selection_source="case",
+        reason="multiple_amo_deals",
+        as_of=datetime(2026, 8, 29, tzinfo=timezone.utc),
+        audit_identity={
+            "resolution_status": "ambiguous_candidate_set",
+            "candidate_amo_contact_sha256s": [contact_sha],
+            "candidate_amo_lead_sha256s": [lead_sha],
+        },
+    )
+
+    assert row["Аудит связи AMO"].startswith("AUDIT_IDENTITY_HOLD")
+    assert contact_sha in row["Кандидаты AMO (SHA256)"]
+    assert lead_sha in row["Кандидаты AMO (SHA256)"]
+    assert row["Активные сделки"] == ""
+    assert row["Следующий шаг"] == ""
+    assert row["Источник шага"] == ""
+    assert row["Ограничение действия"] == "AUDIT_IDENTITY_HOLD"

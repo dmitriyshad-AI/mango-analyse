@@ -91,7 +91,7 @@ def test_expired_fact_is_removed_from_snippet_context() -> None:
         ]
     }
 
-    chunks = _chunk_records(snapshot, active_brand="foton")
+    chunks = _chunk_records(snapshot, active_brand="foton", evaluation_day=date(2026, 8, 13))
 
     assert [chunk["fact_id"] for chunk in chunks] == ["fact:current"]
 
@@ -104,7 +104,7 @@ def test_future_fact_is_removed_from_snippet_context() -> None:
         ]
     }
 
-    chunks = _chunk_records(snapshot, active_brand="foton")
+    chunks = _chunk_records(snapshot, active_brand="foton", evaluation_day=date(2026, 8, 13))
 
     assert [chunk["fact_id"] for chunk in chunks] == ["fact:current"]
 
@@ -113,10 +113,12 @@ def test_expired_fact_is_not_usable_as_precise_answer() -> None:
     assert _usable_for_precise_answer(
         _fact(valid_until="2000-01-01"),
         active_brand="foton",
+        evaluation_day=date(2026, 8, 13),
     ) is False
     assert _usable_for_precise_answer(
         _fact(valid_until="2999-01-01"),
         active_brand="foton",
+        evaluation_day=date(2026, 8, 13),
     ) is True
 
 
@@ -124,8 +126,11 @@ def test_fact_without_expiry_keeps_previous_behavior() -> None:
     assert _chunk_records(
         {"chunks": [_fact(text="Бессрочный факт.")]},
         active_brand="foton",
+        evaluation_day=date(2026, 8, 13),
     )
-    assert _usable_for_precise_answer(_fact(), active_brand="foton") is True
+    assert _usable_for_precise_answer(
+        _fact(), active_brand="foton", evaluation_day=date(2026, 8, 13)
+    ) is True
 
 
 def test_built_chunk_mirrors_fact_validity_window() -> None:

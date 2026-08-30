@@ -85,6 +85,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
@@ -101,6 +102,18 @@ from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
     _connect_ro,
 )
 from mango_mvp.customer_timeline.store import customer_entity_ref_values  # noqa: E402
+from mango_mvp.customer_timeline.tallanto_finished_grade import (  # noqa: E402
+    finished_grade_from_student_type,
+    is_explicit_graduate_student_type,
+    next_grade_from_student_type,
+    student_type_in_timeline_scope,
+)
+from scripts.publish_snapshot.common import (  # noqa: E402
+    classify_publish_worktree_status,
+    git_head,
+    git_status_short,
+    sha256_file,
+)
 
 
 def _short_hash(value: str) -> str:
@@ -354,9 +367,7 @@ def cmd_owner50(args: argparse.Namespace) -> int:
 
 
 CURRENT_TALLANTO_STUDENT_TYPES = frozenset(
-    {"listener", "слушатель"}
-    | {f"{grade}_klass" for grade in range(1, 11)}
-    | {f"{grade} класс" for grade in range(1, 11)}
+    f"{grade}_klass" for grade in range(1, 11)
 )
 
 
@@ -604,6 +615,13 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
 
 
 _ACCEPTANCE_SHEETS = ("Семьи 30", "Хронология", "Доказательства", "Конфликты", "Owner50")
+_ACCEPTANCE_BUSINESS_REVIEW_COLUMNS = (
+    "B1. Полезно без существенной правки (да/нет)",
+    "B2. Секунд до следующего шага",
+    "B3. False READY (да/нет/не READY)",
+    "B4. Критическая ошибка (да/нет)",
+    "B5. Комментарий аудитора",
+)
 
 
 def _write_acceptance_workbook(path: Path, sheets: Mapping[str, tuple[Sequence[str], Sequence[Sequence[Any]]]]) -> None:
@@ -913,7 +931,7 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     owner_headers = list(OWNER50_CONTROL_COLUMNS)
 
     sheets = {
-        "Семьи 30": (("№", "family_id", "customer_id", "Основной контакт (роль не подтверждена)", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий"), families),
+        "Семьи 30": (("№", "family_id", "customer_id", "Основной контакт (роль не подтверждена)", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий", *_ACCEPTANCE_BUSINESS_REVIEW_COLUMNS), families),
         "Хронология": (("family_id", "customer_id", "event_id", "Дата/время", "Тип события", "Источник", "Направление", "Тема", "Краткое содержание", "Полный текст", "source_ref"), chronology),
         "Доказательства": (("family_id", "Тип", "Доказательство", "Точное поле", "Дата", "source_system", "event_id/record_id", "Проверяемо"), evidence),
         "Конфликты": (("family_id", "conflict_id", "Тип", "Критичность", "Статус", "Дата", "Исходная запись", "F1. Статус", "F2. Комментарий"), conflicts),
@@ -944,6 +962,8 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     scrubbed_manifest["owner50_ready_rows"] = status_counts["READY"]
     scrubbed_manifest["owner50_candidate_rows"] = status_counts["CANDIDATE"]
     scrubbed_manifest["owner50_excluded_rows"] = status_counts["EXCLUDED"]
+    scrubbed_manifest["business_review_columns"] = list(_ACCEPTANCE_BUSINESS_REVIEW_COLUMNS)
+    scrubbed_manifest["business_review_status"] = "awaiting_manual_scores"
     scrubbed_manifest["chronology_row_limit_applied"] = False
     (out_root / "acceptance_selection_manifest.json").write_text(
         json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -952,6 +972,440 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     print(f"Scrubbed selection manifest (no PII): {out_root / 'acceptance_selection_manifest.json'}")
     return 0
 
+
+# ---------------------------------------------------------------------------
+# Subcommand: human-review
+# ---------------------------------------------------------------------------
+
+
+_HUMAN_REVIEW_COLUMNS = (
+    "Когорта", "Позиция/источник отбора", "customer_id", "Клиент", "Телефон", "Email", "Бренд",
+    "Дети/семья", "Класс закончен", "Следующий класс", "Статус выпускника",
+    "Аудит связи AMO", "Кандидаты AMO (SHA256)", "Активные сделки", "Следующий шаг", "Источник шага",
+    "Ограничение действия", "Последняя история",
+    "Причина проверки", "Владелец/семья верны?", "История верна и полна?",
+    "Досье экономит время?", "Действие верно сейчас?", "Решение/что исправить",
+)
+_AMBIGUOUS_INPUT_SCHEMA = "customer_timeline_ambiguous_amo_links_v2"
+_AMBIGUOUS_TOP_LEVEL_FIELDS = frozenset({"schema_version", "rows"})
+_AMBIGUOUS_ROW_FIELDS = frozenset({
+    "customer_sha256",
+    "case_event_sha256",
+    "reason_codes",
+    "candidate_amo_contact_sha256s",
+    "candidate_amo_lead_sha256s",
+    "resolution_status",
+    "resolved_amo_lead_sha256",
+})
+_AMBIGUOUS_REASON_CODES = frozenset({
+    "multiple_amo_contacts",
+    "multiple_amo_deals",
+    "contact_customer_unproven",
+    "lead_customer_unproven",
+    "primary_evidence_missing",
+})
+_AMBIGUOUS_RESOLUTION_STATUSES = frozenset({
+    "unresolved_no_authoritative_lead",
+    "ambiguous_multiple_authoritative_leads",
+    "ambiguous_candidate_set",
+    "resolved_authoritative_singleton",
+})
+
+
+def _require_sha256(value: Any, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a SHA256 string")
+    digest = value.strip().lower()
+    if len(digest) != 64 or not all(char in "0123456789abcdef" for char in digest):
+        raise ValueError(f"{field} must be a 64-character SHA256")
+    return digest
+
+
+def _unique_sha256_list(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list of SHA256 values")
+    digests = [_require_sha256(item, field=field) for item in value]
+    if len(digests) != len(set(digests)):
+        raise ValueError(f"{field} contains duplicate SHA256 values")
+    return digests
+
+
+def _write_human_review_workbook(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Human review"
+    ws.append(_HUMAN_REVIEW_COLUMNS)
+    for row in rows:
+        ws.append(tuple(row.get(column, "") for column in _HUMAN_REVIEW_COLUMNS))
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for column in ws.columns:
+        column_letter = column[0].column_letter
+        ws.column_dimensions[column_letter].width = min(
+            70, max(12, *(len(str(cell.value or "")) for cell in column))
+        )
+    wb.save(path)
+    path.chmod(0o600)
+
+
+def _active_no_step_refs(path: Path, *, expected_count: int) -> list[Mapping[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = (((payload.get("cards") or {}).get("active_deal_closed_or_empty")) or [])
+    if len(rows) != expected_count:
+        raise ValueError(f"active-no-step input must contain exactly {expected_count} rows, got {len(rows)}")
+    result = []
+    for row in rows:
+        digest = str(row.get("customer_sha256") or "").strip().lower()
+        if len(digest) != 64 or not all(char in "0123456789abcdef" for char in digest):
+            raise ValueError("active-no-step row is missing exact customer_sha256")
+        result.append({
+            "customer_sha256": digest,
+            "position": row.get("position"),
+            "reason_code": str(row.get("reason_code") or ""),
+        })
+    if len({row["customer_sha256"] for row in result}) != expected_count:
+        raise ValueError("active-no-step input contains duplicate customers")
+    return result
+
+
+def _ambiguous_link_refs(path: Path, *, expected_count: int) -> list[Mapping[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("ambiguous input must be an object")
+    unexpected_top_fields = sorted(set(payload) - _AMBIGUOUS_TOP_LEVEL_FIELDS)
+    if unexpected_top_fields:
+        raise ValueError(
+            "ambiguous input contains unexpected top-level fields: "
+            + ", ".join(unexpected_top_fields)
+        )
+    if payload.get("schema_version") != _AMBIGUOUS_INPUT_SCHEMA:
+        raise ValueError(f"ambiguous input must use schema_version={_AMBIGUOUS_INPUT_SCHEMA}")
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("ambiguous input rows must be a list")
+    if len(rows) != expected_count:
+        raise ValueError(f"ambiguous input must contain exactly {expected_count} AMO cases, got {len(rows)}")
+    result = []
+    customer_digests: set[str] = set()
+    case_event_digests: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("each ambiguous row must be an object")
+        unexpected_fields = sorted(set(row) - _AMBIGUOUS_ROW_FIELDS)
+        if unexpected_fields:
+            raise ValueError(
+                "ambiguous rows may contain only hashed AMO candidates and contract fields; "
+                f"unexpected fields: {', '.join(unexpected_fields)}"
+            )
+
+        customer_sha256 = _require_sha256(
+            row.get("customer_sha256"), field="customer_sha256",
+        )
+        if customer_sha256 in customer_digests:
+            raise ValueError("ambiguous input contains duplicate customers")
+        customer_digests.add(customer_sha256)
+
+        case_event_sha256 = _require_sha256(
+            row.get("case_event_sha256"), field="case_event_sha256",
+        )
+        if case_event_sha256 in case_event_digests:
+            raise ValueError("ambiguous input contains duplicate cases")
+        case_event_digests.add(case_event_sha256)
+
+        reason_codes_raw = row.get("reason_codes")
+        if not isinstance(reason_codes_raw, list) or not reason_codes_raw:
+            raise ValueError("each ambiguous row needs nonempty reason_codes")
+        if any(not isinstance(value, str) for value in reason_codes_raw):
+            raise ValueError("reason_codes must contain strings")
+        reason_codes = [value.strip() for value in reason_codes_raw]
+        if (
+            any(value not in _AMBIGUOUS_REASON_CODES for value in reason_codes)
+            or len(reason_codes) != len(set(reason_codes))
+        ):
+            raise ValueError("reason_codes must contain unique allowed codes")
+
+        contact_candidates = _unique_sha256_list(
+            row.get("candidate_amo_contact_sha256s"), field="candidate_amo_contact_sha256s",
+        )
+        lead_candidates = _unique_sha256_list(
+            row.get("candidate_amo_lead_sha256s"), field="candidate_amo_lead_sha256s",
+        )
+        resolution_status_raw = row.get("resolution_status")
+        if not isinstance(resolution_status_raw, str):
+            raise ValueError("resolution_status must be a string")
+        resolution_status = resolution_status_raw.strip()
+        if resolution_status not in _AMBIGUOUS_RESOLUTION_STATUSES:
+            raise ValueError("resolution_status must use an allowed code")
+        if len(lead_candidates) == 1 and resolution_status != "resolved_authoritative_singleton":
+            raise ValueError("unresolved ambiguous cases must have zero or multiple AMO lead candidates")
+        if resolution_status == "ambiguous_multiple_authoritative_leads" and len(lead_candidates) < 2:
+            raise ValueError("ambiguous_multiple_authoritative_leads requires multiple AMO lead candidates")
+        resolved_raw = row.get("resolved_amo_lead_sha256")
+        resolved_lead = None
+        if resolved_raw is not None:
+            resolved_lead = _require_sha256(resolved_raw, field="resolved_amo_lead_sha256")
+            if (
+                resolution_status != "resolved_authoritative_singleton"
+                or lead_candidates != [resolved_lead]
+            ):
+                raise ValueError(
+                    "resolved AMO lead is allowed only for an authoritative singleton candidate"
+                )
+        elif resolution_status == "resolved_authoritative_singleton":
+            raise ValueError("resolved_authoritative_singleton requires resolved_amo_lead_sha256")
+
+        case_label = f"sha256:{case_event_sha256[:12]}"
+        result.append({
+            "customer_sha256": customer_sha256,
+            "case_event_sha256": case_event_sha256,
+            "candidate_amo_contact_sha256s": contact_candidates,
+            "candidate_amo_lead_sha256s": lead_candidates,
+            "resolution_status": resolution_status,
+            "resolved_amo_lead_sha256": resolved_lead,
+            "position": (
+                f"case={case_label}; AMO contacts={len(contact_candidates)}; "
+                f"AMO leads={len(lead_candidates)}; status={resolution_status}"
+            ),
+            "reason_code": "; ".join(reason_codes),
+        })
+    return result
+
+
+def _resolve_customer_refs(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    refs: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    rows = con.execute(
+        "SELECT customer_id FROM customer_identities WHERE tenant_id=? ORDER BY customer_id",
+        (tenant_id,),
+    ).fetchall()
+    by_digest = {_short_hash(str(row[0])): str(row[0]) for row in rows}
+    by_full_digest = {hashlib.sha256(str(row[0]).encode("utf-8")).hexdigest(): str(row[0]) for row in rows}
+    resolved = []
+    for ref in refs:
+        customer_id = str(ref.get("customer_id") or "").strip()
+        if not customer_id:
+            digest = str(ref.get("customer_sha256") or "").strip().lower()
+            customer_id = by_full_digest.get(digest) or by_digest.get(digest, "")
+        if not customer_id:
+            raise ValueError("customer reference from primary evidence is absent in this exact database")
+        resolved.append({**ref, "customer_id": customer_id})
+    return resolved
+
+
+def _student_classes(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> tuple[str, str, str]:
+    members = _family_scope_customer_ids(
+        con, tenant_id=tenant_id, customer_id=customer_id,
+    )
+    placeholders = ",".join("?" for _ in members)
+    rows = con.execute(
+        f"SELECT json_extract(record_json,'$.record.payload.student_type') AS student_type "
+        f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({placeholders}) "
+        "AND event_type='tallanto_student_snapshot' AND (superseded_by IS NULL OR superseded_by='') "
+        "AND julianday(event_at)<=julianday(?) ORDER BY event_at DESC,event_id DESC",
+        (tenant_id, *members, as_of.isoformat()),
+    ).fetchall()
+    finished: list[int] = []
+    graduate = False
+    for row in rows:
+        value = str(row[0] or "").strip()
+        graduate = graduate or is_explicit_graduate_student_type(value)
+        if student_type_in_timeline_scope(value):
+            grade = finished_grade_from_student_type(value)
+            if grade is not None:
+                finished.append(grade)
+    unique_finished = sorted(set(finished))
+    return (
+        ", ".join(str(grade) for grade in unique_finished),
+        ", ".join(
+            str(next_grade_from_student_type(f"{grade}_klass"))
+            for grade in unique_finished
+        ),
+        "да" if graduate else "нет",
+    )
+
+
+def _human_review_row(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    cohort: str,
+    selection_source: str,
+    reason: str,
+    as_of: datetime,
+    audit_identity: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    dossier = build_customer_dossier(
+        con, tenant_id=tenant_id, customer_id=customer_id, as_of=as_of,
+    )
+    finished_class, next_class, graduate = _student_classes(
+        con, tenant_id=tenant_id, customer_id=customer_id, as_of=as_of,
+    )
+    audit_identity = audit_identity or {}
+    resolution_status = str(audit_identity.get("resolution_status") or "")
+    audit_hold = bool(resolution_status and resolution_status != "resolved_authoritative_singleton")
+    candidate_lines = [
+        *(f"contact:{value}" for value in audit_identity.get("candidate_amo_contact_sha256s") or ()),
+        *(f"lead:{value}" for value in audit_identity.get("candidate_amo_lead_sha256s") or ()),
+    ]
+    active_deals = tuple(getattr(dossier, "active_deals", ()))
+    return {
+        "Когорта": cohort,
+        "Позиция/источник отбора": selection_source,
+        "customer_id": customer_id,
+        "Клиент": dossier.display_name,
+        "Телефон": dossier.phone,
+        "Email": dossier.email,
+        "Бренд": dossier.brand,
+        "Дети/семья": "\n".join(row.text for row in dossier.family),
+        "Класс закончен": finished_class,
+        "Следующий класс": next_class,
+        "Статус выпускника": graduate,
+        "Аудит связи AMO": f"AUDIT_IDENTITY_HOLD: {resolution_status}" if audit_hold else "связь не помечена как спорная",
+        "Кандидаты AMO (SHA256)": "\n".join(candidate_lines),
+        "Активные сделки": "" if audit_hold else "\n".join(row.text for row in active_deals),
+        "Следующий шаг": "" if audit_hold else dossier.next_step,
+        "Источник шага": "" if audit_hold else dossier.next_step_source,
+        "Ограничение действия": "AUDIT_IDENTITY_HOLD" if audit_hold else getattr(dossier, "no_action_reason_code", ""),
+        "Последняя история": "\n".join(row.text for row in dossier.chronology),
+        "Причина проверки": reason,
+    }
+
+
+def cmd_human_review(args: argparse.Namespace) -> int:
+    db = Path(args.db).expanduser()
+    out_root = Path(args.out_root).expanduser()
+    local_dir = out_root / ".codex_local"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_dir.chmod(0o700)
+    run_token = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_xlsx = _guard_local_dossier_output_path(
+        local_dir / f"customer_timeline_human_review_{run_token}.xlsx", out_root,
+    )
+    as_of = datetime.fromisoformat(str(args.as_of).replace("Z", "+00:00")) if args.as_of else datetime.now(timezone.utc)
+    if as_of.tzinfo is None:
+        raise ValueError("--as-of must include timezone")
+
+    manifest: dict[str, Any] = {
+        "schema_version": "customer_timeline_human_review_manifest_v2",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "db": str(db),
+        "data_time": datetime.fromtimestamp(db.stat().st_mtime, timezone.utc).isoformat(),
+        "mode": "read_only_local_private_review",
+        "tenant_id": args.tenant_id,
+        "as_of": as_of.isoformat(),
+        "writes_external_systems": False,
+        "sends_to_clients": False,
+        "current_artifact": None,
+        "blockers": [],
+    }
+    code_sha = git_head(ROOT)
+    worktree = classify_publish_worktree_status(git_status_short(ROOT))
+    manifest.update(code_sha=code_sha, writer_worktree=worktree)
+    if not code_sha or worktree.get("clean_for_publish") is not True:
+        manifest["blockers"].append("human review must be built by one clean exact code SHA")
+    try:
+        active_refs = _active_no_step_refs(Path(args.active_input).expanduser(), expected_count=args.active_count)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        manifest.update(status="human_review_blocked_by_active_input", blockers=[str(exc)])
+        _write_private_text(out_root / "human_review_selection_manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        return 4
+
+    ambiguous_refs: list[Mapping[str, Any]] = []
+    if args.ambiguous_input:
+        try:
+            ambiguous_refs = _ambiguous_link_refs(
+                Path(args.ambiguous_input).expanduser(), expected_count=args.ambiguous_count,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            manifest["blockers"].append(str(exc))
+    else:
+        manifest["blockers"].append(
+            f"exact {args.ambiguous_count} ambiguous AMO cases require primary {_AMBIGUOUS_INPUT_SCHEMA} input"
+        )
+
+    with _connect_ro(db) as con:
+        population = _dossier_population(con, tenant_id=args.tenant_id)
+        diverse = stratified_sample(
+            population,
+            count=args.diverse_count,
+            seed=args.seed,
+            strata_key=lambda row: (
+                row["brand"], row["channel"], row["child_bucket"], row["has_payment"],
+                row["has_conflict"], row["has_signal"], row["has_mail"], row["has_call"], row["has_attendance"],
+            ),
+        )
+        if len(diverse) != args.diverse_count:
+            manifest["blockers"].append(
+                f"diverse cohort requires {args.diverse_count} customers, got {len(diverse)}"
+            )
+        active = _resolve_customer_refs(con, tenant_id=args.tenant_id, refs=active_refs)
+        ambiguous = _resolve_customer_refs(con, tenant_id=args.tenant_id, refs=ambiguous_refs)
+        review_rows: list[Mapping[str, Any]] = []
+        for index, row in enumerate(diverse, start=1):
+            review_rows.append(_human_review_row(
+                con, tenant_id=args.tenant_id, customer_id=str(row["id"]), cohort="10 разнородных",
+                selection_source=str(index), reason="Проверить клиента, историю и пользу досье", as_of=as_of,
+            ))
+        for row in active:
+            review_rows.append(_human_review_row(
+                con, tenant_id=args.tenant_id, customer_id=str(row["customer_id"]), cohort="8 active/no-step",
+                selection_source=str(row.get("position") or ""), reason=str(row.get("reason_code") or ""), as_of=as_of,
+            ))
+        for row in ambiguous:
+            review_rows.append(_human_review_row(
+                con, tenant_id=args.tenant_id, customer_id=str(row["customer_id"]), cohort="19 AMO ambiguous",
+                selection_source=str(row.get("position") or ""), reason=str(row.get("reason_code") or ""), as_of=as_of,
+                audit_identity=row,
+            ))
+
+    _write_human_review_workbook(out_xlsx, review_rows)
+    cohort_counts = dict(Counter(str(row["Когорта"]) for row in review_rows))
+    diverse_customer_sha256s = sorted(
+        hashlib.sha256(str(row["id"]).encode("utf-8")).hexdigest()
+        for row in diverse
+    )
+    ready = (
+        not manifest["blockers"]
+        and cohort_counts == {
+            "10 разнородных": args.diverse_count,
+            "8 active/no-step": args.active_count,
+            "19 AMO ambiguous": args.ambiguous_count,
+        }
+        and len(diverse_customer_sha256s) == args.diverse_count
+        and len(set(diverse_customer_sha256s)) == args.diverse_count
+    )
+    manifest.update(
+        status="human_review_ready" if ready else "human_review_partial_input_required",
+        current_artifact=f".codex_local/{out_xlsx.name}",
+        artifact_sha256=sha256_file(out_xlsx),
+        database_sha256=sha256_file(db) if ready else None,
+        database_size_bytes=db.stat().st_size,
+        diverse_customer_sha256s=diverse_customer_sha256s,
+        cohort_counts=cohort_counts,
+        rows_total=len(review_rows),
+    )
+    _write_private_text(
+        out_root / "human_review_selection_manifest.json",
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+    print(f"Private human review: {out_xlsx}")
+    print(f"Status: {manifest['status']}; rows: {len(review_rows)}")
+    return 0 if not manifest["blockers"] else 4
 
 # ---------------------------------------------------------------------------
 # Subcommand: drafts
@@ -1139,6 +1593,28 @@ def main() -> int:
     p_acceptance.add_argument("--seed", type=int, default=20260726)
     p_acceptance.add_argument("--count", type=int, default=30)
     p_acceptance.set_defaults(func=cmd_acceptance)
+
+    p_human = sub.add_parser(
+        "human-review",
+        help="One private table: 10 diverse + 8 proven active/no-step + exact 19 AMO ambiguity cases.",
+    )
+    p_human.add_argument("--db", required=True, help="Path to the staging customer_timeline.sqlite.")
+    p_human.add_argument("--out-root", required=True)
+    p_human.add_argument("--active-input", required=True, help="Primary exam_result.json containing exact 8 rows.")
+    p_human.add_argument(
+        "--ambiguous-input",
+        help=(
+            f"Primary {_AMBIGUOUS_INPUT_SCHEMA} registry of exact cases; AMO candidates must be SHA256 "
+            "lists and may be empty or contain multiple values. Absent input is a blocker."
+        ),
+    )
+    p_human.add_argument("--tenant-id", default="foton")
+    p_human.add_argument("--seed", type=int, default=20260812)
+    p_human.add_argument("--as-of", help="Timezone-aware fixed evaluation time; defaults to now.")
+    p_human.add_argument("--diverse-count", type=int, default=10)
+    p_human.add_argument("--active-count", type=int, default=8)
+    p_human.add_argument("--ambiguous-count", type=int, default=19)
+    p_human.set_defaults(func=cmd_human_review)
 
     p_drafts = sub.add_parser("drafts", help="Sample 50 stratified blind Wappi drafts from a dry-run journal.")
     p_drafts.add_argument("--journal", required=True, help="Path to draft_loop journal.jsonl produced by a dry run.")

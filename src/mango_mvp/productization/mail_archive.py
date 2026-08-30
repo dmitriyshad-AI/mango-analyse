@@ -50,7 +50,7 @@ ACCEPTED_MAIL_ARCHIVE_SCHEMA_VERSIONS = (
     CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION,
 )
 DEFAULT_MAIL_DATA_ROOT = Path(
-    os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Mango_Data")
+    os.getenv("MANGO_MAIL_DATA_ROOT", str(Path.home() / "Mango_Data"))
 ).expanduser()
 CANONICAL_MAIL_ARCHIVE_ROOT = Path("_external_handoffs/mail_archive_canonical_20260711")
 CANONICAL_MAIL_ARCHIVE_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "archive/mail_archive.sqlite"

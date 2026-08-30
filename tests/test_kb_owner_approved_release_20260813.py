@@ -174,6 +174,7 @@ def test_zvsh_2027_dates_and_price_reach_bot_context(monkeypatch) -> None:
         active_brand="unpk",
         topic_id="program",
         required_fact_keys=("programs.current", "prices.current", "schedule.current"),
+        evaluation_day=date(2026, 8, 13),
     ).to_prompt_context()
 
     confirmed = "\n".join(str(value) for value in context["confirmed_facts"].values())
@@ -269,6 +270,7 @@ def test_model_driven_retriever_delivers_owner_facts_for_non_keyword_questions()
         pack = _direct_path_context_fact_pack(
             {
                 "active_brand": "unpk",
+                "evaluation_date": "2026-08-13",
                 "snapshot_path": str(SNAPSHOT),
                 LLM_RETRIEVE_ENV: "1",
                 ASSUMED_SCOPE_GUARD_ENV: "1",

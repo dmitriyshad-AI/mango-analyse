@@ -49,7 +49,8 @@ def test_approval_decision_template_writes_jsonl_report_and_blocks_live_actions(
     serialized = out_template.read_text(encoding="utf-8") + out_report.read_text(encoding="utf-8")
 
     assert from_disk == report
-    assert len(rows) == 2
+    assert len(rows) == 3
+    assert "REVIEW_MANAGER_ACTION" in {row["queue_item"]["action"] for row in rows}
     assert rows[0]["decision"] == "pending"
     assert rows[0]["record_type"] == "customer_timeline_approval_decision"
     assert all(row["approval_allowed"] is False for row in rows)
@@ -58,7 +59,7 @@ def test_approval_decision_template_writes_jsonl_report_and_blocks_live_actions(
     assert rows[0]["workspace_summary_snapshot"]["status"] == "blocked_by_conflict"
     assert rows[0]["queue_item"]["live_write"] is False
     assert rows[0]["live_write"] is False
-    assert report["summary"]["pending_rows"] == 2
+    assert report["summary"]["pending_rows"] == 3
     assert report["safety"]["write_crm"] is False
     assert report["safety"]["write_product_timeline_db"] is False
     assert report["safety"]["network_calls"] is False
@@ -81,7 +82,7 @@ def test_approval_decision_validate_accepts_needs_rework_for_blocked_workspace(t
 
     assert report["validation_ok"] is True
     assert report["summary"]["workflow_status"] == "needs_rework"
-    assert report["summary"]["accepted_rows"] == 2
+    assert report["summary"]["accepted_rows"] == 3
     assert report["summary"]["ready_for_live"] is False
     assert report["accepted_rows"][0]["decision"] == "needs_rework"
     assert report["next_safe_step"] == "fix_workspace_blockers_and_regenerate_template"
@@ -237,7 +238,7 @@ def test_approval_decision_can_build_workspace_from_readonly_timeline_db(tmp_pat
         generated_at=FIXED_TIME,
     )
 
-    assert report["summary"]["decision_rows"] == 2
+    assert report["summary"]["decision_rows"] == 3
     assert out_template.exists()
     assert load_decision_jsonl_rows(out_template)[0]["tenant_id"] == "foton"
 
@@ -316,6 +317,8 @@ def ready_workspace() -> dict[str, object]:
             "open_conflicts": 0,
             "bot_allowed_chunks": 2,
             "bot_review_required_chunks": 0,
+            "manager_action_state": "ready",
+            "manager_action_reason": "",
             "live_actions_available": False,
             "warnings": 0,
             "blocked": 0,

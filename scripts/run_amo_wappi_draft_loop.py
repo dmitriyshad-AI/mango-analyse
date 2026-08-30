@@ -1138,12 +1138,17 @@ def run_loop_forever(
                 pass
         processed_total += int(summary.get("processed") or 0)
         skipped_total += int(summary.get("skipped") or 0)
-        error_total += int(summary.get("status") == "cycle_error" or bool(summary.get("auth_error")))
+        error_total += int(
+            summary.get("status") == "cycle_error"
+            or bool(summary.get("auth_error"))
+            or bool(summary.get("deferred_fetch"))
+        )
         current = monotonic()
         if health_notify is not None and current - last_health_at >= health_interval:
             try:
+                health_state = "деградация" if error_total else "жив"
                 sent = health_notify(
-                    f"Mango Wappi: жив; обработано {processed_total}; "
+                    f"Mango Wappi: {health_state}; обработано {processed_total}; "
                     f"пропусков {skipped_total}; ошибок {error_total}"
                 )
             except Exception:  # noqa: BLE001 -- retry after five minutes, never expose secrets
@@ -1203,6 +1208,8 @@ def write_startup_manifest(
 
 def main() -> int:
     args = parse_args()
+    if args.live_write and int(getattr(args, "chat_limit", 0) or 0) > 0:
+        raise RuntimeError("--chat-limit is diagnostic-only and cannot be combined with --live-write")
     dry_run = not bool(args.live_write)
     if args.loop and args.live_write:
         load_env_file(args.env_file)

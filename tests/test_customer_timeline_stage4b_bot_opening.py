@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from mango_mvp.customer_timeline.stage4b_bot_opening import (
     Stage4BBotOpeningConfig,
     run_stage4b_bot_opening,
 )
+from mango_mvp.customer_timeline.store import customer_timeline_run_lock
 
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
@@ -54,7 +57,7 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
               tenant_id TEXT NOT NULL,
               customer_id TEXT,
               client_safe INTEGER NOT NULL,
-              client_safe_reason TEXT NOT NULL DEFAULT 'no_sensitive_signals',
+              client_safe_reason TEXT,
               sensitivity_tags_json TEXT NOT NULL DEFAULT '[]',
               bot_visible INTEGER NOT NULL DEFAULT 0
             );
@@ -68,7 +71,7 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("open", open_event.event_id, "foton", customer.customer_id, 1, "no_sensitive_signals", "[]", 1),
+            ("open", open_event.event_id, "foton", customer.customer_id, 1, None, "[]", 1),
         )
         store._con.execute(  # noqa: SLF001 - test fixture creates historical empty text.
             "UPDATE bot_context_chunks SET record_json = json_set(record_json, '$.text', '') WHERE event_id = ?",
@@ -109,7 +112,9 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
     assert opened["allowed_for_bot"] == 1
     assert opened["requires_manager_review"] == 0
     assert payload["metadata"]["memory_status"] == "usable_memory"
-    assert payload["metadata"]["client_safe"] is False
+    assert payload["metadata"]["client_safe"] is True
+    assert payload["metadata"]["client_safe_reason"] == "no_sensitive_signals"
+    assert payload["metadata"]["client_safe_provenance"] == "a2v3_mail_event_facts"
     assert payload["metadata"]["bot_memory_allowed"] is True
     assert payload["metadata"]["bot_memory_policy_version"] == STAGE4B_OPENING_POLICY_VERSION
     assert "foton" in payload["metadata"]["sensitivity_tags"]
@@ -507,9 +512,9 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             if event is wrong_chunk_type_event:
                 store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or "", chunk_type="wrong_call_summary"))
             elif event is mismatch_event:
-                store.upsert_bot_context_chunk(
-                    _mango_call_chunk(event, text=event.summary or "", customer_id=mismatch_customer.customer_id)
-                )
+                # Public writer rejects this edge. Seed a valid row first, then
+                # inject the legacy poison below to test the read-side gate.
+                store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
             else:
                 store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
 
@@ -528,6 +533,20 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             "WHERE event_id=?",
             (json.dumps(stale_payload, ensure_ascii=False), non_contentful_event.event_id),
         )
+        mismatch_row = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE event_id=?",
+            (mismatch_event.event_id,),
+        ).fetchone()
+        mismatch_payload = json.loads(mismatch_row[0])
+        mismatch_payload["customer_id"] = mismatch_customer.customer_id
+        con.execute(
+            "UPDATE bot_context_chunks SET customer_id=?,record_json=? WHERE event_id=?",
+            (
+                mismatch_customer.customer_id,
+                json.dumps(mismatch_payload, ensure_ascii=False),
+                mismatch_event.event_id,
+            ),
+        )
         con.commit()
 
     report = run_stage4b_bot_opening(
@@ -540,16 +559,16 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
         )
     )
 
-    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 3}
+    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 2}
     assert report["plan"]["skipped"]["non_contentful_mango_call_chunks"] == 4
-    assert report["apply"]["chunks_updated"] == 3
+    assert report["apply"]["chunks_updated"] == 2
     assert report["apply"]["chunks_retracted_not_openable"] == 1
-    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 3
+    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 2
     assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
     assert report["final_checks"]["opened_mango_processed_non_contentful_after"] == 0
     assert report["final_checks"]["opened_disallowed_identity_after"] == 0
     assert report["final_checks"]["opened_unknown_brand_non_call_after"] == 0
-    assert report["final_checks"]["opened_mango_processed_unknown_brand_after"] == 1
+    assert report["final_checks"]["opened_mango_processed_unknown_brand_after"] == 0
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {
@@ -567,16 +586,14 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     assert rows[ambiguous_event.event_id]["allowed_for_bot"] == 0
     assert rows[unmatched_event.event_id]["allowed_for_bot"] == 0
     assert rows[partial_event.event_id]["allowed_for_bot"] == 1
-    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 1
+    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 0
     assert rows[non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[non_contentful_event.event_id]["requires_manager_review"] == 1
     assert rows[boolean_non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[numeric_non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[conflicting_contentful_event.event_id]["allowed_for_bot"] == 0
     unknown_payload = json.loads(rows[unknown_brand_event.event_id]["record_json"])
-    assert {"call", "mango_processed_summary", "bot_visible", "brand_unknown"}.issubset(
-        set(unknown_payload["relevance_tags"])
-    )
+    assert "bot_visible" not in set(unknown_payload["relevance_tags"])
     assert rows[wrong_chunk_type_event.event_id]["allowed_for_bot"] == 0
     assert rows[mismatch_event.event_id]["allowed_for_bot"] == 0
     assert rows[ambiguous_identity_event.event_id]["allowed_for_bot"] == 0
@@ -786,10 +803,10 @@ def test_stage4b_keeps_a2_client_unsafe_mail_manager_only(tmp_path: Path) -> Non
     )
 
     assert report["client_unsafe_mail_chunks_indexed"] == 2
-    assert report["client_safe_mail_chunks_indexed"] == 3
+    assert report["client_safe_mail_chunks_indexed"] == 1
     assert report["plan"]["skipped"]["client_unsafe_mail_chunks"] == 2
-    assert report["plan"]["skipped"]["mail_chunks_not_allowed_by_output_gate"] == 1
-    assert report["apply"]["chunks_updated"] == 2
+    assert report["plan"]["skipped"]["mail_chunks_not_allowed_by_output_gate"] == 3
+    assert report["apply"]["chunks_updated"] == 1
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {
@@ -802,10 +819,91 @@ def test_stage4b_keeps_a2_client_unsafe_mail_manager_only(tmp_path: Path) -> Non
     assert rows[unsafe_event.event_id]["requires_manager_review"] == 1
     assert rows[safe_event.event_id]["allowed_for_bot"] == 1
     assert rows[safe_event.event_id]["requires_manager_review"] == 0
-    assert rows[money_event.event_id]["allowed_for_bot"] == 1
-    assert rows[money_event.event_id]["requires_manager_review"] == 0
+    assert rows[money_event.event_id]["allowed_for_bot"] == 0
+    assert rows[money_event.event_id]["requires_manager_review"] == 1
     assert rows[medical_event.event_id]["allowed_for_bot"] == 0
     assert rows[medical_event.event_id]["requires_manager_review"] == 1
+
+
+def test_stage4b_apply_respects_store_writer_lock_but_dry_run_remains_read_only(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    apply_config = Stage4BBotOpeningConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        out_dir=tmp_path / "apply-out",
+        apply=True,
+        allow_test_paths=True,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path):
+        with pytest.raises(RuntimeError, match="writer lock"):
+            run_stage4b_bot_opening(apply_config)
+        dry_run = run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "dry-out",
+                apply=False,
+                allow_test_paths=True,
+            )
+        )
+
+    assert dry_run["mode"] == "dry_run"
+    assert dry_run["apply"] == {"chunks_updated": 0, "dry_run": True}
+
+
+def test_stage4b_apply_shares_nightly_run_lock_but_dry_run_does_not(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    ready = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with customer_timeline_run_lock(db_path, timeout_seconds=1):
+            ready.set()
+            assert release.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(hold_lock)
+        assert ready.wait(timeout=2)
+        with pytest.raises(TimeoutError, match="run lock timeout"):
+            run_stage4b_bot_opening(
+                Stage4BBotOpeningConfig(
+                    timeline_db_path=db_path,
+                    allowed_root=tmp_path,
+                    out_dir=tmp_path / "apply-run-lock",
+                    apply=True,
+                    allow_test_paths=True,
+                    lock_timeout_seconds=0.01,
+                )
+            )
+        dry_run = run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "dry-run-lock",
+                apply=False,
+                allow_test_paths=True,
+            )
+        )
+        release.set()
+        future.result(timeout=2)
+
+    assert dry_run["mode"] == "dry_run"
+    with customer_timeline_run_lock(db_path, timeout_seconds=1):
+        nested = run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "nested-run-lock",
+                apply=True,
+                allow_test_paths=True,
+                lock_timeout_seconds=0.01,
+            )
+        )
+    assert nested["mode"] == "apply"
 
 
 def test_stage4b_does_not_open_mail_without_a2_bot_visible_flag(tmp_path: Path) -> None:

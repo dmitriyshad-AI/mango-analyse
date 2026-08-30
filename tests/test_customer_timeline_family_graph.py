@@ -23,7 +23,94 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
 
 
-def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("text", "name", "expected"),
+    [
+        ("Обсудили расписание для Анны", "Анна", True),
+        ("Написала Даня", "Даниил", True),
+        ("Дениил написал сообщение", "Даниил", True),
+        ("Поездка в Орел", "Орёл", True),
+        ("Школа для Тимофея", "Филипп", False),
+        ("Школа для Тимофея", "", False),
+    ],
+)
+def test_prepared_name_match_preserves_name_semantics(text: str, name: str, expected: bool) -> None:
+    normalized = family_graph_module._normalize_match_text(text)
+    prepared = family_graph_module._prepare_text_match(normalized)
+
+    assert family_graph_module._name_mentioned_prepared(prepared, name) is expected
+    assert family_graph_module._name_mentioned(normalized, name) is expected
+
+
+def test_name_spelling_variant_skips_distance_for_impossible_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = family_graph_module._levenshtein_distance
+    calls = 0
+
+    def counted(left: str, right: str) -> int:
+        nonlocal calls
+        calls += 1
+        return original(left, right)
+
+    monkeypatch.setattr(family_graph_module, "_levenshtein_distance", counted)
+
+    assert family_graph_module._token_spelling_variant("филипп", "расписание") is False
+    assert calls == 0
+    assert family_graph_module._token_spelling_variant("филипп", "филиппа") is True
+    assert calls == 1
+
+
+def test_attribute_text_prepares_event_text_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = family_graph_module._prepare_text_match
+    calls = 0
+
+    def counted(value: str):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(family_graph_module, "_prepare_text_match", counted)
+    groups = [
+        {
+            "status": "confident",
+            "confidence": "high",
+            "customer_id": "customer:one",
+            "child_key": "child:one",
+            "canonical_name": "Филипп",
+            "name_variants": ["Филя", "Филиппа"],
+        },
+        {
+            "status": "needs_review",
+            "confidence": "medium",
+            "customer_id": "customer:one",
+            "child_key": "child:two",
+            "canonical_name": "Анна",
+            "name_variants": ["Аня", "Анны"],
+        },
+    ]
+    context = family_graph_module.CustomerContext(
+        customer_id="customer:one",
+        tenant_id="foton",
+        identity_status="strong",
+        display_name="",
+        primary_phone="",
+        primary_email="",
+        shared_family_phone=False,
+        parent_name_keys=frozenset(),
+        family_id="family:one",
+    )
+
+    family_graph_module._attribute_text(
+        groups,
+        "Обсудили занятия для Филиппа",
+        context=context,
+        object_kind="event",
+        event_type="mango_call",
+    )
+
+    assert calls == 1
+
+
+def test_family_graph_keeps_child_relevant_single_child_event_ambiguous_without_name(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")
     _seed_event(db_path, tmp_path, customer_id="customer:one", source_id="call-1", summary="Клиент спросил про расписание курса.")
@@ -53,8 +140,66 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
         event = con.execute("SELECT status, confidence, reason, child_key FROM event_child_attribution_v1").fetchone()
     assert family == ("Аня", "confident", "high")
     assert member == ("singleton", "medium")
-    assert event[0:3] == ("matched", "high", "single_child_family")
-    assert event[3]
+    assert event[0:3] == ("ambiguous", "low", "child_relevant_but_no_unique_name")
+    assert event[3] == ""
+
+
+def test_family_graph_does_not_assign_event_naming_another_child_to_single_child(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")
+    _seed_event(
+        db_path,
+        tmp_path,
+        customer_id="customer:one",
+        source_id="call-other-child",
+        summary="Клиента интересовала летняя школа для Тимофея.",
+    )
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:one", phone="+79000000001")
+    _insert_field(profiles_db, profile_id="customer:one", field="child_name", value="Филипп", child_key="child_1")
+    _insert_field(profiles_db, profile_id="customer:one", field="grade", value="5", child_key="child_1")
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        event = con.execute(
+            "SELECT a.status,a.confidence,a.reason,a.child_key FROM event_child_attribution_v1 a "
+            "JOIN timeline_events e USING(event_id) WHERE e.source_id='call-other-child'"
+        ).fetchone()
+    assert event == ("ambiguous", "low", "child_relevant_but_no_unique_name", "")
+
+
+def test_family_graph_keeps_single_child_opportunity_ambiguous_without_exact_name(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:one", phone="+79000000001")
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE customer_opportunities SET title='26/27 уч.год мат 8 кл онлайн'")
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:one", phone="+79000000001")
+    _insert_field(profiles_db, profile_id="customer:one", field="child_name", value="Евгений", child_key="child_1")
+    _insert_field(profiles_db, profile_id="customer:one", field="grade", value="5", child_key="child_1")
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        opportunity = con.execute(
+            "SELECT status,confidence,reason,child_key FROM opportunity_child_attribution_v1"
+        ).fetchone()
+    assert opportunity == ("ambiguous", "low", "child_relevant_but_no_unique_name", "")
 
 
 def test_family_graph_reuses_normalized_amo_organization_brand(tmp_path: Path) -> None:
@@ -1896,6 +2041,55 @@ def test_family_graph_generated_at_ignores_future_source_rows(tmp_path: Path) ->
     report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
 
     assert report["generated_at"] != "2099-01-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("student_type", "expected_grades", "finished", "target", "eligible", "graduate"),
+    (
+        ("8_klass", ["9"], [8], [9], True, False),
+        ("8 класс", ["9"], [8], [9], True, False),
+        ("10_klass", ["11"], [10], [11], True, False),
+        ("10 класс", ["11"], [10], [11], True, False),
+        ("vypusknik", [], [], [], False, True),
+        ("Выпускник", [], [], [], False, True),
+    ),
+)
+def test_family_graph_projects_tallanto_completed_grade_contract(
+    tmp_path: Path,
+    student_type: str,
+    expected_grades: list[str],
+    finished: list[int],
+    target: list[int],
+    eligible: bool,
+    graduate: bool,
+) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:grade", phone="+79000000123")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        "customer:grade",
+        "student-grade",
+        "grade-parent@example.com",
+        student_name="Анна",
+        student_type=student_type,
+    )
+
+    build_family_graph(
+        FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True)
+    )
+
+    with sqlite3.connect(db_path) as con:
+        grades_json, record_json = con.execute(
+            "SELECT grades_json,record_json FROM family_links_v1 WHERE customer_id='customer:grade'"
+        ).fetchone()
+    record = json.loads(record_json)
+    assert json.loads(grades_json) == expected_grades
+    assert record["student_types"] == [student_type]
+    assert record["finished_grades"] == finished
+    assert record["target_grades"] == target
+    assert record["timeline_scope_eligible"] is eligible
+    assert record["explicit_graduate"] is graduate
 
 
 def test_family_graph_never_marks_multiple_children_high_without_unique_mention(tmp_path: Path) -> None:

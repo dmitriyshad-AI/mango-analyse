@@ -126,6 +126,17 @@ def test_startup_manifest_reports_timeline_disabled_instead_of_default_path(tmp_
     assert payload["customer_timeline_db"] == ""
 
 
+def test_live_write_rejects_diagnostic_chat_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runner,
+        "parse_args",
+        lambda: SimpleNamespace(live_write=True, chat_limit=1),
+    )
+
+    with pytest.raises(RuntimeError, match="diagnostic-only"):
+        runner.main()
+
+
 def test_wappi_launchd_installer_restores_previous_plist_when_bootstrap_fails(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     target = tmp_path / "loaded.plist"
@@ -965,7 +976,32 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
     assert "must-not-leak" not in json.dumps(FakeLoop.heartbeats)
     assert second == {"status": "ok", "client_sends": 0, "note_written": 0}
     assert sleeps == [5, 5]
-    assert health_messages == ["Mango Wappi: жив; обработано 0; пропусков 0; ошибок 1"]
+    assert health_messages == ["Mango Wappi: деградация; обработано 0; пропусков 0; ошибок 1"]
+
+
+def test_run_loop_forever_reports_deferred_fetch_as_health_error() -> None:
+    class StopLoop(Exception):
+        pass
+
+    class FakeLoop:
+        def run_once(self, *, dry_run: bool):
+            assert dry_run is False
+            return {"processed": 0, "skipped": 0, "deferred_fetch": 1}
+
+    health_messages: list[str] = []
+
+    with pytest.raises(StopLoop):
+        runner.run_loop_forever(
+            FakeLoop(),
+            dry_run=False,
+            interval_sec=1,
+            sleep=lambda _interval: (_ for _ in ()).throw(StopLoop),
+            emit=lambda _payload: None,
+            health_notify=lambda text: health_messages.append(text) or True,
+            monotonic=lambda: 0.0,
+        )
+
+    assert health_messages == ["Mango Wappi: деградация; обработано 0; пропусков 0; ошибок 1"]
 
 
 def test_health_notifier_uses_only_internal_chat_and_business_hours() -> None:

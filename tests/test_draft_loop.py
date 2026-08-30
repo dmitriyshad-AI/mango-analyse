@@ -5,6 +5,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -25,6 +26,7 @@ from mango_mvp.integrations.draft_loop import (
     DraftLoopKey,
     DraftLoopPair,
     DraftLoopProfile,
+    DraftLoopPaginationChanged,
     DraftLoopState,
     DraftWindow,
     OutgoingWindowMessage,
@@ -37,6 +39,7 @@ from mango_mvp.integrations.draft_loop import (
     classify_manager_edit_windows,
     load_pairs_file,
     load_profiles_file,
+    normalize_wappi_message_page,
     persist_auto_pair,
 )
 
@@ -66,6 +69,135 @@ class FakeWappi:
         offset = int(kwargs.get("offset") or 0)
         limit = int(kwargs.get("limit") or 50)
         return {"messages": rows[offset : offset + limit]}
+
+
+def test_wappi_message_page_normalizer_accepts_only_proven_terminal_null() -> None:
+    accepted = normalize_wappi_message_page(
+        {"status": "done", "has_more": False, "messages": None},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert accepted.valid is True
+    assert accepted.terminal is True
+    assert accepted.terminal_null is True
+    assert accepted.items == ()
+    assert accepted.raw_count == 0
+    for payload, reason in (
+        ({"messages": None}, "message_null_not_terminal"),
+        ({"status": "queued", "has_more": False, "messages": None}, "message_page_not_ready"),
+        ({"status": "done", "has_more": True, "messages": None}, "message_null_not_terminal"),
+        ({"status": "done", "has_more": 0, "messages": None}, "message_pagination_metadata_malformed"),
+    ):
+        rejected = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert rejected.valid is False
+        assert rejected.reason == reason
+
+
+def test_wappi_message_page_normalizer_marks_only_strict_terminal_lists() -> None:
+    message = _message("m-1")
+    accepted = normalize_wappi_message_page(
+        {"status": "done", "has_more": False, "messages": [message]},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert accepted.valid is True
+    assert accepted.terminal is True
+    for payload in ({"messages": [message]}, {"status": "done", "has_more": True, "messages": [message]}):
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert page.valid is True
+        assert page.terminal is False
+    for payload in (
+        {"status": "queued", "has_more": False, "messages": [message]},
+        {"status": "done", "has_more": 0, "messages": [message]},
+    ):
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert page.valid is False
+
+
+def test_wappi_message_page_normalizer_semantically_deduplicates_first_wins() -> None:
+    first = _message("m-1")
+    duplicate = {**first, "transport_only": "ignored"}
+
+    page = normalize_wappi_message_page(
+        {"messages": [first, duplicate]},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert page.valid is True
+    assert page.raw_count == 2
+    assert page.items == (first,)
+    assert page.message_ids == ("m-1",)
+    assert len(page.semantic_signatures) == 1
+
+
+def test_wappi_message_page_normalizer_fails_closed_on_cyclic_or_ambiguous_envelopes() -> None:
+    message = _message("m-1")
+    cyclic: dict[str, Any] = {}
+    cyclic["data"] = cyclic
+
+    for payload, reason in (
+        (cyclic, "message_envelope_cycle"),
+        (
+            {"messages": [message], "data": {"messages": [message]}},
+            "message_list_ambiguous",
+        ),
+    ):
+        page = normalize_wappi_message_page(
+            payload,
+            profile_id="profile-foton",
+            expected_chat_id="chat-1",
+        )
+        assert page.valid is False
+        assert page.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    (
+        (
+            [
+                {"id": "m-1", "chatId": "chat-1", "type": "text", "body": "Цена?", "time": 1000},
+                {"id": "m-1", "chatId": "chat-1", "type": "text", "body": "Изменено", "time": 1000},
+            ],
+            "message_duplicate_semantic_conflict",
+        ),
+        (
+            [{"id": "m-1", "chatId": "foreign-chat", "type": "text", "body": "Цена?", "time": 1000}],
+            "message_foreign_chat",
+        ),
+        (
+            [{"id": "m-1", "type": "text", "body": "Цена?", "time": 1000}],
+            "message_chat_id_missing",
+        ),
+    ),
+)
+def test_wappi_message_page_normalizer_blocks_semantic_conflict_and_foreign_chat(
+    rows: list[Mapping[str, Any]],
+    reason: str,
+) -> None:
+    page = normalize_wappi_message_page(
+        {"messages": rows},
+        profile_id="profile-foton",
+        expected_chat_id="chat-1",
+    )
+
+    assert page.valid is False
+    assert page.reason == reason
 
 
 class FakeAmo:
@@ -1276,6 +1408,80 @@ def test_draft_loop_chat_limit_zero_pages_all_dialogs(tmp_path: Path) -> None:
     assert wappi.list_calls == 3
 
 
+def test_draft_loop_short_dialog_page_with_has_more_fetches_the_tail(tmp_path: Path) -> None:
+    profile = DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
+
+    class ShortPageWappi(FakeWappi):
+        def list_chats(self, *, channel: str, profile_id: str, limit: int = 50, offset: int = 0):
+            del channel, profile_id, limit
+            self.list_calls += 1
+            if offset == 0:
+                return {"status": "done", "has_more": True, "dialogs": [{"id": "chat-1", "type": "user"}]}
+            return {"status": "done", "has_more": False, "dialogs": [{"id": "chat-2", "type": "user"}]}
+
+    wappi = ShortPageWappi({}, {})
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path),
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+    )
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["deferred_fetch"] == 0
+    assert wappi.list_calls == 3
+
+
+def test_draft_loop_blocks_when_promised_dialog_tail_is_empty(tmp_path: Path) -> None:
+    class MissingTailWappi(FakeWappi):
+        def list_chats(self, *, channel: str, profile_id: str, limit: int = 50, offset: int = 0):
+            del channel, profile_id, limit
+            self.list_calls += 1
+            if offset == 0:
+                return {"status": "done", "has_more": True, "dialogs": [{"id": "chat-1"}, {"id": "chat-2"}]}
+            return {"status": "done", "has_more": False, "dialogs": []}
+
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path),
+        wappi_client=MissingTailWappi({}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+    )
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["deferred_fetch"] == 1
+
+
+def test_draft_loop_blocks_when_dialog_head_has_more_changes(tmp_path: Path) -> None:
+    class MovingMetadataWappi(FakeWappi):
+        def list_chats(self, *, channel: str, profile_id: str, limit: int = 50, offset: int = 0):
+            del channel, profile_id, limit
+            self.list_calls += 1
+            if offset:
+                return {"status": "done", "has_more": False, "dialogs": [{"id": "chat-2"}]}
+            return {
+                "status": "done",
+                "has_more": self.list_calls == 1,
+                "dialogs": [{"id": "chat-1"}, {"id": "chat-2"}],
+            }
+
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path),
+        wappi_client=MovingMetadataWappi({}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+    )
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["deferred_fetch"] == 1
+
+
 def test_draft_loop_defers_profile_when_dialog_head_changes_during_pagination(tmp_path: Path) -> None:
     profile = DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
     dialogs = [{"id": f"chat-{idx}", "type": "user"} for idx in range(101)]
@@ -1307,6 +1513,62 @@ def test_draft_loop_defers_profile_when_dialog_head_changes_during_pagination(tm
     assert second["deferred_fetch"] == 0
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sum(row.get("event") == "dialogs_deferred" for row in rows) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"status": "queued", "dialogs": []},
+        {"status": "done", "dialogs": None},
+    ),
+)
+def test_draft_loop_defers_profile_when_dialog_page_is_not_ready_or_malformed(
+    tmp_path: Path,
+    payload: Mapping[str, Any],
+) -> None:
+    class InvalidDialogsWappi(FakeWappi):
+        def list_chats(self, **_kwargs: Any) -> Mapping[str, Any]:
+            return payload
+
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path),
+        wappi_client=InvalidDialogsWappi({}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["processed"] == 0
+    assert summary["bot_calls"] == 0
+    assert summary["deferred_fetch"] == 1
+    assert json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))["status"] == "degraded"
+
+
+def test_draft_loop_defers_profile_when_same_dialog_changes_across_pages(tmp_path: Path) -> None:
+    dialogs = [{"id": f"chat-{idx}", "type": "user"} for idx in range(101)]
+
+    class ConflictingDialogWappi(FakeWappi):
+        def list_chats(self, *, channel: str, profile_id: str, limit: int = 50, offset: int = 0):
+            page = list(self.dialogs[profile_id][offset : offset + limit])
+            if offset and page:
+                page[0] = {**page[0], "phone": "+70000000001"}
+            return {"dialogs": page}
+
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path),
+        wappi_client=ConflictingDialogWappi({"profile-foton": dialogs}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["processed"] == 0
+    assert summary["bot_calls"] == 0
+    assert summary["deferred_fetch"] == 1
 
 
 def test_draft_loop_pages_messages_until_all_new_inbound_are_loaded(tmp_path: Path) -> None:
@@ -1402,6 +1664,148 @@ def test_draft_loop_defers_chat_when_message_page_boundary_moves(tmp_path: Path)
             )
 
     wappi = ShiftedBoundaryOnceWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "private"}]},
+        {("profile-foton", "chat-1"): messages},
+    )
+    bot = FakeBot()
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path, pairs={key: pair}),
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    first = loop.run_once(dry_run=False)
+    second = loop.run_once(dry_run=False)
+
+    assert first["deferred_fetch"] == 1
+    assert first["processed"] == 0
+    assert second["processed"] == 205
+    assert len(bot.calls) == 1
+
+
+@pytest.mark.parametrize("failure", ("malformed_metadata", "foreign_chat"))
+def test_draft_loop_defers_entire_chat_on_untrusted_message_page(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+
+    class UntrustedPageWappi(FakeWappi):
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            rows = [_message("m-1")]
+            if failure == "foreign_chat":
+                rows.append({**_message("m-2"), "chatId": "chat-2"})
+            return {
+                "status": "done",
+                "has_more": 0 if failure == "malformed_metadata" else False,
+                "messages": rows,
+            }
+
+    bot = FakeBot()
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path, pairs={key: pair}),
+        wappi_client=UntrustedPageWappi(
+            {"profile-foton": [{"id": "chat-1", "type": "private"}]},
+            {},
+        ),
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["deferred_fetch"] == 1
+    assert summary["processed"] == 0
+    assert bot.calls == []
+    heartbeat = json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["status"] == "degraded"
+
+
+def test_fetch_messages_respects_short_page_with_has_more(tmp_path: Path) -> None:
+    messages = [_message("m-3", ts=3), _message("m-2", ts=2), _message("m-1", ts=1)]
+
+    class ShortExplicitPages(FakeWappi):
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            offset = int(kwargs.get("offset") or 0)
+            rows = messages[:2] if offset == 0 else messages[2:]
+            return {"status": "done", "has_more": offset == 0, "messages": rows}
+
+    loop = _loop(tmp_path, messages=[])
+    loop.wappi_client = ShortExplicitPages(
+        {"profile-foton": [{"id": "chat-1", "type": "private"}]},
+        {},
+    )
+
+    fetched = loop._fetch_messages(loop.config.profiles["profile-foton"], "chat-1")
+
+    assert [item.message_id for item in fetched] == ["m-1", "m-2", "m-3"]
+
+
+def test_fetch_messages_rejects_terminal_null_without_overlap_anchor(tmp_path: Path) -> None:
+    messages = [_message(f"m-{idx}", ts=idx) for idx in range(100)]
+
+    class TerminalNullPage(FakeWappi):
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            if int(kwargs.get("offset") or 0) == 0:
+                return {"status": "done", "has_more": True, "messages": messages}
+            return {"status": "done", "has_more": False, "messages": None}
+
+    loop = _loop(tmp_path, messages=[])
+    loop.wappi_client = TerminalNullPage(
+        {"profile-foton": [{"id": "chat-1", "type": "private"}]},
+        {},
+    )
+
+    with pytest.raises(DraftLoopPaginationChanged, match="lost the overlap anchor"):
+        loop._fetch_messages(loop.config.profiles["profile-foton"], "chat-1")
+
+
+def test_fetch_messages_rejects_terminal_null_after_short_page_claiming_more(tmp_path: Path) -> None:
+    class ShortThenNullWappi(FakeWappi):
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            if int(kwargs.get("offset") or 0) == 0:
+                return {"status": "done", "has_more": True, "messages": [_message("m-1")]}
+            return {"status": "done", "has_more": False, "messages": None}
+
+    loop = _loop(tmp_path, messages=[])
+    loop.wappi_client = ShortThenNullWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "private"}]},
+        {},
+    )
+
+    with pytest.raises(DraftLoopPaginationChanged, match="lost the overlap anchor"):
+        loop._fetch_messages(loop.config.profiles["profile-foton"], "chat-1")
+
+
+def test_draft_loop_defers_chat_on_extra_message_page_overlap(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    messages = [_message(f"m-{idx}", ts=idx + 1) for idx in range(205)]
+
+    class ExtraOverlapOnceWappi(FakeWappi):
+        overlapped = False
+
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            offset = int(kwargs.get("offset") or 0)
+            limit = int(kwargs.get("limit") or 50)
+            if offset == 99 and not self.overlapped:
+                self.overlapped = True
+                rows = self.messages_by_chat[(profile_id, chat_id)]
+                return {"messages": [rows[98], *rows[offset : offset + limit - 1]]}
+            return super().get_chat_messages(
+                channel=channel,
+                profile_id=profile_id,
+                chat_id=chat_id,
+                **kwargs,
+            )
+
+    wappi = ExtraOverlapOnceWappi(
         {"profile-foton": [{"id": "chat-1", "type": "private"}]},
         {("profile-foton", "chat-1"): messages},
     )
@@ -1589,7 +1993,7 @@ def test_draft_loop_defers_wappi_fetch_messages_queued_400_and_retries_next_cycl
     assert first["auth_error_count"] == 0
     assert first["deferred_fetch"] == 1
     assert first["bot_calls"] == 0
-    assert first_heartbeat["status"] == "ok"
+    assert first_heartbeat["status"] == "degraded"
     assert first_heartbeat["summary"]["deferred_fetch"] == 1
     assert second["processed"] == 1
     assert second["bot_calls"] == 1

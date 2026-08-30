@@ -1959,6 +1959,45 @@ def test_mango_increment_ambiguous_does_not_attach_or_create_customer() -> None:
     assert batch.conflicts[0]["conflict_type"] == "pending_attribution"
 
 
+@pytest.mark.parametrize("raw_direction", ("unknown", "garbage", None))
+def test_mango_processed_summary_unknown_direction_fails_closed_to_system(raw_direction: str | None) -> None:
+    batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mango_processed_summary",
+            source_ref="call#unknown-direction",
+            payload={
+                "call_id": "provider:unknown-direction",
+                "call_at": "2026-05-04T12:00:00+00:00",
+                "direction": raw_direction,
+            },
+        )
+    )
+
+    assert batch.events[0].direction == TimelineDirection.SYSTEM
+
+
+def test_mango_processed_summary_textual_null_customer_id_stays_unmatched() -> None:
+    batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mango_processed_summary",
+            source_ref="call#nullish-customer",
+            payload={
+                "call_id": "provider:nullish-customer",
+                "call_at": "2026-05-04T12:00:00+00:00",
+                "identity_authority": "existing_timeline_increment",
+                "identity_resolved_by_increment": True,
+                "match_class": "strong_unique",
+                "customer_id": "None",
+            },
+        )
+    )
+
+    assert batch.customers == ()
+    assert batch.events[0].customer_id is None
+    assert batch.events[0].match_status == IdentityMatchClass.UNMATCHED
+    assert batch.conflicts[0]["conflict_type"] == "pending_attribution"
+
+
 def test_mango_increment_non_conversation_has_no_summary_chunk_or_signal() -> None:
     batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
         TimelineSourceRecord(

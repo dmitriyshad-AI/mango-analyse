@@ -1,3 +1,5 @@
+from datetime import date
+
 import yaml
 
 from mango_mvp.channels.draft_prompt_builder import build_draft_prompt
@@ -142,6 +144,7 @@ def test_pilot_context_includes_few_shot_reference(monkeypatch, tmp_path):
         "сколько стоит очно 7 класс?",
         kc_snapshot=snapshot,
         active_brand="foton",
+        evaluation_day=date(2026, 8, 13),
     ).to_prompt_context()
 
     assert context["few_shot_style_examples"]

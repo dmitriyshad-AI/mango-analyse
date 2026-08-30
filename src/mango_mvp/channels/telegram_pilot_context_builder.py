@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -112,6 +113,7 @@ def build_telegram_pilot_context(
     dialogue_memory: Mapping[str, Any] | DialogueMemory | None = None,
     session_id: str = "",
     current_message_id: str = "",
+    evaluation_day: date | None = None,
 ) -> PilotContext:
     """Build PilotContext for Telegram manager drafts from a compact KC snapshot."""
 
@@ -193,6 +195,7 @@ def build_telegram_pilot_context(
         kc_snapshot=snapshot,
         snapshot_warnings=snapshot_warnings,
         active_brand=active_brand,
+        evaluation_day=evaluation_day,
     )
     policy_for_prompt = dict(policy_for_snapshot)
     if snapshot_context.facts_context.get("required_fact_keys"):
@@ -345,6 +348,7 @@ def build_knowledge_snapshot_context(
     kc_snapshot: Mapping[str, Any] | None = None,
     snapshot_warnings: Sequence[str] = (),
     active_brand: str = "unknown",
+    evaluation_day: date | None = None,
 ) -> KnowledgeSnapshotContext:
     policy = merge_theme_and_rop_policy(theme=theme, rop_policy=rop_policy)
     required_fact_keys = required_fact_keys_for_message(message_text, theme=theme, rop_policy=policy)
@@ -387,7 +391,7 @@ def build_knowledge_snapshot_context(
         facts = scoped_facts
     chunks = [
         chunk
-        for chunk in _chunk_records(kc_snapshot, active_brand=active)
+        for chunk in _chunk_records(kc_snapshot, active_brand=active, evaluation_day=evaluation_day)
         if _chunk_matches_scope_only(chunk, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes)
     ]
     selected_chunks = limit_context_chunks(
@@ -421,6 +425,7 @@ def build_knowledge_snapshot_context(
         active_brand=active,
         fact_scope=fact_scope,
         blocked_neighbor_scopes=blocked_neighbor_scopes,
+        evaluation_day=evaluation_day,
     )
     missing_facts, stale_or_blocked = _missing_fact_keys(
         required_fact_keys=required_fact_keys,
@@ -679,7 +684,9 @@ def _snapshot_version(snapshot: Mapping[str, Any]) -> str:
     return "kc_knowledge_snapshot_unknown"
 
 
-def _chunk_records(snapshot: Mapping[str, Any], *, active_brand: str = "unknown") -> list[Mapping[str, Any]]:
+def _chunk_records(
+    snapshot: Mapping[str, Any], *, active_brand: str = "unknown", evaluation_day: date | None = None
+) -> list[Mapping[str, Any]]:
     chunks = _records(snapshot.get("chunks") or snapshot.get("knowledge_chunks"))
     result: list[Mapping[str, Any]] = []
     for chunk in chunks:
@@ -690,7 +697,7 @@ def _chunk_records(snapshot: Mapping[str, Any], *, active_brand: str = "unknown"
         status = _stable_status(chunk.get("freshness_status"))
         if status in _FORBIDDEN_SNIPPET_STATUSES:
             continue
-        if not fact_runtime_time_ok(chunk):
+        if not fact_runtime_time_ok(chunk, today=evaluation_day):
             continue
         text = _clean_text(
             chunk.get("text")
@@ -727,10 +734,11 @@ def _select_confirmed_facts(
     active_brand: str = "unknown",
     fact_scope: str = "",
     blocked_neighbor_scopes: Sequence[str] = (),
+    evaluation_day: date | None = None,
 ) -> dict[str, str]:
     candidates: list[Mapping[str, Any]] = []
     for index, fact in enumerate(facts):
-        if not _usable_for_precise_answer(fact, active_brand=active_brand):
+        if not _usable_for_precise_answer(fact, active_brand=active_brand, evaluation_day=evaluation_day):
             continue
         if not _record_matches_scope_only(
             fact,
@@ -1323,14 +1331,16 @@ def _normalize_match_text(value: Any) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").replace("\u00a0", " ").split())
 
 
-def _usable_for_precise_answer(record: Mapping[str, Any], *, active_brand: str = "unknown") -> bool:
+def _usable_for_precise_answer(
+    record: Mapping[str, Any], *, active_brand: str = "unknown", evaluation_day: date | None = None
+) -> bool:
     return (
         _stable_status(record.get("freshness_status")) in _FRESH_STATUSES
         and _truthy(record.get("usable_for_precise_answer"))
         and _truthy(record.get("allowed_for_client_answer"))
         and not _truthy(record.get("requires_manager_confirmation"))
         and not _truthy(record.get("forbidden_for_client"))
-        and fact_runtime_time_ok(record)
+        and fact_runtime_time_ok(record, today=evaluation_day)
         and _record_allowed_for_active_brand(record, active_brand=active_brand)
     )
 

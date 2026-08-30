@@ -21,6 +21,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -28,50 +30,42 @@ from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     DEFAULT_TALLANTO_CARDS_MAX_PAGES,
     DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS,
     NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
+    REQUIRED_CANONICAL_NIGHTLY_CHAIN,
     REQUIRED_MANIFEST_SOURCE_STEP_MAP,
     REQUIRED_MUTATING_NIGHTLY_CHAIN,
     validate_mutating_nightly_chain,
 )
+from mango_mvp.customer_timeline.calls_two_processes import configured_calls_working_db  # noqa: E402
+from mango_mvp.productization.mail_archive import DEFAULT_MAIL_DATA_ROOT  # noqa: E402
+from scripts.run_customer_timeline_mail_download import sha256_file  # noqa: E402
 
-FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
-MANGO_READY_PACKAGE_DB = Path(
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/"
-    "mango_calls_two_processes/drop/mango_calls_ready.sqlite"
-)
 NIGHTLY_HOME = Path(
     os.getenv("CUSTOMER_TIMELINE_NIGHTLY_HOME", "~/.mango_local/customer_timeline_nightly")
 ).expanduser()
 STAGING_ROOT = NIGHTLY_HOME / ".codex_local" / "staging"
+FOTON_DAILY = Path(
+    os.getenv("CUSTOMER_TIMELINE_DAILY_SUMMARY_ROOT", str(STAGING_ROOT / "daily_summaries"))
+).expanduser()
 LOG_ROOT = STAGING_ROOT / "codex_dev_tasks"
 TASK_STATE_ROOT = STAGING_ROOT / "task_state"
 NIGHTLY_SERVICE_ROOT = STAGING_ROOT / "nightly_service"
 NIGHTLY_DV2_CONFIG = NIGHTLY_SERVICE_ROOT / "customer_timeline_nightly_service_dv2_config.json"
 NIGHTLY_BASE_CONFIG = NIGHTLY_SERVICE_ROOT / "customer_timeline_nightly_service_config.json"
 STAGING_TIMELINE_DB = STAGING_ROOT / "customer_timeline_staging.sqlite"
-MAIL_STATE_DIR = STAGING_ROOT / "mail_pipeline"
-MAIL_DATA_ROOT = Path(
-    os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Mango_Data")
-).expanduser()
+MAIL_STATE_DIR = STAGING_ROOT / "state" / "mail_pipeline"
+MAIL_DATA_ROOT = DEFAULT_MAIL_DATA_ROOT
 PROD_TIMELINE_DB = Path(
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
-    "customer_timeline_prod_20260621/customer_timeline.sqlite"
-)
+    os.getenv(
+        "CUSTOMER_TIMELINE_PROD_DB",
+        str(
+            ROOT
+            / "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
+        ),
+    )
+).expanduser()
 PROD_SNAPSHOT_STALE_HOURS = 7 * 24
 TASK_SUCCESS_STALE_HOURS = 30
-REQUIRED_NIGHTLY_STEPS = {
-    "mango_processed_sweep",
-    "calls_and_amo_incremental",
-    "wappi_history_incremental",
-    "mail_archive_incremental",
-    "mail_link_enrich",
-    "tallanto_money_api_incremental",
-    "tallanto_cards_sync",
-    "tallanto_attendance_api_incremental",
-    "family_graph_refresh",
-    "derived_signals_refresh",
-    "stage4b_bot_opening",
-    "bot_safe_rebuild",
-}
+REQUIRED_NIGHTLY_STEPS = {name for name, _kind in REQUIRED_CANONICAL_NIGHTLY_CHAIN}
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
 EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION = NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
 REQUIRED_MANIFEST_SOURCES = frozenset(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
@@ -165,6 +159,12 @@ def validate_nightly_config(path: Path | None = None) -> str:
         strict=False
     ):
         return "nightly config allowed_root does not match persistent staging root"
+    expected_state_root = (STAGING_ROOT / "state").resolve(strict=False)
+    if Path(str(payload.get("state_root") or "")).expanduser().resolve(strict=False) != expected_state_root:
+        return "nightly config state_root does not match the single persistent state tree"
+    expected_receipt = expected_state_root / "WRITER_OWNERSHIP.json"
+    if Path(str(payload.get("ownership_receipt_path") or "")).expanduser().resolve(strict=False) != expected_receipt:
+        return "nightly config ownership receipt path does not match the single writer state tree"
     chain_reason = validate_mutating_nightly_chain(payload)
     if chain_reason:
         return chain_reason
@@ -267,17 +267,41 @@ def validate_nightly_config(path: Path | None = None) -> str:
     missing_call_sources = sorted(REQUIRED_CALL_SOURCES.keys() - call_sources.keys())
     if missing_call_sources:
         return "calls_and_amo_incremental misses required sources: " + ",".join(missing_call_sources)
+    if len(calls_config.get("sources") or ()) != 1 or set(call_sources) != set(REQUIRED_CALL_SOURCES):
+        return "calls_and_amo_incremental must contain only mango_processed_summary"
     for source_system, normalizer in REQUIRED_CALL_SOURCES.items():
         source = call_sources[source_system]
         if source.get("normalizer") != normalizer or source.get("required") is not True:
             return f"calls_and_amo_incremental source contract is invalid: {source_system}"
         if source_system == "mango_processed_summary" and (
-            source.get("ignore_cursor") is not True or source.get("preserve_cursor") is not True
+            source.get("ignore_cursor") is True or source.get("preserve_cursor") is True
         ):
-            return "mango_processed_summary late sweep must ignore and preserve the shared cursor"
+            return "mango_processed_summary must advance its updated_at cursor"
         source_path = Path(str(source.get("path") or "")).expanduser().resolve(strict=False)
         if not path_is_within(source_path, STAGING_ROOT):
             return f"calls_and_amo_incremental source is outside persistent staging root: {source_system}"
+    mail_incremental = steps["mail_archive_incremental"].get("config")
+    if not isinstance(mail_incremental, Mapping):
+        return "mail_archive_incremental has no config"
+    mail_sources = [
+        item for item in mail_incremental.get("sources") or () if isinstance(item, Mapping)
+    ]
+    if len(mail_sources) != 1 or mail_sources[0].get("source_system") != "mail_archive_stage2":
+        return "mail_archive_incremental must contain one mail_archive_stage2 source"
+    mail_source = mail_sources[0]
+    process_manifest = Path(
+        str(mail_source.get("proof_manifest_path") or "")
+    ).expanduser().resolve(strict=False)
+    expected_process_manifest = (STAGING_ROOT / "state/mail_pipeline/mail_process_manifest.json").resolve(
+        strict=False
+    )
+    if process_manifest != expected_process_manifest:
+        return "mail_archive_incremental proof must use the canonical process manifest"
+    if float(mail_source.get("proof_max_age_hours") or 0) != 72.0:
+        return "mail_archive_incremental proof freshness window must be 72 hours"
+    configured_manifest_sha = str(mail_source.get("proof_manifest_sha256") or "")
+    if process_manifest.is_file() and configured_manifest_sha != sha256_file(process_manifest):
+        return "mail_archive_incremental process manifest changed; rebuild config"
     sweep_script = Path(
         str(steps["mango_processed_sweep"].get("config", {}).get("producer_script") or "")
     ).resolve(strict=False)
@@ -288,19 +312,27 @@ def validate_nightly_config(path: Path | None = None) -> str:
         Path(str(item)).expanduser().resolve(strict=False)
         for item in steps["mango_processed_sweep"].get("config", {}).get("package_dbs") or ()
     }
-    ready_package_db = MANGO_READY_PACKAGE_DB.resolve(strict=False)
-    if ready_package_db not in package_dbs:
-        return "mango_processed_sweep misses required mango_calls_ready.sqlite package DB"
-    if not ready_package_db.is_file():
-        return f"required mango_calls_ready.sqlite package DB is missing: {ready_package_db}"
+    source_service_config = Path(
+        str(steps["mango_processed_sweep"].get("config", {}).get("source_service_config") or "")
+    ).expanduser().resolve(strict=False)
+    if not str(steps["mango_processed_sweep"].get("config", {}).get("source_service_config") or "").strip():
+        return "mango_processed_sweep misses source_service_config proof"
     try:
-        with sqlite3.connect(f"file:{ready_package_db}?mode=ro", uri=True, timeout=5) as con:
+        processed_calls_db = configured_calls_working_db(source_service_config)
+    except (FileNotFoundError, KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        return f"Mango Calls service config is unavailable or invalid: {type(exc).__name__}"
+    if package_dbs != {processed_calls_db}:
+        return "mango_processed_sweep must use only the configured Mango Calls working DB"
+    if not processed_calls_db.is_file():
+        return f"configured Mango Calls working DB is missing: {processed_calls_db}"
+    try:
+        with sqlite3.connect(f"file:{processed_calls_db}?mode=ro", uri=True, timeout=5) as con:
             columns = {str(row[1]) for row in con.execute("PRAGMA table_info(call_records)")}
     except sqlite3.Error as exc:
-        return f"required mango_calls_ready.sqlite package DB is unreadable: {type(exc).__name__}"
+        return f"configured Mango Calls working DB is unreadable: {type(exc).__name__}"
     required_columns = {"analysis_status", "analysis_json"}
     if not required_columns <= columns:
-        return "required mango_calls_ready.sqlite package DB misses analyzed call columns"
+        return "configured Mango Calls working DB misses analyzed call columns"
     return ""
 
 
@@ -327,19 +359,28 @@ def ensure_nightly_config() -> str:
         return ""
     if not STAGING_TIMELINE_DB.is_file():
         return f"cannot rebuild nightly config: staging DB is missing: {STAGING_TIMELINE_DB}"
-    out_root = STAGING_ROOT / "nightly_dv2_sources"
+    state_root = STAGING_ROOT / "state"
     command = (
         sys.executable,
         "scripts/build_customer_timeline_nightly_dv2_sources.py",
         "--out-root",
-        str(out_root),
+        str(state_root),
+        "--state-root",
+        str(state_root),
         "--timeline-db",
         str(STAGING_TIMELINE_DB),
         "--base-service-config",
         str(NIGHTLY_BASE_CONFIG),
         "--service-config-out",
         str(NIGHTLY_DV2_CONFIG),
+        "--source-root",
+        str(ROOT),
+        "--mail-data-root",
+        str(MAIL_DATA_ROOT),
     )
+    identity_db = os.getenv("CUSTOMER_TIMELINE_TALLANTO_IDENTITY_DB", "").strip()
+    if identity_db:
+        command = (*command, "--tallanto-identity-db", identity_db)
     completed = subprocess.run(
         command,
         cwd=ROOT,

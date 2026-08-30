@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.customer_timeline import CustomerIdentity, IdentityStatus
 from mango_mvp.customer_timeline.calls_two_processes import (
     CallsTwoProcessesConfig,
     LockBusy,
@@ -51,6 +52,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     write_json,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.objections import backfill_customer_objections_v1
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
 
 
@@ -1467,6 +1469,7 @@ def create_ready_call_db(path: Path) -> None:
                 source_filename TEXT,
                 source_file TEXT,
                 started_at TEXT,
+                updated_at TEXT,
                 phone TEXT,
                 manager_name TEXT,
                 direction TEXT,
@@ -1475,6 +1478,7 @@ def create_ready_call_db(path: Path) -> None:
                 resolve_status TEXT,
                 analysis_status TEXT,
                 analysis_json TEXT,
+                transcript_client TEXT,
                 dead_letter_stage TEXT,
                 amocrm_contact_id TEXT,
                 amocrm_lead_id TEXT
@@ -1484,10 +1488,10 @@ def create_ready_call_db(path: Path) -> None:
         con.execute(
             """
             INSERT INTO call_records (
-                id, source_call_id, source_filename, source_file, started_at,
+                id, source_call_id, source_filename, source_file, started_at, updated_at,
                 phone, manager_name, direction, duration_sec,
-                analysis_status, analysis_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                analysis_status, analysis_json, transcript_client
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 1,
@@ -1495,12 +1499,14 @@ def create_ready_call_db(path: Path) -> None:
                 "masked.mp3",
                 "/ignored/masked.mp3",
                 "2026-07-09T10:00:00+00:00",
+                "2026-07-09T10:05:00+00:00",
                 "",
                 "manager",
                 "inbound",
                 60.0,
                 "done",
                 json.dumps({"call_type": "sales_call", "history_summary": "Обсуждался курс."}),
+                "Клиент: нам дорого, нужна скидка.",
             ),
         )
     write_json(
@@ -1568,6 +1574,40 @@ def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> 
     assert second["stop_reason"] == "drop_unchanged"
     assert first_count == second_count == 1
     assert call_event_source_systems(config.timeline_db) == ["mango_processed_summary"]
+
+
+def test_process_b_lineage_is_consumed_by_objection_reader_without_manual_fixture(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+
+    report = run_process_b(config)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton",
+            customer_id="customer:lineage",
+            identity_status=IdentityStatus.STRONG,
+        )
+        store.upsert_customer(customer)
+        store._con.execute(  # noqa: SLF001 - fixture attributes the imported event after testing the real importer.
+            "UPDATE timeline_events SET customer_id = ? WHERE source_system = 'mango_processed_summary'",
+            (customer.customer_id,),
+        )
+        store._con.commit()  # noqa: SLF001
+
+    objections = backfill_customer_objections_v1(
+        config.timeline_db,
+        allowed_root=config.timeline_allowed_root,
+        canonical_calls_db_path=config.ready_db,
+        apply=True,
+        as_of=datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "ok"
+    assert objections["call_events_matched"] == 1
+    assert objections["call_events_lineage_gap"] == 0
+    assert objections["stored_objections_total"] == 1
 
 
 def test_process_b_fails_loud_when_import_validation_fails(tmp_path: Path) -> None:

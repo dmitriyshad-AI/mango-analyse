@@ -54,8 +54,28 @@ def build_customer_timeline_approval_workspace(
         summary = api.summary(tenant_id, recent_limit=limit)
         customer_search = api.list_customers(tenant_id, q=query, limit=limit)
         selected_customer_id = customer_id or first_customer_id(customer_search)
-        selected_profile = api.customer_profile(tenant_id, selected_customer_id, event_limit=limit, bot_context_limit=limit) if selected_customer_id else None
-        search = api.search(tenant_id, query, customer_id=selected_customer_id, limit=limit) if query else None
+        selected_profile = (
+            api.customer_profile(
+                tenant_id,
+                selected_customer_id,
+                event_limit=limit,
+                bot_context_limit=limit,
+                as_of=generated,
+            )
+            if selected_customer_id
+            else None
+        )
+        search = (
+            api.search(
+                tenant_id,
+                query,
+                customer_id=selected_customer_id,
+                as_of=generated,
+                limit=limit,
+            )
+            if query
+            else None
+        )
         conflicts = (
             selected_profile["conflicts"]
             if selected_profile and selected_profile.get("found")
@@ -84,6 +104,8 @@ def build_customer_timeline_approval_workspace(
             "open_conflicts": readiness["open_conflicts"],
             "bot_allowed_chunks": readiness["bot_allowed_chunks"],
             "bot_review_required_chunks": readiness["bot_review_required_chunks"],
+            "manager_action_state": readiness["manager_action_state"],
+            "manager_action_reason": readiness["manager_action_reason"],
             "live_actions_available": False,
             "warnings": readiness["warnings"],
             "blocked": readiness["blocked"],
@@ -260,6 +282,7 @@ def render_customer_timeline_approval_workspace_html(workspace: Mapping[str, Any
         <div class="panel">
           <h2>Selected customer</h2>
           {render_customer_card(customer, summary)}
+          {render_manager_action(profile)}
         </div>
         <div class="panel">
           <h2>Timeline</h2>
@@ -314,6 +337,13 @@ def approval_readiness(
         bot_summary = selected_profile["bot_context"].get("summary") or {}
     bot_allowed = int(bot_summary.get("allowed_chunks") or 0)
     review_required = int(bot_summary.get("review_required_chunks") or 0)
+    manager_action = manager_action_from_profile(selected_profile)
+    manager_action_state = str(manager_action.get("readiness_state") or "review")
+    reason_codes = manager_action.get("readiness_reason_codes")
+    manager_action_reason = str(
+        manager_action.get("reason")
+        or (reason_codes[0] if isinstance(reason_codes, list) and reason_codes else "manager_action_missing")
+    )
     warnings = 0
     blocked = 0
     if not selected_profile or not selected_profile.get("found"):
@@ -322,9 +352,13 @@ def approval_readiness(
         blocked += 1
     if review_required:
         warnings += 1
+    if selected_profile and selected_profile.get("found") and manager_action_state != "ready":
+        warnings += 1
     status = "ready_for_review"
     if blocked:
         status = "blocked_by_conflict"
+    elif selected_profile and selected_profile.get("found") and manager_action_state != "ready":
+        status = "needs_manager_action_review"
     elif bot_allowed == 0:
         status = "needs_context"
         warnings += 1
@@ -333,6 +367,8 @@ def approval_readiness(
         "open_conflicts": open_conflicts,
         "bot_allowed_chunks": bot_allowed,
         "bot_review_required_chunks": review_required,
+        "manager_action_state": manager_action_state,
+        "manager_action_reason": manager_action_reason,
         "warnings": warnings,
         "blocked": blocked,
     }
@@ -355,6 +391,22 @@ def build_review_queue(
         )
     if selected_profile and selected_profile.get("found"):
         readiness = selected_profile.get("readiness") or {}
+        manager_action = manager_action_from_profile(selected_profile)
+        if str(manager_action.get("readiness_state") or "review") != "ready":
+            reason_codes = manager_action.get("readiness_reason_codes")
+            reason = str(
+                manager_action.get("reason")
+                or (reason_codes[0] if isinstance(reason_codes, list) and reason_codes else "manager_action_missing")
+            )
+            queue.append(
+                {
+                    "action": "REVIEW_MANAGER_ACTION",
+                    "priority": "high",
+                    "label": f"Manager action requires review: {reason}",
+                    "reason": reason,
+                    "live_write": False,
+                }
+            )
         if int(readiness.get("bot_review_required_chunks") or 0):
             queue.append(
                 {
@@ -445,6 +497,33 @@ def render_customer_card(customer: Mapping[str, Any], summary: Mapping[str, Any]
         ("Workspace", summary.get("status")),
     )
     return "".join(f'<div class="kv"><div class="label">{e(label)}</div><div>{e(value)}</div></div>' for label, value in rows)
+
+
+def render_manager_action(profile: Optional[Mapping[str, Any]]) -> str:
+    action = manager_action_from_profile(profile)
+    if not action:
+        return ""
+    rows = (
+        ("Manager action", action.get("readiness_state") or "review"),
+        ("Action reason", action.get("reason") or "manager_action_missing"),
+        ("Action", action.get("action") or "Не доказано"),
+        ("Responsible", action.get("responsible_name") or action.get("responsible_ref") or "Не доказан"),
+        ("Due", action.get("due_at") or "Не доказан"),
+    )
+    return "".join(
+        f'<div class="kv"><div class="label">{e(label)}</div><div>{e(value)}</div></div>'
+        for label, value in rows
+    )
+
+
+def manager_action_from_profile(profile: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not isinstance(profile, Mapping):
+        return {}
+    projection = profile.get("manager_projection")
+    if not isinstance(projection, Mapping):
+        return {}
+    action = projection.get("manager_action")
+    return action if isinstance(action, Mapping) else {}
 
 
 def render_timeline(items: Sequence[Mapping[str, Any]]) -> str:

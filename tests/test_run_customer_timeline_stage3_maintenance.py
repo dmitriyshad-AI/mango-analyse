@@ -29,7 +29,7 @@ def test_stage3_cli_writes_table_counts_and_requires_explicit_apply(
 
     def fake_run(config):  # type: ignore[no-untyped-def]
         captured["config"] = config
-        return {"mode": "dry_run"}
+        return {"mode": "dry_run", "validation_ok": True}
 
     monkeypatch.setattr(stage3_cli, "run_stage3_maintenance", fake_run)
 
@@ -55,6 +55,7 @@ def test_stage3_cli_writes_table_counts_and_requires_explicit_apply(
     assert captured["config"].signal_as_of.isoformat() == "2026-07-22T18:00:00+00:00"
     report = json.loads((tmp_path / "report" / stage3_cli.REPORT_NAME).read_text(encoding="utf-8"))
     assert report["mode"] == "dry_run"
+    assert report["validation_ok"] is True
     assert report["table_counts"] == {
         "derived_signals": 2,
         "customer_objections_v1": 1,
@@ -70,3 +71,20 @@ def test_stage3_cli_refuses_prod_like_db_before_runner(tmp_path: Path, monkeypat
 
     with pytest.raises(ValueError, match="prod timeline"):
         stage3_cli.main(["--db-path", str(prod_path), "--output", str(tmp_path / "report"), "--apply"])
+
+
+def test_stage3_cli_returns_nonzero_when_final_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_count_tables(db_path)
+    monkeypatch.setattr(
+        stage3_cli,
+        "run_stage3_maintenance",
+        lambda config: {"mode": "apply", "validation_ok": False},
+    )
+
+    assert stage3_cli.main(
+        ["--db-path", str(db_path), "--output", str(tmp_path / "report"), "--apply"]
+    ) == 2

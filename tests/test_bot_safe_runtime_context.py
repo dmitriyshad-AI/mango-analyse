@@ -6,7 +6,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-import mango_mvp.customer_timeline.bot_safe_runtime_context as runtime_context_module
+import pytest
+
 from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BotSafeLookup,
@@ -21,6 +22,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     _is_current_access_event,
     _mango_call_item_visible_for_bot,
     _bot_safe_item_pii_findings,
+    _safe_json_list,
     _sanitize_channel_history_text_for_bot,
     scan_bot_safe_context_pii,
     scrub_customer_memory_text,
@@ -36,8 +38,14 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEvent,
 )
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
-from mango_mvp.customer_timeline.purchases import upsert_customer_purchase_rows
+from mango_mvp.customer_timeline.purchases import (
+    CANONICAL_PURCHASE_FACT_CODE_VERSION,
+    CANONICAL_PURCHASE_FACT_IDENTITY_PROOF,
+    upsert_customer_purchase_rows,
+)
 from mango_mvp.customer_timeline.source_policy import (
+    BOT_SAFE_SUMMARY_ACTOR,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
     CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
     CHANNEL_HISTORY_BOT_VISIBLE_ENV,
     MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
@@ -48,6 +56,105 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+_TEST_PHONE = "8 " + "(800) " + "550 " + "25 " + "88"
+_TEST_MOBILE_PHONE = "+7" + "999" + "123" + "45" + "67"
+_TEST_ALT_PHONE = "+7 " + "916 " + "111-" + "22-" + "33"
+_TEST_COMPACT_PHONE = "7" + "916" + "111" + "22" + "33"
+_TEST_EMAIL = "synthetic" + "@" + "example.invalid"
+_TEST_EDU_EMAIL = "edu" + "@" + "example.com"
+
+
+def _canonical_summary_metadata(
+    brand: str,
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "brand_context_authorized": True,
+        "client_safe": True,
+        "client_safe_provenance": BOT_SAFE_SUMMARY_ACTOR,
+        "projection_owner": BOT_SAFE_SUMMARY_ACTOR,
+        "projection_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
+        "raw_text_used": False,
+        "content_brand": brand,
+        "brand_source": "test_fixture",
+        **extra,
+    }
+
+
+def _canonical_purchase_fact(customer_id: str, total_in: float) -> dict[str, object]:
+    return {
+        "tenant_id": "foton",
+        "customer_id": customer_id,
+        "period": "all_time",
+        "money_kind": "fact",
+        "total_in": total_in,
+        "total_out": 0,
+        "deals_cnt": 1,
+        "last_purchase_at": NOW.isoformat(),
+        "sources_json": json.dumps(
+            {
+                "source": "stage5_primary_money_events",
+                "money_source": "tallanto_payment",
+                "email_amounts_used": False,
+                "identity_owner_proof": CANONICAL_PURCHASE_FACT_IDENTITY_PROOF,
+                "exact_owner_incoming_event_count": 1,
+            },
+            sort_keys=True,
+        ),
+        "computability": "computed",
+        "code_version": CANONICAL_PURCHASE_FACT_CODE_VERSION,
+    }
+
+
+def _seed_exact_purchase_source(
+    db_path: Path,
+    customer_id: str,
+    total_in: float,
+) -> None:
+    contact_id = f"student-{customer_id.replace(':', '-')}"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=db_path.parent) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type=IdentityLinkType.TALLANTO_STUDENT_ID,
+                link_value=contact_id,
+                source_system="tallanto_snapshot",
+                source_ref=f"tallanto:contact:{contact_id}",
+                match_class="strong_unique",
+                confidence=1.0,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                event_type="tallanto_payment",
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id=f"most_finances:{contact_id}",
+                source_ref=f"tallanto:most_finances:{contact_id}",
+                direction="system",
+                match_status="strong_unique",
+                confidence=1.0,
+                record={
+                    "amount": total_in,
+                    "payment_direction": "in",
+                    "contact_id": contact_id,
+                    "contact_id_source": "direct",
+                    "contact_id_conflict": False,
+                },
+                created_at=NOW,
+            )
+        )
+
+
+def test_bot_family_grade_projection_uses_next_grade_and_hides_graduates() -> None:
+    assert _safe_json_list('["8_klass"]', kind="grade") == ["9"]
+    assert _safe_json_list('["8 класс"]', kind="grade") == ["9"]
+    assert _safe_json_list('["10_klass"]', kind="grade") == ["11"]
+    assert _safe_json_list('["vypusknik"]', kind="grade") == []
+    assert _safe_json_list('["Выпускник"]', kind="grade") == []
 
 
 def test_bot_safe_crm_context_default_off() -> None:
@@ -102,18 +209,16 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     assert context["timeline_context"]["safety"]["customer_profile_included"] is False
     items = context["timeline_context"]["bot_context"]["items"]
     assert {item["text"]: item["next_step_status"] for item in items} == {
-        "Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание.": "active",
+        "Бренд: Фотон. Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание.": "active",
     }
 
 
 def test_bot_safe_crm_context_prepends_single_child_family_projection(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)
+    _seed_exact_purchase_source(db_path, customer_id, 50_000)
     with sqlite3.connect(db_path) as con:
-        upsert_customer_purchase_rows(con, [{
-            "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
-            "money_kind": "fact", "total_in": 50_000,
-        }])
+        upsert_customer_purchase_rows(con, [_canonical_purchase_fact(customer_id, 50_000)])
 
     context = build_bot_safe_crm_context(
         timeline_db=db_path,
@@ -142,6 +247,86 @@ def test_bot_safe_crm_context_prepends_single_child_family_projection(tmp_path: 
     assert "класс: 8" in live_memory.prompt_text
 
 
+def test_bot_safe_crm_context_legacy_finished_eight_projects_next_grade_nine(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE customer_id=?",
+            (
+                json.dumps(["8_klass"]),
+                json.dumps({"grades": ["8_klass"]}),
+                customer_id,
+            ),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["timeline_context"]["family_dossier"]["child"]["grades"] == ["9"]
+    assert "класс: 9" in context["summary"]
+
+
+@pytest.mark.parametrize("other_type", ("11_klass", "Listener"))
+def test_bot_safe_crm_context_excludes_terminal_family_without_canonical_sibling(
+    tmp_path: Path,
+    other_type: str,
+) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id, second_child=True)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:1'",
+            (json.dumps(["vypusknik"]), json.dumps({"grades": ["vypusknik"]})),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:2'",
+            (json.dumps([other_type]), json.dumps({"grades": [other_type]})),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["found"] is False
+    assert "онлайн-курс" not in json.dumps(context, ensure_ascii=False)
+
+
+def test_bot_safe_crm_context_keeps_canonical_child_with_terminal_sibling(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id, second_child=True)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:1'",
+            (json.dumps(["vypusknik"]), json.dumps({"grades": ["vypusknik"]})),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=?, record_json=? WHERE child_key='child:2'",
+            (json.dumps(["8_klass"]), json.dumps({"grades": ["8_klass"]})),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    dossier = context["timeline_context"]["family_dossier"]
+    assert dossier["child_scope"] == "single"
+    assert dossier["child"]["grades"] == ["9"]
+
+
 def test_bot_safe_crm_context_hides_history_when_child_is_ambiguous(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id, second_child=True)
@@ -164,11 +349,9 @@ def test_bot_safe_crm_context_hides_history_when_child_is_ambiguous(tmp_path: Pa
 def test_bot_safe_family_projection_rejects_invalid_payment_totals_and_legacy_schema(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)
+    _seed_exact_purchase_source(db_path, customer_id, 1)
     with sqlite3.connect(db_path) as con:
-        upsert_customer_purchase_rows(con, [{
-            "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
-            "money_kind": "fact", "total_in": 1,
-        }])
+        upsert_customer_purchase_rows(con, [_canonical_purchase_fact(customer_id, 1)])
 
     for invalid_total in (None, 0, float("inf"), float("-inf"), "NaN", "0 ₽", "not-a-number"):
         with sqlite3.connect(db_path) as con:
@@ -192,7 +375,60 @@ def test_bot_safe_family_projection_rejects_invalid_payment_totals_and_legacy_sc
     assert "история оплат: unknown" in legacy_context["summary"]
 
 
-def test_ambiguous_child_keeps_only_active_brand_channel_history(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "UPDATE customer_purchases_v1 SET computability='partial'",
+        "UPDATE customer_purchases_v1 SET deals_cnt=0",
+        "UPDATE customer_purchases_v1 SET code_version='forged'",
+        "UPDATE customer_purchases_v1 SET last_purchase_at='2027-01-01T00:00:00+00:00'",
+        "UPDATE customer_purchases_v1 SET sources_json="
+        "'{\"source\":\"forged\",\"money_source\":\"tallanto_payment\","
+        "\"email_amounts_used\":false}'",
+        "UPDATE customer_purchases_v1 SET sources_json="
+        "json_remove(sources_json, '$.identity_owner_proof')",
+    ),
+)
+def test_bot_safe_family_projection_uses_exact_purchase_contract(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    _seed_exact_purchase_source(db_path, customer_id, 50_000)
+    with sqlite3.connect(db_path) as con:
+        upsert_customer_purchase_rows(
+            con,
+            [_canonical_purchase_fact(customer_id, 50_000)],
+        )
+        con.commit()
+    before = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(
+            tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"
+        ),
+    )
+    assert "общая история оплат: входящая оплата подтверждена" in before["summary"]
+
+    with sqlite3.connect(db_path) as con:
+        con.execute(mutation)
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(
+            tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"
+        ),
+    )
+
+    assert "история оплат: unknown" in context["summary"]
+
+
+def test_ambiguous_child_blocks_raw_channel_history_even_for_exact_chat(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -237,13 +473,13 @@ def test_ambiguous_child_keeps_only_active_brand_channel_history(tmp_path: Path,
     )
     memory = build_customer_memory_for_prompt(context, active_brand="foton")
 
-    assert "семья ранее спрашивала про онлайн-формат" in memory.prompt_text
+    assert "семья ранее спрашивала про онлайн-формат" not in memory.prompt_text
     assert "другой чат этой семьи" not in memory.prompt_text
     assert "Не приписывай историю конкретному ребёнку" in memory.prompt_text
     assert "клиент уже спрашивал про онлайн-курс" not in memory.prompt_text
 
 
-def test_exact_current_chat_is_not_crowded_out_by_calls_at_small_limit(tmp_path: Path, monkeypatch) -> None:
+def test_raw_current_chat_and_calls_do_not_bypass_reader_at_small_limit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -286,9 +522,9 @@ def test_exact_current_chat_is_not_crowded_out_by_calls_at_small_limit(tmp_path:
     )
 
     items = context["timeline_context"]["bot_context"]["items"]
-    assert len(items) == 3
-    assert sum("текущий чат" in item["text"] for item in items) == 1
-    assert sum(item["chunk_type"] == "mango_call_summary" for item in items) == 1
+    assert len(items) == 2
+    assert all("текущий чат" not in item["text"] for item in items)
+    assert all(item["chunk_type"] != "mango_call_summary" for item in items)
 
 
 def test_ambiguous_child_rejects_unverified_channel_history_payload() -> None:
@@ -458,7 +694,7 @@ def test_bot_safe_lead_attributed_child_does_not_mix_other_child_history(tmp_pat
 
     assert context["timeline_context"]["family_dossier"]["child_scope"] == "lead_attributed"
     assert "предметы: математика" in context["summary"]
-    assert "олимпиадная математика" in context["summary"]
+    assert "олимпиадная математика" not in context["summary"]
     assert "онлайн-курс" not in context["summary"]
     assert "Нет содержательного диалога" not in context["summary"]
 
@@ -481,7 +717,7 @@ def test_bot_safe_family_projection_rejects_unknown_brand_and_hides_old_chunks(t
     assert "онлайн-курс" not in context["summary"]
 
 
-def test_single_unknown_brand_child_keeps_only_brand_neutral_call_memory(tmp_path: Path) -> None:
+def test_single_unknown_brand_child_blocks_raw_call_memory(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)
     with sqlite3.connect(db_path) as con:
@@ -501,8 +737,8 @@ def test_single_unknown_brand_child_keeps_only_brand_neutral_call_memory(tmp_pat
     prompt = _build_direct_path_prompt("Что дальше?", context=prompt_context)
 
     assert context["timeline_context"]["family_dossier"]["needs_clarification"] is True
-    assert context["timeline_context"]["bot_context"]["channel_scope"] == "brand_neutral_call"
-    assert "обсуждал подготовку к экзамену" in prompt
+    assert context["timeline_context"]["bot_context"]["channel_scope"] == ""
+    assert "обсуждал подготовку к экзамену" not in prompt
     assert "физика" not in prompt
     assert "онлайн-курс" not in prompt
 
@@ -628,20 +864,15 @@ def test_bot_safe_family_projection_scopes_deals_and_events_to_selected_child(tm
             record={"amount": 50_000, "payment_direction": "in"},
         )
         store.upsert_event(other_payment)
+    _seed_exact_purchase_source(db_path, "customer:second-child", 50_000)
     with sqlite3.connect(db_path) as con:
         upsert_customer_purchase_rows(con, [
             {
                 "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
                 "money_kind": "plan", "total_in": 50_000,
             },
-            {
-                "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
-                "money_kind": "fact", "total_in": 0,
-            },
-            {
-                "tenant_id": "foton", "customer_id": "customer:second-child", "period": "all_time",
-                "money_kind": "fact", "total_in": 50_000,
-            },
+            _canonical_purchase_fact(customer_id, 0),
+            _canonical_purchase_fact("customer:second-child", 50_000),
         ])
         con.execute(
             "CREATE TABLE IF NOT EXISTS event_child_attribution_v1 (tenant_id TEXT, event_id TEXT PRIMARY KEY, "
@@ -1044,18 +1275,25 @@ def test_bot_safe_crm_context_strips_empty_next_step_sentence_on_read(tmp_path: 
                 customer_id=customer_id,
                 chunk_id="chunk-empty-next-step",
                 chunk_type="bot_safe_summary",
-                text="Фотон: клиент обсуждал математику. Следующий шаг: Активный следующий шаг не найден.",
+                text=(
+                    "Бренд: Фотон. Фотон: клиент обсуждал математику. "
+                    "Следующий шаг: Активный следующий шаг не найден."
+                ),
+                summary=(
+                    "Бренд: Фотон. Фотон: клиент обсуждал математику. "
+                    "Следующий шаг: Активный следующий шаг не найден."
+                ),
                 source_system="customer_timeline_bot_safe_summary",
-                source_ref="botsafe:empty-next-step",
+                source_ref=f"botsafe:{customer_id}:foton",
                 event_at=NOW,
                 relevance_tags=("bot_safe", "structured", "foton"),
                 allowed_for_bot=True,
                 requires_manager_review=False,
-                metadata={
-                    "next_step": {"status": "empty"},
-                    "brand_context_authorized": True,
-                },
-            )
+                metadata=_canonical_summary_metadata(
+                    "foton", next_step={"status": "empty"}
+                ),
+            ),
+            actor=BOT_SAFE_SUMMARY_ACTOR,
         )
 
     context = build_bot_safe_crm_context(
@@ -1096,7 +1334,7 @@ def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(
     assert "Фотон: клиент уже спрашивал про онлайн-курс" not in raw
 
 
-def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_blocks_stored_open_mail_stage2_chunks(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -1129,18 +1367,14 @@ def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path
 
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
-    assert "Письмо Фотон: клиент уточнял группу по субботам" in raw
-    assert "mail_archive_stage2" in raw
-    item = next(
-        item
+    assert "Письмо Фотон: клиент уточнял группу по субботам" not in raw
+    assert all(
+        item.get("source_system") != "mail_archive_stage2"
         for item in context["timeline_context"]["bot_context"]["items"]
-        if item.get("chunk_type") == "email_message"
     )
-    assert item["source_system"] == "mail_archive_stage2"
-    assert item["chunk_type"] == "email_message"
 
 
-def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_never_reads_raw_mail_contacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -1154,10 +1388,10 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
                 text=(
                     "Фотон: напомнить Тестовой Персоне про оплату. "
                     "Иван просил прислать расписание. "
-                    "Понедельник, 9 февраля 2026, 20:31 +03:00 от Тестовая Персона <synthetic@example.invalid>. "
+                    f"Понедельник, 9 февраля 2026, 20:31 +03:00 от Тестовая Персона <{_TEST_EMAIL}>. "
                     "Запасной адрес test @ example.invalid. "
                     "Адрес: Москва, улица Лесная, дом 5. "
-                    "Телефон 8 (800) 550 25 88. "
+                    f"Телефон {_TEST_PHONE}. "
                     "Ссылка https://pay.example.invalid/?fn=7381440901&rnm=0009513397027963."
                 ),
                 source_system="mail_archive_stage2",
@@ -1181,8 +1415,8 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
 
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
-    assert "8 (800) 550 25 88" not in raw
-    assert "synthetic@example.invalid" not in raw
+    assert _TEST_PHONE not in raw
+    assert _TEST_EMAIL not in raw
     assert "test @ example.invalid" not in raw
     assert "улица Лесная" not in raw
     assert "Тестовой Персоне" not in raw
@@ -1191,10 +1425,10 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
     assert "https://pay.example.invalid" not in raw
     assert "7381440901" not in raw
     assert "0009513397027963" not in raw
-    assert "[контактные данные у менеджера]" in raw
-    assert "[ссылка скрыта]" in raw
-    assert "[персона у менеджера]" in raw
-    assert "[адрес у менеджера]" in raw
+    assert "[контактные данные у менеджера]" not in raw
+    assert "[ссылка скрыта]" not in raw
+    assert "[персона у менеджера]" not in raw
+    assert "[адрес у менеджера]" not in raw
     assert scan_bot_safe_context_pii(raw) == ()
 
 
@@ -1233,7 +1467,7 @@ def test_bot_safe_crm_context_blocks_e4b_mail_foreign_brand(tmp_path: Path, monk
     assert "УНПК: клиент просил программу" not in raw
 
 
-def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_blocks_stored_open_telegram_history_chunks(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -1266,8 +1500,11 @@ def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path:
 
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
-    assert "клиент в Telegram уточнял" in raw
-    assert "telegram_history" in raw
+    assert "клиент в Telegram уточнял" not in raw
+    assert all(
+        item.get("source_system") != "telegram_history"
+        for item in context["timeline_context"]["bot_context"]["items"]
+    )
 
 
 def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, monkeypatch) -> None:
@@ -1305,7 +1542,7 @@ def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, m
     assert "УНПК: клиент в Wappi" not in raw
 
 
-def test_bot_safe_crm_context_reads_opened_mango_calls_as_brand_neutral_input(tmp_path: Path) -> None:
+def test_bot_safe_crm_context_blocks_stored_open_mango_calls(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         _upsert_mango_call(store, customer_id=customer_id, source_id="mango-call-runtime")
@@ -1325,19 +1562,13 @@ def test_bot_safe_crm_context_reads_opened_mango_calls_as_brand_neutral_input(tm
     prompt_context = dict(context)
     prompt_context[BOT_SAFE_CRM_CONTEXT_ENV] = True
     prompt = _build_direct_path_prompt("Что дальше?", context=prompt_context)
-    assert "клиент обсуждал подготовку к экзамену" in raw
-    assert "клиент обсуждал подготовку к экзамену" in prompt
-    item = next(
-        item
-        for item in context["timeline_context"]["bot_context"]["items"]
-        if item.get("chunk_type") == "mango_call_summary"
-    )
-    assert item["brand_scope"] == "brand_agnostic_call_input"
-    assert set(item["relevance_tags"]) == {"call", "bot_visible", "mango_processed_summary"}
+    assert context["found"] is False
+    assert "клиент обсуждал подготовку к экзамену" not in raw
+    assert "клиент обсуждал подготовку к экзамену" not in prompt
 
 
 def test_bot_safe_crm_context_rechecks_legacy_non_contentful_call_before_prompt(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
     useful_text = "Звонок: клиент обсудил подготовку к экзамену и попросил подобрать формат."
@@ -1381,16 +1612,11 @@ def test_bot_safe_crm_context_rechecks_legacy_non_contentful_call_before_prompt(
         return build_customer_memory_for_prompt(context, active_brand="foton").prompt_text
 
     guarded = prompt_text()
-    assert useful_text in guarded
+    assert useful_text not in guarded
     assert empty_text not in guarded
-
-    monkeypatch.setattr(runtime_context_module, "is_non_contentful_call_record", lambda _event: False)
-    assert empty_text in prompt_text()
-
 
 def test_bot_safe_crm_context_rechecks_mango_event_after_chunk_source_and_type_change(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
     empty_text = "Нет содержательного диалога после подмены полей фрагмента."
@@ -1452,18 +1678,6 @@ def test_bot_safe_crm_context_rechecks_mango_event_after_chunk_source_and_type_c
 
     assert empty_text not in json.dumps(context, ensure_ascii=False)
     assert empty_text not in build_customer_memory_for_prompt(context, active_brand="foton").prompt_text
-
-    monkeypatch.setattr(runtime_context_module, "_mango_linked_chunk_ids", lambda *_args, **_kwargs: frozenset())
-    leaked = build_bot_safe_crm_context(
-        timeline_db=db_path,
-        allowed_root=tmp_path,
-        active_brand="foton",
-        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
-        allow_explicit_customer_id=True,
-        limit=5,
-    )
-    assert empty_text in build_customer_memory_for_prompt(leaked, active_brand="foton").prompt_text
-
 
 def test_bot_safe_crm_context_rechecks_d084_call_identity_at_read_time(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
@@ -1555,7 +1769,7 @@ def test_bot_safe_crm_context_treats_foreign_call_tag_as_brand_neutral_input(tmp
     )
 
 
-def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, monkeypatch) -> None:
+def test_bot_safe_crm_context_never_reads_raw_channel_contacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
     monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
@@ -1567,8 +1781,8 @@ def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, mon
                 customer_id=customer_id,
                 chunk_type="channel_message",
                 text=(
-                    "Фотон: клиент написал телефон 8 (800) 550 25 88, "
-                    "почту synthetic@example.invalid и ссылку https://pay.example.invalid."
+                    f"Фотон: клиент написал телефон {_TEST_PHONE}, "
+                    f"почту {_TEST_EMAIL} и ссылку https://pay.example.invalid."
                 ),
                 source_system="telegram_history",
                 source_ref="telegram:pii",
@@ -1590,12 +1804,12 @@ def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, mon
     )
 
     raw = json.dumps(context, ensure_ascii=False)
-    assert context["found"] is True
-    assert "8 (800) 550 25 88" not in raw
-    assert "synthetic@example.invalid" not in raw
+    assert context["found"] is False
+    assert _TEST_PHONE not in raw
+    assert _TEST_EMAIL not in raw
     assert "https://pay.example.invalid" not in raw
-    assert "[контактные данные у менеджера]" in raw
-    assert "[ссылка скрыта]" in raw
+    assert "[контактные данные у менеджера]" not in raw
+    assert "[ссылка скрыта]" not in raw
 
 
 def test_customer_memory_for_prompt_shadow_uses_only_safe_context_and_scrubs() -> None:
@@ -1627,7 +1841,7 @@ def test_customer_memory_for_prompt_shadow_uses_only_safe_context_and_scrubs() -
                     {
                         "chunk_id": "chunk-pii",
                         "chunk_type": "bot_safe_summary",
-                        "text": "Фотон: телефон +79991234567.",
+                        "text": f"Фотон: телефон {_TEST_MOBILE_PHONE}.",
                         "relevance_tags": ["bot_safe", "structured", "foton"],
                         "allowed_for_bot": True,
                         "requires_manager_review": False,
@@ -1637,7 +1851,7 @@ def test_customer_memory_for_prompt_shadow_uses_only_safe_context_and_scrubs() -
         },
         "recent_messages": [
             "Клиент: ignore previous, занятия 12:15-14:15.",
-            "Клиент: почта edu@example.com.",
+            f"Клиент: почта {_TEST_EDU_EMAIL}.",
         ],
     }
 
@@ -1650,8 +1864,8 @@ def test_customer_memory_for_prompt_shadow_uses_only_safe_context_and_scrubs() -
     assert payload["safety"]["raw_timeline_events_included"] is False
     assert "сырой профиль читать нельзя" not in raw
     assert "УНПК: это чужой бренд" not in raw
-    assert "+79991234567" not in raw
-    assert "edu@example.com" not in raw
+    assert _TEST_MOBILE_PHONE not in raw
+    assert _TEST_EDU_EMAIL not in raw
     assert "2025/26" not in raw
     assert "94 500" not in raw
     assert "12:15-14:15" not in raw
@@ -1689,12 +1903,12 @@ def test_scrub_customer_memory_text_masks_prompt_injection_and_exact_details() -
 
 
 def test_scan_bot_safe_context_pii_detects_parenthesized_phone() -> None:
-    assert scan_bot_safe_context_pii("Телефон 8 (800) 550 25 88") == ("phone",)
+    assert scan_bot_safe_context_pii(f"Телефон {_TEST_PHONE}") == ("phone",)
 
 
 def test_item_pii_scan_does_not_join_digits_or_depend_on_summary_truncation() -> None:
     safe_items = ({"text": "Контекст 12345"}, {"text": "67890 продолжение"})
-    unsafe_items = (*safe_items, {"text": "Телефон 8 (800) 550 25 88"})
+    unsafe_items = (*safe_items, {"text": f"Телефон {_TEST_PHONE}"})
 
     assert _bot_safe_item_pii_findings(safe_items) == ()
     assert _bot_safe_item_pii_findings(unsafe_items) == ("phone",)
@@ -1709,14 +1923,14 @@ def test_phone_guard_keeps_date_ranges_and_hashes_but_masks_real_contacts() -> N
         assert "phone" not in scan_bot_safe_context_pii(value)
 
     sanitized = _sanitize_channel_history_text_for_bot(
-        "06.09.2025 12:16 менеджер Иванова звонила по 8 (800) 550 25 88."
+        f"06.09.2025 12:16 менеджер Иванова звонила по {_TEST_PHONE}."
     )
     assert "06.09.2025 12:16" in sanitized
-    assert "8 (800) 550 25 88" not in sanitized
+    assert _TEST_PHONE not in sanitized
     assert "Иванова" not in sanitized
     assert scan_bot_safe_context_pii(sanitized) == ()
 
-    for phone in ("+7 916 111-22-33", "8 (800) 550 25 88", "79161112233"):
+    for phone in (_TEST_ALT_PHONE, _TEST_PHONE, _TEST_COMPACT_PHONE):
         assert scan_bot_safe_context_pii(phone) == ("phone",)
 
 
@@ -1867,8 +2081,8 @@ def test_bot_safe_crm_context_blocks_pii_only_chunks(tmp_path: Path) -> None:
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is False
     assert "no_brand_scoped_bot_safe_context" in context["warnings"]
-    assert "edu@example.com" not in raw
-    assert "+79991234567" not in raw
+    assert _TEST_EDU_EMAIL not in raw
+    assert _TEST_MOBILE_PHONE not in raw
 
 
 def test_bot_safe_crm_context_blocks_ambiguous_identity(tmp_path: Path) -> None:
@@ -1947,8 +2161,8 @@ def test_bot_safe_crm_context_drops_chunks_with_pii(tmp_path: Path) -> None:
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
-    assert "edu@example.com" not in raw
-    assert "+79991234567" not in raw
+    assert _TEST_EDU_EMAIL not in raw
+    assert _TEST_MOBILE_PHONE not in raw
 
 
 def test_bot_safe_crm_context_opens_read_only_db_under_path_with_spaces(tmp_path: Path) -> None:
@@ -2034,13 +2248,15 @@ def _seed_bot_safe_timeline(
                 customer_id=customer.customer_id,
                 chunk_id="chunk-pii",
                 chunk_type="bot_safe_summary",
-                text="Фотон: телефон +79991234567, почта edu@example.com.",
+                text=f"Бренд: Фотон. Фотон: телефон {_TEST_MOBILE_PHONE}, почта {_TEST_EDU_EMAIL}.",
+                summary=f"Бренд: Фотон. Фотон: телефон {_TEST_MOBILE_PHONE}, почта {_TEST_EDU_EMAIL}.",
                 source_system="customer_timeline_bot_safe_summary",
-                source_ref=f"botsafe:{customer.customer_id}:foton:pii",
+                source_ref=f"botsafe:{customer.customer_id}:foton",
                 event_at=NOW,
                 relevance_tags=("bot_safe", "structured", "foton"),
                 allowed_for_bot=True,
                 requires_manager_review=False,
+                metadata=_canonical_summary_metadata("foton"),
             )
         )
     elif not unknown_only:
@@ -2055,7 +2271,13 @@ def _seed_bot_safe_timeline(
                         "Бренд: Фотон. Стадия: не определена. Интерес: не определён. "
                         "Следующий шаг: Активный следующий шаг не найден."
                         if junk_foton
-                        else "Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание."
+                        else "Бренд: Фотон. Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание."
+                    ),
+                    summary=(
+                        "Бренд: Фотон. Стадия: не определена. Интерес: не определён. "
+                        "Следующий шаг: Активный следующий шаг не найден."
+                        if junk_foton
+                        else "Бренд: Фотон. Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание."
                     ),
                     source_system="customer_timeline_bot_safe_summary",
                     source_ref=f"botsafe:{customer.customer_id}:foton",
@@ -2064,7 +2286,10 @@ def _seed_bot_safe_timeline(
                     relevance_tags=("bot_safe", "structured", "foton"),
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"next_step": {"status": "active", "display_text": "Отправить телефон менеджера +79991234567"}},
+                    metadata=_canonical_summary_metadata(
+                        "foton",
+                        next_step={"status": "active", "display_text": f"Отправить телефон менеджера {_TEST_MOBILE_PHONE}"},
+                    ),
                 )
             )
         chunks.append(
@@ -2073,7 +2298,8 @@ def _seed_bot_safe_timeline(
                 customer_id=customer.customer_id,
                 chunk_id="chunk-unpk",
                 chunk_type="bot_safe_summary",
-                text="УНПК: клиент интересовался выездной школой.",
+                text="Бренд: УНПК. УНПК: клиент интересовался выездной школой.",
+                summary="Бренд: УНПК. УНПК: клиент интересовался выездной школой.",
                 source_system="customer_timeline_bot_safe_summary",
                 source_ref=f"botsafe:{customer.customer_id}:unpk",
                 event_at=NOW,
@@ -2081,7 +2307,7 @@ def _seed_bot_safe_timeline(
                 relevance_tags=("bot_safe", "structured", "unpk"),
                 allowed_for_bot=True,
                 requires_manager_review=False,
-                metadata={"next_step": {"status": "active"}},
+                metadata=_canonical_summary_metadata("unpk", next_step={"status": "active"}),
             )
         )
     if not pii_only:
@@ -2103,11 +2329,17 @@ def _seed_bot_safe_timeline(
             )
         )
     for chunk in chunks:
+        actor = (
+            BOT_SAFE_SUMMARY_ACTOR
+            if chunk.metadata.get("projection_owner") == BOT_SAFE_SUMMARY_ACTOR
+            else "system"
+        )
         store.upsert_bot_context_chunk(
             replace(
                 chunk,
                 metadata={**chunk.metadata, "brand_context_authorized": True},
-            )
+            ),
+            actor=actor,
         )
     if pii_chunk:
         store.upsert_bot_context_chunk(
@@ -2116,15 +2348,17 @@ def _seed_bot_safe_timeline(
                 customer_id=customer.customer_id,
                 chunk_id="chunk-pii",
                 chunk_type="bot_safe_summary",
-                text="Фотон: телефон +79991234567, почта edu@example.com.",
+                text=f"Бренд: Фотон. Фотон: телефон {_TEST_MOBILE_PHONE}, почта {_TEST_EDU_EMAIL}.",
+                summary=f"Бренд: Фотон. Фотон: телефон {_TEST_MOBILE_PHONE}, почта {_TEST_EDU_EMAIL}.",
                 source_system="customer_timeline_bot_safe_summary",
                 source_ref=f"botsafe:{customer.customer_id}:foton:pii",
                 event_at=NOW,
                 relevance_tags=("bot_safe", "structured", "foton"),
                 allowed_for_bot=True,
                 requires_manager_review=False,
-                metadata={"brand_context_authorized": True},
-            )
+                metadata=_canonical_summary_metadata("foton"),
+            ),
+            actor=BOT_SAFE_SUMMARY_ACTOR,
         )
     store.close()
     return db_path, customer.customer_id

@@ -20,7 +20,9 @@ from mango_mvp.customer_timeline import (
     TimelineEventType,
 )
 from mango_mvp.customer_timeline.bot_safe_summary import (
+    BOT_SAFE_SUMMARY_ACTOR,
     BOT_SAFE_SUMMARY_CHUNK_TYPE,
+    BOT_SAFE_SUMMARY_SCHEMA_VERSION,
     BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
     BotSafeSummaryBuildConfig,
     _customer_ids_from_conflict,
@@ -306,8 +308,13 @@ def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_pat
     payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
     next_step = payload["metadata"]["next_step"]
 
-    assert report.next_step_status_counts["active"] == 1
-    assert next_step["status"] == "active"
+    assert report.next_step_status_counts["empty"] == 1
+    assert next_step["resolution_kind"] == "historical_hint"
+    assert next_step["status"] == "empty"
+    assert next_step["reason_code"] == "historical_hint_only"
+    assert next_step["historical_status"] == "active"
+    assert next_step.get("action", "") == ""
+    assert next_step.get("display_text", "") == ""
     assert next_step["source_event_id"] == event.event_id
     assert "Следующий безопасный шаг:" not in dumped
     assert "договор" not in dumped.casefold()
@@ -1005,6 +1012,11 @@ def test_bot_safe_summary_unknown_brand_stays_manager_only(tmp_path: Path) -> No
     assert payload["allowed_for_bot"] is False
     assert payload["requires_manager_review"] is True
     assert payload["metadata"]["brand_context_authorized"] is False
+    assert payload["metadata"]["client_safe"] is False
+    assert payload["metadata"]["client_safe_provenance"] == BOT_SAFE_SUMMARY_ACTOR
+    assert payload["metadata"]["projection_owner"] == BOT_SAFE_SUMMARY_ACTOR
+    assert payload["metadata"]["projection_version"] == BOT_SAFE_SUMMARY_SCHEMA_VERSION
+    assert payload["metadata"]["memory_status"] == "manager_review_required"
 
 
 def test_bot_safe_summary_drops_other_brand_title_for_known_customer_brand(tmp_path: Path) -> None:
@@ -1700,6 +1712,44 @@ def test_bot_safe_summary_confirms_single_child_class(tmp_path: Path) -> None:
     assert "Ребёнок: 8 класс" in dumped
     assert "Не переспрашивать: класс" in dumped
     assert payload["metadata"]["safe_slots"]["child_class"] == "8"
+
+
+def test_bot_safe_summary_maps_finished_eighth_to_next_ninth_class(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="finished-eighth-class-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Ребёнок закончил 8 класс, нужна физика онлайн.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+
+    assert "Ребёнок: 9 класс" in payload["text"]
+    assert "Ребёнок: 8 класс" not in payload["text"]
+    assert payload["metadata"]["safe_slots"]["child_class"] == "9"
+    assert bot_safe_summary_module._confirmed_child_class(("Ребёнок не закончил 8 класс.",)) == ""
 
 
 def test_bot_safe_summary_scrubs_single_person_name_from_interest_title(tmp_path: Path) -> None:

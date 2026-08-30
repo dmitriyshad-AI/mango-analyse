@@ -34,6 +34,23 @@ sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
 
 
+@pytest.fixture(autouse=True)
+def _configured_calls_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline_root = tmp_path / "mango-calls-runtime"
+    working_db = pipeline_root / "working" / "mango_calls_pipeline.sqlite"
+    working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(working_db) as con:
+        con.execute(
+            "CREATE TABLE call_records (id TEXT PRIMARY KEY, analysis_status TEXT, analysis_json TEXT)"
+        )
+    service_config = tmp_path / "mango-calls-config.json"
+    service_config.write_text(
+        json.dumps({"pipeline_root": str(pipeline_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(builder, "DEFAULT_MANGO_CALLS_SERVICE_CONFIG", service_config)
+
+
 def test_lightweight_wrapper_matches_canonical_required_sources() -> None:
     canonical = set(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
 
@@ -53,17 +70,22 @@ def _mail_root_with_identity(tmp_path: Path) -> Path:
 def test_builder_passes_mail_data_root_separately_from_repo_root(tmp_path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     mail_data_root = tmp_path / "Mango_Data"
+    identity_one = tmp_path / "readonly/tallanto_identity_1.sqlite"
+    identity_two = tmp_path / "readonly/tallanto_identity_2.sqlite"
+    identity_one.parent.mkdir(parents=True)
+    identity_one.touch()
+    identity_two.touch()
     captured = {}
     assert builder.build_parser().parse_args([]).mail_data_root == str(builder.DEFAULT_MAIL_DATA_ROOT)
 
-    def fake_mail_builder(root, **kwargs):
-        captured["mail_data_root"] = root
+    monkeypatch.setattr(builder, "build_mango_freshness", lambda *args, **kwargs: {})
+
+    def fake_service_config(**kwargs):
+        captured["mail_data_root"] = kwargs["mail_data_root"]
+        captured["tallanto_identity_dbs"] = kwargs["tallanto_identity_dbs"]
         return {}
 
-    monkeypatch.setattr(builder, "build_mail_increment", fake_mail_builder)
-    monkeypatch.setattr(builder, "build_mango_freshness", lambda *args, **kwargs: {})
-    monkeypatch.setattr(builder, "build_tallanto_freshness", lambda *args, **kwargs: {})
-    monkeypatch.setattr(builder, "build_service_config", lambda **kwargs: {})
+    monkeypatch.setattr(builder, "build_service_config", fake_service_config)
 
     result = builder.main(
         [
@@ -75,11 +97,16 @@ def test_builder_passes_mail_data_root_separately_from_repo_root(tmp_path, monke
             str(tmp_path / "out"),
             "--timeline-db",
             str(tmp_path / "timeline.sqlite"),
+            "--tallanto-identity-db",
+            str(identity_one),
+            "--tallanto-identity-db",
+            str(identity_two),
         ]
     )
 
     assert result == 0
     assert captured["mail_data_root"] == mail_data_root.resolve()
+    assert captured["tallanto_identity_dbs"] == [str(identity_one), str(identity_two)]
 
 
 def test_mail_builder_fails_before_writing_when_archive_input_is_missing(tmp_path) -> None:
@@ -91,7 +118,7 @@ def test_mail_builder_fails_before_writing_when_archive_input_is_missing(tmp_pat
             tmp_path / "Mango_Data",
             out_jsonl=out_jsonl,
             manifest_path=manifest,
-            since=builder.parse_dt(builder.DEFAULT_CURSOR),
+            since=builder.parse_dt("2026-06-19T14:53:27+00:00"),
             text_limit=1200,
         )
 
@@ -109,18 +136,25 @@ def valid_nightly_payload(staging_root: Path) -> dict:
         "required_manifest_sources": sorted(module.REQUIRED_MANIFEST_SOURCES),
         "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
         "allowed_root": str(staging_root),
+        "state_root": str(staging_root / "state"),
+        "ownership_receipt_path": str(staging_root / "state/WRITER_OWNERSHIP.json"),
         "steps": [
             {
                 "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
                 "enabled": True,
                 "required": True,
                 "config": {
                     "producer_script": str(module.ROOT / "scripts/build_mango_call_timeline_increment.py"),
-                    "package_dbs": [str(module.MANGO_READY_PACKAGE_DB)],
+                    "source_service_config": str(builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG),
+                    "package_dbs": [
+                        str(module.configured_calls_working_db(builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG))
+                    ],
                 },
             },
             {
                 "name": "calls_and_amo_incremental",
+                "kind": "nightly_incremental",
                 "enabled": True,
                 "required": True,
                 "config": {
@@ -132,7 +166,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                             "required": True,
                             "path": str(staging_root / "nightly_dv2_sources" / f"{source_system}.jsonl"),
                             **(
-                                {"ignore_cursor": True, "preserve_cursor": True}
+                                {"ignore_cursor": False, "preserve_cursor": False}
                                 if source_system == "mango_processed_summary"
                                 else {}
                             ),
@@ -160,9 +194,27 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                     "checkpoint_dir": str(staging_root / "wappi_history_checkpoint"),
                 },
             },
-            {"name": "mail_archive_incremental", "enabled": True, "required": True},
+            {
+                "name": "mail_archive_incremental",
+                "kind": "nightly_incremental",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "sources": [
+                        {
+                            "source_system": "mail_archive_stage2",
+                            "proof_manifest_path": str(
+                                staging_root / "state/mail_pipeline/mail_process_manifest.json"
+                            ),
+                            "proof_manifest_sha256": None,
+                            "proof_max_age_hours": 72.0,
+                        }
+                    ]
+                },
+            },
             {
                 "name": "mail_link_enrich",
+                "kind": "mail_link_enrich",
                 "enabled": True,
                 "required": True,
                 "config": {
@@ -489,6 +541,43 @@ def test_nightly_config_rejects_duplicate_or_reordered_mutating_chain(
     assert expected in module.validate_nightly_config(config)
 
 
+@pytest.mark.parametrize(
+    "step_name",
+    [
+        name
+        for name, _kind in module.REQUIRED_CANONICAL_NIGHTLY_CHAIN
+        if name not in {item[0] for item in module.REQUIRED_MUTATING_NIGHTLY_CHAIN}
+    ],
+)
+def test_nightly_config_rejects_duplicate_core_source_owner(
+    tmp_path, monkeypatch, step_name: str
+) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    step = next(item for item in payload["steps"] if item["name"] == step_name)
+    payload["steps"].append(dict(step))
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert f"exactly one {step_name}" in module.validate_nightly_config(config)
+
+
+def test_nightly_config_rejects_renamed_second_amo_owner(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    amo = dict(next(item for item in payload["steps"] if item["name"] == "amo_incremental_shadow"))
+    amo["name"] = "amo_incremental_second_owner"
+    payload["steps"].append(amo)
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert "unexpected second owner for amo_incremental" in module.validate_nightly_config(config)
+
+
 def test_nightly_config_rejects_tallanto_money_before_cards(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
@@ -504,7 +593,7 @@ def test_nightly_config_rejects_tallanto_money_before_cards(tmp_path, monkeypatc
     assert "cards -> attendance -> money" in module.validate_nightly_config(config)
 
 
-def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeypatch) -> None:
+def test_nightly_config_rejects_sweep_without_configured_calls_db(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
@@ -516,15 +605,36 @@ def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeyp
 
     reason = module.validate_nightly_config(config)
 
-    assert "mango_calls_ready.sqlite" in reason
+    assert "configured Mango Calls working DB" in reason
 
 
-def test_nightly_config_rejects_missing_ready_package_db(tmp_path, monkeypatch) -> None:
+def test_nightly_config_resolves_calls_db_from_its_own_service_config(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
-    missing_ready = tmp_path / "drop/mango_calls_ready.sqlite"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
-    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", missing_ready)
+    payload = valid_nightly_payload(staging_root)
+    sweep = next(step for step in payload["steps"] if step["name"] == "mango_processed_sweep")
+    override = tmp_path / "override-calls-config.json"
+    override.write_text(
+        json.dumps({"pipeline_root": str(tmp_path / "other-calls-runtime")}),
+        encoding="utf-8",
+    )
+    sweep["config"]["source_service_config"] = str(override)
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert "only the configured Mango Calls working DB" in module.validate_nightly_config(config)
+
+
+def test_nightly_config_rejects_missing_configured_calls_db(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    missing_root = tmp_path / "missing-mango-calls-runtime"
+    builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG.write_text(
+        json.dumps({"pipeline_root": str(missing_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
     payload = valid_nightly_payload(staging_root)
     config = tmp_path / "nightly.json"
     config.write_text(json.dumps(payload), encoding="utf-8")
@@ -733,6 +843,22 @@ def test_nightly_config_rejects_stale_schema_version(tmp_path, monkeypatch) -> N
     assert "schema version" in reason
 
 
+def test_nightly_config_rejects_old_split_state_layout(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(
+        module,
+        "STAGING_TIMELINE_DB",
+        staging_root / "customer_timeline_staging.sqlite",
+    )
+    payload = valid_nightly_payload(staging_root)
+    payload.pop("state_root")
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert "single persistent state tree" in module.validate_nightly_config(config)
+
+
 def test_nightly_config_rejects_missing_required_manifest_sources(tmp_path, monkeypatch) -> None:
     """B1: this is the exact bug report -- an old nightly.json written before
     required_manifest_sources existed (so the key is simply absent) must be
@@ -768,22 +894,10 @@ def test_nightly_config_rejects_incomplete_required_manifest_sources(tmp_path, m
     assert "wappi_max" in reason
 
 
-def _write_ready_package_db(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as con:
-        con.execute(
-            "CREATE TABLE call_records (id TEXT PRIMARY KEY, analysis_status TEXT, analysis_json TEXT)"
-        )
-        con.commit()
-
-
 def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
-    ready_package_db = tmp_path / "drop/mango_calls_ready.sqlite"
-    _write_ready_package_db(ready_package_db)
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
-    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", ready_package_db)
     base = valid_nightly_payload(staging_root)
     config = tmp_path / "nightly.json"
 
@@ -814,9 +928,6 @@ def test_nightly_self_heal_rebuilds_stale_on_disk_config(tmp_path, monkeypatch) 
     staging_root.mkdir(parents=True)
     timeline_db = staging_root / "customer_timeline_staging.sqlite"
     timeline_db.write_bytes(b"sqlite")
-    ready_package_db = tmp_path / "drop" / "mango_calls_ready.sqlite"
-    _write_ready_package_db(ready_package_db)
-    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", ready_package_db)
     dv2_config = staging_root / "nightly_service/dv2.json"
     dv2_config.parent.mkdir(parents=True)
     stale_payload = valid_nightly_payload(staging_root)
@@ -874,7 +985,195 @@ def test_nightly_self_heal_rebuilds_and_validates_persistent_config(tmp_path, mo
     command, kwargs = calls[0]
     assert command[command.index("--timeline-db") + 1] == str(timeline_db)
     assert command[command.index("--base-service-config") + 1] == str(base_config)
+    state_root = staging_root / "state"
+    assert command[command.index("--state-root") + 1] == str(state_root)
+    assert command[command.index("--out-root") + 1] == str(state_root)
+    assert "nightly_dv2_sources" not in command
     assert kwargs["env"]["CUSTOMER_TIMELINE_NIGHTLY_HOME"] == str(nightly_home)
+
+
+def test_builder_reuses_verified_mail_process_output_without_rebuilding(tmp_path, monkeypatch) -> None:
+    timeline_db = tmp_path / "staging" / "customer_timeline_staging.sqlite"
+    timeline_db.parent.mkdir(parents=True)
+    state_root = timeline_db.parent / "state"
+    mail_root = state_root / "mail_pipeline"
+    process_root = mail_root / "process"
+    process_root.mkdir(parents=True)
+    output_jsonl = process_root / "mail_archive_stage2_incremental.jsonl"
+    builder_manifest = process_root / "mail_increment_builder_manifest.json"
+    output_jsonl.write_text('{"source_id":"mail-1"}\n', encoding="utf-8")
+    builder_manifest.write_text('{"rows_written":1}\n', encoding="utf-8")
+    process_manifest = mail_root / "mail_process_manifest.json"
+    process_manifest.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "finished_at": "2026-08-28T12:00:00+00:00",
+                "rows_written": 1,
+                "output_jsonl": str(output_jsonl),
+                "output_sha256": builder.sha256_file(output_jsonl),
+                "builder_manifest": str(builder_manifest),
+                "builder_manifest_sha256": builder.sha256_file(builder_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_before = output_jsonl.read_bytes()
+    manifest_before = builder_manifest.read_bytes()
+    captured = {}
+
+    def fake_service_config(**kwargs):
+        captured["state_root"] = kwargs["state_root"]
+        captured["mail_jsonl"] = kwargs["mail_jsonl"]
+        captured["mail_process_manifest"] = kwargs["mail_process_manifest"]
+        captured["mail_process_manifest_sha256"] = kwargs["mail_process_manifest_sha256"]
+        return {}
+
+    monkeypatch.setattr(
+        builder,
+        "build_mail_increment",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("builder must not produce mail")),
+    )
+    monkeypatch.setattr(builder, "build_mango_freshness", lambda *args, **kwargs: {})
+    monkeypatch.setattr(builder, "build_service_config", fake_service_config)
+
+    result = builder.main(
+        [
+            "--source-root",
+            str(tmp_path / "source"),
+            "--mail-data-root",
+            str(tmp_path / "mail"),
+            "--out-root",
+            str(state_root),
+            "--state-root",
+            str(state_root),
+            "--timeline-db",
+            str(timeline_db),
+        ]
+    )
+
+    assert result == 0
+    assert captured["state_root"] == state_root.resolve()
+    assert captured["mail_jsonl"] == output_jsonl
+    assert captured["mail_process_manifest"] == process_manifest
+    assert captured["mail_process_manifest_sha256"] == builder.sha256_file(process_manifest)
+    assert output_jsonl.read_bytes() == output_before
+    assert builder_manifest.read_bytes() == manifest_before
+
+
+def test_builder_mail_process_input_is_missing_or_sha_verified(tmp_path) -> None:
+    state_root = tmp_path / "staging/state"
+    missing = builder.resolve_mail_process_input(state_root)
+
+    assert missing["status"] == "missing"
+    assert missing["verified"] is False
+    assert not (state_root / "mail_pipeline").exists()
+
+    mail_root = state_root / "mail_pipeline"
+    process_root = mail_root / "process"
+    process_root.mkdir(parents=True)
+    output_jsonl = process_root / "mail_archive_stage2_incremental.jsonl"
+    builder_manifest = process_root / "mail_increment_builder_manifest.json"
+    output_jsonl.write_text("{}\n", encoding="utf-8")
+    builder_manifest.write_text("{}\n", encoding="utf-8")
+    (mail_root / "mail_process_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "output_jsonl": str(output_jsonl),
+                "output_sha256": "wrong",
+                "builder_manifest": str(builder_manifest),
+                "builder_manifest_sha256": builder.sha256_file(builder_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="mail_process_output_sha_mismatch"):
+        builder.resolve_mail_process_input(state_root)
+
+
+def test_builder_uses_measured_mango_freshness_cursor(tmp_path) -> None:
+    source_root = tmp_path / "source"
+    capture = source_root / "product_data/mango_update_after_202607_test"
+    capture.mkdir(parents=True)
+    manifest = tmp_path / "mango_freshness.json"
+
+    report = builder.build_mango_freshness(source_root, manifest)
+
+    expected = report["latest"]["mtime_utc"]
+    assert builder.freshness_cursor_from_manifest(manifest) == expected
+    assert expected != "1970-01-01T00:00:00+00:00"
+
+
+def test_builder_rejects_second_descendant_state_tree(tmp_path) -> None:
+    timeline_db = tmp_path / "staging/customer_timeline_staging.sqlite"
+    timeline_db.parent.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="single <staging>/state tree"):
+        builder.main(
+            [
+                "--out-root",
+                str(timeline_db.parent / "state/other"),
+                "--state-root",
+                str(timeline_db.parent / "state/other"),
+                "--timeline-db",
+                str(timeline_db),
+            ]
+        )
+
+
+def test_builder_reuses_single_existing_state_tree(tmp_path) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    state_root = staging_root / "state"
+    tasks_snapshot = state_root / "amo_tasks/amo_tasks_snapshot.csv"
+    tasks_snapshot.parent.mkdir(parents=True)
+    tasks_snapshot.write_text("task_id\n", encoding="utf-8")
+    mail_data_root = _mail_root_with_identity(tmp_path)
+
+    payload = builder.build_service_config(
+        timeline_db=staging_root / "customer_timeline_staging.sqlite",
+        state_root=state_root,
+        mail_jsonl=state_root / "mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
+        mail_process_manifest=state_root / "mail_pipeline/mail_process_manifest.json",
+        mango_manifest=state_root / "freshness/mango.json",
+        base_service_config=staging_root / "missing.json",
+        mail_data_root=mail_data_root,
+        amo_tasks_snapshot=builder.resolve_amo_tasks_snapshot(state_root, explicit=None),
+    )
+
+    steps = {step["name"]: step for step in payload["steps"]}
+    assert steps["mango_processed_sweep"]["config"]["out_jsonl"] == str(
+        state_root / "calls/mango_processed_sweep.jsonl"
+    )
+    assert steps["calls_and_amo_incremental"]["config"]["journal_path"] == str(
+        state_root / "calls/import_journal.jsonl"
+    )
+    assert steps["amo_incremental_shadow"]["config"]["out_root"] == str(
+        state_root / "amo_incremental"
+    )
+    assert steps["amo_incremental_shadow"]["config"]["tasks_snapshot"] == str(tasks_snapshot)
+    assert steps["wappi_history_incremental"]["config"]["widget_link_db"] == str(
+        state_root / "wappi/wappi_amo_links.sqlite"
+    )
+    assert steps["wappi_history_incremental"]["config"]["checkpoint_dir"] == str(
+        state_root / "wappi/checkpoint"
+    )
+    assert steps["mail_archive_incremental"]["config"]["journal_path"] == str(
+        state_root / "mail_pipeline/process/mail_incremental_journal.jsonl"
+    )
+    mail_source = steps["mail_archive_incremental"]["config"]["sources"][0]
+    assert mail_source["proof_manifest_path"] == str(
+        state_root / "mail_pipeline/mail_process_manifest.json"
+    )
+    assert mail_source["proof_max_age_hours"] == 72.0
+    assert steps["mail_link_enrich"]["config"]["out_dir"] == str(
+        state_root / "mail_pipeline/mail_link_enrich"
+    )
+    assert steps["tallanto_cards_sync"]["config"]["out_root"] == str(
+        state_root / "tallanto_cards"
+    )
+    assert payload["out_root"] == str(state_root / "nightly_service_runs")
+    assert "nightly_dv2_sources" not in json.dumps(payload)
 
 
 def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> None:
@@ -883,11 +1182,10 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
-        out_root=staging_root / "nightly_dv2_sources",
-        mail_jsonl=staging_root / "mail.jsonl",
-        mail_manifest=staging_root / "mail.json",
-        mango_manifest=staging_root / "mango.json",
-        tallanto_manifest=staging_root / "tallanto.json",
+        state_root=staging_root / "state",
+        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
+        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=staging_root / "missing.json",
         mail_data_root=mail_data_root,
     )
@@ -904,7 +1202,7 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     wappi = steps["wappi_history_incremental"]
     assert wappi["config"]["require_widget_linkage"] is False
     assert wappi["config"]["checkpoint_dir"] == str(
-        staging_root / "nightly_dv2_sources/wappi_history_checkpoint"
+        staging_root / "state/wappi/checkpoint"
     )
     cards = steps["tallanto_cards_sync"]
     assert cards["kind"] == "tallanto_cards"
@@ -941,6 +1239,35 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert list(steps).index("stage4b_bot_opening") < list(steps).index("bot_safe_rebuild")
 
 
+def test_builder_uses_explicit_existing_tallanto_identity_db_without_mail_root(tmp_path) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    identity_db = tmp_path / "readonly/tallanto_identity.sqlite"
+    identity_db.parent.mkdir(parents=True)
+    identity_db.touch()
+
+    payload = builder.build_service_config(
+        timeline_db=staging_root / "customer_timeline_staging.sqlite",
+        state_root=staging_root / "state",
+        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
+        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mango_manifest=staging_root / "state/freshness/mango.json",
+        base_service_config=staging_root / "missing.json",
+        mail_data_root=tmp_path / "missing-mail-root",
+        tallanto_identity_dbs=[identity_db],
+    )
+
+    steps = {step["name"]: step for step in payload["steps"]}
+    assert steps["mail_link_enrich"]["config"]["tallanto_identity_dbs"] == [
+        str(identity_db.resolve())
+    ]
+
+    with pytest.raises(FileNotFoundError, match="Tallanto identity DB is missing"):
+        builder.resolve_tallanto_identity_dbs(
+            tmp_path / "missing-mail-root",
+            explicit=[tmp_path / "missing.sqlite"],
+        )
+
+
 def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     mail_data_root = _mail_root_with_identity(tmp_path)
@@ -960,7 +1287,13 @@ def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) 
                                     "normalizer": "mango_processed_summary",
                                     "required": True,
                                     "path": str(staging_root / "mango.jsonl"),
-                                }
+                                },
+                                {
+                                    "source_system": "amocrm_snapshot",
+                                    "normalizer": "amo_snapshot",
+                                    "required": True,
+                                    "path": str(staging_root / "legacy_amo.jsonl"),
+                                },
                             ],
                         },
                     }
@@ -972,11 +1305,10 @@ def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) 
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
-        out_root=staging_root / "nightly_dv2_sources",
-        mail_jsonl=staging_root / "mail.jsonl",
-        mail_manifest=staging_root / "mail.json",
-        mango_manifest=staging_root / "mango.json",
-        tallanto_manifest=staging_root / "tallanto.json",
+        state_root=staging_root / "state",
+        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
+        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=base,
         mail_data_root=mail_data_root,
     )
@@ -1033,11 +1365,10 @@ def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
-        out_root=staging_root / "nightly_dv2_sources",
-        mail_jsonl=staging_root / "mail.jsonl",
-        mail_manifest=staging_root / "mail.json",
-        mango_manifest=staging_root / "mango.json",
-        tallanto_manifest=staging_root / "tallanto.json",
+        state_root=staging_root / "state",
+        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
+        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=base,
         mail_data_root=mail_data_root,
     )
@@ -1046,10 +1377,11 @@ def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
     assert {"mango_processed_sweep", "calls_and_amo_incremental", "mail_archive_incremental"} <= steps.keys()
     assert all(steps[name]["required"] is True for name in module.REQUIRED_NIGHTLY_STEPS)
     assert steps["mango_processed_sweep"]["config"]["package_dbs"] == [
-        str(builder.MANGO_READY_PACKAGE_DB)
+        str(builder.configured_calls_working_db(builder.DEFAULT_MANGO_CALLS_SERVICE_CONFIG))
     ]
+    assert steps["mango_processed_sweep"]["config"]["scan_roots"] == []
     mango_source = steps["calls_and_amo_incremental"]["config"]["sources"][0]
-    assert mango_source["path"].endswith("nightly_dv2_sources/mango_processed_sweep.jsonl")
+    assert mango_source["path"].endswith("state/calls/mango_processed_sweep.jsonl")
 
 
 def test_summary_is_exactly_five_lines(tmp_path, monkeypatch) -> None:

@@ -12,7 +12,11 @@ from mango_mvp.customer_timeline.contracts import DerivedSignal, SignalSeverity,
 from mango_mvp.customer_timeline.ids import normalize_key, optional_text, require_text, require_timezone, stable_signal_id
 from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_entity_ref_values
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    customer_entity_ref_values,
+    customer_timeline_run_lock,
+)
 
 
 DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION = "customer_timeline_derived_signals_v1"
@@ -113,6 +117,7 @@ CALLBACK_PROMISE_MARKERS = (
 )
 CALLBACK_CONDITIONAL_MARKERS = ("если появ", "если будет", "при появлен")
 ACTIVE_DEAL_STATUSES = ("актив", "observed", "open", "new", "в работе", "первичный контакт", "переговор")
+AMO_TERMINAL_STATUS_IDS = frozenset({"142", "143"})
 PAYMENT_IN_MARKERS = ("in", "поступ", "оплат", "приход", "зачисл")
 PAYMENT_OUT_MARKERS = ("out", "refund", "возврат", "отмен", "cancel")
 ACTIVE_ABONEMENT_MARKERS = ("active", "актив", "действ", "открыт")
@@ -312,13 +317,54 @@ def backfill_sg_v1_signals(
     tenant_id: str = "foton",
     as_of: datetime,
     apply: bool = True,
+    lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
     require_timezone(as_of, "as_of")
     db = guard_customer_timeline_output_path(db_path, allowed_root)
     _require_existing_db(db)
+    if apply:
+        with customer_timeline_run_lock(db, timeout_seconds=lock_timeout_seconds):
+            with CustomerTimelineSQLiteStore(db, allowed_root=allowed_root) as store:
+                return backfill_sg_v1_signals_on_store(
+                    store,
+                    tenant_id=tenant_id,
+                    as_of=as_of,
+                )
     with _connect_existing_db(db, writable=False) as con:
         con.row_factory = sqlite3.Row
         loaded = _load_sg_v1_inputs(con, tenant_id=tenant_id)
+    return _build_and_write_sg_v1_signals(
+        loaded,
+        store=None,
+        tenant_id=tenant_id,
+        as_of=as_of,
+    )
+
+
+def backfill_sg_v1_signals_on_store(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    tenant_id: str = "foton",
+    as_of: datetime,
+) -> Mapping[str, Any]:
+    require_timezone(as_of, "as_of")
+    store._ensure_writable()  # noqa: SLF001 - Stage3 reuses the canonical writer session.
+    loaded = _load_sg_v1_inputs(store._con, tenant_id=tenant_id)  # noqa: SLF001
+    return _build_and_write_sg_v1_signals(
+        loaded,
+        store=store,
+        tenant_id=tenant_id,
+        as_of=as_of,
+    )
+
+
+def _build_and_write_sg_v1_signals(
+    loaded: Mapping[str, Mapping[str, Any]],
+    *,
+    store: CustomerTimelineSQLiteStore | None,
+    tenant_id: str,
+    as_of: datetime,
+) -> Mapping[str, Any]:
     signals: list[DerivedSignal] = []
     for customer_id, payload in loaded.items():
         signals.extend(
@@ -333,45 +379,44 @@ def backfill_sg_v1_signals(
         )
     write_status_counts: Counter[str] = Counter()
     lifecycle_status_counts: Counter[str] = Counter()
-    if apply:
+    if store is not None:
         desired_ids = {require_text(signal.signal_id, "signal_id") for signal in signals}
-        with CustomerTimelineSQLiteStore(db, allowed_root=allowed_root) as store:
-            with store.bulk_write():
-                for signal in signals:
-                    result = store.upsert_signal(signal, actor="sg_v1_backfill")
-                    write_status_counts[result.status] += 1
-                for existing in _list_existing_sg_v1_signals(store._con, tenant_id=tenant_id):
-                    signal_id = require_text(existing.get("signal_id"), "signal_id")
-                    if signal_id in desired_ids:
-                        continue
-                    existing_signal = _signal_from_payload(existing)
-                    if existing_signal.status != SignalStatus.ACTIVE:
-                        lifecycle_status_counts[existing_signal.status.value] += 1
-                        continue
-                    status = (
-                        SignalStatus.STALE
-                        if existing_signal.expires_at and existing_signal.expires_at <= as_of
-                        else SignalStatus.RESOLVED
-                    )
-                    lifecycle_status_counts[status.value] += 1
-                    result = store.upsert_signal(
-                        _replace_signal_lifecycle(
-                            existing_signal,
-                            signal_id=signal_id,
-                            status=status,
-                            created_at=existing_signal.created_at,
-                            metadata_extra={
-                                "lifecycle_reason": "expired" if status == SignalStatus.STALE else "predicate_resolved",
-                                "rules_version": SIGNAL_RULES_VERSION,
-                            },
-                        ),
-                        actor="sg_v1_backfill",
-                    )
-                    write_status_counts[result.status] += 1
+        with store.bulk_write():
+            for signal in signals:
+                result = store.upsert_signal(signal, actor="sg_v1_backfill")
+                write_status_counts[result.status] += 1
+            for existing in _list_existing_sg_v1_signals(store._con, tenant_id=tenant_id):
+                signal_id = require_text(existing.get("signal_id"), "signal_id")
+                if signal_id in desired_ids:
+                    continue
+                existing_signal = _signal_from_payload(existing)
+                if existing_signal.status != SignalStatus.ACTIVE:
+                    lifecycle_status_counts[existing_signal.status.value] += 1
+                    continue
+                status = (
+                    SignalStatus.STALE
+                    if existing_signal.expires_at and existing_signal.expires_at <= as_of
+                    else SignalStatus.RESOLVED
+                )
+                lifecycle_status_counts[status.value] += 1
+                result = store.upsert_signal(
+                    _replace_signal_lifecycle(
+                        existing_signal,
+                        signal_id=signal_id,
+                        status=status,
+                        created_at=existing_signal.created_at,
+                        metadata_extra={
+                            "lifecycle_reason": "expired" if status == SignalStatus.STALE else "predicate_resolved",
+                            "rules_version": SIGNAL_RULES_VERSION,
+                        },
+                    ),
+                    actor="sg_v1_backfill",
+                )
+                write_status_counts[result.status] += 1
     return {
         "schema_version": DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION,
         "rules_version": SIGNAL_RULES_VERSION,
-        "apply": bool(apply),
+        "apply": store is not None,
         "customers_scanned": len(loaded),
         "signals": len(signals),
         "signal_type_counts": dict(Counter(signal.signal_type for signal in signals)),
@@ -451,12 +496,40 @@ def _callback_promise_text(event: Mapping[str, Any]) -> str:
 def _is_active_deal(opportunity: Mapping[str, Any]) -> bool:
     if str(opportunity.get("opportunity_type") or "") != "amo_deal":
         return False
-    status = _joined_lower(opportunity.get("status"))
+    if opportunity.get("closed_at"):
+        return False
+    status = _joined_lower(opportunity.get("status")).strip()
     if not status:
         return True
+    if status in AMO_TERMINAL_STATUS_IDS:
+        return False
     if any(marker in status for marker in ("закры", "lost", "won", "успеш", "оплата получена")):
         return False
     return any(marker in status for marker in ACTIVE_DEAL_STATUSES) or status not in {"closed", "lost", "won"}
+
+
+def _is_active_deal_at(opportunity: Mapping[str, Any], *, as_of: datetime) -> bool:
+    """Return deal activity at a fixed cutoff, including later closures."""
+    require_timezone(as_of, "as_of")
+    opened_raw = str(opportunity.get("opened_at") or "").strip()
+    if opened_raw:
+        try:
+            opened_at = _parse_datetime(opened_raw, "opened_at")
+        except (TypeError, ValueError):
+            return False
+        if opened_at > as_of:
+            return False
+    closed_raw = str(opportunity.get("closed_at") or "").strip()
+    if not closed_raw:
+        return _is_active_deal(opportunity)
+    try:
+        closed_at = datetime.fromisoformat(closed_raw.replace("Z", "+00:00"))
+        require_timezone(closed_at, "closed_at")
+    except (TypeError, ValueError):
+        return False
+    if closed_at <= as_of:
+        return False
+    return str(opportunity.get("opportunity_type") or "") == "amo_deal"
 
 
 def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, Mapping[str, Any]]:
@@ -637,7 +710,7 @@ def _derive_deal_stalling(
     opportunities: Sequence[Mapping[str, Any]],
     as_of: datetime,
 ) -> Optional[DerivedSignal]:
-    if not events or not any(_is_active_deal(item) for item in opportunities):
+    if not events or not any(_is_active_deal_at(item, as_of=as_of) for item in opportunities):
         return None
     latest = events[-1]
     latest_at = _event_at(latest)

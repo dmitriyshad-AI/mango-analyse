@@ -40,6 +40,58 @@ def test_brand_evidence_is_deterministic_single_both_none() -> None:
     assert producer.detect_brand_evidence("Обсудили занятия") == ("none", ())
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("inbound", "inbound"),
+        ("входящий", "inbound"),
+        ("outbound", "outbound"),
+        ("исходящий", "outbound"),
+        ("internal", "internal"),
+        ("unknown", "system"),
+        ("garbage", "system"),
+        (None, "system"),
+        ("", "system"),
+    ],
+)
+def test_normalize_direction_maps_unknown_and_missing_to_system(raw: str | None, expected: str) -> None:
+    assert producer.normalize_direction(raw) == expected
+
+
+@pytest.mark.parametrize("nullish_match_class", ("ambiguous", "strong_unique"))
+def test_resolve_phone_identity_keeps_nullish_link_as_blocker(nullish_match_class: str) -> None:
+    with sqlite3.connect(":memory:") as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            "CREATE TABLE identity_links ("
+            "tenant_id TEXT, link_type TEXT, link_value TEXT, customer_id TEXT, match_class TEXT)"
+        )
+        con.executemany(
+            "INSERT INTO identity_links VALUES (?, ?, ?, ?, ?)",
+            (
+                ("foton", "phone", "+79990001122", "None", nullish_match_class),
+                ("foton", "phone", "+79990001122", "customer:valid", "strong_unique"),
+            ),
+        )
+
+        resolved = producer.resolve_phone_identity(con, "foton", "+79990001122")
+        assert resolved == producer.IdentityResolution(
+            match_class="ambiguous",
+            customer_id=None,
+            reason="invalid_existing_link_owner",
+            candidate_count=1,
+        )
+
+        con.execute("DELETE FROM identity_links WHERE customer_id = 'customer:valid'")
+        unresolved = producer.resolve_phone_identity(con, "foton", "+79990001122")
+        assert unresolved == producer.IdentityResolution(
+            match_class="ambiguous",
+            customer_id=None,
+            reason="invalid_existing_link_owner",
+            candidate_count=0,
+        )
+
+
 def seed_customer_with_phone(db_path: Path, allowed_root: Path, *, customer_id: str, phone: str) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
         store.upsert_customer(
@@ -82,6 +134,7 @@ def create_call_records_db(path: Path, rows: list[dict]) -> None:
               source_filename TEXT,
               source_file TEXT,
               started_at TEXT,
+              updated_at TEXT,
               phone TEXT,
               manager_name TEXT,
               direction TEXT,
@@ -97,17 +150,24 @@ def create_call_records_db(path: Path, rows: list[dict]) -> None:
         con.executemany(
             """
             INSERT INTO call_records (
-              id, source_call_id, source_filename, source_file, started_at, phone,
+              id, source_call_id, source_filename, source_file, started_at, updated_at, phone,
               manager_name, direction, duration_sec, analysis_status, analysis_json, transcript_text,
               amocrm_contact_id, amocrm_lead_id
             )
             VALUES (
-              :id, :source_call_id, :source_filename, :source_file, :started_at, :phone,
+              :id, :source_call_id, :source_filename, :source_file, :started_at, :updated_at, :phone,
               :manager_name, :direction, :duration_sec, :analysis_status, :analysis_json, :transcript_text,
               :amocrm_contact_id, :amocrm_lead_id
             )
             """,
-            [{**row, "transcript_text": row.get("transcript_text", "")} for row in rows],
+            [
+                {
+                    **row,
+                    "updated_at": row.get("updated_at", row["started_at"]),
+                    "transcript_text": row.get("transcript_text", ""),
+                }
+                for row in rows
+            ],
         )
 
 
@@ -160,7 +220,14 @@ def analysis(summary: str = "Клиент уточнил стоимость.", *
     )
 
 
-def run_producer(tmp_path: Path, *, timeline_db: Path, package_db: Path, limit: int | None = None) -> tuple[list[dict], dict]:
+def run_producer(
+    tmp_path: Path,
+    *,
+    timeline_db: Path,
+    package_db: Path,
+    limit: int | None = None,
+    since: str | None = None,
+) -> tuple[list[dict], dict]:
     out_jsonl = tmp_path / "mango_increment.jsonl"
     report_out = tmp_path / "producer_report.json"
     argv = [
@@ -175,10 +242,48 @@ def run_producer(tmp_path: Path, *, timeline_db: Path, package_db: Path, limit: 
     ]
     if limit is not None:
         argv.extend(["--limit", str(limit)])
+    if since is not None:
+        argv.extend(["--since", since])
     assert producer.main(argv) == 0
     events = [json.loads(line) for line in out_jsonl.read_text(encoding="utf-8").splitlines() if line.strip()]
     report = json.loads(report_out.read_text(encoding="utf-8"))
     return events, report
+
+
+def test_producer_filters_on_call_records_updated_at_not_old_call_date(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    package_db = tmp_path / "calls.sqlite"
+    create_call_records_db(
+        package_db,
+        [{
+            "id": 1,
+            "source_call_id": "late-analysis",
+            "source_filename": "late.wav",
+            "source_file": "/ignored/late.wav",
+            "started_at": "2026-01-01T09:00:00+00:00",
+            "updated_at": "2026-06-25T10:00:00+00:00",
+            "phone": "+7 916 111-22-33",
+            "manager_name": None,
+            "direction": "inbound",
+            "duration_sec": 60,
+            "analysis_status": "done",
+            "analysis_json": analysis(),
+            "amocrm_contact_id": None,
+            "amocrm_lead_id": None,
+        }],
+    )
+
+    events, report = run_producer(
+        tmp_path,
+        timeline_db=timeline_db,
+        package_db=package_db,
+        since="2026-06-25T09:55:00+00:00",
+    )
+
+    assert report["rows_selected"] == 1
+    assert events[0]["call_at"] == "2026-01-01T09:00:00+00:00"
+    assert events[0]["updated_at"] == "2026-06-25T10:00:00+00:00"
 
 
 def run_canonical_producer(tmp_path: Path, *, timeline_db: Path, canonical_db: Path) -> tuple[list[dict], dict]:
@@ -249,6 +354,13 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
     assert [event["event_type"] for event in events] == ["mango_call", "mango_call"]
     assert events[0]["customer_id"] == "customer:one"
     assert events[0]["match_class"] == "strong_unique"
+    assert events[0]["call_id"] == "provider:27100000001"
+    assert events[0]["provider_call_id"] == events[0]["call_id"]
+    assert events[0]["original_call_id"] == "27100000001"
+    assert events[0]["source_db"] == str(package_db.resolve())
+    assert events[0]["source_row_id"] == "1"
+    assert events[0]["source_filename"] == "call-one.wav"
+    assert events[0]["call_at"] == "2026-06-25T09:00:00+00:00"
     assert "customer_id" not in events[1]
     assert events[1]["match_class"] == "ambiguous"
     assert events[1]["identity_resolution_reason"] == "multiple_existing_customers"
@@ -443,3 +555,99 @@ def test_package_duplicate_source_call_id_is_stable_when_sibling_is_not_done(tmp
 
     assert report["events_written"] == 1
     assert events[0]["call_id"].startswith("provider:same-provider-id:")
+
+
+def test_package_duplicate_source_call_id_is_stable_across_databases_before_sibling_is_done(
+    tmp_path: Path,
+) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    done_db = tmp_path / "done.sqlite"
+    pending_db = tmp_path / "pending.sqlite"
+    common = {
+        "source_call_id": "same-provider-id",
+        "phone": "+7 916 111-22-33",
+        "manager_name": None,
+        "direction": None,
+        "duration_sec": None,
+        "amocrm_contact_id": None,
+        "amocrm_lead_id": None,
+    }
+    create_call_records_db(
+        done_db,
+        [
+            {
+                **common,
+                "id": 1,
+                "source_filename": "done.wav",
+                "source_file": "/ignored/done.wav",
+                "started_at": "2026-06-25T09:00:00+00:00",
+                "analysis_status": "done",
+                "analysis_json": analysis(),
+            }
+        ],
+    )
+    create_call_records_db(
+        pending_db,
+        [
+            {
+                **common,
+                "id": 2,
+                "source_filename": "pending.wav",
+                "source_file": "/ignored/pending.wav",
+                "started_at": "2026-06-25T09:05:00+00:00",
+                "analysis_status": "pending",
+                "analysis_json": "",
+            }
+        ],
+    )
+    out_jsonl = tmp_path / "mango_increment.jsonl"
+    report_out = tmp_path / "producer_report.json"
+
+    assert producer.main(
+        [
+            "--timeline-db",
+            str(timeline_db),
+            "--package-db",
+            str(done_db),
+            "--package-db",
+            str(pending_db),
+            "--out-jsonl",
+            str(out_jsonl),
+            "--report-out",
+            str(report_out),
+        ]
+    ) == 0
+
+    events = [json.loads(line) for line in out_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 1
+    assert events[0]["call_id"].startswith("provider:same-provider-id:")
+
+
+def test_producer_rejects_collision_of_final_duplicate_source_ids(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    package_db = tmp_path / "calls.sqlite"
+    common = {
+        "source_call_id": "same-provider-id",
+        "source_filename": "same.wav",
+        "started_at": "2026-06-25T09:00:00+00:00",
+        "phone": "+7 916 111-22-33",
+        "manager_name": None,
+        "direction": None,
+        "duration_sec": None,
+        "analysis_status": "done",
+        "analysis_json": analysis(),
+        "amocrm_contact_id": None,
+        "amocrm_lead_id": None,
+    }
+    create_call_records_db(
+        package_db,
+        [
+            {**common, "id": 1, "source_file": "/ignored/one.wav"},
+            {**common, "id": 2, "source_file": "/ignored/two.wav"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicate final call id"):
+        run_producer(tmp_path, timeline_db=timeline_db, package_db=package_db)

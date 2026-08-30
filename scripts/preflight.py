@@ -306,13 +306,20 @@ def _run_collect_only(root: Path, test_cmd: str) -> tuple[int, str]:
     return result.returncode, result.stdout + result.stderr
 
 
-def _refresh_inventory(root: Path, header: TzHeader) -> tuple[dict[str, object] | None, str | None]:
+def _refresh_inventory(
+    root: Path,
+    header: TzHeader,
+    *,
+    graph_path: Path | None = None,
+) -> tuple[dict[str, object] | None, str | None]:
     command = [
         sys.executable, str(root / "scripts/skills/inventory_before_build.py"), "--root", str(root),
         "--feature-id", header.feature_id or "", "--problem-id", header.problem_id or "",
         "--change", header.change or "", "--symbols", ",".join(header.symbols),
         "--keywords", ",".join(header.keywords), "--json",
     ]
+    if graph_path is not None:
+        command.extend(["--graph", str(graph_path)])
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120)
     if result.returncode not in {0, 1}:
         return None, "inventory helper завершился с ошибкой: " + result.stderr[-500:]
@@ -322,7 +329,13 @@ def _refresh_inventory(root: Path, header: TzHeader) -> tuple[dict[str, object] 
         return None, "inventory helper не вернул валидный JSON: " + result.stderr[-500:]
     return payload if isinstance(payload, dict) else None, None if isinstance(payload, dict) else "inventory JSON должен быть object"
 
-def _validate_inventory(root: Path, header: TzHeader, path: Path) -> list[str]:
+def _validate_inventory(
+    root: Path,
+    header: TzHeader,
+    path: Path,
+    *,
+    graph_path: Path | None = None,
+) -> list[str]:
     try:
         supplied = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -342,6 +355,7 @@ def _validate_inventory(root: Path, header: TzHeader, path: Path) -> list[str]:
         candidates = []
     decision = supplied.get("decision")
     owner = supplied.get("selected_owner")
+    owner_map = supplied.get("owner_map")
     if decision == "stop" or supplied.get("unresolved"):
         failures.append("inventory требует STOP")
     if decision in {"reuse", "extend", "port"}:
@@ -361,7 +375,25 @@ def _validate_inventory(root: Path, header: TzHeader, path: Path) -> list[str]:
             failures.append("decision=new без ABSENT_PROVEN на свежем Graphify")
     else:
         failures.append("неизвестный inventory decision")
-    current, error = _refresh_inventory(root, header)
+    if len(header.symbols) > 1:
+        if not isinstance(owner_map, dict):
+            failures.append("inventory не содержит карту владельцев символов")
+        else:
+            for symbol in header.symbols:
+                mapped = owner_map.get(symbol)
+                if not isinstance(mapped, dict) or not mapped.get("path") or not any(
+                    item.get("classification") in {"ACTIVE_REUSE", "ACTIVE_EXTEND", "DONOR_REF"}
+                    and item.get("verified_in_raw_source") is True
+                    and item.get("path") == mapped.get("path")
+                    and item.get("symbol") == symbol
+                    for item in candidates if isinstance(item, dict)
+                ):
+                    failures.append(f"символ {symbol} без raw-подтверждённого владельца")
+    current, error = (
+        _refresh_inventory(root, header, graph_path=graph_path)
+        if graph_path is not None
+        else _refresh_inventory(root, header)
+    )
     if error:
         failures.append(error)
     elif current is not None:
@@ -388,7 +420,8 @@ def _validate_claude_receipt(root: Path, receipt: Path, task: Path, inventory: P
 
 def run_preflight(
     root: Path, tz_path: Path, *, inventory_path: Path | None = None,
-    claude_receipt: Path | None = None, run_collect: bool = True,
+    claude_receipt: Path | None = None, graph_path: Path | None = None,
+    run_collect: bool = True,
 ) -> tuple[bool, list[str]]:
     failures: list[str] = []
     root = root.resolve()
@@ -417,7 +450,9 @@ def run_preflight(
         if inventory_path is None:
             failures.append("code-ТЗ требует --inventory")
         elif not missing:
-            failures.extend(_validate_inventory(root, header, inventory_path.resolve()))
+            failures.extend(_validate_inventory(
+                root, header, inventory_path.resolve(), graph_path=graph_path,
+            ))
         if claude_receipt is None:
             failures.append("code-ТЗ требует --claude-receipt")
         elif inventory_path is not None and not missing:
@@ -459,10 +494,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tz", required=True, type=Path)
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--claude-receipt", type=Path)
+    parser.add_argument("--graph", type=Path)
     parser.add_argument("--skip-collect-only", action="store_true")
     args = parser.parse_args(argv)
     ok, failures = run_preflight(
         args.root, args.tz, inventory_path=args.inventory, claude_receipt=args.claude_receipt,
+        graph_path=args.graph,
         run_collect=not args.skip_collect_only,
     )
     if not ok:

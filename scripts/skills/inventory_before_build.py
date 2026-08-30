@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -22,7 +24,12 @@ from mango_mvp.graphify_structural import graph_source_hints, load_output_manife
 from scripts.preflight import parse_worktrees_porcelain
 
 
-DEFAULT_GRAPH = Path("/Users/dmitrijfabarisov/Projects/_mango_graphify_current/output/graphify-out/graph.json")
+DEFAULT_GRAPH = Path(
+    os.environ.get(
+        "MANGO_GRAPHIFY_GRAPH",
+        REPO_ROOT.parent / "_mango_graphify_current/output/graphify-out/graph.json",
+    )
+)
 CODE_ROOTS = ("src", "scripts", "tests", ".claude", ".agents")
 OWNER_PREFIXES = ("src/", "scripts/", ".claude/", ".agents/")
 AUDIT_FILES = frozenset({"manifest.json", "changed_files.txt", "implementation_notes.md", "risk_review.md", "backward_compatibility.md"})
@@ -59,6 +66,7 @@ class InventoryResult:
     candidates: list[InventoryCandidate]
     decision: str
     selected_owner: dict[str, str]
+    owner_map: dict[str, dict[str, str]]
     unresolved: list[str]
     generated_at: str
 
@@ -74,7 +82,14 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout
 
 
-def _rg_hits(root: Path, term: str, paths: Sequence[str] = CODE_ROOTS, *, ignore_case: bool = False) -> list[tuple[str, int]]:
+def _rg_hits(
+    root: Path,
+    term: str,
+    paths: Sequence[str] = CODE_ROOTS,
+    *,
+    ignore_case: bool = False,
+    all_matches_per_path: bool = False,
+) -> list[tuple[str, int]]:
     existing = [path for path in paths if (root / path).exists()]
     if not existing:
         return []
@@ -92,7 +107,9 @@ def _rg_hits(root: Path, term: str, paths: Sequence[str] = CODE_ROOTS, *, ignore
             continue
         data = item["data"]
         pair = (str(data["path"]["text"]), int(data["line_number"]))
-        if not any(path == pair[0] for path, _line in hits):
+        if pair not in hits and (
+            all_matches_per_path or not any(path == pair[0] for path, _line in hits)
+        ):
             hits.append(pair)
         if len(hits) > 200:
             raise RuntimeError(f"query too broad: {term!r}")
@@ -112,14 +129,23 @@ def _dirty_paths(status: str) -> set[str]:
 
 
 def _owner_text(text: str, symbol: str) -> bool:
-    return any(marker in text.strip() for marker in (f"def {symbol}", f"class {symbol}", f"{symbol} =", f"{symbol}=", f"{symbol}:"))
+    stripped = text.strip()
+    escaped = re.escape(symbol)
+    return bool(
+        re.match(rf"^(?:async\s+)?def\s+{escaped}\b", stripped)
+        or re.match(rf"^class\s+{escaped}\b", stripped)
+        or re.match(rf"^{escaped}(?:\s*:[^=]+)?\s*=", stripped)
+    )
 
 
 def _owns_symbol(root: Path, path: str, line: int, symbol: str) -> bool:
     candidate = root / path
     if not candidate.is_file() or candidate.is_symlink():
         return False
-    text = candidate.read_text(encoding="utf-8", errors="ignore").splitlines()[line - 1].strip()
+    lines = candidate.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if line < 1 or line > len(lines):
+        return False
+    text = lines[line - 1].strip()
     return _owner_text(text, symbol)
 
 
@@ -205,30 +231,59 @@ def _metadata_hits(root: Path, term: str) -> list[InventoryCandidate]:
     return candidates
 
 
-def _decision(candidates: Sequence[InventoryCandidate], change: str, graph_fresh: bool) -> tuple[str, dict[str, str], list[str]]:
+def _owner_payload(item: InventoryCandidate) -> dict[str, str]:
+    return {"path": item.path, "symbol": item.symbol, "sha": item.sha or "WORKTREE"}
+
+
+def _decision(
+    candidates: Sequence[InventoryCandidate],
+    change: str,
+    graph_fresh: bool,
+    symbols: Sequence[str],
+) -> tuple[str, dict[str, str], dict[str, dict[str, str]], list[str]]:
     partial = [item for item in candidates if item.classification == "PARTIAL_WORKTREE"]
     active = [item for item in candidates if item.classification in {"ACTIVE_REUSE", "ACTIVE_EXTEND"}]
     donors = [item for item in candidates if item.classification == "DONOR_REF"]
     removed = [item for item in candidates if item.classification == "REMOVED_INTENTIONALLY"]
     if partial:
-        return "stop", {}, ["dirty_code_unclassified"]
+        return "stop", {}, {}, ["dirty_code_unclassified"]
     conflicts = {item.symbol for item in active if len({candidate.path for candidate in active if candidate.symbol == item.symbol}) > 1}
     if conflicts:
-        return "stop", {}, ["active_owner_conflict:" + ",".join(sorted(conflicts))]
+        return "stop", {}, {}, ["active_owner_conflict:" + ",".join(sorted(conflicts))]
+
+    owner_map: dict[str, dict[str, str]] = {}
+    for symbol in symbols:
+        matches = sorted(
+            (item for item in active if item.symbol == symbol),
+            key=lambda item: (item.path, item.line or 0, item.sha or ""),
+        )
+        if not matches:
+            matches = sorted(
+                (item for item in donors if item.symbol == symbol),
+                key=lambda item: (item.path, item.line or 0, item.sha or ""),
+            )
+        if matches:
+            owner_map[symbol] = _owner_payload(matches[0])
+
+    missing = [symbol for symbol in symbols if symbol not in owner_map]
     if active:
-        owner = active[0]
+        if missing:
+            return "stop", {}, owner_map, ["symbol_owner_missing:" + ",".join(missing)]
+        owner = sorted(active, key=lambda item: (item.symbol, item.path, item.line or 0))[0]
         decision = "reuse" if change in {"new", "remove"} else "extend"
-        return decision, {"path": owner.path, "symbol": owner.symbol, "sha": owner.sha or "WORKTREE"}, []
+        return decision, _owner_payload(owner), owner_map, []
     if any(item.source == "raw_keyword" for item in candidates):
-        return "stop", {}, ["keyword_lead_requires_classification"]
+        return "stop", {}, owner_map, ["keyword_lead_requires_classification"]
     if removed:
-        return "stop", {}, ["removed_intentionally_requires_owner_decision"]
+        return "stop", {}, owner_map, ["removed_intentionally_requires_owner_decision"]
     if donors:
-        owner = donors[0]
-        return "port", {"path": owner.path, "symbol": owner.symbol, "sha": owner.sha or ""}, []
+        if missing:
+            return "stop", {}, owner_map, ["symbol_owner_missing:" + ",".join(missing)]
+        owner = sorted(donors, key=lambda item: (item.symbol, item.path, item.line or 0))[0]
+        return "port", _owner_payload(owner), owner_map, []
     if not graph_fresh:
-        return "stop", {}, ["graphify_stale_absence_not_proven"]
-    return "new", {}, []
+        return "stop", {}, owner_map, ["graphify_stale_absence_not_proven"]
+    return "new", {}, owner_map, []
 
 
 def run_inventory(
@@ -273,7 +328,12 @@ def run_inventory(
             if not worktree.is_dir():
                 continue
             worktree_head = _git(worktree, "rev-parse", "HEAD").strip()
-            for path, line in _rg_hits(worktree, term, ignore_case=term not in symbol_terms):
+            for path, line in _rg_hits(
+                worktree,
+                term,
+                ignore_case=term not in symbol_terms,
+                all_matches_per_path=term in symbol_terms,
+            ):
                 term_hits.append((entry, worktree, path, line, worktree_head))
             for path in sorted(dirty.get(entry.path, set())):
                 if not any(path == item or path.startswith(item + "/") for item in CODE_ROOTS):
@@ -319,7 +379,7 @@ def run_inventory(
     actionable = [item for item in candidates if item.classification not in {"FALSE_MATCH", "IMPLEMENTED_OFF"}]
     if not actionable and graph_fresh:
         candidates.append(InventoryCandidate("ABSENT_PROVEN", "inventory", "", None, head, terms[0], "all permitted surfaces checked", True))
-    decision, owner, unresolved = _decision(candidates, change, graph_fresh)
+    decision, owner, owner_map, unresolved = _decision(candidates, change, graph_fresh, symbols)
     coverage = {key: "completed" for key in ("graphify", "worktrees", "raw_rg", "git_refs", "tasks", "audits", "decisions")}
     coverage["graphify"] = "completed" if graph.exists() and graph_rev else "missing"
     command_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -327,7 +387,7 @@ def run_inventory(
     return InventoryResult(
         "mango_prebuild_inventory_v1", feature_id, problem_id, head, branch, str(root),
         _fingerprint(root, head, worktrees_text, entries, dirty, statuses, [feature_id, problem_id, *terms], graph, [item for item in candidates if item.source in {"task_or_decision", "audit_metadata"}]), graph_rev, graph_fresh,
-        "mango_inventory_before_build_v2", "sha256:" + command_hash, [feature_id, problem_id, *terms], coverage, candidates, decision, owner, unresolved, generated_at,
+        "mango_inventory_before_build_v3", "sha256:" + command_hash, [feature_id, problem_id, *terms], coverage, candidates, decision, owner, owner_map, unresolved, generated_at,
     )
 
 
@@ -337,6 +397,8 @@ def _write_outputs(result: InventoryResult, out_dir: Path) -> None:
     (out_dir / "prebuild_inventory.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     lines = [f"# Prebuild inventory: {result.feature_id}", "", f"- Решение: `{result.decision}`", f"- HEAD: `{result.repo_head}`", f"- Graphify: `{result.graph_revision or 'missing'}`", "", "## Кандидаты"]
     lines.extend(f"- `{item.classification}` {item.source}: `{item.path or item.sha}` ({item.symbol})" for item in result.candidates)
+    lines.extend(["", "## Карта владельцев"])
+    lines.extend(f"- `{symbol}` → `{owner['path']}`" for symbol, owner in result.owner_map.items())
     (out_dir / "prebuild_inventory.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

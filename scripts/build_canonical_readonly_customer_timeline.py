@@ -38,6 +38,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--canonical-calls-db")
     parser.add_argument("--amo-contacts-csv")
     parser.add_argument("--amo-deals-csv")
+    parser.add_argument("--amo-tasks-csv")
     parser.add_argument("--mail-handoff-db")
     parser.add_argument("--mail-bridge-db")
     parser.add_argument("--max-call-events-per-contact", type=int, default=0)
@@ -72,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         canonical_calls_db=optional_path(args.canonical_calls_db),
         amo_contacts_csv=optional_path(args.amo_contacts_csv),
         amo_deals_csv=optional_path(args.amo_deals_csv),
+        amo_tasks_csv=optional_path(args.amo_tasks_csv),
         mail_handoff_db=optional_path(args.mail_handoff_db),
         mail_bridge_db=optional_path(args.mail_bridge_db),
         generated_at=parse_generated_at(args.generated_at),

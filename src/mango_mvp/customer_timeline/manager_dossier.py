@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +15,7 @@ from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.derived_signals import (
     _is_access_event,
     _is_active_deal,
+    _is_active_deal_at,
     dedupe_customer_payment_rows as dedupe_family_payment_rows,
 )
 from mango_mvp.customer_timeline.freshness import (
@@ -23,11 +24,16 @@ from mango_mvp.customer_timeline.freshness import (
     source_freshness_rows,
 )
 from mango_mvp.customer_timeline.next_step_resolver import (
-    NEXT_STEP_STATUS_ACTIVE,
+    ManagerActionReadSnapshot,
+    ManagerActionResolution as DossierManagerAction,
     NEXT_STEP_STATUS_EMPTY,
     _event_text,
     _is_non_closing_service_event,
-    resolve_customer_next_step,
+    event_has_explicit_contact_opt_out,
+    is_meaningful_manager_action,
+    load_durable_contact_restrictions_batch,
+    load_manager_action_read_snapshot,
+    resolve_customer_manager_action,
 )
 from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
@@ -37,6 +43,14 @@ from mango_mvp.customer_timeline.store import (
     customer_entity_ref_values,
     customer_timeline_readonly_uri,
     open_family_identity_conflict_customer_ids,
+    trusted_family_customer_ids as _family_scope_customer_ids,
+)
+from mango_mvp.customer_timeline.tallanto_finished_grade import (
+    FAMILY_LINK_SCOPE_INVALID,
+    FAMILY_LINK_SCOPE_OUT,
+    family_link_student_type_contract,
+    family_link_timeline_scope_state,
+    family_timeline_scope_decision,
 )
 from mango_mvp.knowledge_base.price_axes_catalog import extract_price_query_axes, select_price
 
@@ -163,6 +177,38 @@ OWNER50_REASON_TEXT = {
     "person_origin_unproven": "Нет структурного происхождения контакта (AMO-контакт или Tallanto ID) -- имя не подтверждено как клиент",
     "human_name_unproven": "Имя человека не подтверждено структурным источником",
 }
+MANAGER_ACTION_REVIEW_TEXT = {
+    "identity_conflict_open": "Есть открытый конфликт идентификации",
+    "amo_task_missing": "В AMO не доказана открытая задача",
+    "amo_tasks_cursor_missing": "Нет подтверждённого курсора AMO Tasks",
+    "amo_tasks_cursor_in_future": "Время проверки AMO Tasks некорректно",
+    "amo_tasks_cursor_stale": "Проверка AMO Tasks устарела",
+    "amo_tasks_cursor_incomplete": "Полная исходная выборка AMO Tasks не подтверждена",
+    "amo_tasks_cursor_not_ok": "Последнее чтение AMO Tasks не подтверждено",
+    "amo_tasks_import_missing": "Нет завершённого импорта AMO Tasks",
+    "amo_tasks_import_not_completed": "Последний импорт AMO Tasks не завершён",
+    "amo_tasks_import_in_future": "Время импорта AMO Tasks некорректно",
+    "amo_tasks_import_stale": "Импорт AMO Tasks устарел",
+    "task_completed": "Задача AMO уже закрыта",
+    "task_completion_unknown": "Статус задачи AMO не доказан",
+    "task_owner_missing": "В задаче AMO не указан ответственный",
+    "task_owner_invalid": "Ответственный задачи AMO некорректен",
+    "task_owner_actor_mismatch": "Ответственный задачи AMO не совпадает с владельцем события",
+    "task_due_missing": "В задаче AMO отсутствует срок",
+    "task_due_not_absolute": "Срок задачи AMO записан некорректно",
+    "task_due_not_future": "Срок задачи AMO уже прошёл",
+    "task_due_mismatch": "Срок задачи AMO не совпадает в источниках",
+    "task_action_not_concrete": "Действие задачи AMO недостаточно конкретно",
+    "task_action_mismatch": "Текст действия задачи AMO не совпадает в источниках",
+    "task_match_not_strong": "Связь задачи AMO с клиентом не доказана",
+    "task_pending_attribution": "Принадлежность задачи AMO ещё не проверена",
+    "task_id_provenance_mismatch": "task_id не совпадает с первичным источником AMO",
+    "task_source_ref_mismatch": "Ссылка на задачу AMO не совпадает с task_id",
+    "task_opportunity_foreign_customer": "Сделка AMO принадлежит другому клиенту",
+    "task_opportunity_lead_mismatch": "Сделка AMO не совпадает с lead_id задачи",
+    "task_opportunity_status_missing": "Активный статус сделки AMO не доказан",
+    "task_opportunity_not_active": "Сделка AMO уже не активна",
+}
 # требование E2 (26.07): три новых поля в самом конце -- НЕ вставлять в середину, позиционные
 # индексы существующих колонок (в т.ч. в тестах) на них полагаются.
 OWNER50_REQUIRED_COLUMNS = (
@@ -172,24 +218,8 @@ OWNER50_REQUIRED_COLUMNS = (
     "Формула ранга", "Действие одной фразой",
     "ID ребёнка (адресат)", "Ребёнок (адресат)", "Класс (адресат)",
     "Члены семьи",
+    "Ответственный задачи", "Срок задачи", "AMO task_id", "AMO lead_id",
 )
-MANAGER_OPTOUT_PHRASES = (
-    "не пишите",
-    "больше не пишите",
-    "перестаньте писать",
-    "не звоните",
-    "больше не звоните",
-    "не надо мне звонить",
-    "не беспокойте",
-    "не связывайтесь",
-    "не связываться",
-    "удалите номер",
-    "отпишите меня",
-    "хочу отписаться",
-    "не хочу получать рассылку",
-)
-
-
 # ---------------------------------------------------------------------------
 # Owner50: classify_family -- классификация READY/CANDIDATE/EXCLUDED (§3-5
 # спеки владельца SPEC_tablitsa_50_semey.md), встроена сюда по запросу
@@ -302,7 +332,7 @@ def owner50_tier_reason_text(code: str) -> str:
         return f"Активен риск-сигнал {code.split(':', 1)[1]}"
     if code.startswith("classification_error:"):
         return f"Внутренняя ошибка классификации ({code.split(':', 1)[1]}) — строка исключена, не подана как готовая"
-    return OWNER50_TIER_REASON_TEXT.get(code, code)
+    return OWNER50_TIER_REASON_TEXT.get(code) or MANAGER_ACTION_REVIEW_TEXT.get(code) or code
 
 
 def classify_family(family: Mapping[str, Any], *, as_of: datetime | None = None) -> dict[str, Any]:
@@ -362,7 +392,8 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         signal: {"signal_type", "created_at", "evidence_text", "event_id", "source_system"} | None -- Г5.
             event_id+source_system -- ТОЛЬКО если разрешаются в реальное события events_by_id
             с СОВПАДАЮЩИМ source_system (требование архитектора #2); иначе signal_ok=False.
-        next_step: {"action", "due"} | None -- Г6.
+        manager_action: DossierManagerAction converted to a mapping. READY requires its
+            readiness_state="ready"; its action/due are the only operational next step.
         product: {"name", "brand", "verified", "source", "seats_available", "grade_min", "grade_max"} | None -- Г7.
             source, начинающийся с "kb" (в проде -- "kb_price_axes_catalog:<entry_id>" из
             _owner50_select_price_entry/_owner50_product_from_price_entry, требование #3) --
@@ -505,7 +536,22 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         # правка Fable #2: устаревший сигнал (>30 дней) -- уже не повод писать "сегодня".
         missing.append("stale_signal")
 
-    next_step = _mapping(family.get("next_step"))
+    manager_action = _mapping(family.get("manager_action"))
+    manager_action_state = _clean_text(manager_action.get("readiness_state")).casefold()
+    manager_reason_codes = tuple(
+        dict.fromkeys(
+            _clean_text(code)
+            for code in manager_action.get("readiness_reason_codes") or ()
+            if _clean_text(code)
+        )
+    )
+    if manager_action_state != "ready":
+        manager_reason = _clean_text(manager_action.get("reason"))
+        missing.extend(manager_reason_codes or (manager_reason or "amo_task_missing",))
+    next_step = {
+        "action": manager_action.get("action"),
+        "due": manager_action.get("due_at"),
+    }
     next_step_ok = (
         _owner50_is_concrete_next_step(str(next_step.get("action") or ""))
         and _parse_iso_datetime(next_step.get("due")) is not None
@@ -635,13 +681,13 @@ def resolve_evidence_source(event_id: str, events_by_id: Mapping[str, Mapping[st
 
 def owner50_action_text(family: Mapping[str, Any]) -> str:
     """Правка Fable #1: одна императивная фраза "кому + что + срок" для READY-строки
-    ("тест 5 секунд" -- менеджер прочитал и сразу звонит). Пусто, если next_step.action
-    не задан -- в этом случае строка и не должна была стать READY (см. Г6 выше)."""
-    next_step = _mapping(family.get("next_step"))
-    action = _clean_text(next_step.get("action"))
+    ("тест 5 секунд" -- менеджер прочитал и сразу звонит). Источник действия
+    и срока -- только строгий manager_action из AMO Tasks."""
+    manager_action = _mapping(family.get("manager_action"))
+    action = _clean_text(manager_action.get("action"))
     if not action:
         return ""
-    due = _clean_text(next_step.get("due"))
+    due = _clean_text(manager_action.get("due_at"))
     who = _clean_text(_mapping(family.get("identity")).get("display_name"))
     pieces = [action.rstrip(".")]
     if who and who.casefold() not in action.casefold():
@@ -696,6 +742,8 @@ def _owner50_resolve_child_grade(child: Mapping[str, Any], as_of: datetime) -> i
 
 
 def _owner50_child_is_graduate(child: Mapping[str, Any], as_of: datetime) -> bool:
+    if child.get("grade_semantics") == "tallanto_finished_grade":
+        return child.get("is_graduate") is True
     if child.get("is_graduate"):
         return True
     grade = _owner50_resolve_child_grade(child, as_of)
@@ -768,13 +816,14 @@ def _owner50_is_concrete_next_step(text: str) -> bool:
     value = _clean_text(text)
     if value.casefold().startswith(_OWNER50_CLARIFY_INTEREST_PREFIX):
         return True  # спека §5.3: "уточнить интерес" -- легальный шаг сам по себе, даже короткий
-    return _meaningful_next_step(value)
+    return is_meaningful_manager_action(value)
 
 
 def _owner50_select_target_child(
     verified_children: Sequence[Any],
     child_grade_sets: Sequence[set[int]],
     child_is_graduate: Sequence[bool],
+    child_in_timeline_scope: Sequence[bool] | None = None,
 ) -> tuple[Any, int | None, bool]:
     """Требование E2 (26.07): продукт/предложение адресованы ОДНОМУ конкретному ребёнку, не
     "младшему классу из всей истории семьи". child_grade_sets[i] -- это МНОЖЕСТВО ВСЕХ
@@ -794,10 +843,16 @@ def _owner50_select_target_child(
         "самый младший из подходящих" (то же запрещённое гадание, просто на уровне детей,
         а не истории одного ребёнка)."""
     eligible: list[tuple[Any, int]] = []
-    for child_row, grades, is_graduate in zip(verified_children, child_grade_sets, child_is_graduate):
+    scopes = child_in_timeline_scope or [False] * len(verified_children)
+    for child_row, grades, is_graduate, in_scope in zip(
+        verified_children, child_grade_sets, child_is_graduate, scopes,
+    ):
         if is_graduate:
             continue
-        single_grades = {grade for grade in grades if 1 <= grade <= 10}
+        single_grades = {
+            grade for grade in grades
+            if 1 <= grade <= 10 or (in_scope and grade == 11)
+        }
         if len(single_grades) == 1:
             eligible.append((child_row, next(iter(single_grades))))
     if not eligible:
@@ -807,6 +862,38 @@ def _owner50_select_target_child(
         return None, None, True
     child_row, grade = eligible[0]
     return child_row, grade, False
+
+
+def _owner50_tallanto_grade_contract(child: Any) -> tuple[bool, bool, bool, set[int]]:
+    """Return (has_contract, in_scope, explicit_graduate, target_grades)."""
+    record, valid = _owner50_tallanto_record(child)
+    return family_link_student_type_contract(record) if valid else (True, False, True, set())
+
+
+def _owner50_tallanto_scope_state(child: Any) -> str:
+    record, valid = _owner50_tallanto_record(child)
+    return family_link_timeline_scope_state(record) if valid else FAMILY_LINK_SCOPE_INVALID
+
+
+def _owner50_tallanto_record(child: Any) -> tuple[Mapping[str, Any], bool]:
+    try:
+        raw = child["record_json"]
+    except (KeyError, TypeError, IndexError):
+        raw = child.get("record_json") if isinstance(child, Mapping) else None
+    parsed = _json_any(raw) if isinstance(raw, str) else raw
+    if not isinstance(parsed, Mapping):
+        return {}, False
+    record = dict(parsed)
+    if not isinstance(record.get("student_types"), list) and not isinstance(record.get("grades"), list):
+        try:
+            grades_raw = child["grades_json"]
+        except (KeyError, TypeError, IndexError):
+            grades_raw = child.get("grades_json") if isinstance(child, Mapping) else None
+        grades = _json_any(grades_raw) if isinstance(grades_raw, str) else grades_raw
+        if not isinstance(grades, list):
+            return {}, False
+        record["grades"] = grades
+    return record, True
 
 
 def _owner50_family_assumptions(family: Mapping[str, Any], children: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -834,6 +921,10 @@ class DossierRow:
     source: str
 
 
+def _record_source(table: str, *parts: Any) -> str:
+    return f"{table}:{json.dumps([str(value) for value in parts], ensure_ascii=False, separators=(',', ':'))}"
+
+
 @dataclass(frozen=True)
 class CustomerDossier:
     tenant_id: str
@@ -845,17 +936,18 @@ class CustomerDossier:
     actuality_header: str = ""
     family: tuple[DossierRow, ...] = field(default_factory=tuple)
     money: tuple[DossierRow, ...] = field(default_factory=tuple)
+    active_deals: tuple[DossierRow, ...] = field(default_factory=tuple)
+    attendance: tuple[DossierRow, ...] = field(default_factory=tuple)
     signals: tuple[DossierRow, ...] = field(default_factory=tuple)
     next_step: str = ""
     next_step_source: str = ""
     action_status: str = NEXT_STEP_STATUS_EMPTY
     no_action_reason_code: str = ""
+    manager_action: DossierManagerAction = field(default_factory=DossierManagerAction)
     objections: tuple[DossierRow, ...] = field(default_factory=tuple)
     chronology: tuple[DossierRow, ...] = field(default_factory=tuple)
     interests: tuple[DossierMarker, ...] = field(default_factory=tuple)
     pains: tuple[DossierMarker, ...] = field(default_factory=tuple)
-
-
 def build_customer_dossier(
     con: sqlite3.Connection,
     *,
@@ -863,7 +955,13 @@ def build_customer_dossier(
     customer_id: str,
     canonical_calls: Mapping[str, str] | None = None,
     actuality_header: str = "",
+    as_of: datetime | None = None,
+    manager_action_read_snapshot: ManagerActionReadSnapshot | None = None,
 ) -> CustomerDossier:
+    evaluation_at = as_of or datetime.now(timezone.utc)
+    if evaluation_at.tzinfo is None or evaluation_at.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    evaluation_at = evaluation_at.astimezone(timezone.utc)
     con.row_factory = sqlite3.Row
     customer = con.execute(
         """
@@ -875,6 +973,37 @@ def build_customer_dossier(
     ).fetchone()
     if customer is None:
         raise ValueError(f"customer not found: {customer_id}")
+    if manager_action_read_snapshot is None:
+        manager_action_read_snapshot = load_manager_action_read_snapshot(
+            con,
+            tenant_id=tenant_id,
+            customer_ids=(customer_id,),
+            as_of=evaluation_at,
+        )
+    family_customer_ids = (
+        manager_action_read_snapshot.family_customer_ids_by_customer.get(customer_id)
+        or (customer_id,)
+    )
+    manager_action = resolve_customer_manager_action(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=evaluation_at,
+        read_snapshot=manager_action_read_snapshot,
+    )
+    if "identity_conflict_open" in manager_action.readiness_reason_codes:
+        return CustomerDossier(
+            tenant_id=str(customer["tenant_id"]),
+            customer_id=str(customer["customer_id"]),
+            display_name=_clean_text(customer["display_name"]),
+            brand="",
+            phone=_clean_text(customer["primary_phone"]),
+            email=_clean_text(customer["primary_email"]),
+            actuality_header=actuality_header,
+            action_status=manager_action.status,
+            no_action_reason_code=manager_action.reason,
+            manager_action=manager_action,
+        )
     customer_record = _safe_json(customer["record_json"])
     identity_brands = [
         str(item).strip().casefold()
@@ -883,14 +1012,26 @@ def build_customer_dossier(
     ]
     opportunities = con.execute(
         """
-        SELECT opportunity_id, record_json
-        FROM customer_opportunities
-        WHERE tenant_id = ? AND customer_id = ?
-        ORDER BY opened_at DESC, opportunity_id
+        SELECT opportunity.opportunity_id, opportunity.customer_id,
+               opportunity.opportunity_type, opportunity.source_system,
+               opportunity.source_id, opportunity.title, opportunity.status,
+               opportunity.opened_at, opportunity.closed_at, opportunity.record_json,
+               identity.display_name AS source_customer_name
+        FROM customer_opportunities AS opportunity
+        LEFT JOIN customer_identities AS identity
+          ON identity.tenant_id=opportunity.tenant_id
+         AND identity.customer_id=opportunity.customer_id
+        WHERE opportunity.tenant_id = ?
+          AND opportunity.customer_id IN (SELECT value FROM json_each(?))
+          AND (opportunity.opened_at IS NULL OR julianday(opportunity.opened_at)<=julianday(?))
+        ORDER BY opportunity.opened_at DESC, opportunity.opportunity_id
         """,
-        (tenant_id, customer_id),
+        (tenant_id, json.dumps(family_customer_ids, ensure_ascii=False), evaluation_at.isoformat()),
     ).fetchall()
-    opportunity_records = tuple(_safe_json(row["record_json"]) for row in opportunities)
+    customer_opportunities = tuple(
+        row for row in opportunities if str(row["customer_id"]) == customer_id
+    )
+    opportunity_records = tuple(_safe_json(row["record_json"]) for row in customer_opportunities)
     event_brand_records = tuple(
         _safe_json(row["record_json"])
         for row in con.execute(
@@ -898,8 +1039,9 @@ def build_customer_dossier(
             SELECT record_json
             FROM timeline_events
             WHERE tenant_id = ? AND customer_id = ?
+              AND julianday(event_at)<=julianday(?)
             """,
-            (tenant_id, customer_id),
+            (tenant_id, customer_id, evaluation_at.isoformat()),
         ).fetchall()
     )
     derived_brands = customer_summary_brands(opportunity_records, event_brand_records, ())
@@ -918,16 +1060,17 @@ def build_customer_dossier(
           AND customer_id = ?
           AND event_type = 'mango_call'
           AND match_status = 'strong_unique'
+          AND julianday(event_at)<=julianday(?)
           AND (superseded_by IS NULL OR superseded_by = '')
           AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
         ORDER BY event_at DESC, event_id DESC
         LIMIT 100
         """,
-        (tenant_id, customer_id),
+        (tenant_id, customer_id, evaluation_at.isoformat()),
     ).fetchall()
     interests: list[DossierMarker] = []
     pains: list[DossierMarker] = []
-    for value in _product_interest_values(customer["record_json"], opportunities):
+    for value in _product_interest_values(customer["record_json"], customer_opportunities):
         interests.append(DossierMarker(kind="interest", text=f"Из данных: {value}", source="products_of_interest"))
     call_texts = canonical_calls or {}
     for event in events:
@@ -937,9 +1080,18 @@ def build_customer_dossier(
         source = f"mango_call:{event['source_id']}"
         interests.extend(_markers_from_client_text(client_text, INTEREST_MARKER_RE, kind="interest", label="Интерес из звонка", source=source))
         pains.extend(_markers_from_client_text(client_text, PAIN_MARKER_RE, kind="pain", label="Боль из звонка", source=source))
-    signals = _signal_rows(con, tenant_id=tenant_id, customer_id=customer_id)
-    next_step, next_step_source, action_status, no_action_reason_code = _next_step_for_dossier(
-        con, tenant_id=tenant_id, customer_id=customer_id, signals=signals
+    signals = _signal_rows(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=evaluation_at,
+    )
+    action_ready = manager_action.readiness_state == "ready"
+    next_step = manager_action.action if action_ready else ""
+    next_step_source = (
+        f"amo_task:{manager_action.action_provenance.get('task_id', '')}"
+        if action_ready
+        else ""
     )
     return CustomerDossier(
         tenant_id=str(customer["tenant_id"]),
@@ -954,17 +1106,52 @@ def build_customer_dossier(
                 con,
                 tenant_id=tenant_id,
                 customer_id=customer_id,
+                customer_ids=family_customer_ids,
                 active_brand=brands[0] if len(brands) == 1 else "",
             )
         ),
-        money=tuple(_money_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
+        money=tuple(_money_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            as_of=evaluation_at,
+        )),
+        active_deals=tuple(_active_deal_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            opportunities=opportunities,
+            as_of=evaluation_at,
+        )),
+        attendance=tuple(_attendance_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            as_of=evaluation_at,
+        )),
         signals=tuple(signals),
         next_step=next_step,
         next_step_source=next_step_source,
-        action_status=action_status,
-        no_action_reason_code=no_action_reason_code,
-        objections=tuple(_objection_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
-        chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=12)),
+        action_status=manager_action.status,
+        no_action_reason_code=manager_action.reason,
+        manager_action=manager_action,
+        objections=tuple(_objection_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            as_of=evaluation_at,
+        )),
+        chronology=tuple(_chronology_rows(
+            con,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            customer_ids=family_customer_ids,
+            as_of=evaluation_at,
+            limit=12,
+        )),
         interests=tuple(_dedupe_markers(interests, limit=8)),
         pains=tuple(_dedupe_markers(pains, limit=8)),
     )
@@ -1003,6 +1190,17 @@ def build_manager_dossier_workbook(
             raise RuntimeError(f"manager freshness gate failed: {reasons}")
         segment_total = _full_dossier_segment_count(con, tenant_id=tenant_id)
         actuality_header = _actuality_header(freshness, reconcile)
+        manager_action_as_of = datetime.now(timezone.utc)
+        manager_action_read_snapshot = (
+            load_manager_action_read_snapshot(
+                con,
+                tenant_id=tenant_id,
+                customer_ids=ids,
+                as_of=manager_action_as_of,
+            )
+            if ids
+            else None
+        )
         dossiers: list[CustomerDossier] = []
         missing_customer_ids: list[str] = []
         exclusion_counts: Counter[str] = Counter()
@@ -1024,6 +1222,8 @@ def build_manager_dossier_workbook(
                         customer_id=customer_id,
                         canonical_calls=canonical_calls,
                         actuality_header=actuality_header,
+                        as_of=manager_action_as_of,
+                        manager_action_read_snapshot=manager_action_read_snapshot,
                     )
                 )
             except ValueError:
@@ -1044,12 +1244,17 @@ def build_manager_dossier_workbook(
         "pains_total": sum(len(item.pains) for item in dossiers),
         "family_rows_total": sum(len(item.family) for item in dossiers),
         "money_rows_total": sum(len(item.money) for item in dossiers),
+        "active_deals_total": sum(len(item.active_deals) for item in dossiers),
+        "attendance_rows_total": sum(len(item.attendance) for item in dossiers),
         "signals_total": sum(len(item.signals) for item in dossiers),
         "objections_total": sum(len(item.objections) for item in dossiers),
         "chronology_rows_total": sum(len(item.chronology) for item in dossiers),
         "next_step_rows_total": sum(1 for item in dossiers if item.next_step),
         "missing_next_step_rows_total": sum(1 for item in dossiers if not item.next_step),
         "action_status_counts": dict(sorted(Counter(item.action_status for item in dossiers).items())),
+        "manager_action_readiness_counts": dict(sorted(Counter(
+            item.manager_action.readiness_state for item in dossiers
+        ).items())),
         "no_action_reason_counts": dict(sorted(Counter(
             item.no_action_reason_code for item in dossiers if item.no_action_reason_code
         ).items())),
@@ -1383,7 +1588,12 @@ def manager_outreach_eligibility(
         ):
             reasons.append("meaningful_outbound_after_evidence")
     # ponytail: block historical hard risks until a structured resolution/opt-in field exists.
-    reasons.extend(_durable_contact_risks(con, tenant_id=tenant_id, customer_id=customer_id))
+    reasons.extend(_durable_contact_risks(
+        con,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        as_of=now,
+    ))
     unique_reasons = tuple(dict.fromkeys(reasons))
     return {
         "eligible": not unique_reasons,
@@ -1440,28 +1650,29 @@ def _has_active_customer_access(con: sqlite3.Connection, *, tenant_id: str, cust
     return False
 
 
-def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> tuple[str, ...]:
-    customer_ids = list(_family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id))
-    family_link_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(family_links_v1)").fetchall()}
-    if not _table_exists(con, "family_members_v1") and "family_id" in family_link_columns:
-        related = con.execute(
-            "SELECT DISTINCT sibling.customer_id FROM family_links_v1 current "
-            "JOIN family_links_v1 sibling ON sibling.tenant_id=current.tenant_id AND sibling.family_id=current.family_id "
-            "WHERE current.tenant_id=? AND current.customer_id=? "
-            "AND current.status='confident' AND current.confidence IN ('high','medium') "
-            "AND sibling.status='confident' AND sibling.confidence IN ('high','medium')",
-            (tenant_id, customer_id),
-        ).fetchall()
-        customer_ids.extend(str(row[0]) for row in related if row[0])
-    customer_ids = list(dict.fromkeys(customer_ids))
+def _durable_contact_risks(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> tuple[str, ...]:
+    scopes, restrictions = load_durable_contact_restrictions_batch(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=(customer_id,),
+        as_of=as_of,
+    )
+    customer_ids = scopes[customer_id]
     rows = con.execute(
         "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
         f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({','.join('?' for _ in customer_ids)}) "
+        "AND julianday(event_at)<=julianday(?) "
         "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true') "
         "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
-        (tenant_id, *customer_ids),
+        (tenant_id, *customer_ids, as_of.isoformat()),
     ).fetchall()
-    risks: list[str] = []
+    risks = list(restrictions[customer_id])
     for row in rows:
         event = dict(row)
         stored = _safe_json(row["record_json"])
@@ -1474,8 +1685,6 @@ def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_
         text = _event_text(event)
         if hard_codes_from_text(text):
             risks.append("durable_p0_history")
-        if any(phrase in text for phrase in MANAGER_OPTOUT_PHRASES):
-            risks.append("durable_opt_out")
     return tuple(dict.fromkeys(risks))
 
 
@@ -1688,6 +1897,13 @@ def _owner50_family_rows(
         include_purchases="customer_purchases_v1" in available,
         include_objections="customer_objections_v1" in available,
     )
+    task_customer_ids = tuple(str(row["customer_id"]) for row in snapshot["signals"])
+    manager_action_read_snapshot = load_manager_action_read_snapshot(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=task_customer_ids,
+        as_of=as_of,
+    )
     selected_families = frozenset(str(value) for value in family_ids if str(value))
     grouped: dict[str, dict[str, list[sqlite3.Row]]] = defaultdict(lambda: defaultdict(list))
     for kind in ("signals", "members", "children", "opportunities", "events", "risk_signals", "purchases", "objections"):
@@ -1743,6 +1959,7 @@ def _owner50_family_rows(
     )
     candidates: list[dict[str, Any]] = []
     control: list[tuple[str, ...]] = []
+    manager_actions_by_customer: dict[str, DossierManagerAction] = {}
     for family_id, family in grouped.items():
         # требование аудиторов BLOCKED #4 (полная классификация семей): раньше семья без
         # сигналов, прошедших SQL-предфильтр, тихо пропускалась здесь ("if not signals:
@@ -1785,12 +2002,21 @@ def _owner50_family_rows(
                 if value in OWNER50_BRAND_ALIASES
             )
             no_contact = (
-                record.get("no_contact"), record.get("opt_out"), metadata.get("no_contact"),
-                metadata.get("opt_out"), metadata.get("do_not_contact"),
+                record.get("no_contact"), record.get("opt_out"), record.get("do_not_contact"),
+                metadata.get("no_contact"), metadata.get("opt_out"), metadata.get("do_not_contact"),
             )
-            if any(str(value).strip().casefold() in {"1", "true", "yes", "да"} for value in no_contact) or str(
-                metadata.get("contact_allowed", "true")
-            ).casefold() in {"0", "false", "no", "нет"}:
+            contact_allowed = (record.get("contact_allowed"), metadata.get("contact_allowed"))
+            if any(
+                value is True or str(value).strip().casefold() in {"1", "true", "yes", "да"}
+                for value in no_contact
+            ) or any(
+                value is False
+                or (
+                    value is not None
+                    and str(value).strip().casefold() in {"0", "false", "no", "нет"}
+                )
+                for value in contact_allowed
+            ):
                 hard_reasons.append("structured_no_contact")
             roles = [member["customer_id"], member["display_name"], *(metadata.get(key) for key in ("role", "kind", "type", "tags"))]
             if OWNER50_STAFF_TEST_RE.search(" ".join(_plain_values(roles))):
@@ -1836,23 +2062,38 @@ def _owner50_family_rows(
         # 6-классником ошибочно исключалась целиком, потому что 11 просто попадал в общий
         # набор. Правильно: считать выпускника ПО КАЖДОМУ ребёнку отдельно и исключать,
         # только если это истинно для ВСЕХ верифицированных детей (all(), не any()).
-        child_grade_sets = [
-            {
+        grade_contracts = [_owner50_tallanto_grade_contract(row) for row in verified_children]
+        grade_scope_states = [_owner50_tallanto_scope_state(row) for row in verified_children]
+        child_grade_sets = []
+        child_is_graduate = []
+        child_in_timeline_scope = []
+        for row, contract in zip(verified_children, grade_contracts):
+            has_contract, in_scope, explicit_graduate, target_grades = contract
+            legacy_grades = {
                 int(value)
-                for value in re.findall(r"(?<!\d)(?:[1-9]|10|11)(?!\d)", _join_list_json(row["grades_json"]))
+                for value in re.findall(
+                    r"(?<!\d)(?:[1-9]|10|11)(?!\d)", _join_list_json(row["grades_json"])
+                )
             }
-            for row in verified_children
-        ]
-        child_is_graduate = [
-            11 in grades or bool(OWNER50_GRADUATE_RE.search(_clean_text(row["canonical_name"])))
-            for row, grades in zip(verified_children, child_grade_sets)
-        ]
+            grades = target_grades if has_contract and target_grades else legacy_grades
+            child_grade_sets.append(grades)
+            child_in_timeline_scope.append(in_scope)
+            child_is_graduate.append(
+                explicit_graduate
+                if has_contract
+                else 11 in grades or bool(
+                    OWNER50_GRADUATE_RE.search(_clean_text(row["canonical_name"]))
+                )
+            )
         grade_values = {grade for grades in child_grade_sets for grade in grades}
         grade_values.update(int(match.group(1)) for offer in offers for match in OWNER50_OFFER_GRADE_RE.finditer(offer))
         if verified_children:
-            if all(child_is_graduate):
+            family_scope = family_timeline_scope_decision(grade_scope_states)
+            if family_scope == FAMILY_LINK_SCOPE_INVALID:
+                missing_reasons.append("child_grade_unproven")
+            elif family_scope == FAMILY_LINK_SCOPE_OUT or all(child_is_graduate):
                 hard_reasons.append("grade_11_or_graduate")
-            elif not any(1 <= grade <= 10 for grade in grade_values):
+            elif not any(child_in_timeline_scope) and not any(1 <= grade <= 10 for grade in grade_values):
                 missing_reasons.append("child_grade_unproven")
         elif 11 in grade_values or any(OWNER50_GRADUATE_RE.search(offer) for offer in offers):
             hard_reasons.append("grade_11_or_graduate")
@@ -1946,7 +2187,7 @@ def _owner50_family_rows(
             ).casefold()
             if event_is_inbound and hard_codes_from_text(customer_risk_text):
                 hard_reasons.append("durable_p0_history")
-            if event_is_inbound and any(phrase in customer_risk_text for phrase in MANAGER_OPTOUT_PHRASES):
+            if event and event_has_explicit_contact_opt_out(event):
                 hard_reasons.append("durable_opt_out")
             signal_brands = {
                 brand
@@ -1977,6 +2218,8 @@ def _owner50_family_rows(
         for event in events:
             if _owner50_event_is_explicit_refund(event):
                 hard_reasons.append("durable_p0_history")
+            if event_has_explicit_contact_opt_out(event):
+                hard_reasons.append("durable_opt_out")
             if _clean_text(event.get("direction")).casefold() != "inbound":
                 continue
             text = _event_text(event)
@@ -1988,8 +2231,6 @@ def _owner50_family_rows(
                 event, codes=event_p0_codes, all_events=all_events, as_of=as_of,
             ):
                 hard_reasons.append("durable_p0_history")
-            if any(phrase in text for phrase in MANAGER_OPTOUT_PHRASES):
-                hard_reasons.append("durable_opt_out")
         hard_reasons.extend(f"active_risk_signal:{row['signal_type']}" for row in family["risk_signals"])
         # bug-fix owner50_pravki #3 (continued): dedupe_family_payment_rows схлопывает
         # сырые per-period строки в один аггрегат на customer_id (all_time побеждает
@@ -2207,6 +2448,7 @@ def _owner50_family_rows(
                 [verified_children[index] for index in child_indexes],
                 [child_grade_sets[index] for index in child_indexes],
                 [child_is_graduate[index] for index in child_indexes],
+                [child_in_timeline_scope[index] for index in child_indexes],
             )
             target_child_key = _clean_text(target_child["child_key"]) if target_child is not None else ""
             target_child_name = _clean_text(target_child["canonical_name"]) if target_child is not None else ""
@@ -2255,16 +2497,24 @@ def _owner50_family_rows(
                 else None
             )
 
-            # expires_at — срок жизни сигнала, а не обещанный срок действия менеджера.
-            due_dt = next(
-                (
-                    parsed
-                    for key in ("follow_up_due_at", "manager_followup_deadline", "deadline_at", "due_at")
-                    if (parsed := _parse_iso_datetime(signal_record.get(key))) is not None
-                ),
-                None,
-            )
-            next_step_action = _clean_text(signal_record.get("recommended_action")) or OWNER50_NEXT_ACTION[signal_type]
+            # Рабочее действие Owner50 -- ровно то же DossierManagerAction, что и в
+            # карточке. Сигнал остаётся основанием, но не подменяет AMO task.
+            if customer_id not in manager_actions_by_customer:
+                manager_actions_by_customer[customer_id] = resolve_customer_manager_action(
+                    con,
+                    tenant_id=tenant_id,
+                    customer_id=customer_id,
+                    as_of=as_of,
+                    read_snapshot=manager_action_read_snapshot,
+                )
+            manager_action = manager_actions_by_customer[customer_id]
+            due_dt = _parse_iso_datetime(manager_action.due_at)
+            next_step_action = manager_action.action
+            action_provenance = _mapping(manager_action.action_provenance)
+            task_id = _clean_text(action_provenance.get("task_id"))
+            lead_id = _clean_text(action_provenance.get("lead_id"))
+            task_event_id = _clean_text(action_provenance.get("event_id"))
+            task_source_system = _clean_text(action_provenance.get("source_system"))
             # требование E2 (26.07): classify_family решает "продукт подтверждён именно для
             # этого ребёнка" через _owner50_product_confirmed(product, brands, children, ...) --
             # раньше сюда шли ВСЕ верифицированные дети семьи (min(grades) из истории каждого),
@@ -2317,10 +2567,7 @@ def _owner50_family_rows(
                     "event_id": classify_event_id,
                     "source_system": classify_source_system,
                 },
-                "next_step": {
-                    "action": next_step_action,
-                    "due": due_dt.date().isoformat() if due_dt else "",
-                },
+                "manager_action": asdict(manager_action),
                 "product": product_dict,
                 "target_child_ambiguous": target_child_ambiguous,
                 "last_objection": last_objection,
@@ -2355,6 +2602,12 @@ def _owner50_family_rows(
                     "event", _owner50_event_evidence_text(event), f"timeline_events:{event_id}",
                     event_id=event_id, source_system=_clean_text(event.get("source_system")), at=event.get("event_at"),
                     known_records=known_records,
+                ))
+            if task_event_id:
+                evidence.append(_owner50_evidence_item(
+                    "amo_task", next_step_action, f"timeline_events:{task_event_id}",
+                    event_id=task_event_id, source_system=task_source_system,
+                    at=action_provenance.get("event_at"), known_records=known_records,
                 ))
             for opportunity in opportunities:
                 offer_evidence = _dedupe_texts([
@@ -2477,6 +2730,10 @@ def _owner50_family_rows(
                 "target_child_name": target_child_name,
                 "target_child_grade": str(target_grade) if target_grade is not None else "",
                 "family_members": "; ".join(member_texts),
+                "task_responsible": manager_action.responsible_name or manager_action.responsible_ref,
+                "task_due_at": manager_action.due_at,
+                "task_id": task_id,
+                "lead_id": lead_id,
             }
             # требование архитектора #1: READY/CANDIDATE/EXCLUDED -- CANDIDATE никогда не
             # попадает в READY_50 (candidates), только в CANDIDATES со статусом candidate.
@@ -2498,6 +2755,9 @@ def _owner50_family_rows(
                         evidence_at=row_common["evidence_at"], next_action=row_common["next_action"],
                         offer=row_common["offer"], payment=row_common["payment"],
                         family_members=row_common["family_members"],
+                        task_responsible=row_common["task_responsible"],
+                        task_due_at=row_common["task_due_at"],
+                        task_id=row_common["task_id"], lead_id=row_common["lead_id"],
                     )
                 )
             else:
@@ -2513,6 +2773,9 @@ def _owner50_family_rows(
                         evidence_at=row_common["evidence_at"], next_action=row_common["next_action"],
                         offer=row_common["offer"], payment=row_common["payment"],
                         family_members=row_common["family_members"],
+                        task_responsible=row_common["task_responsible"],
+                        task_due_at=row_common["task_due_at"],
+                        task_id=row_common["task_id"], lead_id=row_common["lead_id"],
                     )
                 )
             break
@@ -2650,11 +2913,12 @@ def _owner50_snapshot(
             JOIN family_members_v1 AS member
               ON member.tenant_id=event.tenant_id AND member.customer_id=event.customer_id
             WHERE event.tenant_id=?
+              AND julianday(event.event_at)<=julianday(?)
               AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
               AND (
                 event.direction IN ('inbound','outbound')
                 OR event.event_type IN (
-                  'amo_contact_snapshot','tallanto_student_snapshot','tallanto_group','tallanto_abonement'
+                  'amo_contact_snapshot','amo_task','tallanto_student_snapshot','tallanto_group','tallanto_abonement'
                 )
                 OR json_extract(event.record_json,'$.record.module')='most_class'
                 OR (
@@ -2671,7 +2935,7 @@ def _owner50_snapshot(
               )
             LIMIT ?
             """,
-            (tenant_id, OWNER50_EVENT_SCAN_LIMIT + 1),
+            (tenant_id, as_of.isoformat(), OWNER50_EVENT_SCAN_LIMIT + 1),
         ),
         "risk_signals": fetch(
             f"""
@@ -2845,6 +3109,7 @@ OWNER50_CONTROL_COLUMNS = (
     "Бренд", "Контакт", "Телефон", "Email", "Канал", "Дата основания",
     "Дети", "Сигнал", "Основание", "Следующий шаг", "Предложение", "Оплаты", "Действие",
     "Члены семьи",
+    "Ответственный задачи", "Срок задачи", "AMO task_id", "AMO lead_id",
 )
 
 
@@ -2867,6 +3132,10 @@ def _owner50_control_rows(
     offer: str = "",
     payment: str = "",
     family_members: str = "",
+    task_responsible: str = "",
+    task_due_at: str = "",
+    task_id: str = "",
+    lead_id: str = "",
 ) -> list[tuple[str, ...]]:
     return [
         (
@@ -2874,6 +3143,7 @@ def _owner50_control_rows(
             brand, name, phone, email, channel, evidence_at,
             children, signal_type, evidence_text, next_action, offer, payment, action_text,
             family_members,
+            task_responsible, task_due_at, task_id, lead_id,
         )
         for reason in dict.fromkeys(reasons)
     ]
@@ -2887,6 +3157,7 @@ def _owner50_control_row_from_ready(row: Mapping[str, Any], *, status: str, code
         row["brand"], row["name"], row["phone"], row["email"], row["channel"], row["evidence_at"],
         row["children"], row["signal_type"], row["evidence_text"], row["next_action"],
         row["offer"], row["payment"], row["action_text"], row["family_members"],
+        row["task_responsible"], row["task_due_at"], row["task_id"], row["lead_id"],
     )
 
 
@@ -3035,15 +3306,16 @@ def _family_rows(
     *,
     tenant_id: str,
     customer_id: str,
+    customer_ids: Sequence[str],
     active_brand: str,
 ) -> list[DossierRow]:
     if not _table_exists(con, "family_links_v1"):
         return []
-    customer_ids = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
-        SELECT canonical_name, name_variants_json, grades_json, subjects_json, brand, status, confidence, reason
+        SELECT customer_id, child_key, canonical_name, name_variants_json, grades_json,
+               subjects_json, brand, status, confidence
         FROM family_links_v1
         WHERE tenant_id = ? AND customer_id IN ({placeholders})
         ORDER BY status, confidence DESC, canonical_name
@@ -3055,7 +3327,6 @@ def _family_rows(
         variants = _join_list_json(row["name_variants_json"])
         grades = _join_list_json(row["grades_json"])
         subjects = _join_list_json(row["subjects_json"])
-        quality = f"{row['status']}/{row['confidence']}"
         text = f"{_clean_text(row['canonical_name'])}"
         details = []
         if variants and variants != text:
@@ -3072,14 +3343,22 @@ def _family_rows(
             details.append("уточнить семейную связь")
         if details:
             text += " (" + "; ".join(details) + ")"
-        result.append(DossierRow("Семья", text, f"family_links_v1:{quality}:{row['reason']}"))
+        result.append(DossierRow(
+            "Семья", text, _record_source("family_links_v1", row["customer_id"], row["child_key"]),
+        ))
     return result
 
 
-def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+def _money_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str],
+    as_of: datetime,
+) -> list[DossierRow]:
     if not _table_exists(con, "customer_purchases_v1"):
         return []
-    customer_ids = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
@@ -3090,9 +3369,11 @@ def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) ->
         LEFT JOIN customer_identities AS identity
           ON identity.tenant_id = purchase.tenant_id AND identity.customer_id = purchase.customer_id
         WHERE purchase.tenant_id = ? AND purchase.customer_id IN ({placeholders})
+          AND (purchase.last_purchase_at IS NULL OR purchase.last_purchase_at=''
+               OR julianday(purchase.last_purchase_at)<=julianday(?))
         ORDER BY purchase.customer_id, purchase.period, purchase.money_kind
         """,
-        (tenant_id, *customer_ids),
+        (tenant_id, *customer_ids, as_of.isoformat()),
     ).fetchall()
     result: list[DossierRow] = []
     labels = {"fact": "факт оплат", "plan": "план сделок"}
@@ -3110,26 +3391,37 @@ def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) ->
         if len(customer_ids) > 1:
             member = _clean_text(row["display_name"]) or str(row["customer_id"])
             text += f" [карточка: {member}]"
-        result.append(DossierRow("Деньги", text, "customer_purchases_v1"))
+        result.append(DossierRow(
+            "Деньги", text,
+            _record_source("customer_purchases_v1", row["customer_id"], row["period"], row["money_kind"]),
+        ))
     return result
 
 
-def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+def _signal_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: datetime,
+) -> list[DossierRow]:
     if not _table_exists(con, "derived_signals"):
         return []
     rows = con.execute(
         """
-        SELECT signal_type, severity, expires_at, confidence, requires_manager_review, record_json
+        SELECT signal_id, signal_type, severity, created_at, expires_at, confidence,
+               requires_manager_review, record_json
         FROM derived_signals
         WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
-          AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) >= julianday('now'))
+          AND julianday(created_at)<=julianday(?)
+          AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) >= julianday(?))
         ORDER BY CASE severity
                    WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4
                  END,
                  expires_at, signal_type
         LIMIT 12
         """,
-        (tenant_id, customer_id),
+        (tenant_id, customer_id, as_of.isoformat(), as_of.isoformat()),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3142,119 +3434,38 @@ def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -
             parts.append(f"важность: {row['severity']}")
         if row["expires_at"]:
             parts.append(f"до: {row['expires_at']}")
-        if action and _meaningful_next_step(action):
+        if action and is_meaningful_manager_action(action):
             parts.append(f"рекомендация: {action}")
         if evidence:
             parts.append(f"основание: {evidence}")
-        result.append(DossierRow("Сигналы", "; ".join(parts), f"derived_signals:{row['signal_type']}"))
+        result.append(DossierRow(
+            "Сигналы", "; ".join(parts), _record_source("derived_signals", row["signal_id"]),
+        ))
     return result
 
 
-def _next_step_from_signals(signals: Sequence[DossierRow]) -> str:
-    for signal in signals:
-        match = re.search(r"рекомендация:\s*([^;]+)", signal.text)
-        if not match:
-            continue
-        value = _clean_text(match.group(1))
-        if _meaningful_next_step(value):
-            return value
-    return ""
-
-
-def _next_step_for_dossier(
+def _objection_rows(
     con: sqlite3.Connection,
     *,
     tenant_id: str,
     customer_id: str,
-    signals: Sequence[DossierRow],
-) -> tuple[str, str, str, str]:
-    rows = con.execute(
-        """
-        SELECT event_id, customer_id, event_at, event_type, source_system, source_id,
-               source_ref, subject, summary, text_preview, direction, record_json
-        FROM timeline_events
-        WHERE tenant_id = ? AND customer_id = ?
-          AND (superseded_by IS NULL OR superseded_by = '')
-          AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
-          AND (event_type != 'mango_call' OR match_status = 'strong_unique')
-        ORDER BY event_at DESC, event_id DESC
-        LIMIT 500
-        """,
-        (tenant_id, customer_id),
-    ).fetchall()
-    events: list[Mapping[str, Any]] = []
-    for row in rows:
-        stored = _safe_json(row["record_json"])
-        event = dict(row)
-        event["record"] = dict(stored["record"]) if isinstance(stored.get("record"), Mapping) else {}
-        event["metadata"] = dict(stored["metadata"]) if isinstance(stored.get("metadata"), Mapping) else {}
-        event["stage_before"] = stored.get("stage_before")
-        event["stage_after"] = stored.get("stage_after")
-        events.append(event)
-    conflicts: list[Mapping[str, Any]] = []
-    if _table_exists(con, "timeline_conflicts"):
-        customer_refs = set(customer_entity_ref_values(customer_id))
-        for row in con.execute(
-            "SELECT conflict_type, status, record_json FROM timeline_conflicts WHERE tenant_id = ? AND status = 'open'",
-            (tenant_id,),
-        ).fetchall():
-            record = dict(_safe_json(row["record_json"]))
-            entity_refs = {str(item) for item in (record.get("entity_refs") or ())}
-            if customer_refs.isdisjoint(entity_refs):
-                continue
-            record.setdefault("conflict_type", row["conflict_type"])
-            record.setdefault("status", row["status"])
-            conflicts.append(record)
-    if customer_id in open_family_identity_conflict_customer_ids(con, tenant_id) and not any(
-        "ambiguous_identity" in str(conflict.get("conflict_type") or "").casefold()
-        for conflict in conflicts
-    ):
-        conflicts.append(
-            {
-                "conflict_type": "ambiguous_identity",
-                "status": "open",
-                "summary": "canonical customer or family conflict",
-            }
-        )
-    resolved = resolve_customer_next_step(
-        events,
-        readiness={"open_conflicts": len(conflicts)},
-        conflicts=conflicts,
-        customer_id=customer_id,
-    )
-    if resolved.status == NEXT_STEP_STATUS_ACTIVE and _meaningful_next_step(resolved.action):
-        return resolved.display_text, "timeline_events", resolved.status, ""
-    if resolved.status != NEXT_STEP_STATUS_EMPTY:
-        return "", "", resolved.status, resolved.reason_code
-    fallback = _next_step_from_signals(signals)
-    if fallback:
-        return fallback, "derived_signals", NEXT_STEP_STATUS_ACTIVE, ""
-    return "", "", resolved.status, resolved.reason_code
-
-
-def _meaningful_next_step(value: str) -> bool:
-    text = value.casefold()
-    if not text or text in {"уточнить у менеджера", "связаться с клиентом", "позвонить клиенту"}:
-        return False
-    if "посмотреть историю" in text:
-        return False
-    return len(text.split()) >= 3
-
-
-def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+    as_of: datetime,
+) -> list[DossierRow]:
     if not _table_exists(con, "customer_objections_v1"):
         return []
     rows = con.execute(
         """
-        SELECT source_channel, objection_type, quote_preview, budget_hint_rub, price_sensitivity, confidence, speaker
+        SELECT customer_id, source_event_id, source_channel, objection_type, quote_preview,
+               budget_hint_rub, price_sensitivity, confidence, speaker
         FROM customer_objections_v1
         WHERE tenant_id = ?
           AND customer_id = ?
           AND speaker = 'client'
+          AND julianday(extracted_at)<=julianday(?)
         ORDER BY confidence DESC, extracted_at DESC
         LIMIT 12
         """,
-        (tenant_id, customer_id),
+        (tenant_id, customer_id, as_of.isoformat()),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3264,34 +3475,148 @@ def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str
             text += f"; бюджет: {_format_money(row['budget_hint_rub'])}"
         if row["price_sensitivity"]:
             text += f"; чувствительность к цене: {row['price_sensitivity']}"
-        result.append(DossierRow("Возражения", text, f"customer_objections_v1:{row['source_channel']}:{row['confidence']}"))
+        result.append(DossierRow(
+            "Возражения", text,
+            _record_source(
+                "customer_objections_v1", row["customer_id"], row["source_event_id"], row["objection_type"],
+            ),
+        ))
     return result
 
 
-def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str, limit: int) -> list[DossierRow]:
-    customer_ids = _family_scope_customer_ids(
-        con,
-        tenant_id=tenant_id,
-        customer_id=customer_id,
-    )
+def _active_deal_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str],
+    opportunities: Sequence[sqlite3.Row],
+    as_of: datetime,
+) -> list[DossierRow]:
+    """Expose only cutoff-active AMO deals with one exact canonical owner."""
+    lead_ids = tuple(sorted({
+        _clean_text(row["source_id"])
+        for row in opportunities
+        if _clean_text(row["source_id"])
+    }))
+    owners: dict[str, set[str]] = defaultdict(set)
+    if lead_ids and _table_exists(con, "identity_links"):
+        for row in con.execute(
+            """
+            SELECT link_value, customer_id
+            FROM identity_links
+            WHERE tenant_id=? AND link_type='amo_lead_id'
+              AND match_class IN ('strong_unique','manual')
+              AND (first_seen_at IS NULL OR julianday(first_seen_at)<=julianday(?))
+              AND link_value IN (SELECT value FROM json_each(?))
+            """,
+            (tenant_id, as_of.isoformat(), json.dumps(lead_ids, ensure_ascii=False)),
+        ):
+            owners[str(row["link_value"])].add(str(row["customer_id"]))
+
+    result: list[DossierRow] = []
+    for row in opportunities:
+        opportunity = dict(row)
+        lead_id = _clean_text(row["source_id"])
+        row_customer_id = str(row["customer_id"])
+        if owners.get(lead_id) != {row_customer_id} or not _is_active_deal_at(opportunity, as_of=as_of):
+            continue
+        title = _clean_text(row["title"]) or f"Сделка #{lead_id}"
+        status = _clean_text(row["status"]) or "открыта"
+        details = [title, f"статус на срез: {status}"]
+        if row["opened_at"]:
+            details.append(f"открыта: {row['opened_at']}")
+        if len(customer_ids) > 1:
+            member = _clean_text(row["source_customer_name"]) or row_customer_id
+            details.append(f"карточка: {member}")
+        result.append(DossierRow(
+            "Активные сделки",
+            "; ".join(details),
+            f"customer_opportunities:{row['opportunity_id']}",
+        ))
+    return result
+
+
+def _attendance_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str],
+    as_of: datetime,
+) -> list[DossierRow]:
     placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
         f"""
-        SELECT event.event_at, event.event_type, event.source_system, event.subject,
-               event.summary, event.text_preview, event.record_json, event.customer_id,
+        SELECT event.event_id, event.event_at, event.event_type, event.source_system,
+               event.subject, event.summary, event.text_preview,
+               event.customer_id, identity.display_name AS source_customer_name
+        FROM timeline_events AS event
+        LEFT JOIN customer_identities AS identity
+          ON identity.tenant_id=event.tenant_id AND identity.customer_id=event.customer_id
+        WHERE event.tenant_id=?
+          AND event.customer_id IN ({placeholders})
+          AND julianday(event.event_at)<=julianday(?)
+          AND (event.event_type='tallanto_attendance' OR event.source_system='tallanto_attendance_api')
+          AND event.match_status IN ('strong_unique','manual')
+          AND (event.superseded_by IS NULL OR event.superseded_by='')
+          AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
+        ORDER BY event.event_at DESC,event.event_id DESC
+        LIMIT 12
+        """,
+        (tenant_id, *customer_ids, as_of.isoformat()),
+    ).fetchall()
+    result: list[DossierRow] = []
+    for row in rows:
+        summary = _event_summary_for_manager(row) or "Запись Tallanto о занятии."
+        text = f"{row['event_at']} {summary}"
+        if len(customer_ids) > 1:
+            member = _clean_text(row["source_customer_name"]) or str(row["customer_id"])
+            text = f"{text} [карточка: {member}]"
+        result.append(DossierRow(
+            "Занятия",
+            text,
+            _record_source("timeline_events", row["event_id"]),
+        ))
+    return result
+
+
+def _chronology_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    customer_ids: Sequence[str] | None = None,
+    as_of: datetime | None = None,
+    limit: int,
+) -> list[DossierRow]:
+    cutoff = as_of or datetime.now(timezone.utc)
+    if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    customer_ids = tuple(customer_ids or _family_scope_customer_ids(
+        con, tenant_id=tenant_id, customer_id=customer_id, as_of=cutoff,
+    ))
+    placeholders = ",".join("?" for _ in customer_ids)
+    rows = con.execute(
+        f"""
+        SELECT event.event_id, event.event_at, event.event_type, event.source_system, event.subject,
+               event.summary, event.text_preview, event.customer_id,
                identity.display_name AS source_customer_name
         FROM timeline_events AS event
         LEFT JOIN customer_identities AS identity
           ON identity.tenant_id = event.tenant_id AND identity.customer_id = event.customer_id
         WHERE event.tenant_id = ?
           AND event.customer_id IN ({placeholders})
+          AND julianday(event.event_at)<=julianday(?)
           AND (event.superseded_by IS NULL OR event.superseded_by = '')
           AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
-          AND (event.event_type != 'mango_call' OR event.match_status = 'strong_unique')
+          AND event.match_status IN ('strong_unique','manual')
+          AND event.event_type != 'tallanto_attendance'
+          AND event.source_system != 'tallanto_attendance_api'
         ORDER BY event.event_at DESC, event.event_id DESC
         LIMIT ?
         """,
-        (tenant_id, *customer_ids, int(limit)),
+        (tenant_id, *customer_ids, cutoff.isoformat(), int(limit)),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3306,48 +3631,10 @@ def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: st
             DossierRow(
                 "Хронология",
                 text,
-                f"{row['source_system']}:{row['customer_id']}",
+                _record_source("timeline_events", row["event_id"]),
             )
         )
     return result
-
-
-
-def _family_scope_customer_ids(
-    con: sqlite3.Connection,
-    *,
-    tenant_id: str,
-    customer_id: str,
-) -> tuple[str, ...]:
-    if not _table_exists(con, "family_members_v1"):
-        return (customer_id,)
-    root = con.execute(
-        """
-        SELECT family_id, membership_status
-        FROM family_members_v1
-        WHERE tenant_id = ? AND customer_id = ?
-        """,
-        (tenant_id, customer_id),
-    ).fetchone()
-    if root is None or str(root["membership_status"] or "") not in {"confident", "singleton"}:
-        return (customer_id,)
-    members = tuple(
-        str(row["customer_id"])
-        for row in con.execute(
-            """
-            SELECT customer_id
-            FROM family_members_v1
-            WHERE tenant_id = ? AND family_id = ?
-              AND membership_status IN ('confident', 'singleton')
-            ORDER BY customer_id
-            """,
-            (tenant_id, root["family_id"]),
-        )
-    )
-    if customer_id not in members or not 1 <= len(members) <= 8:
-        return (customer_id,)
-    return members
-
 
 def _event_summary_for_manager(row: sqlite3.Row) -> str:
     event_type = str(row["event_type"] or "")
@@ -3684,6 +3971,10 @@ def _write_owner50_workbook(
                 row["target_child_name"],
                 row["target_child_grade"],
                 row["family_members"],
+                row["task_responsible"],
+                row["task_due_at"],
+                row["task_id"],
+                row["lead_id"],
             )
         )
         for item in row["evidence"]:
@@ -3736,7 +4027,11 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
     wb = Workbook()
     overview = wb.active
     overview.title = "Оглавление"
-    overview.append(("customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг", "Статус действия", "Код причины бездействия", "Интересов", "Болей", "Возражений", "Хронология"))
+    overview.append((
+        "customer_id", "Имя", "Бренд", "Семья", "Активные сделки", "Занятия", "Сигналы", "Следующий шаг",
+        "Статус действия", "Код причины бездействия", "Ответственный", "Срок",
+        "Готовность", "Интересов", "Болей", "Возражений", "Хронология",
+    ))
     overview.freeze_panes = "A2"
     for cell in overview[1]:
         cell.font = Font(bold=True)
@@ -3748,10 +4043,15 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
                 dossier.display_name,
                 dossier.brand,
                 len(dossier.family),
+                len(dossier.active_deals),
+                len(dossier.attendance),
                 len(dossier.signals),
                 dossier.next_step,
                 dossier.action_status,
                 dossier.no_action_reason_code,
+                dossier.manager_action.responsible_name or dossier.manager_action.responsible_ref,
+                dossier.manager_action.due_at,
+                dossier.manager_action.readiness_state,
                 len(dossier.interests),
                 len(dossier.pains),
                 len(dossier.objections),
@@ -3772,6 +4072,10 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
             ws.append((row.section, row.text, _display_source(row.source)))
         for row in dossier.money:
             ws.append((row.section, row.text, _display_source(row.source)))
+        for row in dossier.active_deals:
+            ws.append((row.section, row.text, _display_source(row.source)))
+        for row in dossier.attendance:
+            ws.append((row.section, row.text, _display_source(row.source)))
         for row in dossier.signals:
             ws.append((row.section, row.text, _display_source(row.source)))
         ws.append(
@@ -3782,6 +4086,29 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
             )
         )
         ws.append(("Статус действия", dossier.action_status, dossier.no_action_reason_code or "Активный шаг"))
+        if dossier.manager_action.readiness_state == "review" and dossier.manager_action.action:
+            task_id = _clean_text(dossier.manager_action.action_provenance.get("task_id"))
+            lead_id = _clean_text(dossier.manager_action.action_provenance.get("lead_id"))
+            ws.append((
+                "Кандидат действия (REVIEW)",
+                dossier.manager_action.action,
+                f"AMO task_id={task_id or 'не доказан'}; lead_id={lead_id or 'не доказан'}",
+            ))
+        ws.append((
+            "Ответственный",
+            dossier.manager_action.responsible_name or dossier.manager_action.responsible_ref or "Не доказан",
+            _display_source(dossier.next_step_source or "amo_task"),
+        ))
+        ws.append((
+            "Срок",
+            dossier.manager_action.due_at or "Не доказан",
+            _display_source(dossier.next_step_source or "amo_task"),
+        ))
+        ws.append((
+            "Готовность",
+            dossier.manager_action.readiness_state,
+            _manager_action_review_text(dossier.manager_action),
+        ))
         for row in dossier.objections:
             ws.append((row.section, row.text, _display_source(row.source)))
         for item in dossier.interests:
@@ -3802,6 +4129,10 @@ def _display_source(source: str) -> str:
         return "Семейная карта"
     if text.startswith("customer_purchases_v1"):
         return "Деньги из staging"
+    if text.startswith("customer_opportunities"):
+        return "Сделка AMO"
+    if text.startswith("tallanto_attendance"):
+        return "Занятие Tallanto"
     if text.startswith("derived_signals"):
         return "Сигнал Customer Timeline"
     if text.startswith("customer_objections_v1"):
@@ -3825,3 +4156,10 @@ def _display_source(source: str) -> str:
         "telegram_history": "Telegram история",
     }
     return mapping.get(text, text or "Источник не указан")
+
+
+def _manager_action_review_text(action: DossierManagerAction) -> str:
+    if not action.readiness_reason_codes:
+        return "Все обязательные поля доказаны"
+    primary = action.reason or action.readiness_reason_codes[0]
+    return MANAGER_ACTION_REVIEW_TEXT.get(primary, "Требуется проверка данных AMO")

@@ -35,6 +35,7 @@ from scripts.derive_customer_timeline_signals import (
     _list_customer_ids,
     run_derive_customer_timeline_signals,
 )
+from mango_mvp.customer_timeline.derived_signals import _is_active_deal
 
 
 NOW = datetime(2026, 6, 18, 12, 0, tzinfo=timezone.utc)
@@ -54,6 +55,50 @@ def test_paid_no_access_signal_requires_payment_without_tallanto_access() -> Non
     assert signal.status.value == "active"
     assert signal.expires_at == NOW + timedelta(days=90)
     assert "Проверить оплату" in (signal.recommended_action or "")
+
+
+def test_canonical_active_deal_contract_rejects_terminal_status_or_closed_at() -> None:
+    for status in (142, "142", " 142 ", 143, "143", " 143 ", "won", "lost"):
+        assert _is_active_deal({"opportunity_type": "amo_deal", "status": status}) is False
+    assert _is_active_deal({
+        "opportunity_type": "amo_deal",
+        "status": "open",
+        "closed_at": NOW.isoformat(),
+    }) is False
+    assert _is_active_deal({"opportunity_type": "amo_deal", "status": "open"}) is True
+
+
+def test_deal_stalling_uses_deal_state_at_cutoff() -> None:
+    event = touch_event(
+        "call-before-cutoff",
+        NOW - timedelta(days=20),
+        summary="Клиент ждёт следующий шаг.",
+    )
+    closed_later = {
+        "opportunity_type": "amo_deal",
+        "status": "won",
+        "closed_at": (NOW + timedelta(days=1)).isoformat(),
+    }
+
+    signals = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(event,),
+        opportunities=(closed_later,),
+        as_of=NOW,
+    )
+
+    assert DEAL_STALLING_SIGNAL in {signal.signal_type for signal in signals}
+
+    for opened_at in ((NOW + timedelta(days=1)).isoformat(), "not-a-date"):
+        future_or_invalid = {**closed_later, "opened_at": opened_at}
+        assert derive_sg_v1_signals(
+            tenant_id=TENANT,
+            customer_id=CUSTOMER,
+            events=(event,),
+            opportunities=(future_or_invalid,),
+            as_of=NOW,
+        ) == ()
 
 
 def test_paid_no_access_is_not_created_when_abonement_or_class_access_exists() -> None:

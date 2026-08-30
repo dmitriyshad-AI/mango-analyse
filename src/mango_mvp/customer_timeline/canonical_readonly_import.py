@@ -58,6 +58,7 @@ class CanonicalReadonlyTimelineConfig:
     canonical_calls_db: Optional[Path] = None
     amo_contacts_csv: Optional[Path] = None
     amo_deals_csv: Optional[Path] = None
+    amo_tasks_csv: Optional[Path] = None
     mail_handoff_db: Optional[Path] = None
     mail_bridge_db: Optional[Path] = None
     generated_at: Optional[datetime] = None
@@ -85,6 +86,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
     )
     amo_contacts_by_phone = read_amo_contacts_by_phone(resolved.amo_contacts_csv, known_phones=known_phones)
     amo_deals_by_contact_id = read_amo_deals_by_contact_id(resolved.amo_deals_csv)
+    amo_tasks = read_csv_rows(resolved.amo_tasks_csv) if resolved.amo_tasks_csv else []
     duplicate_amo_contact_ids, duplicate_amo_lead_ids = duplicate_amo_ids_across_sources(
         contacts,
         amo_contacts_by_phone=amo_contacts_by_phone,
@@ -107,6 +109,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             "canonical_calls_db": resolved.canonical_calls_db,
             "amo_contacts_csv": resolved.amo_contacts_csv,
             "amo_deals_csv": resolved.amo_deals_csv,
+            "amo_tasks_csv": resolved.amo_tasks_csv,
             "mail_handoff_db": resolved.mail_handoff_db,
             "mail_bridge_db": resolved.mail_bridge_db,
         }
@@ -128,6 +131,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
     manual_review_counts: Counter[str] = Counter()
     source_customer_counts: Counter[str] = Counter()
     source_event_counts: Counter[str] = Counter()
+    amo_task_outcomes: Counter[str] = Counter()
     brand_counts: Counter[str] = Counter()
     run: Any = None
     try:
@@ -327,6 +331,32 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                     write_status_counts[result.status] += 1
                     source_event_counts[MAIL_SOURCE] += 1
 
+            task_results, amo_task_outcomes = upsert_amo_task_snapshot(
+                store,
+                tenant_id=resolved.tenant_id,
+                tasks=amo_tasks,
+                current_lead_ids={
+                    safe_text(deal.get("lead_id"))
+                    for deals in amo_deals_by_contact_id.values()
+                    for deal in deals
+                    if safe_text(deal.get("lead_id"))
+                },
+                ambiguous_lead_ids=duplicate_amo_lead_ids,
+                generated_at=generated_at,
+                ingestion_run_id=run.run_id,
+            )
+            for result in task_results:
+                imported_counts[result.record_type] += 1
+                write_status_counts[result.status] += 1
+                source_event_counts[AMO_SOURCE] += 1
+            manual_review_counts.update(
+                {
+                    f"amo_task_{reason}": count
+                    for reason, count in amo_task_outcomes.items()
+                    if reason != "imported"
+                }
+            )
+
             store.finish_ingestion_run(
                 run.run_id,
                 status="completed",
@@ -383,6 +413,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         duplicate_amo_contact_ids=duplicate_amo_contact_ids,
         duplicate_amo_lead_ids=duplicate_amo_lead_ids,
         shared_amo_reasons_by_phone=shared_amo_reasons_by_phone,
+        amo_task_outcomes=amo_task_outcomes,
     )
     import_report = {
         "schema_version": CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION,
@@ -424,6 +455,12 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
     amo_root = project_root / "stable_runtime" / "deal_aware_amo_live_snapshot_20260513_v2"
     amo_contacts = resolve_existing(config.amo_contacts_csv or amo_root / "amo_contacts_snapshot.csv")
     amo_deals = resolve_existing(config.amo_deals_csv or amo_root / "amo_deals_snapshot.csv")
+    default_amo_tasks = (amo_root / "amo_tasks_snapshot.csv").resolve(strict=False)
+    amo_tasks = (
+        resolve_existing(config.amo_tasks_csv)
+        if config.amo_tasks_csv
+        else resolve_existing(default_amo_tasks) if default_amo_tasks.is_file() else None
+    )
     mail_handoff = resolve_existing(config.mail_handoff_db or project_root / CANONICAL_MAIL_HISTORY_HANDOFF_DB)
     mail_bridge = resolve_existing(config.mail_bridge_db or project_root / CANONICAL_MAIL_MANGO_BRIDGE_DB)
     return CanonicalReadonlyTimelineConfig(
@@ -437,6 +474,7 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
         canonical_calls_db=resolve_existing(config.canonical_calls_db) if config.canonical_calls_db else None,
         amo_contacts_csv=amo_contacts,
         amo_deals_csv=amo_deals,
+        amo_tasks_csv=amo_tasks,
         mail_handoff_db=mail_handoff,
         mail_bridge_db=mail_bridge,
         generated_at=config.generated_at,
@@ -1056,6 +1094,131 @@ def read_amo_deals_by_contact_id(path: Path) -> dict[str, tuple[Mapping[str, str
     return {contact_id: tuple(rows) for contact_id, rows in grouped.items()}
 
 
+def upsert_amo_task_snapshot(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    tenant_id: str,
+    tasks: Sequence[Mapping[str, Any]],
+    current_lead_ids: set[str],
+    ambiguous_lead_ids: set[str],
+    generated_at: datetime,
+    ingestion_run_id: str,
+    actor: str = "canonical_readonly_timeline_import",
+    source_snapshot: str = "amo_tasks_snapshot.csv",
+) -> tuple[list[Any], Counter[str]]:
+    """Attach each task only through its exact, current and uniquely owned AMO lead."""
+    rows_by_task_id: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    outcomes: Counter[str] = Counter()
+    for row in tasks:
+        task_id = safe_text(row.get("task_id") or row.get("id"))
+        if not task_id:
+            outcomes["missing_task_id"] += 1
+            continue
+        rows_by_task_id[task_id].append(row)
+
+    results: list[Any] = []
+    for task_id, task_rows in sorted(rows_by_task_id.items()):
+        if len(task_rows) != 1:
+            outcomes["duplicate_task_id"] += 1
+            continue
+        task = task_rows[0]
+        entity_type = safe_text(task.get("entity_type")).casefold()
+        if entity_type not in {"lead", "leads"}:
+            outcomes["unsupported_entity_type"] += 1
+            continue
+        lead_id = safe_text(task.get("entity_id"))
+        if lead_id in ambiguous_lead_ids:
+            outcomes["ambiguous_lead"] += 1
+            continue
+        if not lead_id or lead_id not in current_lead_ids:
+            outcomes["lead_not_in_current_snapshot"] += 1
+            continue
+        opportunity = store.get_opportunity_by_source(
+            tenant_id,
+            source_system=AMO_SOURCE,
+            source_id=lead_id,
+            opportunity_type="amo_deal",
+        )
+        opportunity_id = safe_text(opportunity.get("opportunity_id")) if opportunity else ""
+        customer_id = safe_text(opportunity.get("customer_id")) if opportunity else ""
+        if not opportunity_id or not customer_id:
+            outcomes["opportunity_not_uniquely_owned"] += 1
+            continue
+
+        created_at = parse_unix_or_iso(task.get("created_at"))
+        updated_at = parse_unix_or_iso(task.get("updated_at"))
+        complete_till = parse_unix_or_iso(task.get("complete_till"))
+        event_at = updated_at or created_at or complete_till
+        if event_at is None:
+            outcomes["missing_event_time"] += 1
+            continue
+        completed = amo_task_completion_state(task.get("is_completed"))
+        if completed is None:
+            outcomes["unrecognized_completion_flag"] += 1
+            continue
+        action_text = safe_text(task.get("text"))
+        responsible_user_id = safe_text(task.get("responsible_user_id"))
+        responsible_user_name = safe_text(task.get("responsible_user_name"))
+        responsible_user_id_valid = responsible_user_id.isdecimal() and int(responsible_user_id) > 0
+        next_step = (
+            {
+                "action": action_text,
+                "due": complete_till.isoformat(),
+            }
+            if action_text and responsible_user_id_valid and complete_till and not completed
+            else None
+        )
+        result_value = task.get("result")
+        if isinstance(result_value, Mapping):
+            result_value = result_value.get("text")
+        event = TimelineEvent(
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            opportunity_id=opportunity_id,
+            event_type=TimelineEventType.AMO_TASK,
+            event_at=event_at,
+            source_system=AMO_SOURCE,
+            source_id=task_id,
+            source_ref=f"amo:task:{task_id}",
+            direction=TimelineDirection.INTERNAL,
+            actor_name=responsible_user_name or None,
+            actor_ref=f"amo:user:{responsible_user_id}" if responsible_user_id_valid else None,
+            subject="AMO task",
+            text_preview=action_text[:240] or None,
+            summary="Completed AMO task" if completed else "Open AMO task",
+            match_status=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=1.0,
+            record={
+                "action_text": action_text,
+                **({"next_step": next_step} if next_step else {}),
+                "responsible_user_id": responsible_user_id,
+                "responsible_user_name": responsible_user_name,
+                "complete_till": complete_till.isoformat() if complete_till else None,
+                "created_at": created_at.isoformat() if created_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "completed": completed,
+                "result": safe_text(result_value),
+                "task_type_id": safe_text(task.get("task_type_id")),
+                "provenance": {
+                    "task_id": task_id,
+                    "entity_type": entity_type,
+                    "entity_id": lead_id,
+                    "opportunity_source_system": AMO_SOURCE,
+                    "opportunity_source_id": lead_id,
+                },
+            },
+            metadata={
+                "source_snapshot": source_snapshot,
+                "source_updated_at": updated_at.isoformat() if updated_at else event_at.isoformat(),
+                **({"actor_role": "manager"} if responsible_user_id_valid else {}),
+            },
+            created_at=created_at or event_at or generated_at,
+        )
+        results.append(store.upsert_event(event, actor=actor, ingestion_run_id=ingestion_run_id))
+        outcomes["imported"] += 1
+    return results, outcomes
+
+
 def upsert_amo_snapshot(
     store: CustomerTimelineSQLiteStore,
     *,
@@ -1327,6 +1490,7 @@ def build_coverage_report(
     duplicate_amo_contact_ids: set[str],
     duplicate_amo_lead_ids: set[str],
     shared_amo_reasons_by_phone: Mapping[str, Sequence[str]],
+    amo_task_outcomes: Counter[str],
 ) -> Mapping[str, Any]:
     total = len(phones)
     tallanto_count = sum(1 for row in contacts if safe_text(row.get("ID Tallanto")) or safe_text(row.get("Статус матчинга Tallanto")))
@@ -1380,6 +1544,7 @@ def build_coverage_report(
         "brand_counts": dict(brand_counts),
         "source_customer_counts": dict(source_customer_counts),
         "source_event_counts": dict(source_event_counts),
+        "amo_task_outcome_counts": dict(amo_task_outcomes),
         "manual_review_reason_counts": dict(manual_review_counts),
         "write_status_counts": dict(write_status_counts),
         "imported_counts": dict(imported_counts),
@@ -1724,6 +1889,19 @@ def parse_unix_or_iso(value: Any) -> Optional[datetime]:
             number = number // 1000
         return datetime.fromtimestamp(number, tz=timezone.utc)
     return parse_datetime_guess(text)
+
+
+def amo_task_completion_state(value: Any) -> Optional[bool]:
+    if value is True:
+        return True
+    if value is False:
+        return False
+    normalized = safe_text(value).casefold()
+    if normalized in {"1", "true", "yes", "да"}:
+        return True
+    if normalized in {"0", "false", "no", "нет"}:
+        return False
+    return None
 
 
 def ordered_datetime_pair(first: datetime, last: datetime) -> tuple[datetime, datetime, bool]:

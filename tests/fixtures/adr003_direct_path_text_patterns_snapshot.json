@@ -1264,7 +1264,7 @@
     "value_preview": "{\n    \"city_day_camp\",\n    \"residential_lvsh\",\n    \"trial_offline\",\n    \"trial_online_fragment\",\n    \"offline_recordings\",\n    \"online_recordings\",\n    \"camp_extra_facts\",\n    \"olympiad_online\",\n}",
     "literal_string_count": 8,
     "cyrillic_string_count": 0,
-    "lineno": 1056,
+    "lineno": 1064,
     "col_offset": 0,
     "row_id": "adr003:0cddb8d98bd233e62804f24b"
   },
@@ -1862,7 +1862,7 @@
     "value_preview": "{\n    \"pricing\": (\"prices.current\",),\n    \"price\": (\"prices.current\",),\n    \"payment_method\": (\"payment_methods.current\",),\n    \"payment_status\": (\"payment_methods.current\",),\n    \"discount\": (\"discounts.current\",),\n    \"installment\": (\"ins",
     "literal_string_count": 34,
     "cyrillic_string_count": 0,
-    "lineno": 62,
+    "lineno": 63,
     "col_offset": 0,
     "row_id": "adr003:683164ac64dfdad1d634f8ea"
   },
@@ -2885,7 +2885,7 @@
     "symbol": "In",
     "expression_sha256": "d12bb82641f26f98b2bb0c1a87c550ba143b028353d9630fce9e5e2254a5e3ff",
     "expression_preview": "\"offline\" in query_text",
-    "lineno": 1173,
+    "lineno": 1181,
     "col_offset": 109,
     "row_id": "adr003:7e9368b6278c841efdc620da"
   },
@@ -2896,7 +2896,7 @@
     "symbol": "In",
     "expression_sha256": "2d86fe3e5e97469cba555904446d92d507804464a6dfacd8992e271730bcd98d",
     "expression_preview": "\",\" in value",
-    "lineno": 1414,
+    "lineno": 1424,
     "col_offset": 11,
     "row_id": "adr003:6e10a10828c9abc00243f38c"
   },
@@ -2918,7 +2918,7 @@
     "symbol": "In",
     "expression_sha256": "b8a0b6d97933082cf40a83616f33735ecab35efe649245b5f670e51f29b6faae",
     "expression_preview": "\"objection_responses\" in text",
-    "lineno": 1146,
+    "lineno": 1154,
     "col_offset": 11,
     "row_id": "adr003:2d572a7aaf19c712a5c55fd6"
   },
@@ -2929,7 +2929,7 @@
     "symbol": "In",
     "expression_sha256": "e992c3d74e936b25121748507d863c85eda8b6b419c5db5bdfa71d71c5e6ca7a",
     "expression_preview": "\"без прожив\" in query_text",
-    "lineno": 1152,
+    "lineno": 1160,
     "col_offset": 11,
     "row_id": "adr003:92eae2c43016b844915e3cf9"
   },
@@ -2940,7 +2940,7 @@
     "symbol": "In",
     "expression_sha256": "98ddce563074789fddf72af6b43100b1c00c5f368414b323d4d54f156cced628",
     "expression_preview": "\"дат\" in text",
-    "lineno": 1215,
+    "lineno": 1223,
     "col_offset": 11,
     "row_id": "adr003:08374bcda1d368dae602c18d"
   },
@@ -2951,7 +2951,7 @@
     "symbol": "In",
     "expression_sha256": "3c0308ed05329920df3f0aa0caaf0fc0093e956ec5ca20efac918fcf5e7f54cc",
     "expression_preview": "\"другим класс\" in text",
-    "lineno": 1192,
+    "lineno": 1200,
     "col_offset": 11,
     "row_id": "adr003:9c8ca53333e7fcf74aedd2b7"
   },
@@ -2962,7 +2962,7 @@
     "symbol": "In",
     "expression_sha256": "f3f48260b08f292c49bf37fcbbe0172ef0c24d2cbd965467991d11a10374da32",
     "expression_preview": "\"других классов\" in text",
-    "lineno": 1191,
+    "lineno": 1199,
     "col_offset": 11,
     "row_id": "adr003:29912a56e9f8be6c9c1783a8"
   },
@@ -2973,7 +2973,7 @@
     "symbol": "In",
     "expression_sha256": "f65fe0910896991ae57a8e920f1dd3585e53f8b4395d8f8f830d60973b97920d",
     "expression_preview": "\"другому классу\" in text",
-    "lineno": 1193,
+    "lineno": 1201,
     "col_offset": 11,
     "row_id": "adr003:5de0169774363a7f438a5ce2"
   },
@@ -2984,7 +2984,7 @@
     "symbol": "In",
     "expression_sha256": "9b0a1b84c9c2d194378ee5f7e10be707d482b0b5e296d4d41e29f60d0ffaaced",
     "expression_preview": "\"ждем распис\" in text",
-    "lineno": 1218,
+    "lineno": 1226,
     "col_offset": 11,
     "row_id": "adr003:69334b5f6cf5b8597150988e"
   },
@@ -2995,7 +2995,7 @@
     "symbol": "In",
     "expression_sha256": "46b12bec55b9ec04ef32c7dd6e7fc95839040f9cee10b7161e2bf50b6259d99e",
     "expression_preview": "\"записи занятий\" in text",
-    "lineno": 1220,
+    "lineno": 1228,
     "col_offset": 11,
     "row_id": "adr003:d5608e39262cc38051532a66"
   },
@@ -3006,7 +3006,7 @@
     "symbol": "In",
     "expression_sha256": "5a3890bc53439080e3a3ca5dc68dd43ea3eab8bf68cffe6479e8ac381e4315af",
     "expression_preview": "\"записи уроков\" in text",
-    "lineno": 1221,
+    "lineno": 1229,
     "col_offset": 11,
     "row_id": "adr003:16c64710f3a3f0591d328cab"
   },
@@ -3017,7 +3017,7 @@
     "symbol": "In",
     "expression_sha256": "91a1edb644dd6eb025900e673993c3d7cd966c5d915c5b96aaf6ed72621dcd49",
     "expression_preview": "\"когда\" in query_text",
-    "lineno": 1209,
+    "lineno": 1217,
     "col_offset": 11,
     "row_id": "adr003:5c3257d48f5105011f7831af"
   },
@@ -3028,7 +3028,7 @@
     "symbol": "In",
     "expression_sha256": "c5266c632df99013cf0c49a289293514f87b9e8741d4f2b2acd18f5d9b007372",
     "expression_preview": "\"лист ожид\" in text",
-    "lineno": 1217,
+    "lineno": 1225,
     "col_offset": 11,
     "row_id": "adr003:ada026e50ab99419acac6205"
   },
@@ -3039,7 +3039,7 @@
     "symbol": "In",
     "expression_sha256": "2955d05f2e2b28c8979871d441e59240498d60c9361059021b57afc67435da6a",
     "expression_preview": "\"лш москва\" in query_text",
-    "lineno": 1154,
+    "lineno": 1162,
     "col_offset": 11,
     "row_id": "adr003:73ceccb4f074506afadba797"
   },
@@ -3061,7 +3061,7 @@
     "symbol": "In",
     "expression_sha256": "3a4e98c7def0fd73957854c2df16c11f3901a1192b359081bfbb78100e6e44e1",
     "expression_preview": "\"раз в неделю\" in text",
-    "lineno": 1219,
+    "lineno": 1227,
     "col_offset": 11,
     "row_id": "adr003:9749b65d909281130529f95e"
   },
@@ -3072,7 +3072,7 @@
     "symbol": "In",
     "expression_sha256": "47b1b86e63616281b6476c86a2550a6a60db359e3709303ce1d012326d08f415",
     "expression_preview": "\"распис\" in text",
-    "lineno": 1216,
+    "lineno": 1224,
     "col_offset": 11,
     "row_id": "adr003:47c46fadd1e9a400be645604"
   },
@@ -3280,7 +3280,7 @@
     "pattern_sha256": "1fbbb3d187556a3877640ed0dafb9402f821b14e929ecdb10b198e6509bed3f5",
     "flags": "text",
     "pattern_preview": "по каким дням|выходн|суббот|воскрес|слот",
-    "lineno": 569,
+    "lineno": 574,
     "col_offset": 11,
     "row_id": "adr003:0d1c6db682e17e165250114c"
   },
@@ -3293,7 +3293,7 @@
     "pattern_sha256": "510df4bb79896fb3de32ed0c447b7d053fe1ae2bf24ecac8e0b94115ca23002a",
     "flags": "text",
     "pattern_preview": "онлайн|дистанц",
-    "lineno": 572,
+    "lineno": 577,
     "col_offset": 11,
     "row_id": "adr003:365da41c77d18485565f31af"
   },
@@ -3306,7 +3306,7 @@
     "pattern_sha256": "57626e7c4b3ef6f8ee1e6fb923b1226a4bf922f859c8111f469d2b9f89c3abe3",
     "flags": "text",
     "pattern_preview": "за\\s+год|годов|год\\s",
-    "lineno": 582,
+    "lineno": 587,
     "col_offset": 11,
     "row_id": "adr003:ccdc85295eb3adbd1eaf588f"
   },
@@ -3319,7 +3319,7 @@
     "pattern_sha256": "495b2567b672211727ee30e6c1b3ac8710d4171cf98cbb7c17dff08908589719",
     "flags": "text",
     "pattern_preview": "семестр|полугод",
-    "lineno": 584,
+    "lineno": 589,
     "col_offset": 11,
     "row_id": "adr003:f54807f1149f82f6992b2005"
   },
@@ -3332,7 +3332,7 @@
     "pattern_sha256": "2919d2caba42ae4d7d3f19a33c2cb4c4e97477f8557124b4776def4deb4187af",
     "flags": "text",
     "pattern_preview": "сфр|рассматри|срок|сколько|дней|рабоч",
-    "lineno": 598,
+    "lineno": 603,
     "col_offset": 11,
     "row_id": "adr003:d0371a22626704529657636b"
   },
@@ -3484,7 +3484,7 @@
     "symbol": "In",
     "expression_sha256": "beb01a1317ab38ba10a03bc4ba98336c5da0d48535ac9cb90a03b25165a270e2",
     "expression_preview": "\"летн\" in query_text",
-    "lineno": 1153,
+    "lineno": 1161,
     "col_offset": 12,
     "row_id": "adr003:9cd11cb568ef771d5f7a9035"
   },
@@ -3612,7 +3612,7 @@
     "pattern_sha256": "510df4bb79896fb3de32ed0c447b7d053fe1ae2bf24ecac8e0b94115ca23002a",
     "flags": "text",
     "pattern_preview": "онлайн|дистанц",
-    "lineno": 560,
+    "lineno": 565,
     "col_offset": 12,
     "row_id": "adr003:88133d44fc713d96f2d5dc88"
   },
@@ -3638,7 +3638,7 @@
     "pattern_sha256": "dbba78b1af2086e5533a60aa4f4ce9cbee03dab8caaff0df73c900baa6cec870",
     "flags": "text",
     "pattern_preview": "по\\s+сч[её]ту|сч[её]т|банковск\\w*\\s+перевод|реквизит|не\\s+рассроч|не\\s+долями|не\\s+частями",
-    "lineno": 588,
+    "lineno": 593,
     "col_offset": 12,
     "row_id": "adr003:1494cfdc7fdef54aee82b059"
   },
@@ -3727,7 +3727,7 @@
     "pattern_sha256": "142ea3f8dc5b0037d2bbe53bef66a77c6a2b07bf2f77cb2c352c7427c25af833",
     "flags": "text",
     "pattern_preview": "очно|офлайн",
-    "lineno": 574,
+    "lineno": 579,
     "col_offset": 13,
     "row_id": "adr003:5235e584fbd81dcdd9e01b60"
   },
@@ -4117,7 +4117,7 @@
     "pattern_sha256": "5222cf2eef0db4e58c172b8fd356d4ec1b5906473de7798b3c19fb3d12c8d054",
     "flags": "text",
     "pattern_preview": "не\\s+олимпиад|обычн|регулярн",
-    "lineno": 561,
+    "lineno": 566,
     "col_offset": 16,
     "row_id": "adr003:e9bbd4c9c799639d62884732"
   },
@@ -4130,7 +4130,7 @@
     "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
     "flags": "text.casefold()",
     "pattern_preview": "pattern",
-    "lineno": 1431,
+    "lineno": 1441,
     "col_offset": 16,
     "row_id": "adr003:8141d52cb4e8a7409f800fd9"
   },
@@ -4208,7 +4208,7 @@
     "pattern_sha256": "8c2d7cb29c851ea78e02cca3399ea0009e1bd269de74e826f5acb62819f9410f",
     "flags": "query_text",
     "pattern_preview": "(?<!\\d)(\\d{1,2})(?:\\s*[-–]\\s*\\d{1,2})?\\s*(?:класс|кл\\b)",
-    "lineno": 1201,
+    "lineno": 1209,
     "col_offset": 17,
     "row_id": "adr003:851d85adfdaadce93513e487"
   },
@@ -4221,7 +4221,7 @@
     "pattern_sha256": "6b35e33edb0e94a9b1bb3eaf87b919856be9adacea656ad04b6ce598256568eb",
     "flags": "query_text",
     "pattern_preview": "(?:для|в)\\s+(\\d{1,2})(?:\\s*(?:го|ого|й|ой))?\\s*(?:класс|кл\\b)",
-    "lineno": 1203,
+    "lineno": 1211,
     "col_offset": 17,
     "row_id": "adr003:16712e02bff04654e0a645a8"
   },
@@ -4245,7 +4245,7 @@
     "symbol": "In",
     "expression_sha256": "715d666de1aa8d454e9bacc7858f47bb8aa39620ad42542a3ddf2955f2620098",
     "expression_preview": "\"онлайн\" in query_text",
-    "lineno": 1172,
+    "lineno": 1180,
     "col_offset": 18,
     "row_id": "adr003:024cf09226f1b890a4ecf20d"
   },
@@ -4271,7 +4271,7 @@
     "pattern_sha256": "ff99df4aa643035d21a8632a6c37432f25f29607612257bbc3635fb93acea851",
     "flags": "query_text",
     "pattern_preview": "\\d+",
-    "lineno": 1269,
+    "lineno": 1277,
     "col_offset": 18,
     "row_id": "adr003:192a8678da20bb188cc00fa6"
   },
@@ -4347,7 +4347,7 @@
     "symbol": "In",
     "expression_sha256": "fc55a1b9049471e310e8e5d035bebc11e6bbb92cc60effb8dcf73a2d230ec7be",
     "expression_preview": "\"очно\" in query_text",
-    "lineno": 1173,
+    "lineno": 1181,
     "col_offset": 19,
     "row_id": "adr003:9b2e6a781bf63dc6460008ed"
   },
@@ -4605,7 +4605,7 @@
     "symbol": "In",
     "expression_sha256": "2c100a8bf45b34f1a482ba5fe663a627d87207c8d1179107498ba7c1151b887f",
     "expression_preview": "\"theme:009_refund\" in topic_text",
-    "lineno": 557,
+    "lineno": 562,
     "col_offset": 22,
     "row_id": "adr003:f4f4d63cdc79d7998add969c"
   },
@@ -4616,7 +4616,7 @@
     "symbol": "NotIn",
     "expression_sha256": "ed95e37a655b6add4a441bb70c6b7df9b1dd460b734a9344d5a6f304da6fdf50",
     "expression_preview": "\"класс\" not in text",
-    "lineno": 1187,
+    "lineno": 1195,
     "col_offset": 22,
     "row_id": "adr003:2362057498483d0e28ed84e6"
   },
@@ -4642,7 +4642,7 @@
     "pattern_sha256": "013ae51927b657ce250f2bf68088f222d0f9652dae2439edd1229612c545cde9",
     "flags": "text",
     "pattern_preview": "(?<!\\d)(\\d{1,2})\\s*[-–]\\s*(\\d{1,2})(?!\\d)",
-    "lineno": 1306,
+    "lineno": 1314,
     "col_offset": 22,
     "row_id": "adr003:2aafc8ef027f4e40c988efcc"
   },
@@ -4744,7 +4744,7 @@
     "symbol": "In",
     "expression_sha256": "53d75a79776214ecacaa325ca3035e6cf36a01b4bdc88eddbe47fb10c3a133e9",
     "expression_preview": "\"очно\" in text",
-    "lineno": 1174,
+    "lineno": 1182,
     "col_offset": 24,
     "row_id": "adr003:a71573e60928e0344e03062e"
   },
@@ -4846,7 +4846,7 @@
     "symbol": "In",
     "expression_sha256": "c83058a91fece4b8cb7af513d539a71e7e1703d221f7519cba244f3a4430b822",
     "expression_preview": "\"онлайн\" in text",
-    "lineno": 1178,
+    "lineno": 1186,
     "col_offset": 25,
     "row_id": "adr003:52961bc675b5703d4139e080"
   },
@@ -4898,7 +4898,7 @@
     "pattern_sha256": "05ce90c48b77976cd7459dcc4aef456fb1b9b44dbfd2ac705198ddb1ef02122f",
     "flags": "text",
     "pattern_preview": "запис[ьи]\\s+(?:урок|занят)|урок[ауы]\\s+в\\s+запис|посмотреть\\s+запис|запис\\w*\\s+сохраня",
-    "lineno": 566,
+    "lineno": 571,
     "col_offset": 25,
     "row_id": "adr003:acde548f6a3fce3bd51d0566"
   },
@@ -5280,7 +5280,7 @@
     "pattern_sha256": "90243aacba356ff77268127150c113533bdd34f8005001ba578f1f9bb409c645",
     "flags": "query.casefold().replace(\"ё\", \"е\")",
     "pattern_preview": "[0-9A-Za-zА-Яа-яЁё]{4,}",
-    "lineno": 1423,
+    "lineno": 1433,
     "col_offset": 29,
     "row_id": "adr003:7619bd5c224d23786903388e"
   },
@@ -5371,7 +5371,7 @@
     "pattern_sha256": "396e16cd6b9f245c24a67c0873df023e01f184360dc717fab8cfbeb03e502710",
     "flags": "text",
     "pattern_preview": "скид|за\\s+год|семестр|помесяч|рассроч|долями|частями",
-    "lineno": 593,
+    "lineno": 598,
     "col_offset": 29,
     "row_id": "adr003:13b561198d1f8996a2f027bd"
   },
@@ -5404,7 +5404,7 @@
     "symbol": "In",
     "expression_sha256": "e967e152cb3421ecf67d86482f175b1f4abd740d9a19ad21efa1da7ee622ed6b",
     "expression_preview": "\"очный\" in text",
-    "lineno": 1179,
+    "lineno": 1187,
     "col_offset": 30,
     "row_id": "adr003:4f5cfe0c2e0198af55389491"
   },
@@ -5415,7 +5415,7 @@
     "symbol": "In",
     "expression_sha256": "e967e152cb3421ecf67d86482f175b1f4abd740d9a19ad21efa1da7ee622ed6b",
     "expression_preview": "\"очный\" in text",
-    "lineno": 1275,
+    "lineno": 1283,
     "col_offset": 30,
     "row_id": "adr003:c14f4805c29cea2e2a8c267f"
   },
@@ -5545,7 +5545,7 @@
     "pattern_sha256": "4302aa611c7b670463c560916a7a1b75f0c16e7f99551d5268bcf154936b3d84",
     "flags": "text",
     "pattern_preview": "сбп|реквизит|карт|ссылк[ау] на оплат|как\\s+оплат|куда\\s+оплат|банковск\\w*\\s+перевод|на\\s+сч[её]т|по\\s+сч[её]ту",
-    "lineno": 592,
+    "lineno": 597,
     "col_offset": 30,
     "row_id": "adr003:54426c494ce6c803aba0bdb3"
   },
@@ -5597,7 +5597,7 @@
     "pattern_sha256": "217dc98c2fd346f3f96f215c7e220e5446a86054416f9f20c816b471cfe693f7",
     "flags": "text",
     "pattern_preview": "распис|когда|во сколько|суббот|воскрес|слот|занят",
-    "lineno": 567,
+    "lineno": 572,
     "col_offset": 31,
     "row_id": "adr003:921849177293cbc67672e6b4"
   },
@@ -5610,7 +5610,7 @@
     "pattern_sha256": "18781af1de958eced795dd4877efa2e30b5b33b287bb014f9d3af480866d3f06",
     "flags": "text",
     "pattern_preview": "договор|справ|налог|возврат|чек|квитанц",
-    "lineno": 600,
+    "lineno": 605,
     "col_offset": 31,
     "row_id": "adr003:2e174196f4088560f5bee257"
   },
@@ -5747,7 +5747,7 @@
     "symbol": "In",
     "expression_sha256": "e0168d1afdbdcab7b91a0cb0aef644d9e260f9ca26c2c3678425edb2f12eba50",
     "expression_preview": "\"online\" in text",
-    "lineno": 1175,
+    "lineno": 1183,
     "col_offset": 34,
     "row_id": "adr003:e4b35d3123c52c7545082a90"
   },
@@ -5758,7 +5758,7 @@
     "symbol": "In",
     "expression_sha256": "c6a608b2de5569df0284feecbeb66bec2f9879ecb887d4d65d48ffa41ec0af0a",
     "expression_preview": "\"адрес\" in query_text",
-    "lineno": 1282,
+    "lineno": 1290,
     "col_offset": 34,
     "row_id": "adr003:31fb35ff4f88e27b6826c40d"
   },
@@ -6008,7 +6008,7 @@
     "symbol": "In",
     "expression_sha256": "fe0f7ded18cfc680dae9711c05463aca5ba5387177aa2eea1b08362941352654",
     "expression_preview": "\"очный\" in query_text",
-    "lineno": 1274,
+    "lineno": 1282,
     "col_offset": 36,
     "row_id": "adr003:2f6d00f47423ecda6ca481d9"
   },
@@ -6143,7 +6143,7 @@
     "symbol": "In",
     "expression_sha256": "490a632974dbe774280c49a1fe374980dd6e94556f83bf25baabd9551e95314e",
     "expression_preview": "\"дат\" in query_text",
-    "lineno": 1278,
+    "lineno": 1286,
     "col_offset": 38,
     "row_id": "adr003:2926855ccb46729f325c5cfc"
   },
@@ -6154,7 +6154,7 @@
     "symbol": "In",
     "expression_sha256": "490a632974dbe774280c49a1fe374980dd6e94556f83bf25baabd9551e95314e",
     "expression_preview": "\"дат\" in query_text",
-    "lineno": 1280,
+    "lineno": 1288,
     "col_offset": 38,
     "row_id": "adr003:d06a64e7d649c8ad6bfd3e4a"
   },
@@ -6417,7 +6417,7 @@
     "symbol": "In",
     "expression_sha256": "b1ba2c60207fb21b27d121b2e63933520d1f9960fd91022a9184f8bfa8ce0ae0",
     "expression_preview": "\"online\" in query_text",
-    "lineno": 1272,
+    "lineno": 1280,
     "col_offset": 40,
     "row_id": "adr003:ad1eca08e36991d0e1912ca4"
   },
@@ -6428,7 +6428,7 @@
     "symbol": "In",
     "expression_sha256": "16fa61bcbebf412f51d44d29a165d273cc9daa223f6ede9ac90d9f418e5cf146",
     "expression_preview": "\"городск\" in text",
-    "lineno": 1128,
+    "lineno": 1136,
     "col_offset": 40,
     "row_id": "adr003:ee9f9c26c4d302daed8d3f2d"
   },
@@ -6452,7 +6452,7 @@
     "symbol": "In",
     "expression_sha256": "490a632974dbe774280c49a1fe374980dd6e94556f83bf25baabd9551e95314e",
     "expression_preview": "\"дат\" in query_text",
-    "lineno": 1209,
+    "lineno": 1217,
     "col_offset": 41,
     "row_id": "adr003:3c9298303d9d54d7eebe3053"
   },
@@ -6474,7 +6474,7 @@
     "symbol": "In",
     "expression_sha256": "13cc20623fcecc38129cb0bf45079e498edff950999ddfe3dfd04a6e5988d945",
     "expression_preview": "\"школ\" in query_text",
-    "lineno": 1153,
+    "lineno": 1161,
     "col_offset": 41,
     "row_id": "adr003:61bf08fbe8ac1e2c398a5ba0"
   },
@@ -6522,7 +6522,7 @@
     "symbol": "In",
     "expression_sha256": "3f5c65f32dd2771abe0cb9df1919bcdda76c1d0e5281763059f0041881488343",
     "expression_preview": "\"фрагмент\" in text",
-    "lineno": 1088,
+    "lineno": 1096,
     "col_offset": 42,
     "row_id": "adr003:8a3abccf7ba89425a976bdaa"
   },
@@ -6559,7 +6559,7 @@
     "symbol": "In",
     "expression_sha256": "f751ab60a33c439e29a1d9f949ffe6b5c5380e81b7334a37b2093785d6793e6e",
     "expression_preview": "\"возражение\" in text",
-    "lineno": 1146,
+    "lineno": 1154,
     "col_offset": 44,
     "row_id": "adr003:2ec4a111ada776ce5c4d2f4b"
   },
@@ -6570,7 +6570,7 @@
     "symbol": "In",
     "expression_sha256": "c9e11c410a1d082f6254948991fcdea5c9380a990b1d172664bca01acd40fdb6",
     "expression_preview": "\"лагер\" in query_text",
-    "lineno": 1151,
+    "lineno": 1159,
     "col_offset": 45,
     "row_id": "adr003:70f87edf11c3c8214c902544"
   },
@@ -6581,7 +6581,7 @@
     "symbol": "In",
     "expression_sha256": "e967e152cb3421ecf67d86482f175b1f4abd740d9a19ad21efa1da7ee622ed6b",
     "expression_preview": "\"очный\" in text",
-    "lineno": 1174,
+    "lineno": 1182,
     "col_offset": 46,
     "row_id": "adr003:52f4a6b0ba0ea1c1600cd11f"
   },
@@ -6618,7 +6618,7 @@
     "symbol": "In",
     "expression_sha256": "fe0f7ded18cfc680dae9711c05463aca5ba5387177aa2eea1b08362941352654",
     "expression_preview": "\"очный\" in query_text",
-    "lineno": 1173,
+    "lineno": 1181,
     "col_offset": 47,
     "row_id": "adr003:3d746312462850bf43864567"
   },
@@ -6861,7 +6861,7 @@
     "symbol": "In",
     "expression_sha256": "b1ba2c60207fb21b27d121b2e63933520d1f9960fd91022a9184f8bfa8ce0ae0",
     "expression_preview": "\"online\" in query_text",
-    "lineno": 1172,
+    "lineno": 1180,
     "col_offset": 50,
     "row_id": "adr003:618c33408b6d3197fa96776c"
   },
@@ -6896,7 +6896,7 @@
     "symbol": "In",
     "expression_sha256": "e0168d1afdbdcab7b91a0cb0aef644d9e260f9ca26c2c3678425edb2f12eba50",
     "expression_preview": "\"online\" in text",
-    "lineno": 1178,
+    "lineno": 1186,
     "col_offset": 51,
     "row_id": "adr003:fe4d1e674c1b9a55cd71a021"
   },
@@ -6929,7 +6929,7 @@
     "symbol": "In",
     "expression_sha256": "b242a452825c7d466472bbf92b8ff8c1bb665fba133ad8136a392b95ab9d6339",
     "expression_preview": "\"offline\" in text",
-    "lineno": 1275,
+    "lineno": 1283,
     "col_offset": 54,
     "row_id": "adr003:1a3a4c4811d63958c25aa8b8"
   },
@@ -6940,7 +6940,7 @@
     "symbol": "In",
     "expression_sha256": "83a8101ab0120ff5cfe172c592de11e70ca401025b3a9c695dae0c2f26d2fa05",
     "expression_preview": "\"дистанц\" in text",
-    "lineno": 1175,
+    "lineno": 1183,
     "col_offset": 54,
     "row_id": "adr003:50aac00cf018cad829fed76d"
   },
@@ -6951,7 +6951,7 @@
     "symbol": "In",
     "expression_sha256": "855310c7361a2854853882b053909c087d8455ab5dce5c400a5231f27ff4d255",
     "expression_preview": "\"офлайн\" in text",
-    "lineno": 1179,
+    "lineno": 1187,
     "col_offset": 54,
     "row_id": "adr003:f54609c90a69b3b51705cf47"
   },
@@ -6986,7 +6986,7 @@
     "symbol": "In",
     "expression_sha256": "cde265bdcafed0fbe6b094336ab34a8b9d702ca3ecb7be7a3827e2a31cb3db92",
     "expression_preview": "\"refund\" in topic_text",
-    "lineno": 557,
+    "lineno": 562,
     "col_offset": 58,
     "row_id": "adr003:f05ea384509d226ca18c2e24"
   },
@@ -7067,7 +7067,7 @@
     "symbol": "In",
     "expression_sha256": "e44a57353a1a376c7f67f4f58ee67bc1c8f2e4fd94c63417a5e124e238d96285",
     "expression_preview": "\"площадк\" in query_text",
-    "lineno": 1282,
+    "lineno": 1290,
     "col_offset": 64,
     "row_id": "adr003:7b2936b4eeaaae0e6dbf641c"
   },
@@ -7078,7 +7078,7 @@
     "symbol": "In",
     "expression_sha256": "6e109eb6ae176c82c023f48d324063597db52728a4bbbc4a45154ada78325b69",
     "expression_preview": "\"распис\" in query_text",
-    "lineno": 1278,
+    "lineno": 1286,
     "col_offset": 64,
     "row_id": "adr003:b7e08c5f026bb0521ea50797"
   },
@@ -7089,7 +7089,7 @@
     "symbol": "In",
     "expression_sha256": "6e109eb6ae176c82c023f48d324063597db52728a4bbbc4a45154ada78325b69",
     "expression_preview": "\"распис\" in query_text",
-    "lineno": 1280,
+    "lineno": 1288,
     "col_offset": 64,
     "row_id": "adr003:17678584b9f88f25f2b74979"
   },
@@ -7111,7 +7111,7 @@
     "symbol": "In",
     "expression_sha256": "81ac10ed326212adadd2aab4d38b3aedcd34cd83f36dc17ff143dd6115feb4e9",
     "expression_preview": "\"офлайн\" in query_text",
-    "lineno": 1274,
+    "lineno": 1282,
     "col_offset": 66,
     "row_id": "adr003:865ce30ed8ca68ea7303f599"
   },
@@ -7122,7 +7122,7 @@
     "symbol": "In",
     "expression_sha256": "6e109eb6ae176c82c023f48d324063597db52728a4bbbc4a45154ada78325b69",
     "expression_preview": "\"распис\" in query_text",
-    "lineno": 1209,
+    "lineno": 1217,
     "col_offset": 67,
     "row_id": "adr003:f30b63a9e17cccc0f9544260"
   },
@@ -7155,7 +7155,7 @@
     "symbol": "In",
     "expression_sha256": "c83058a91fece4b8cb7af513d539a71e7e1703d221f7519cba244f3a4430b822",
     "expression_preview": "\"онлайн\" in text",
-    "lineno": 1272,
+    "lineno": 1280,
     "col_offset": 69,
     "row_id": "adr003:927b2b45a4809c68f1dcab6e"
   },
@@ -7190,7 +7190,7 @@
     "symbol": "In",
     "expression_sha256": "d71586903f8abffeeb804411a4957157a195ccf011a5a0e89cea17ad378ddd81",
     "expression_preview": "\".\" in text",
-    "lineno": 1436,
+    "lineno": 1446,
     "col_offset": 7,
     "row_id": "adr003:ce36078cad18819e4e49e7fb"
   },
@@ -7377,7 +7377,7 @@
     "symbol": "In",
     "expression_sha256": "3dae09933e3ca415cf7f92f06ab966cd342237f959df178b3ed88198fe69ecc3",
     "expression_preview": "\"выездн\" in query_text",
-    "lineno": 1128,
+    "lineno": 1136,
     "col_offset": 7,
     "row_id": "adr003:ea64953c59953eb2b7e73ef4"
   },
@@ -7729,7 +7729,7 @@
     "pattern_sha256": "6dfe9d54ff89dcb6e7d4d7925bd0c8a66db775d38d7fa6877963152806dbc2a4",
     "flags": "text",
     "pattern_preview": "rf\"(?<!\\d){re.escape(number)}(?!\\d)\"",
-    "lineno": 1303,
+    "lineno": 1311,
     "col_offset": 7,
     "row_id": "adr003:35453b59163b23c334c8c454"
   },
@@ -7755,7 +7755,7 @@
     "pattern_sha256": "617f5ae696f9b7a7776340cd32b9bf9b6384471743d62937f017d8914720b9f5",
     "flags": "text",
     "pattern_preview": "стоим|цен[аы]|сколько стоит|прайс|руб",
-    "lineno": 564,
+    "lineno": 569,
     "col_offset": 7,
     "row_id": "adr003:3e1c8d9d5698d2e366ad8e6b"
   },
@@ -7768,7 +7768,7 @@
     "pattern_sha256": "8749d33227310a8cb8a1a14fdbd3a02402fb961604d607db191679a0674aff91",
     "flags": "text",
     "pattern_preview": "преподав|педагог|учитель|кто\\s+вед|кто\\s+работает",
-    "lineno": 578,
+    "lineno": 583,
     "col_offset": 7,
     "row_id": "adr003:d34638e87e04ecbfc226f083"
   },
@@ -7781,7 +7781,7 @@
     "pattern_sha256": "363297f67a2af29fc4b2225f03d95dd95f286b366c0f76322d2f8cb8dae296a5",
     "flags": "text",
     "pattern_preview": "скид|льгот|промокод|акци",
-    "lineno": 580,
+    "lineno": 585,
     "col_offset": 7,
     "row_id": "adr003:f068479a2245b657d0c7851e"
   },
@@ -7794,7 +7794,7 @@
     "pattern_sha256": "52a0816769bd0e1860df310205799c3879b9085c014fc06c9e0dd20073b55bee",
     "flags": "text",
     "pattern_preview": "рассроч",
-    "lineno": 590,
+    "lineno": 595,
     "col_offset": 7,
     "row_id": "adr003:046571488fb99e19a29f799e"
   },
@@ -7807,7 +7807,7 @@
     "pattern_sha256": "1be6b575329f29a2391a9e70b0a3f7e8c1545e1bbfaacae713a391d7d23ed89f",
     "flags": "text",
     "pattern_preview": "маткап|материн",
-    "lineno": 596,
+    "lineno": 601,
     "col_offset": 7,
     "row_id": "adr003:6b8bee8844a140ef8fa06e8b"
   },
@@ -7820,7 +7820,7 @@
     "pattern_sha256": "e3d5d1d908e3e6237a0006bc145a49ec4fd60cc638eb74c352c028b7e654286b",
     "flags": "text",
     "pattern_preview": "личный кабинет|кабинет|платформ|логин|парол",
-    "lineno": 602,
+    "lineno": 607,
     "col_offset": 7,
     "row_id": "adr003:879177775b62481e52c16725"
   },
@@ -7833,7 +7833,7 @@
     "pattern_sha256": "4af6603fc60d663359b6eb0f6bdc6a98737086f4ec83a6fe7d573f232b0d5e5e",
     "flags": "text",
     "pattern_preview": "электрон|документооборот|скан-коп",
-    "lineno": 604,
+    "lineno": 609,
     "col_offset": 7,
     "row_id": "adr003:fbf5337670e94ce00078a566"
   },
@@ -7846,7 +7846,7 @@
     "pattern_sha256": "262df9be039cb77e047dd7d60a6ebec25d953a85ae2e86bfa83e4f72b9f924cc",
     "flags": "text",
     "pattern_preview": "формат|онлайн|очно|офлайн|дистанц",
-    "lineno": 606,
+    "lineno": 611,
     "col_offset": 7,
     "row_id": "adr003:e0f7a526bf14c7493890dddf"
   },
@@ -7859,7 +7859,7 @@
     "pattern_sha256": "c7336180b6b4cf2faff051bab3bfcca2c163fca20db47da0ffd26af600080a09",
     "flags": "text",
     "pattern_preview": "адрес|где\\s+вы|где\\s+находит|куда\\s+ехать|куда\\s+ездить|площадк|метро",
-    "lineno": 608,
+    "lineno": 613,
     "col_offset": 7,
     "row_id": "adr003:8a50d8ca0190d9c4d105f317"
   },
@@ -7872,7 +7872,7 @@
     "pattern_sha256": "f489ca3b8e4eff2096a40553c187e0db933b73d4f9423a19f6d7977cde0fe498",
     "flags": "text",
     "pattern_preview": "пробн|фрагмент|попроб",
-    "lineno": 610,
+    "lineno": 615,
     "col_offset": 7,
     "row_id": "adr003:df49bb88292e62e18cd01cc8"
   },
@@ -7885,7 +7885,7 @@
     "pattern_sha256": "93fb3b8e092af72969ea8bb9d1e89ffa5e9b1c6c61170a98f5baeeafee56a14c",
     "flags": "text",
     "pattern_preview": "программ|предмет|летн|пробн|чему учат|содержание",
-    "lineno": 612,
+    "lineno": 617,
     "col_offset": 7,
     "row_id": "adr003:5da90d1356c162a9f480ce65"
   },
@@ -7898,7 +7898,7 @@
     "pattern_sha256": "da2970d5452fe3c980de76393229b8ec3f79e80eb796e1b37b87b58825614220",
     "flags": "text",
     "pattern_preview": "трансфер|добир|дорог|заезд|из москв|самостоятельн",
-    "lineno": 614,
+    "lineno": 619,
     "col_offset": 7,
     "row_id": "adr003:b2330902258245bee72edc47"
   },
@@ -7935,7 +7935,7 @@
     "symbol": "In",
     "expression_sha256": "855310c7361a2854853882b053909c087d8455ab5dce5c400a5231f27ff4d255",
     "expression_preview": "\"офлайн\" in text",
-    "lineno": 1174,
+    "lineno": 1182,
     "col_offset": 70,
     "row_id": "adr003:cf653bd9f17a3fbbd7825669"
   },
@@ -7946,7 +7946,7 @@
     "symbol": "In",
     "expression_sha256": "83a8101ab0120ff5cfe172c592de11e70ca401025b3a9c695dae0c2f26d2fa05",
     "expression_preview": "\"дистанц\" in text",
-    "lineno": 1178,
+    "lineno": 1186,
     "col_offset": 71,
     "row_id": "adr003:30f06e2e65144dd4abba25ef"
   },
@@ -7979,7 +7979,7 @@
     "symbol": "In",
     "expression_sha256": "13cc20623fcecc38129cb0bf45079e498edff950999ddfe3dfd04a6e5988d945",
     "expression_preview": "\"школ\" in query_text",
-    "lineno": 1151,
+    "lineno": 1159,
     "col_offset": 75,
     "row_id": "adr003:90165d286c13cb1147959c42"
   },
@@ -8001,7 +8001,7 @@
     "symbol": "In",
     "expression_sha256": "ba68a29694e755d61172edb5eeb750be21cf3a7e7dc4dc73922502e5302bb33c",
     "expression_preview": "\"дистанц\" in query_text",
-    "lineno": 1172,
+    "lineno": 1180,
     "col_offset": 76,
     "row_id": "adr003:6ffbfed92f7a2f9f86559cc1"
   },
@@ -8023,7 +8023,7 @@
     "symbol": "In",
     "expression_sha256": "81ac10ed326212adadd2aab4d38b3aedcd34cd83f36dc17ff143dd6115feb4e9",
     "expression_preview": "\"офлайн\" in query_text",
-    "lineno": 1173,
+    "lineno": 1181,
     "col_offset": 77,
     "row_id": "adr003:248364c2c3c2aabdb4f061f9"
   },
@@ -8034,7 +8034,7 @@
     "symbol": "In",
     "expression_sha256": "20cb9b63dcc46552846bc2acaebcca95afaddf6abf3c8f8323cfdc651ca694d1",
     "expression_preview": "\"черновик для ситуации\" in text",
-    "lineno": 1146,
+    "lineno": 1154,
     "col_offset": 78,
     "row_id": "adr003:8ba72c87793661a7e8cdc491"
   },
@@ -8067,7 +8067,7 @@
     "symbol": "In",
     "expression_sha256": "3814f705768fe4e2fc292c2b3a0044fa965e12bda84eb97bd28414cab61e322b",
     "expression_preview": "\"где\" in query_text",
-    "lineno": 1282,
+    "lineno": 1290,
     "col_offset": 8,
     "row_id": "adr003:9bd64aa99b41872fceacb8fc"
   },
@@ -8078,7 +8078,7 @@
     "symbol": "In",
     "expression_sha256": "be1fdf194db56630e51a4a69d323940c795799d74979f08291fc427195341af3",
     "expression_preview": "\"для других класс\" in text",
-    "lineno": 1190,
+    "lineno": 1198,
     "col_offset": 8,
     "row_id": "adr003:247c6891032266ad6216b939"
   },
@@ -8089,7 +8089,7 @@
     "symbol": "In",
     "expression_sha256": "91a1edb644dd6eb025900e673993c3d7cd966c5d915c5b96aaf6ed72621dcd49",
     "expression_preview": "\"когда\" in query_text",
-    "lineno": 1278,
+    "lineno": 1286,
     "col_offset": 8,
     "row_id": "adr003:e8ea3608f0c9318ff14de64e"
   },
@@ -8100,7 +8100,7 @@
     "symbol": "In",
     "expression_sha256": "91a1edb644dd6eb025900e673993c3d7cd966c5d915c5b96aaf6ed72621dcd49",
     "expression_preview": "\"когда\" in query_text",
-    "lineno": 1280,
+    "lineno": 1288,
     "col_offset": 8,
     "row_id": "adr003:214bec80ffbecefb3bf355e6"
   },
@@ -8111,7 +8111,7 @@
     "symbol": "In",
     "expression_sha256": "715d666de1aa8d454e9bacc7858f47bb8aa39620ad42542a3ddf2955f2620098",
     "expression_preview": "\"онлайн\" in query_text",
-    "lineno": 1272,
+    "lineno": 1280,
     "col_offset": 8,
     "row_id": "adr003:6a16c3266752e7bee16211bb"
   },
@@ -8122,7 +8122,7 @@
     "symbol": "In",
     "expression_sha256": "c83058a91fece4b8cb7af513d539a71e7e1703d221f7519cba244f3a4430b822",
     "expression_preview": "\"онлайн\" in text",
-    "lineno": 1175,
+    "lineno": 1183,
     "col_offset": 8,
     "row_id": "adr003:47fa47080ea92807323162a2"
   },
@@ -8133,7 +8133,7 @@
     "symbol": "In",
     "expression_sha256": "fc55a1b9049471e310e8e5d035bebc11e6bbb92cc60effb8dcf73a2d230ec7be",
     "expression_preview": "\"очно\" in query_text",
-    "lineno": 1274,
+    "lineno": 1282,
     "col_offset": 8,
     "row_id": "adr003:688a92cf1ce927789262a97b"
   },
@@ -8144,7 +8144,7 @@
     "symbol": "In",
     "expression_sha256": "53d75a79776214ecacaa325ca3035e6cf36a01b4bdc88eddbe47fb10c3a133e9",
     "expression_preview": "\"очно\" in text",
-    "lineno": 1179,
+    "lineno": 1187,
     "col_offset": 8,
     "row_id": "adr003:b834feaea52e141fedfd5e48"
   },
@@ -8155,7 +8155,7 @@
     "symbol": "In",
     "expression_sha256": "53d75a79776214ecacaa325ca3035e6cf36a01b4bdc88eddbe47fb10c3a133e9",
     "expression_preview": "\"очно\" in text",
-    "lineno": 1275,
+    "lineno": 1283,
     "col_offset": 8,
     "row_id": "adr003:5b22c9fdfd5f2ee0e58d56be"
   },
@@ -8259,7 +8259,7 @@
     "pattern_sha256": "16b82e00023189260c92feeeef168cfd2484b5585d0f0514126d80a12a458d43",
     "flags": "text",
     "pattern_preview": "\\b\\d{1,2}\\s*[-–]\\s*\\d{1,2}\\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)|\\b\\d{1,2}\\s+(?:январ|феврал|март|апрел|ма[йя]|июн|июл",
-    "lineno": 1314,
+    "lineno": 1322,
     "col_offset": 8,
     "row_id": "adr003:6a5cb7fb690974537fabac03"
   },
@@ -8311,7 +8311,7 @@
     "pattern_sha256": "1a66a07d914be43d39075e1e70187aac55f93e2ec36835a59e9020d107769c29",
     "flags": "text",
     "pattern_preview": "физтех|олимпиад",
-    "lineno": 559,
+    "lineno": 564,
     "col_offset": 8,
     "row_id": "adr003:fab77b75e6de666d5c15b866"
   },
@@ -8324,7 +8324,7 @@
     "pattern_sha256": "dac07306877d8b2a12fcf09d5649702776ba86f8ab969bed74616057c4d995c1",
     "flags": "text",
     "pattern_preview": "помесяч|каждый\\s+месяц|ежемесяч|по\\s+месяцам",
-    "lineno": 587,
+    "lineno": 592,
     "col_offset": 8,
     "row_id": "adr003:9e95316930dc07c15a33a2eb"
   },
@@ -8400,7 +8400,7 @@
     "symbol": "In",
     "expression_sha256": "d159dc1aa1ef6fb1dd3042c452d306eaf4bfd04f224a0b93ce0ca90ca79265bb",
     "expression_preview": "\"городск\" in query_text",
-    "lineno": 1151,
+    "lineno": 1159,
     "col_offset": 9,
     "row_id": "adr003:e4ca97af972b1396c5e384e5"
   },
@@ -8422,7 +8422,7 @@
     "symbol": "In",
     "expression_sha256": "e0168d1afdbdcab7b91a0cb0aef644d9e260f9ca26c2c3678425edb2f12eba50",
     "expression_preview": "\"online\" in text",
-    "lineno": 1272,
+    "lineno": 1280,
     "col_offset": 95,
     "row_id": "adr003:5e61a744f740f23232bec04e"
   },
@@ -8444,7 +8444,7 @@
     "symbol": "In",
     "expression_sha256": "d12bb82641f26f98b2bb0c1a87c550ba143b028353d9630fce9e5e2254a5e3ff",
     "expression_preview": "\"offline\" in query_text",
-    "lineno": 1274,
+    "lineno": 1282,
     "col_offset": 98,
     "row_id": "adr003:43c53a2010b8a945e08c0268"
   },

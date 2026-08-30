@@ -26,6 +26,8 @@ def test_current_publish_config_uses_canonical_runtime_paths() -> None:
     assert [reader["worktree"] for reader in payload["readers"]] == [
         "/Users/dmitrijfabarisov/Projects/Mango analyse"
     ]
+    assert payload["compact_reader_max_bytes"] == 8 * 1024**3
+    assert payload["bot_visibility_policy"]["min_effective_chunks"] == 1
 
 
 def _config(tmp_path: Path, prod: Path, staging: Path) -> Path:
@@ -39,16 +41,145 @@ def _config(tmp_path: Path, prod: Path, staging: Path) -> Path:
         "backup_root": str(tmp_path / "prod_backups"),
         "backup_async_copy_root": str(tmp_path / "openclaw_backups"),
         "required_free_copies": 1,
+        "compact_reader_max_bytes": 8 * 1024**3,
+        "bot_visibility_policy": {
+            "min_effective_chunks": 1,
+            "max_effective_chunks": 100_000,
+            "allowed_effective_pairs": [
+                {
+                    "source_system": "customer_timeline_bot_safe_summary",
+                    "chunk_type": "bot_safe_summary",
+                },
+                {
+                    "source_system": "customer_purchases_v1",
+                    "chunk_type": "purchase_history",
+                },
+            ],
+        },
         "count_tables": ["customer_identities", "timeline_events", "bot_context_chunks"],
-        "control_customers": [{"customer_id": "customer:0", "expected_found": True}],
-        "readers": [],
+        "control_customers": [
+            {"customer_id": f"customer:missing-{index}", "expected_found": False}
+            for index in range(5)
+        ],
+        "readers": [
+            {
+                "name": "test_reader",
+                "worktree": str(tmp_path),
+                "smoke_command": ["true"],
+                "stop_command": ["true"],
+                "start_command": ["true"],
+            }
+        ],
     }
     path = tmp_path / "publish_config.json"
     path.write_text(json.dumps(cfg), encoding="utf-8")
     return path
 
 
-def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Path) -> None:
+def _five_controls(primary: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        primary,
+        *(
+            {"customer_id": f"customer:extra-missing-{index}", "expected_found": False}
+            for index in range(4)
+        ),
+    ]
+
+
+def _snapshot_manifest(config_path: Path, snapshot_db: Path) -> Path:
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    cutoff = datetime.now(timezone.utc)
+    smoke_report, smoke_ok = reader_smoke.smoke(config_path, snapshot_db=snapshot_db, as_of=cutoff)
+    assert smoke_ok is True
+    source_counts = [{"source_system": "sentinel", "count": 1}]
+    cursors = [
+        {
+            "source_system": "sentinel",
+            "last_cursor_ts": cutoff.isoformat(),
+            "updated_at": cutoff.isoformat(),
+        }
+    ]
+    required_check = {
+        "required": ["sentinel"],
+        "satisfied": ["sentinel"],
+        "missing": [],
+        "degraded": [],
+        "blocking_missing": [],
+        "proofs": {
+            "sentinel": {
+                "source_label": "sentinel",
+                "checked_at": cutoff.isoformat(),
+                "status": "ok",
+                "records_seen_or_written": 1,
+                "cursor_or_max_event_at": cutoff.isoformat(),
+                "source_specific_reason": "test sentinel proof",
+            }
+        },
+    }
+    identity_integrity = {"sentinel_exact_links": 1}
+    nightly_manifest = {
+        "ok": True,
+        "reasons": [],
+        "source_counts": source_counts,
+        "ingestion_cursors": cursors,
+        "identity_integrity": identity_integrity,
+        "required_sources_check": required_check,
+    }
+    writer_head = publish_common.git_head(Path(__file__).resolve().parents[1])
+    payload = {
+        "schema_version": "customer_timeline_snapshot_build_manifest_v3",
+        "snapshot_db": str(snapshot_db.resolve()),
+        "publish_config_sha256": publish_common.sha256_file(config_path),
+        "sha256": publish_common.sha256_file(snapshot_db),
+        "size_bytes": snapshot_db.stat().st_size,
+        "user_version": publish_common.user_version(snapshot_db),
+        "schema_sha256": publish_common.schema_signature_sha256(snapshot_db),
+        "counts": publish_common.table_counts(snapshot_db, tuple(cfg["count_tables"])),
+        "integrity_check": "ok",
+        "quick_check": "ok",
+        "foreign_key_check_rows": 0,
+        "domain_integrity": build_snapshot._domain_integrity(snapshot_db),
+        "compaction": {
+            "within_size_limit": True,
+            "max_size_bytes": cfg["compact_reader_max_bytes"],
+            "size_headroom_bytes": cfg["compact_reader_max_bytes"] - snapshot_db.stat().st_size,
+        },
+        "cutoff": cutoff.isoformat(),
+        "reader_smoke": smoke_report,
+        "control_customers": cfg["control_customers"],
+        "writer_identity_stable": True,
+        "source_unchanged_during_copy": True,
+        "writer_git_head": writer_head,
+        "writer_git_head_end": writer_head,
+        "nightly_manifest": nightly_manifest,
+        "source_freshness": {
+            "source_counts": source_counts,
+            "ingestion_cursors": cursors,
+            "identity_integrity": identity_integrity,
+            "required_sources_check": required_check,
+        },
+    }
+    path = snapshot_db.parent / "manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _release_snapshot(config_path: Path, source_db: Path) -> Path:
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    snapshot_dir = Path(cfg["snapshot_root"]) / "prod_test"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_db = snapshot_dir / "customer_timeline.sqlite"
+    with sqlite3.connect(source_db) as source, sqlite3.connect(snapshot_db) as target:
+        source.backup(target)
+        target.execute("PRAGMA journal_mode=DELETE")
+    publish_common.remove_sidecars(snapshot_db, execute=True)
+    return snapshot_db
+
+
+def test_build_snapshot_compacts_atomically_then_reader_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -57,7 +188,7 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [
+    payload["control_customers"] = _five_controls(
         {
             "customer_id": staging_customer,
             "expected_found": True,
@@ -69,16 +200,211 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
                 "derived_signals_total": 1,
             },
         }
-    ]
+    )
     cfg.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(build_snapshot, "git_status_short", lambda _root: "")
+    monkeypatch.setattr(
+        build_snapshot,
+        "nightly_manifest_report",
+        lambda _cfg: {
+            "ok": True,
+            "staging_sha256": publish_common.sha256_file(staging),
+            "staging_size_bytes": staging.stat().st_size,
+            "source_counts": [{"source_system": "sentinel", "count": 7}],
+            "ingestion_cursors": [{
+                "source_system": "sentinel",
+                "last_cursor_ts": "2026-08-29T00:00:00+00:00",
+                "updated_at": "2026-08-29T00:01:00+00:00",
+            }],
+                "identity_integrity": {"sentinel_exact_links": 11},
+                "required_sources_check": {
+                    "required": ["sentinel"],
+                    "satisfied": ["sentinel"],
+                    "missing": [],
+                    "degraded": [],
+                    "blocking_missing": [],
+                    "proofs": {
+                        "sentinel": {
+                            "source_label": "sentinel",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "status": "ok",
+                            "records_seen_or_written": 7,
+                            "cursor_or_max_event_at": "2026-08-29T00:00:00+00:00",
+                            "source_specific_reason": "test sentinel proof",
+                        }
+                    },
+                },
+                "published_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    quick_check_calls: list[Path] = []
+    real_quick_check = reader_smoke.quick_check
+
+    def counted_quick_check(path: Path) -> str:
+        quick_check_calls.append(path)
+        return real_quick_check(path)
+
+    monkeypatch.setattr(reader_smoke, "quick_check", counted_quick_check)
+    monkeypatch.setattr(
+        build_snapshot,
+        "table_counts",
+        lambda *_args, **_kwargs: pytest.fail(
+            "retained snapshot counts must come from the compaction balance"
+        ),
+    )
 
     report, ok = build_snapshot.build_snapshot(cfg, execute=True, snapshot_name="prod_test")
 
     assert ok is True
+    assert len(quick_check_calls) == 1
     snapshot_db = Path(report["snapshot_db"])
-    manifest = json.loads((snapshot_db.parent / "build_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((snapshot_db.parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["integrity_check"] == "ok"
     assert manifest["quick_check"] == "ok"
+    assert manifest["source_freshness"]["source_counts"] == [
+        {"source_system": "sentinel", "count": 7}
+    ]
+    assert manifest["source_freshness"]["ingestion_cursors"] == [
+        {
+            "source_system": "sentinel",
+            "last_cursor_ts": "2026-08-29T00:00:00+00:00",
+            "updated_at": "2026-08-29T00:01:00+00:00",
+        }
+    ]
+    assert manifest["source_freshness"]["identity_integrity"] == {
+        "sentinel_exact_links": 11
+    }
     assert manifest["counts"]["timeline_events"] >= 1
+    assert manifest["compaction"]["business_counts_match"] is True
+    assert manifest["compaction"]["audit_log_source_rows"] > 0
+    assert manifest["compaction"]["audit_log_snapshot_rows"] == 0
+    assert manifest["compaction"]["table_policy"]["mode"] == "explicit_allowlist_fail_closed"
+    assert manifest["compaction"]["table_policy"]["unknown_source_tables"] == []
+    assert manifest["compaction"]["table_policy"]["lineage_tables_retained"] == [
+        "ingestion_cursors",
+        "ingestion_runs",
+    ]
+    assert manifest["compaction"]["table_policy"]["schema_only_rows_omitted"]["audit_log"] == (
+        "forensic_audit_rows_not_required_by_reader"
+    )
+    assert manifest["compaction"]["indexes_omitted"] == [
+        "idx_customer_purchases_v1_computability",
+        "ix_artifacts_sha256",
+        "ix_bot_context_chunks_active_customer_time",
+        "ix_timeline_events_active_customer_time",
+        "ix_timeline_events_type_time",
+    ]
+    assert manifest["compaction"]["indexes_omitted_source_bytes"] > 0
+    assert manifest["compaction"]["index_omission_evidence"] == {
+        "idx_customer_purchases_v1_computability": {
+            "retained_reader_index": "idx_customer_purchases_v1_customer",
+            "reader_query": "customer_scoped_purchase_lookup",
+            "reason": "writer_reconciliation_index_not_used_by_immutable_reader",
+        },
+        "ix_artifacts_sha256": {
+            "retained_reader_index": "ix_artifacts_event",
+            "reader_query": "event_artifact_projection",
+            "reason": "writer_dedup_index_not_used_by_immutable_reader",
+        },
+        "ix_bot_context_chunks_active_customer_time": {
+            "retained_prefix_index": "ix_chunks_customer_event_time",
+            "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+            "reason": "reader_active_filter_keeps_customer_scoped_prefix",
+        },
+        "ix_timeline_events_active_customer_time": {
+            "retained_prefix_index": "ix_timeline_events_customer_time",
+            "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+            "reason": "reader_active_filter_keeps_customer_scoped_prefix",
+        },
+        "ix_timeline_events_type_time": {
+            "retained_prefix_index": "ix_timeline_events_customer_time",
+            "retained_prefix": ["tenant_id", "customer_id", "event_at"],
+            "reason": "compact_primary_reader_queries_keep_customer_scoped_index",
+        },
+    }
+    assert manifest["compaction"]["within_size_limit"] is True
+    assert manifest["fallback_search"]["ok"] is True
+    assert manifest["reader_smoke"]["status"] == "ok"
+    assert manifest["bot_visible_stored"] == 1
+    assert manifest["bot_visible_after_reader_policy"] == 1
+    assert "bot_visibility_stored" not in manifest
+    assert manifest["bot_visible_stored"] == manifest["reader_smoke"]["bot_visibility"]["bot_visible_stored"]
+    assert manifest["bot_visible_after_reader_policy"] == (
+        manifest["reader_smoke"]["bot_visibility"]["bot_visible_after_reader_policy"]
+    )
+    assert manifest["writer_identity_stable"] is True
+    assert not (snapshot_db.parent / ".customer_timeline.tmp.sqlite").exists()
+    with sqlite3.connect(snapshot_db) as con:
+        assert con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+        assert con.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE name = 'timeline_event_fts' OR name LIKE 'timeline_event_fts_%'
+               OR name = 'bot_context_chunk_fts' OR name LIKE 'bot_context_chunk_fts_%'
+            """
+        ).fetchone()[0] == 0
+        snapshot_indexes = {
+            str(row[0])
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "ix_timeline_events_customer_time" in snapshot_indexes
+        assert "ix_chunks_customer_event_time" in snapshot_indexes
+        assert "ix_timeline_events_source" in snapshot_indexes
+        assert "ix_identity_links_lookup" in snapshot_indexes
+        with sqlite3.connect(staging) as source_con:
+            source_indexes = {
+                str(row[0])
+                for row in source_con.execute("SELECT name FROM sqlite_master WHERE type='index'")
+            }
+        for retained_reader_index in (
+            "idx_customer_purchases_v1_customer",
+            "ix_artifacts_event",
+        ):
+            if retained_reader_index in source_indexes:
+                assert retained_reader_index in snapshot_indexes
+        assert not set(manifest["compaction"]["indexes_omitted"]) & snapshot_indexes
+        assert con.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0] > 0
+        assert manifest["compaction"]["capabilities"]["planner_statistics"] is True
+        event_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT event_id FROM timeline_events "
+                "WHERE tenant_id=? AND customer_id=? AND superseded_by IS NULL "
+                "ORDER BY event_at DESC,event_id DESC LIMIT 50",
+                ("foton", staging_customer),
+            )
+        )
+        chunk_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT chunk_id FROM bot_context_chunks "
+                "WHERE tenant_id=? AND customer_id=? AND superseded_by IS NULL "
+                "ORDER BY event_at DESC,chunk_id DESC LIMIT 50",
+                ("foton", staging_customer),
+            )
+        )
+        assert "ix_timeline_events_customer_time" in event_plan
+        assert "ix_chunks_customer_event_time" in chunk_plan
+        typed_event_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT event_id FROM timeline_events "
+                "WHERE tenant_id=? AND customer_id=? AND event_type=? "
+                "AND superseded_by IS NULL "
+                "ORDER BY event_at DESC,event_id DESC LIMIT 50",
+                ("foton", staging_customer, "call"),
+            )
+        )
+        assert "ix_timeline_events_customer_time" in typed_event_plan
+        source_lookup_plan = " ".join(
+            str(row[3])
+            for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM timeline_events "
+                "WHERE tenant_id=? AND source_system=? AND event_type=? AND source_id=?",
+                ("foton", "amocrm_task", "amo_task", "task:probe"),
+            )
+        )
+        assert "COVERING INDEX ix_timeline_events_source" in source_lookup_plan
 
     smoke_report, smoke_ok = reader_smoke.smoke(cfg, snapshot_db=snapshot_db)
     assert smoke_ok is True
@@ -92,6 +418,126 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
     assert mismatch_report["internal_control_customers"][0]["count_mismatches"]["events_total"]["actual"] == 1
 
 
+def test_compact_reader_rejects_unknown_table_before_copy(tmp_path: Path) -> None:
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    staging, _customer_id = seed_timeline_db(staging_root)
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "CREATE TABLE surprise_technical_cache "
+            "(tenant_id TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO surprise_technical_cache VALUES ('foton','{\"unexpected\":true}')"
+        )
+        con.commit()
+    snapshot = tmp_path / "snapshot" / "customer_timeline.sqlite"
+
+    with pytest.raises(
+        publish_common.PublishSnapshotError,
+        match="rejects unknown tables: surprise_technical_cache",
+    ):
+        build_snapshot.build_compact_reader(
+            staging,
+            snapshot,
+            max_size_bytes=8 * 1024**3,
+        )
+
+    assert not snapshot.exists()
+
+
+def test_compact_reader_uses_insert_change_count_without_destination_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    staging, _customer_id = seed_timeline_db(staging_root)
+    snapshot = tmp_path / "snapshot" / "customer_timeline.sqlite"
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        con = real_connect(*args, **kwargs)
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(build_snapshot.sqlite3, "connect", traced_connect)
+
+    report = build_snapshot.build_compact_reader(
+        staging,
+        snapshot,
+        max_size_bytes=8 * 1024**3,
+    )
+
+    assert report["business_counts_match"] is True
+    assert any(statement == "SELECT changes()" for statement in statements)
+    assert not any(
+        "SELECT COUNT(*) FROM main." in statement
+        for statement in statements
+    )
+
+
+def test_compact_reader_reports_configured_size_budget(tmp_path: Path) -> None:
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    staging, _customer_id = seed_timeline_db(staging_root)
+    snapshot = tmp_path / "snapshot" / "customer_timeline.sqlite"
+
+    report = build_snapshot.build_compact_reader(staging, snapshot, max_size_bytes=1)
+
+    assert report["within_size_limit"] is False
+    assert report["max_size_bytes"] == 1
+    assert report["size_headroom_bytes"] < 0
+
+
+def test_bot_visibility_gate_rejects_zero_and_raw_effective_chunks(tmp_path: Path) -> None:
+    cfg = publish_common.load_config(
+        _config(tmp_path, tmp_path / "prod.sqlite", tmp_path / "staging.sqlite")
+    )
+
+    zero = reader_smoke.bot_visibility_gate(
+        cfg,
+        {"bot_visible_after_reader_policy": 0, "effective_pairs": []},
+    )
+    raw = reader_smoke.bot_visibility_gate(
+        cfg,
+        {
+            "bot_visible_after_reader_policy": 1,
+            "effective_pairs": [
+                {"source_system": "wappi_telegram", "chunk_type": "channel_message", "count": 1}
+            ],
+        },
+    )
+
+    assert zero["ok"] is False
+    assert zero["reasons"] == ["effective_visibility_below_minimum"]
+    assert raw["ok"] is False
+    assert raw["reasons"] == ["unexpected_effective_source_or_chunk_type"]
+
+
+def test_snapshot_table_counts_queries_only_non_compaction_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[tuple[str, ...]] = []
+
+    def fallback_counts(_path: Path, tables: tuple[str, ...]) -> dict[str, int]:
+        requested.append(tables)
+        return {"external_summary": 3}
+
+    monkeypatch.setattr(build_snapshot, "table_counts", fallback_counts)
+
+    counts = build_snapshot.snapshot_table_counts(
+        tmp_path / "snapshot.sqlite",
+        ("timeline_events", "external_summary"),
+        {"table_counts": {"timeline_events": {"source": 17, "snapshot": 17}}},
+    )
+
+    assert counts == {"timeline_events": 17, "external_summary": 3}
+    assert requested == [("external_summary",)]
+
+
 def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
@@ -101,7 +547,7 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    payload["control_customers"] = _five_controls({"customer_id": staging_customer, "expected_found": True})
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     with sqlite3.connect(staging) as con:
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
@@ -151,10 +597,10 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
     assert gate["ok"] is False
     assert gate["violations"]["allowed_mail_forbidden_primary_reason"] == 1
     assert gate["violations"]["allowed_mail_bot_visible_false"] == 1
-    assert gate["violations"]["allowed_mail_unapproved_client_unsafe_reason"] == 1
+    assert gate["violations"]["allowed_mail_client_unsafe"] == 1
 
 
-def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_path: Path) -> None:
+def test_reader_smoke_blocks_client_unsafe_money_and_secret_mail_tags(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -163,7 +609,7 @@ def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_pat
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    payload["control_customers"] = _five_controls({"customer_id": staging_customer, "expected_found": True})
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     with sqlite3.connect(staging) as con:
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
@@ -213,11 +659,10 @@ def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_pat
 
     money_report, money_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
 
-    assert money_ok is True
+    assert money_ok is False
     money_gate = money_report["mail_allowed_safety_gate"]
-    assert money_gate["ok"] is True
-    assert money_gate["counts"]["allowed_mail_variant_b_client_unsafe"] == 1
-    assert money_gate["violations"] == {}
+    assert money_gate["ok"] is False
+    assert money_gate["violations"]["allowed_mail_client_unsafe"] == 1
 
     with sqlite3.connect(staging) as con:
         con.execute(
@@ -258,7 +703,7 @@ def test_reader_smoke_allows_strong_known_brand_mango_processed_chunks(tmp_path:
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    payload["control_customers"] = _five_controls({"customer_id": staging_customer, "expected_found": True})
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     with sqlite3.connect(staging) as con:
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
@@ -308,8 +753,36 @@ def test_reader_smoke_allows_strong_known_brand_mango_processed_chunks(tmp_path:
     assert gate["counts"]["allowed_mango_processed_chunks"] == 1
     assert gate["violations"] == {}
 
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE timeline_events SET superseded_by='owner_changed:test' WHERE event_id=?",
+            (event_id,),
+        )
+        con.commit()
 
-def test_reader_smoke_blocks_mango_processed_non_strong_but_allows_unknown_brand_metric(tmp_path: Path) -> None:
+    poisoned_report, poisoned_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert poisoned_ok is False
+    poisoned_gate = poisoned_report["mango_processed_allowed_safety_gate"]
+    assert poisoned_gate["ok"] is False
+    assert poisoned_gate["violations"]["allowed_mango_processed_missing_or_superseded_event"] == 1
+
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE bot_context_chunks SET superseded_by='retired:test' WHERE chunk_id='mango-strong'"
+        )
+        con.commit()
+
+    retired_report, retired_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert retired_ok is True
+    retired_gate = retired_report["mango_processed_allowed_safety_gate"]
+    assert retired_gate["ok"] is True
+    assert retired_gate["counts"]["allowed_mango_processed_chunks"] == 0
+    assert retired_gate["violations"] == {}
+
+
+def test_reader_smoke_blocks_mango_processed_non_strong_and_unknown_brand(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -318,7 +791,7 @@ def test_reader_smoke_blocks_mango_processed_non_strong_but_allows_unknown_brand
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    payload["control_customers"] = _five_controls({"customer_id": staging_customer, "expected_found": True})
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     with sqlite3.connect(staging) as con:
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
@@ -366,8 +839,22 @@ def test_reader_smoke_blocks_mango_processed_non_strong_but_allows_unknown_brand
     gate = smoke_report["mango_processed_allowed_safety_gate"]
     assert gate["ok"] is False
     assert gate["violations"]["allowed_mango_processed_non_strong_match"] == 1
-    assert "allowed_mango_processed_unknown_brand_metric" not in gate["violations"]
+    assert gate["violations"]["allowed_mango_processed_unknown_brand_metric"] == 1
     assert gate["counts"]["allowed_mango_processed_unknown_brand_metric"] == 1
+
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE bot_context_chunks SET superseded_by='retired:test' WHERE chunk_id='mango-ambiguous'"
+        )
+        con.commit()
+
+    retired_report, retired_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert retired_ok is True
+    retired_gate = retired_report["mango_processed_allowed_safety_gate"]
+    assert retired_gate["ok"] is True
+    assert retired_gate["counts"]["allowed_mango_processed_chunks"] == 0
+    assert retired_gate["violations"] == {}
 
 
 def test_reader_smoke_blocks_mango_processed_corrupted_identity_contract(tmp_path: Path) -> None:
@@ -379,7 +866,7 @@ def test_reader_smoke_blocks_mango_processed_corrupted_identity_contract(tmp_pat
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    payload["control_customers"] = _five_controls({"customer_id": staging_customer, "expected_found": True})
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     with sqlite3.connect(staging) as con:
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
@@ -450,7 +937,7 @@ def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:
     prod, _prod_customer = seed_timeline_db(prod_dir)
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = json.loads(_config(tmp_path, prod, staging).read_text(encoding="utf-8"))
-    cfg["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    cfg["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["true"]}]
     cfg_path = tmp_path / "publish_config_dirty.json"
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
 
@@ -477,7 +964,7 @@ def _run_ok_nightly_service(tmp_path: Path) -> tuple[Path, Path, dict]:
     that PublishConfig.nightly_manifest_path derives by default.
     """
     staging_root = tmp_path / "nightly_staging"
-    db_path = staging_root / "customer_timeline_staging.sqlite"
+    db_path = staging_root / "test_customer_timeline.sqlite"
     with CustomerTimelineSQLiteStore(db_path, allowed_root=staging_root) as store:
         store.upsert_customer(
             CustomerIdentity(
@@ -544,7 +1031,10 @@ def _run_ok_nightly_service(tmp_path: Path) -> tuple[Path, Path, dict]:
     return db_path, manifest_path, report
 
 
-def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(tmp_path: Path) -> None:
+def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prod_dir = tmp_path / "prod"
     prod_dir.mkdir()
     prod, _prod_customer = seed_timeline_db(prod_dir)
@@ -552,6 +1042,8 @@ def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(tmp
     assert nightly_report["overall_status"] == "ok"
     assert manifest_path.exists()
     cfg_path = _config(tmp_path, prod, staging_db)
+    monkeypatch.setattr(preflight, "git_status_short", lambda _root: "")
+    monkeypatch.setattr(preflight, "git_head", lambda _root: "a" * 40)
 
     report, ok = preflight.build_report(cfg_path)
 
@@ -565,6 +1057,13 @@ def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(tmp
     assert nightly["fresh"] is True
     assert nightly["future_dated"] is False
     assert nightly["count_mismatches"] == {}
+    published_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert nightly["source_counts"] == published_manifest["source_counts"]
+    assert nightly["ingestion_cursors"] == published_manifest["ingestion_cursors"]
+    assert nightly["mail_link_enrich"] == published_manifest["mail_link_enrich"]
+    assert nightly["identity_integrity"] == published_manifest["identity_integrity"]
+    assert nightly["required_sources_check"] == published_manifest["required_sources_check"]
+    assert nightly["source_degradation"] == published_manifest["source_degradation"]
     # Находка 4/5а: WAL/SHM sidecars checkpointed and schema matches prod --
     # a clean night must not be blocked by either new gate.
     assert report["wal_sidecars"]["prod"]["ok"] is True
@@ -848,7 +1347,7 @@ def test_flip_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Pat
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["true"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     original_sha = flip.sha256_file(prod)
     wal_path = prod.with_name(prod.name + "-wal")
@@ -864,13 +1363,180 @@ def test_flip_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(flip, "lsof_holders", fake_lsof)
     monkeypatch.setattr(flip, "wal_checkpoint_truncate", lambda _path: {"status": "test_noop"})
 
-    report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
 
     assert ok is False
     assert report["status"] == "blocked_lsof_before_replace"
     assert flip.sha256_file(prod) == original_sha
     assert wal_path.read_bytes() == b"wal-must-survive"
     assert shm_path.read_bytes() == b"shm-must-survive"
+
+
+def test_flip_rejects_manifest_sha_before_stopping_readers(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [
+        {"name": "must_not_run", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["false"]}
+    ]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["sha256"] = "0" * 64
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    original_sha = publish_common.sha256_file(prod)
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
+
+    assert ok is False
+    assert report["status"] == "blocked_snapshot_manifest"
+    assert report["snapshot_manifest_validation"]["checks"]["sha256"] is False
+    assert "stop_results" not in report
+    assert publish_common.sha256_file(prod) == original_sha
+
+
+def test_flip_rejects_snapshot_outside_configured_snapshot_root(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    manifest = _snapshot_manifest(cfg, staging)
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=staging,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
+
+    assert ok is False
+    assert report["status"] == "blocked_snapshot_manifest"
+    assert report["snapshot_manifest_validation"]["checks"]["artifact_lineage"] is False
+
+
+def test_flip_rejects_manifest_with_different_visibility_policy(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["reader_smoke"]["bot_visibility_gate"]["policy"]["max_effective_chunks"] += 1
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
+
+    assert ok is False
+    assert report["snapshot_manifest_validation"]["checks"]["reader_smoke"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "check"),
+    (
+        ("publish_config_sha256", "0" * 64, "publish_config"),
+        ("schema_sha256", "0" * 64, "schema"),
+        ("counts", {}, "counts"),
+        ("nightly_manifest", {"ok": False, "reasons": ["partial"]}, "build_lineage"),
+        ("source_freshness", {}, "source_freshness"),
+        ("writer_git_head", "a" * 40, "writer_code"),
+    ),
+)
+def test_flip_rejects_manifest_without_current_release_evidence(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    check: str,
+) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload[field] = value
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    report, ok = flip.flip(cfg, snapshot_db=snapshot, snapshot_manifest=manifest, execute=True)
+
+    assert ok is False
+    assert report["status"] == "blocked_snapshot_manifest"
+    assert report["snapshot_manifest_validation"]["checks"][check] is False
+
+
+def test_flip_rejects_empty_required_source_proof(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["nightly_manifest"]["required_sources_check"]["proofs"]["sentinel"] = {}
+    payload["source_freshness"]["required_sources_check"]["proofs"]["sentinel"] = {}
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    report, ok = flip.flip(cfg, snapshot_db=snapshot, snapshot_manifest=manifest, execute=True)
+
+    assert ok is False
+    assert report["snapshot_manifest_validation"]["checks"]["source_freshness"] is False
+
+
+def test_flip_dry_run_allows_missing_manifest_for_diagnostics(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=staging,
+        snapshot_manifest=None,
+        execute=False,
+    )
+
+    assert ok is True
+    assert report["status"] == "dry_run"
+    assert report["release_ready"] is False
 
 
 def test_replace_sqlite_retries_only_transient_open(monkeypatch, tmp_path: Path) -> None:
@@ -1015,13 +1681,33 @@ def test_flip_and_rollback_report_post_replace_failure(monkeypatch, tmp_path: Pa
         "sha256": None,
         "exception": {"type": "OperationalError", "message": "database is locked", "attempt": 1},
     }
-    monkeypatch.setattr(flip, "replace_sqlite_verified", lambda *_args, **_kwargs: failure)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    original_sha = publish_common.sha256_file(prod)
+    real_replace = publish_common.replace_sqlite_verified
+    calls = {"count": 0}
 
-    flip_report, flip_ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+    def fail_once(source: Path, target: Path, **kwargs: object) -> dict:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            source.replace(target)
+            return failure
+        return dict(real_replace(source, target, **kwargs))
+
+    monkeypatch.setattr(flip, "replace_sqlite_verified", fail_once)
+
+    flip_report, flip_ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
 
     assert flip_ok is False
-    assert flip_report["status"] == "failed_post_replace_verification"
+    assert flip_report["status"] == "failed_post_replace_verification_rolled_back"
     assert flip_report["post_replace_verification"] == failure
+    assert flip_report["automatic_rollback"]["replacement"]["ok"] is True
+    assert publish_common.sha256_file(prod) == original_sha
     assert "backup_db" in flip_report
 
     backup_dir = tmp_path / "prod_backups" / "pre_flip_backup_test"
@@ -1150,7 +1836,7 @@ def test_run_command_reports_timeout_instead_of_raising() -> None:
     assert result["timeout_seconds"] == 0.01
 
 
-def test_flip_default_does_not_restart_readers(tmp_path: Path) -> None:
+def test_flip_default_does_not_restart_readers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """ETAP6 11.6: flip --execute must not implicitly start a reader service (e.g. Wappi)."""
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
@@ -1165,14 +1851,27 @@ def test_flip_default_does_not_restart_readers(tmp_path: Path) -> None:
             "name": "wappi_amo_draft_loop_owner_gated",
             "worktree": str(tmp_path),
             "process_patterns": ["scripts/run_amo_wappi_draft_loop.py"],
+            "smoke_command": ["true"],
             "stop_command": ["true"],
             "start_command": ["true"],
             "start_timeout_seconds": 1,
         }
     ]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        flip,
+        "process_pattern_counts",
+        lambda patterns: [{"pattern": pattern, "count": 0, "matches": []} for pattern in patterns],
+    )
 
-    report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
 
     assert ok is True
     assert report["restart_readers"] is False
@@ -1193,16 +1892,143 @@ def test_flip_restart_readers_flag_starts_reader(tmp_path: Path) -> None:
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["true"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
 
-    report, ok = flip.flip(cfg, snapshot_db=staging, execute=True, restart_readers=True)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+        restart_readers=True,
+    )
 
     assert ok is True
     assert report["restart_readers"] is True
     assert report["skipped_start"] == []
     assert len(report["start_results"]) == 1
     assert report["start_results"][0]["rc"] == 0
+
+
+def test_flip_rolls_back_when_reader_restart_fails(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [
+        {"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["false"]}
+    ]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    original_sha = publish_common.sha256_file(prod)
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+        restart_readers=True,
+    )
+
+    assert ok is False
+    assert report["status"] == "failed_reader_restart_rolled_back"
+    assert report["automatic_rollback"]["replacement"]["ok"] is True
+    assert publish_common.sha256_file(prod) == original_sha
+
+
+def test_flip_rolls_back_when_post_start_reader_smoke_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [
+        {
+            "name": "reader",
+            "worktree": str(tmp_path),
+            "smoke_command": ["true"],
+            "stop_command": ["true"],
+            "start_command": ["true"],
+        }
+    ]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    original_sha = publish_common.sha256_file(prod)
+    real_smoke = flip.reader_smoke
+    calls = 0
+
+    def fail_only_after_start(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            return {"status": "failed", "reason": "reader_unhealthy_after_start"}, False
+        return real_smoke(*args, **kwargs)
+
+    monkeypatch.setattr(flip, "reader_smoke", fail_only_after_start)
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+        restart_readers=True,
+    )
+
+    assert ok is False
+    assert report["status"] == "failed_reader_restart_rolled_back"
+    assert report["post_start_reader_smoke"]["reason"] == "reader_unhealthy_after_start"
+    assert publish_common.sha256_file(prod) == original_sha
+
+
+def test_flip_blocks_snapshot_mutated_after_manifest_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _ = seed_timeline_db(prod_dir)
+    staging, _ = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    snapshot = _release_snapshot(cfg, staging)
+    manifest = _snapshot_manifest(cfg, snapshot)
+    original_sha = publish_common.sha256_file(prod)
+    real_copy = flip.copy_verified
+
+    def mutate_before_snapshot_copy(source: Path, target: Path) -> dict:
+        if source == snapshot:
+            with sqlite3.connect(snapshot) as con:
+                con.execute("CREATE TABLE changed_after_validation(value TEXT)")
+                con.commit()
+        return dict(real_copy(source, target))
+
+    monkeypatch.setattr(flip, "copy_verified", mutate_before_snapshot_copy)
+
+    report, ok = flip.flip(
+        cfg,
+        snapshot_db=snapshot,
+        snapshot_manifest=manifest,
+        execute=True,
+    )
+
+    assert ok is False
+    assert report["status"] == "blocked_snapshot_changed_after_manifest_validation"
+    assert publish_common.sha256_file(prod) == original_sha
 
 
 def _seed_pre_flip_backup(tmp_path: Path, prod: Path, staging: Path) -> tuple[Path, str]:
@@ -1227,7 +2053,7 @@ def test_rollback_stops_readers_but_does_not_restart_by_default(tmp_path: Path) 
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["true"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
 
@@ -1250,7 +2076,7 @@ def test_rollback_restart_readers_flag_starts_reader(tmp_path: Path) -> None:
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["true"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
 
@@ -1274,7 +2100,7 @@ def test_rollback_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path:
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["true"], "start_command": ["true"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
     original_sha = rollback.sha256_file(prod)
@@ -1310,14 +2136,21 @@ def test_publish_blocks_when_reader_stop_fails(operation: str, tmp_path: Path) -
     staging, _staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["false"]}]
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "smoke_command": ["true"], "stop_command": ["false"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     original_sha = publish_common.sha256_file(prod)
     wal_path = prod.with_name(prod.name + "-wal")
     wal_path.write_bytes(b"wal-must-survive")
 
     if operation == "flip":
-        report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+        snapshot = _release_snapshot(cfg, staging)
+        manifest = _snapshot_manifest(cfg, snapshot)
+        report, ok = flip.flip(
+            cfg,
+            snapshot_db=snapshot,
+            snapshot_manifest=manifest,
+            execute=True,
+        )
     else:
         backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
         report, ok = rollback.rollback(

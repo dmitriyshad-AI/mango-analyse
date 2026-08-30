@@ -14,6 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+SRC = Path(__file__).resolve().parents[2] / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.customer_timeline.store import checkpoint_customer_timeline_wal
+
 
 SCHEMA_VERSION = "customer_timeline_publish_snapshot_v3"
 DEFAULT_COUNT_TABLES = (
@@ -91,6 +97,12 @@ class PublishConfig:
         return tuple(item for item in (self.raw.get("control_customers") or ()) if isinstance(item, Mapping))
 
     @property
+    def compact_reader_max_bytes(self) -> int: return int(self.raw["compact_reader_max_bytes"])
+
+    @property
+    def bot_visibility_policy(self) -> Mapping[str, Any]: return self.raw["bot_visibility_policy"]
+
+    @property
     def nightly_manifest_path(self) -> Path:
         raw = self.raw.get("nightly_manifest_path")
         if raw:
@@ -114,6 +126,84 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def source_freshness_evidence_ok(
+    nightly_manifest: Mapping[str, Any],
+    source_freshness: Mapping[str, Any],
+) -> bool:
+    """Require the compact manifest to carry the full proved nightly lineage."""
+
+    source_counts = nightly_manifest.get("source_counts")
+    cursors = nightly_manifest.get("ingestion_cursors")
+    identity = nightly_manifest.get("identity_integrity")
+    required_check = nightly_manifest.get("required_sources_check")
+    if not isinstance(source_counts, list) or not source_counts:
+        return False
+    if not all(
+        isinstance(row, Mapping)
+        and str(row.get("source_system") or "").strip()
+        and type(row.get("count")) is int
+        and int(row["count"]) >= 0
+        for row in source_counts
+    ):
+        return False
+    if not isinstance(cursors, list) or not cursors:
+        return False
+    if not all(
+        isinstance(row, Mapping)
+        and str(row.get("source_system") or "").strip()
+        and str(row.get("last_cursor_ts") or "").strip()
+        and str(row.get("updated_at") or "").strip()
+        for row in cursors
+    ):
+        return False
+    if not isinstance(identity, Mapping) or not identity:
+        return False
+    if not isinstance(required_check, Mapping):
+        return False
+    required = tuple(str(item) for item in required_check.get("required") or ())
+    satisfied = {str(item) for item in required_check.get("satisfied") or ()}
+    degraded = {str(item) for item in required_check.get("degraded") or ()}
+    blocking = tuple(str(item) for item in required_check.get("blocking_missing") or ())
+    proofs = required_check.get("proofs")
+    if not required or len(set(required)) != len(required) or blocking:
+        return False
+    if not isinstance(proofs, Mapping) or set(map(str, proofs)) != set(required):
+        return False
+    if satisfied & degraded or satisfied | degraded != set(required):
+        return False
+    valid_non_ok_statuses = {"missing", "error", "stale", "unproven_current_run", "empty"}
+    for label in required:
+        proof = proofs.get(label)
+        if not isinstance(proof, Mapping):
+            return False
+        checked_at = str(proof.get("checked_at") or "").replace("Z", "+00:00")
+        try:
+            checked = datetime.fromisoformat(checked_at)
+        except ValueError:
+            return False
+        status = str(proof.get("status") or "")
+        expected_status_ok = label in satisfied and status == "ok"
+        expected_status_degraded = label in degraded and status in valid_non_ok_statuses
+        records = proof.get("records_seen_or_written")
+        if not (
+            proof.get("source_label") == label
+            and checked.tzinfo is not None
+            and checked.utcoffset() is not None
+            and type(records) is int
+            and records >= 0
+            and "cursor_or_max_event_at" in proof
+            and str(proof.get("source_specific_reason") or "").strip()
+            and (expected_status_ok or expected_status_degraded)
+        ):
+            return False
+    return (
+        source_freshness.get("source_counts") == source_counts
+        and source_freshness.get("ingestion_cursors") == cursors
+        and source_freshness.get("identity_integrity") == identity
+        and source_freshness.get("required_sources_check") == required_check
+    )
+
+
 def load_config(path: Path) -> PublishConfig:
     cfg_path = path.expanduser().resolve(strict=False)
     payload = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -122,6 +212,35 @@ def load_config(path: Path) -> PublishConfig:
     for key in ("staging_db", "prod_db", "snapshot_root"):
         if not payload.get(key):
             raise PublishSnapshotError(f"missing config key: {key}")
+    budget = payload.get("compact_reader_max_bytes")
+    if type(budget) is not int or budget <= 0:
+        raise PublishSnapshotError("compact_reader_max_bytes must be a positive integer")
+    policy = payload.get("bot_visibility_policy")
+    pairs = policy.get("allowed_effective_pairs") if isinstance(policy, Mapping) else None
+    valid_policy = bool(
+        isinstance(policy, Mapping)
+        and type(policy.get("min_effective_chunks")) is int
+        and type(policy.get("max_effective_chunks")) is int
+        and 1 <= policy["min_effective_chunks"] <= policy["max_effective_chunks"]
+        and isinstance(pairs, list) and pairs
+        and all(isinstance(item, Mapping) and str(item.get("source_system") or "").strip()
+                and str(item.get("chunk_type") or "").strip() for item in pairs)
+    )
+    if not valid_policy:
+        raise PublishSnapshotError("invalid bot_visibility_policy")
+    controls = payload.get("control_customers")
+    control_ids = {
+        str(item.get("customer_id") or "").strip()
+        for item in controls or ()
+        if isinstance(item, Mapping)
+    }
+    if not isinstance(controls, list) or len(controls) < 5 or len(control_ids) < 5 or "" in control_ids:
+        raise PublishSnapshotError("control_customers must contain at least five distinct customers")
+    readers = payload.get("readers")
+    if not isinstance(readers, list) or not readers or any(
+        not isinstance(item, Mapping) or not item.get("smoke_command") for item in readers
+    ):
+        raise PublishSnapshotError("readers must contain at least one real smoke_command")
     return PublishConfig(raw=payload, path=cfg_path)
 
 
@@ -141,6 +260,14 @@ def quick_check(path: Path) -> str:
     con = sqlite_ro(path)
     try:
         return str(con.execute("PRAGMA quick_check").fetchone()[0])
+    finally:
+        con.close()
+
+
+def integrity_check(path: Path) -> str:
+    con = sqlite_ro(path)
+    try:
+        return str(con.execute("PRAGMA integrity_check").fetchone()[0])
     finally:
         con.close()
 
@@ -195,6 +322,10 @@ def _schema_signature_sha256(signature: Mapping[str, str]) -> str:
     so it is stable regardless of sqlite_master row ordering."""
     normalized = "\n".join(f"{key}\x1f{signature[key]}" for key in sorted(signature))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def schema_signature_sha256(path: Path) -> str:
+    return _schema_signature_sha256(schema_signature(path))
 
 
 def schema_diff(left: Path, right: Path) -> Mapping[str, Any]:
@@ -389,32 +520,10 @@ def replace_sqlite_verified(
 
 
 def wal_checkpoint_truncate(db_path: Path) -> Mapping[str, Any]:
-    con = sqlite3.connect(str(db_path), timeout=30)
     try:
-        row = tuple(con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() or ())
-    finally:
-        con.close()
-    wal = Path(str(db_path) + "-wal")
-    wal_size = wal.stat().st_size if wal.exists() else 0
-    ok = len(row) >= 1 and int(row[0]) == 0 and wal_size == 0
-    if not ok:
-        raise PublishSnapshotError(f"wal checkpoint failed: row={row}, wal_size={wal_size}")
-    return {"row": row, "wal_path": str(wal), "wal_size": wal_size}
-
-
-def vacuum_into(source_db: Path, target_db: Path) -> None:
-    if target_db.exists():
-        raise PublishSnapshotError(f"snapshot DB already exists: {target_db}")
-    target_db.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(source_db), timeout=30)
-    try:
-        con.execute(f"VACUUM INTO {sql_literal(str(target_db))}")
-    finally:
-        con.close()
-
-
-def sql_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+        return checkpoint_customer_timeline_wal(db_path)
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        raise PublishSnapshotError(f"wal checkpoint failed: {exc}") from exc
 
 
 def disk_report(path: Path, required_bytes: int) -> Mapping[str, Any]:

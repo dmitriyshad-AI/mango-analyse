@@ -4,6 +4,7 @@ import csv
 import json
 from pathlib import Path
 
+from scripts.build_deal_aware_amo_live_snapshot import safe_text, task_snapshot_row
 from mango_mvp.deal_aware.stage1_snapshot import (
     Stage1Paths,
     build_call_rollup,
@@ -12,6 +13,16 @@ from mango_mvp.deal_aware.stage1_snapshot import (
     build_tallanto_students_snapshot,
     summarize_writeoffs,
 )
+
+
+def test_amo_task_snapshot_preserves_open_completion_flag() -> None:
+    row = task_snapshot_row(
+        {"id": 1, "entity_id": 2, "entity_type": "lead", "is_completed": False},
+        user_meta={},
+    )
+
+    assert safe_text(False) == "False"
+    assert row["is_completed"] == "False"
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:

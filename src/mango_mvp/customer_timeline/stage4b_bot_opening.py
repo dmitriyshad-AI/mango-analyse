@@ -24,7 +24,10 @@ from mango_mvp.customer_timeline.source_policy import (
     is_non_contentful_call_record,
 )
 from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
     authoritative_exact_identity_rows,
+    customer_timeline_readonly_uri,
+    customer_timeline_run_lock,
     json_dumps,
     json_loads,
     open_family_identity_conflict_customer_ids,
@@ -46,13 +49,6 @@ OPENABLE_CHANNEL_SOURCE_SYSTEMS = tuple(sorted(CHANNEL_HISTORY_SOURCE_SYSTEMS))
 _OPEN_CONFLICT_CUSTOMERS_TEMP_TABLE = "temp_stage4b_open_conflict_customers"
 _CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE = "temp_stage4b_client_unsafe_mail_chunks"
 _CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE = "temp_stage4b_client_safe_mail_chunks"
-_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS = frozenset(
-    {
-        "sensitive_money",
-        "sensitive_tax",
-        "sensitive_contract",
-    }
-)
 _MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS = frozenset(
     {
         "manager_action_required",
@@ -86,23 +82,39 @@ class Stage4BBotOpeningConfig:
     apply: bool = True
     allow_test_paths: bool = False
     defer_full_db_check: bool = False
+    lock_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timeline_db_path", Path(self.timeline_db_path).expanduser())
         object.__setattr__(self, "allowed_root", Path(self.allowed_root).expanduser())
         object.__setattr__(self, "out_dir", Path(self.out_dir).expanduser())
+        if self.lock_timeout_seconds < 0:
+            raise ValueError("lock_timeout_seconds must not be negative")
 
 
 def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any]:
+    db_path = guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    if not config.apply:
+        return _run_stage4b_bot_opening_unlocked(config)
+    with customer_timeline_run_lock(db_path, timeout_seconds=config.lock_timeout_seconds):
+        return _run_stage4b_bot_opening_unlocked(config)
+
+
+def _run_stage4b_bot_opening_unlocked(config: Stage4BBotOpeningConfig) -> Mapping[str, Any]:
     started = time.monotonic()
-    db_path = guard_customer_timeline_writable_path(
-        guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
-    )
+    db_path = guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    if config.apply:
+        db_path = guard_customer_timeline_writable_path(db_path)
     _assert_stage4b_staging_path(db_path, config.allowed_root, allow_test_paths=config.allow_test_paths)
     config.out_dir.mkdir(parents=True, exist_ok=True)
 
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
+    store: CustomerTimelineSQLiteStore | None = None
+    if config.apply:
+        store = CustomerTimelineSQLiteStore(db_path, allowed_root=config.allowed_root)
+        con = store._con
+    else:
+        con = sqlite3.connect(customer_timeline_readonly_uri(db_path), uri=True)
+        con.row_factory = sqlite3.Row
     try:
         before = _metrics(con, tenant_id=config.tenant_id)
         open_conflict_customers = _prepare_open_conflict_customer_ids(con, tenant_id=config.tenant_id)
@@ -141,6 +153,14 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
         if config.apply and opened_non_contentful != 0:
             con.rollback()
             raise RuntimeError("stage4b refused to leave non-contentful Mango calls open for bot memory")
+        opened_unknown_brand_calls = _opened_unknown_brand_count(
+            con,
+            tenant_id=config.tenant_id,
+            only_mango_processed=True,
+        )
+        if config.apply and opened_unknown_brand_calls != 0:
+            con.rollback()
+            raise RuntimeError("stage4b refused to leave unknown-brand Mango calls open for bot memory")
         if config.apply:
             con.commit()
         after = _metrics(con, tenant_id=config.tenant_id)
@@ -162,11 +182,7 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
                 tenant_id=config.tenant_id,
                 include_mango_processed=False,
             ),
-            "opened_mango_processed_unknown_brand_after": _opened_unknown_brand_count(
-                con,
-                tenant_id=config.tenant_id,
-                only_mango_processed=True,
-            ),
+            "opened_mango_processed_unknown_brand_after": opened_unknown_brand_calls,
         }
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
         (config.out_dir / "stage4b_bot_opening_report.json").write_text(
@@ -175,7 +191,10 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
         )
         return report
     finally:
-        con.close()
+        if store is not None:
+            store.close()
+        else:
+            con.close()
 
 
 def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, Any]:
@@ -190,6 +209,11 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
           c.record_hash,
           c.allowed_for_bot,
           c.requires_manager_review,
+          (
+            SELECT safe_mail.client_safe_reason
+            FROM temp_stage4b_client_safe_mail_chunks safe_mail
+            WHERE safe_mail.chunk_id = c.chunk_id
+          ) AS mail_client_safe_reason,
           e.record_json AS event_record_json,
           e.match_status,
           ci.identity_status
@@ -298,7 +322,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             continue
         brand = _content_brand(payload, event_payload)
         brand_counts[brand] += 1
-        if source_system != MANGO_PROCESSED_SOURCE_SYSTEM and brand not in {"foton", "unpk"}:
+        if brand not in {"foton", "unpk"}:
             unknown_brand_chunks += 1
             continue
         rows.append(row)
@@ -352,11 +376,23 @@ def _apply_opening_plan(
         tags = _opening_tags(payload, metadata=metadata, source_system=source_system, brand=brand)
         sensitivity_counts.update(tags)
         payload["relevance_tags"] = list(tags)
-        metadata.update(
+        client_safe_metadata = (
             {
+                "client_safe": True,
+                "client_safe_reason": str(row["mail_client_safe_reason"] or "no_sensitive_signals"),
+                "client_safe_policy_version": "cs_v1",
+                "client_safe_provenance": "a2v3_mail_event_facts",
+            }
+            if source_system == MAIL_STAGE2_INGEST_SOURCE_SYSTEM
+            else {
                 "client_safe": False,
                 "client_safe_reason": "not_client_safe_rich_memory_opened_only_for_internal_bot_context",
                 "client_safe_policy_version": "cs_v1",
+            }
+        )
+        metadata.update(
+            {
+                **client_safe_metadata,
                 "bot_memory_allowed": True,
                 "bot_memory_allowed_reason": _opening_reason(source_system),
                 "bot_memory_policy_version": STAGE4B_OPENING_POLICY_VERSION,
@@ -892,7 +928,8 @@ def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: s
     con.execute(
         f"""
         CREATE TEMP TABLE {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE} (
-          chunk_id TEXT PRIMARY KEY
+          chunk_id TEXT PRIMARY KEY,
+          client_safe_reason TEXT NOT NULL
         )
         """
     )
@@ -903,8 +940,8 @@ def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: s
         return 0
     con.execute(
         f"""
-        INSERT OR IGNORE INTO {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id)
-        SELECT c.chunk_id
+        INSERT OR IGNORE INTO {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id, client_safe_reason)
+        SELECT c.chunk_id, COALESCE(NULLIF(TRIM(f.client_safe_reason), ''), 'no_sensitive_signals')
         FROM bot_context_chunks c
         JOIN a2v3_mail_event_facts f
           ON f.event_id = c.event_id
@@ -914,12 +951,9 @@ def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: s
           AND c.source_system = ?
           AND COALESCE(c.superseded_by, '') = ''
           AND f.bot_visible = 1
-          AND (
-            f.client_safe = 1
-            OR f.client_safe_reason IN (?, ?, ?)
-          )
+          AND f.client_safe = 1
         """,
-        (tenant_id, MAIL_STAGE2_INGEST_SOURCE_SYSTEM, *_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
+        (tenant_id, MAIL_STAGE2_INGEST_SOURCE_SYSTEM),
     )
     return _client_safe_mail_chunk_count(con)
 

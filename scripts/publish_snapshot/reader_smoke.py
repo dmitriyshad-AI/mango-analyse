@@ -5,6 +5,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,8 +16,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig  # noqa: E402
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore  # noqa: E402
 from mango_mvp.customer_timeline.stage4b_bot_opening import (  # noqa: E402
-    _MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS,
     _MAIL_OUTPUT_SECRET_TAGS,
 )
 from scripts.publish_snapshot.common import (  # noqa: E402
@@ -81,7 +82,6 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
         if not _table_exists(con, "a2v3_mail_event_facts") or not _table_exists(con, "bot_context_chunks"):
             return {"ok": True, "skipped": True, "reason": "mail_facts_or_chunks_table_missing"}
-        allowed_reason_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS)
         primary_reason_placeholders = ",".join("?" for _ in _MAIL_FORBIDDEN_PRIMARY_REASONS)
         secret_tag_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_SECRET_TAGS)
         counts = {
@@ -160,9 +160,9 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     tuple(_MAIL_OUTPUT_SECRET_TAGS),
                 ).fetchone()[0]
             ),
-            "allowed_mail_unapproved_client_unsafe_reason": int(
+            "allowed_mail_client_unsafe": int(
                 con.execute(
-                    f"""
+                    """
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
                     JOIN a2v3_mail_event_facts AS f
@@ -171,35 +171,15 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                      AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
-                      AND f.client_safe = 0
-                      AND f.client_safe_reason NOT IN ({allowed_reason_placeholders})
-                    """,
-                    tuple(_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
-                ).fetchone()[0]
-            ),
-            "allowed_mail_variant_b_client_unsafe": int(
-                con.execute(
-                    f"""
-                    SELECT COUNT(*)
-                    FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f
-                      ON f.event_id = b.event_id
-                     AND f.tenant_id = b.tenant_id
-                     AND f.customer_id = b.customer_id
-                    WHERE b.source_system = 'mail_archive_stage2'
-                      AND b.allowed_for_bot = 1
-                      AND f.bot_visible = 1
-                      AND f.client_safe = 0
-                      AND f.client_safe_reason IN ({allowed_reason_placeholders})
-                    """,
-                    tuple(_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
+                      AND f.client_safe != 1
+                    """
                 ).fetchone()[0]
             ),
         }
     violations = {
         key: value
         for key, value in counts.items()
-        if key not in {"allowed_mail_chunks", "allowed_mail_variant_b_client_unsafe"} and int(value) > 0
+        if key != "allowed_mail_chunks" and int(value) > 0
     }
     return {
         "ok": not violations,
@@ -207,8 +187,8 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
         "counts": counts,
         "violations": violations,
         "policy": (
-            "opened mail chunks require A2 bot_visible=1; money/tax/contract may be opened for manager drafts; "
-            "missing facts, bot_visible=0, secret tags, and primary manager-review reasons block publish"
+            "opened mail chunks require A2 client_safe=1 and bot_visible=1; missing facts, "
+            "client_safe=0, bot_visible=0, secret tags, and manager-review reasons block publish"
         ),
     }
 
@@ -226,6 +206,21 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE source_system = 'mango_processed_summary'
                       AND allowed_for_bot = 1
                       AND requires_manager_review = 0
+                      AND superseded_by IS NULL
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_missing_or_superseded_event": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    LEFT JOIN timeline_events AS e ON e.event_id = b.event_id
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND b.superseded_by IS NULL
+                      AND (e.event_id IS NULL OR e.superseded_by IS NOT NULL)
                     """
                 ).fetchone()[0]
             ),
@@ -238,6 +233,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND b.superseded_by IS NULL
                       AND COALESCE(e.match_status, '') != 'strong_unique'
                     """
                 ).fetchone()[0]
@@ -250,6 +246,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND b.superseded_by IS NULL
                       AND COALESCE(b.chunk_type, '') != 'mango_call_summary'
                     """
                 ).fetchone()[0]
@@ -263,7 +260,12 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND COALESCE(b.customer_id, '') != COALESCE(e.customer_id, '')
+                      AND b.superseded_by IS NULL
+                      AND (
+                        e.event_id IS NULL
+                        OR e.superseded_by IS NOT NULL
+                        OR COALESCE(b.customer_id, '') != COALESCE(e.customer_id, '')
+                      )
                     """
                 ).fetchone()[0]
             ),
@@ -278,9 +280,11 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND b.superseded_by IS NULL
                       AND (
                         b.customer_id IS NULL OR b.customer_id = ''
                         OR e.customer_id IS NULL OR e.customer_id = ''
+                        OR e.superseded_by IS NOT NULL
                         OR b.customer_id != e.customer_id
                         OR ci.identity_status IS NULL
                         OR ci.identity_status NOT IN ('strong', 'partial')
@@ -296,6 +300,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
+                      AND b.superseded_by IS NULL
                       AND LOWER(COALESCE(json_extract(b.record_json, '$.metadata.content_brand'), '')) NOT IN ('foton', 'unpk')
                     """
                 ).fetchone()[0]
@@ -304,8 +309,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     violations = {
         key: value
         for key, value in counts.items()
-        if key not in {"allowed_mango_processed_chunks", "allowed_mango_processed_unknown_brand_metric"}
-        and int(value) > 0
+        if key != "allowed_mango_processed_chunks" and int(value) > 0
     }
     return {
         "ok": not violations,
@@ -313,8 +317,8 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
         "counts": counts,
         "violations": violations,
         "policy": (
-            "opened mango_processed_summary chunks require strong_unique event match, "
-            "resolved customer identity; content_brand may be unknown because calls are brand-agnostic input context"
+            "active opened mango_processed_summary chunks require strong_unique event match, "
+            "resolved customer identity, and an explicit foton/unpk content_brand"
         ),
     }
 
@@ -350,13 +354,107 @@ def run_internal_smoke(db_path: Path, allowed_root: Path, tenant_id: str, contro
     return results
 
 
-def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
+def bot_visibility_counts(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    as_of: datetime | None = None,
+) -> dict[str, object]:
+    """Count stored and effective visibility through the canonical reader policy."""
+
+    cutoff = as_of or datetime.now(timezone.utc)
+    with CustomerTimelineSQLiteStore.open_read_only(
+        db_path,
+        allowed_root=db_path.parent,
+        clock=lambda: cutoff,
+    ) as store:
+        stored = int(
+            store._con.execute(  # noqa: SLF001 - acceptance probes the canonical store policy.
+                """
+                SELECT COUNT(*) FROM bot_context_chunks
+                WHERE tenant_id=? AND allowed_for_bot=1
+                  AND (superseded_by IS NULL OR superseded_by='')
+                """,
+                (tenant_id,),
+            ).fetchone()[0]
+        )
+        clauses = ["tenant_id = ?"]
+        params: list[object] = [tenant_id]
+        store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
+            clauses,
+            params,
+            tenant_id=tenant_id,
+            customer_id=None,
+            opportunity_id=None,
+            since=None,
+            until=cutoff,
+            allowed_for_bot=True,
+        )
+        effective = int(
+            store._con.execute(  # noqa: SLF001 - read-only acceptance count.
+                "SELECT COUNT(*) FROM bot_context_chunks WHERE " + " AND ".join(clauses),
+                tuple(params),
+            ).fetchone()[0]
+        )
+        rows = store._con.execute(  # noqa: SLF001 - same canonical boundary, grouped.
+            "SELECT source_system,chunk_type,COUNT(*) FROM bot_context_chunks WHERE "
+            + " AND ".join(clauses)
+            + " GROUP BY source_system,chunk_type ORDER BY source_system,chunk_type",
+            tuple(params),
+        )
+        effective_pairs = [
+            {"source_system": str(row[0] or ""), "chunk_type": str(row[1] or ""), "count": int(row[2])}
+            for row in rows
+        ]
+    return {
+        "as_of": cutoff.isoformat(),
+        "bot_visible_stored": stored,
+        "bot_visible_after_reader_policy": effective,
+        "reader_policy_blocked": stored - effective,
+        "effective_pairs": effective_pairs,
+    }
+
+
+def bot_visibility_gate(cfg, visibility: dict[str, object]) -> dict[str, object]:
+    policy = cfg.bot_visibility_policy
+    allowed = {
+        (str(item["source_system"]), str(item["chunk_type"]))
+        for item in policy["allowed_effective_pairs"]
+    }
+    effective = int(visibility["bot_visible_after_reader_policy"])
+    unexpected = [
+        item
+        for item in visibility.get("effective_pairs", [])
+        if (str(item["source_system"]), str(item["chunk_type"])) not in allowed
+    ]
+    minimum, maximum = int(policy["min_effective_chunks"]), int(policy["max_effective_chunks"])
+    reasons = []
+    for failed, reason in ((effective < minimum, "effective_visibility_below_minimum"),
+                           (effective > maximum, "effective_visibility_above_maximum"),
+                           (bool(unexpected), "unexpected_effective_source_or_chunk_type")):
+        if failed:
+            reasons.append(reason)
+    return {
+        "ok": not reasons,
+        "policy": dict(policy),
+        "unexpected_effective_pairs": unexpected,
+        "reasons": reasons,
+    }
+
+
+def smoke(
+    config_path: Path,
+    *,
+    snapshot_db: Path,
+    as_of: datetime | None = None,
+) -> tuple[dict, bool]:
     cfg = load_config(config_path)
     report = report_base(cfg, "reader_smoke")
     db_path = snapshot_db.expanduser().resolve(strict=False)
     variables = {"db": db_path, "allowed_root": db_path.parent, "tenant_id": cfg.tenant_id}
     reader_results = []
-    ok = quick_check(db_path) == "ok"
+    snapshot_quick_check = quick_check(db_path)
+    ok = snapshot_quick_check == "ok"
     for reader in cfg.readers:
         command = reader.get("smoke_command")
         if command:
@@ -373,14 +471,19 @@ def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
     ok = ok and bool(mail_safety["ok"])
     mango_safety = mango_processed_allowed_safety_gate(db_path)
     ok = ok and bool(mango_safety["ok"])
+    visibility = bot_visibility_counts(db_path, tenant_id=cfg.tenant_id, as_of=as_of)
+    visibility_gate = bot_visibility_gate(cfg, visibility)
+    ok = ok and bool(visibility_gate["ok"])
     report.update(
         {
             "snapshot_db": str(db_path),
-            "quick_check": quick_check(db_path),
+            "quick_check": snapshot_quick_check,
             "reader_results": reader_results,
             "internal_control_customers": internal_results,
             "mail_allowed_safety_gate": mail_safety,
             "mango_processed_allowed_safety_gate": mango_safety,
+            "bot_visibility": visibility,
+            "bot_visibility_gate": visibility_gate,
             "status": "ok" if ok else "failed",
         }
     )
@@ -391,8 +494,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test Customer Timeline snapshot through reader APIs.")
     add_common_args(parser)
     parser.add_argument("--snapshot-db", type=Path, required=True)
+    parser.add_argument("--as-of", help="UTC cutoff used by the canonical reader visibility gate.")
     args = parser.parse_args()
-    report, ok = smoke(args.config, snapshot_db=args.snapshot_db)
+    as_of = None
+    if args.as_of:
+        as_of = datetime.fromisoformat(args.as_of[:-1] + "+00:00" if args.as_of.endswith("Z") else args.as_of)
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise SystemExit("--as-of must include a timezone")
+        as_of = as_of.astimezone(timezone.utc)
+    report, ok = smoke(args.config, snapshot_db=args.snapshot_db, as_of=as_of)
     return finish_cli(report, args.out, ok=ok)
 
 

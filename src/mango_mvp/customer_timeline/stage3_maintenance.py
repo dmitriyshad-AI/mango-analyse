@@ -7,24 +7,42 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
-from mango_mvp.customer_timeline.derived_signals import backfill_sg_v1_signals
+from mango_mvp.customer_timeline.derived_signals import (
+    backfill_sg_v1_signals_on_store,
+)
+from mango_mvp.customer_timeline.contracts import IdentityLink
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.mail_stage2_ingest import MAIL_STAGE2_INGEST_SOURCE_SYSTEM
-from mango_mvp.customer_timeline.mail_stage2_visibility import harden_mail_stage2_bot_visibility
-from mango_mvp.customer_timeline.objections import backfill_customer_objections_v1
+from mango_mvp.customer_timeline.mail_stage2_visibility import (
+    harden_mail_stage2_bot_visibility,
+    harden_mail_stage2_bot_visibility_on_store,
+)
+from mango_mvp.customer_timeline.objections import (
+    LoadedCallTexts,
+    backfill_customer_objections_v1_on_connection,
+    load_call_texts,
+)
 from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     guard_customer_timeline_writable_path,
 )
 from mango_mvp.customer_timeline.store import (
+    CUSTOMER_ID_OWNER_COLUMNS,
     CustomerTimelineSQLiteStore,
+    MAIL_IDENTITY_SENTINEL_MAX,
+    customer_timeline_integrity_report,
+    customer_timeline_integrity_report_ok,
+    customer_id_literal_invalid_sql,
+    customer_timeline_run_lock,
+    is_mail_identity_sentinel_date,
     json_dumps,
     json_loads,
     normalize_email_content_text,
     scrub_timeline_persisted_json,
 )
+from mango_mvp.customer_timeline.temporal import parse_aware_utc
 
 
 STAGE3_MAINTENANCE_SCHEMA_VERSION = "stage3_mail_cleanup_v1"
@@ -42,6 +60,7 @@ class Stage3MaintenanceConfig:
     apply: bool = True
     batch_size: int = 1000
     signal_as_of: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    lock_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timeline_db_path", Path(self.timeline_db_path).expanduser())
@@ -53,13 +72,27 @@ class Stage3MaintenanceConfig:
             raise ValueError("batch_size must be between 1 and 1000")
         if self.signal_as_of.tzinfo is None:
             raise ValueError("signal_as_of must be timezone-aware")
+        if self.lock_timeout_seconds < 0:
+            raise ValueError("lock_timeout_seconds must not be negative")
 
 
 def run_stage3_maintenance(config: Stage3MaintenanceConfig) -> Mapping[str, Any]:
-    started = time.monotonic()
     db_path = guard_customer_timeline_writable_path(
         guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
     )
+    if not config.apply:
+        return _run_stage3_maintenance_unlocked(config, db_path=db_path)
+    with customer_timeline_run_lock(db_path, timeout_seconds=config.lock_timeout_seconds):
+        return _run_stage3_maintenance_unlocked(config, db_path=db_path)
+
+
+def _run_stage3_maintenance_unlocked(
+    config: Stage3MaintenanceConfig,
+    *,
+    db_path: Path,
+) -> Mapping[str, Any]:
+    started = time.monotonic()
+    preloaded_call_texts = load_call_texts(config.canonical_calls_db_path) if config.apply else None
     config.out_dir.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {
@@ -74,19 +107,49 @@ def run_stage3_maintenance(config: Stage3MaintenanceConfig) -> Mapping[str, Any]
             "llm_calls_total": 0,
             "none_customer_groups_actioned": 0,
         },
+        "call_text_source_preflight": (
+            dict(preloaded_call_texts.report)
+            if preloaded_call_texts is not None
+            else {"skipped": "dry_run_avoids_calls_scan"}
+        ),
     }
 
-    report["mail_stage2_visibility_hardening"] = harden_mail_stage2_bot_visibility(
-        db_path,
-        allowed_root=config.allowed_root,
-        apply=config.apply,
-        # Stage 3 already rejects production paths; tests use temporary staging roots.
-        allow_test_paths=True,
+    store_context = (
+        CustomerTimelineSQLiteStore(db_path, allowed_root=config.allowed_root)
+        if config.apply
+        else CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=config.allowed_root)
     )
-
-    with CustomerTimelineSQLiteStore(db_path, allowed_root=config.allowed_root) as store:
+    with store_context as store:
         con = store._con  # noqa: SLF001 - staging maintenance uses store-owned connection and FTS helpers.
         report["before"] = _metrics(con)
+        nullish_customer_plan = _load_nullish_customer_id_repair_plan(
+            con,
+            tenant_id=config.tenant_id,
+        )
+        report["nullish_customer_id_repair_plan"] = nullish_customer_plan["summary"]
+        report["nullish_customer_id_repair"] = (
+            _apply_nullish_customer_id_repair_plan(
+                store,
+                nullish_customer_plan,
+            )
+            if config.apply
+            else {"dry_run": True, "writes": 0}
+        )
+        identity_date_plan = _load_mail_identity_date_repair_plan(
+            con,
+            tenant_id=config.tenant_id,
+            as_of=config.signal_as_of,
+        )
+        report["mail_identity_date_repair_plan"] = identity_date_plan["summary"]
+        report["mail_identity_date_repair"] = (
+            _apply_mail_identity_date_repair_plan(
+                store,
+                identity_date_plan["rows"],
+                as_of=config.signal_as_of,
+            )
+            if config.apply
+            else {"links_repaired": 0, "dry_run": True}
+        )
         content_started = time.monotonic()
         if config.apply:
             content_result = store.backfill_timeline_event_content_keys(batch_size=config.batch_size)
@@ -119,56 +182,650 @@ def run_stage3_maintenance(config: Stage3MaintenanceConfig) -> Mapping[str, Any]
         if config.apply:
             report["soft_delete"] = _apply_duplicate_plan(store, duplicate_plan["groups_detail"])
         else:
-            report["soft_delete"] = {"superseded_events": 0, "superseded_chunks": 0, "groups_actioned": 0}
+            report["soft_delete"] = {
+                "superseded_events": 0,
+                "superseded_signals": 0,
+                "superseded_chunks": 0,
+                "groups_actioned": 0,
+            }
 
-        labels_started = time.monotonic()
-        report["chunk_label_backfill"] = _backfill_chunk_labels(con, apply=config.apply)
-        report["chunk_label_backfill"]["elapsed_seconds"] = round(time.monotonic() - labels_started, 3)
         if config.apply:
-            store._rebuild_fts_indexes()  # noqa: SLF001 - full rebuild proves superseded rows stay hidden.
+            objections_started = time.monotonic()
+            objections = backfill_customer_objections_v1_on_connection(
+                con,
+                canonical_calls=cast(LoadedCallTexts, preloaded_call_texts).texts,
+                tenant_id=config.tenant_id,
+                apply=True,
+                as_of=config.signal_as_of,
+            )
+            report["objections"] = {
+                **objections,
+                "elapsed_seconds": round(time.monotonic() - objections_started, 3),
+            }
+            signals_started = time.monotonic()
+            signals = backfill_sg_v1_signals_on_store(
+                store,
+                tenant_id=config.tenant_id,
+                as_of=config.signal_as_of,
+            )
+            report["derived_signals"] = {
+                **signals,
+                "elapsed_seconds": round(time.monotonic() - signals_started, 3),
+            }
+        else:
+            report["objections"] = {"apply": False, "skipped": "dry_run_avoids_canonical_calls_scan"}
+            report["derived_signals"] = {"apply": False, "skipped": "dry_run_avoids_full_signal_scan"}
+
+        report["mail_stage2_visibility_hardening"] = (
+            harden_mail_stage2_bot_visibility_on_store(
+                store,
+                defer_fts_rebuild=True,
+                commit=False,
+            )
+            if config.apply
+            else harden_mail_stage2_bot_visibility(
+                db_path,
+                allowed_root=config.allowed_root,
+                apply=False,
+                allow_test_paths=True,
+            )
+        )
+        labels_started = time.monotonic()
+        report["chunk_label_backfill"] = _backfill_chunk_labels(
+            con,
+            apply=config.apply,
+            commit=False,
+        )
+        report["chunk_label_backfill"]["elapsed_seconds"] = round(time.monotonic() - labels_started, 3)
+
+        fts_reasons = []
+        if int(report["mail_stage2_visibility_hardening"].get("updated_chunks") or 0) > 0:
+            fts_reasons.append("mail_stage2_visibility")
+        if int(report["chunk_label_backfill"]["counts"].get("chunks_updated") or 0) > 0:
+            fts_reasons.append("chunk_labels")
+        if config.apply and fts_reasons:
+            store._rebuild_fts_indexes()  # noqa: SLF001 - direct chunk SQL requires one atomic rebuild.
+        if config.apply:
             con.commit()
-
+        report["fts_rebuild"] = {
+            "performed": bool(config.apply and fts_reasons),
+            "reasons": fts_reasons,
+        }
         fts_started = time.monotonic()
-        report["fts_after_rebuild"] = _fts_superseded_counts(con)
-        report["fts_after_rebuild"]["elapsed_seconds"] = round(time.monotonic() - fts_started, 3)
-
-    if config.apply:
-        objections_started = time.monotonic()
-        objections = backfill_customer_objections_v1(
-            db_path,
-            allowed_root=config.allowed_root,
-            canonical_calls_db_path=config.canonical_calls_db_path,
-            tenant_id=config.tenant_id,
-            apply=True,
-            as_of=config.signal_as_of,
-        )
-        report["objections"] = {**objections, "elapsed_seconds": round(time.monotonic() - objections_started, 3)}
-
-        signals_started = time.monotonic()
-        signals = backfill_sg_v1_signals(
-            db_path,
-            allowed_root=config.allowed_root,
-            tenant_id=config.tenant_id,
-            apply=True,
-            as_of=config.signal_as_of,
-        )
-        report["derived_signals"] = {**signals, "elapsed_seconds": round(time.monotonic() - signals_started, 3)}
-    else:
-        report["objections"] = {"apply": False}
-        report["derived_signals"] = {"apply": False}
-
-    with CustomerTimelineSQLiteStore(db_path, allowed_root=config.allowed_root) as store:
-        con = store._con  # noqa: SLF001
+        fts_counts = _fts_superseded_counts(con)
+        report["fts_after_rebuild"] = {
+            **fts_counts,
+            "elapsed_seconds": round(time.monotonic() - fts_started, 3),
+        }
         report["after"] = _metrics(con)
-        report["final_checks"] = {
+        integrity_report = customer_timeline_integrity_report(con)
+        final_checks = {
             "quick_check": con.execute("PRAGMA quick_check").fetchone()[0],
             "foreign_key_check_rows": len(con.execute("PRAGMA foreign_key_check").fetchall()),
-            "fts_superseded_counts": _fts_superseded_counts(con),
+            "fts_superseded_counts": fts_counts,
+            "integrity_report": integrity_report,
         }
+        report["final_checks"] = final_checks
+        report["validation_ok"] = bool(
+            final_checks["quick_check"] == "ok"
+            and final_checks["foreign_key_check_rows"] == 0
+            and all(int(value) == 0 for value in fts_counts.values())
+            and customer_timeline_integrity_report_ok(integrity_report)
+        )
 
     report["elapsed_seconds"] = round(time.monotonic() - started, 3)
     (config.out_dir / "stage3_maintenance_report.json").write_text(json_dumps(report), encoding="utf-8")
     return report
+
+
+_NULLISH_REPAIRABLE_OWNER_TABLES = frozenset(
+    {
+        "bot_context_chunks",
+        "customer_identities",
+        "customer_opportunities",
+        "derived_signals",
+        "family_members_v1",
+        "identity_links",
+        "timeline_events",
+    }
+)
+_NULLISH_FTS_TABLES = frozenset({"bot_context_chunk_fts", "timeline_event_fts"})
+_NULLISH_REPAIR_REASON = "textual_null_customer_id"
+
+
+def _load_nullish_customer_id_repair_plan(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+) -> Mapping[str, Any]:
+    tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    columns = {
+        table: {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
+        for table in sorted(tables & {table for table, _column in CUSTOMER_ID_OWNER_COLUMNS})
+    }
+    literal_counts: dict[str, int] = {}
+    bad_values: set[str] = set()
+    for table, column in CUSTOMER_ID_OWNER_COLUMNS:
+        if table in _NULLISH_FTS_TABLES or column not in columns.get(table, set()):
+            continue
+        tenant_clause = "tenant_id=? AND " if "tenant_id" in columns[table] else ""
+        params: tuple[Any, ...] = (tenant_id,) if tenant_clause else ()
+        rows = con.execute(
+            f"SELECT {column},COUNT(*) FROM {table} WHERE {tenant_clause}"
+            f"{customer_id_literal_invalid_sql(column)} GROUP BY {column}",
+            params,
+        ).fetchall()
+        literal_counts[f"{table}.{column}"] = sum(int(row[1]) for row in rows)
+        bad_values.update(str(row[0]) for row in rows)
+
+    values = tuple(sorted(bad_values))
+    unexpected = {
+        key: count
+        for key, count in literal_counts.items()
+        if count and key.split(".", 1)[0] not in _NULLISH_REPAIRABLE_OWNER_TABLES
+    }
+    empty_plan = {
+        "summary": {
+            "bad_literal_values": len(values),
+            "literal_counts": {key: value for key, value in literal_counts.items() if value},
+            "active_events": 0,
+            "identity_links": 0,
+            "opportunities": 0,
+            "derived_signals": 0,
+            "bot_context_chunks": 0,
+            "family_members": 0,
+            "customer_identities": 0,
+            "stop_counts": {f"unexpected_projection:{key}": value for key, value in unexpected.items()},
+        },
+        "bad_values": values,
+        "tenant_id": tenant_id,
+        "event_pairs": (),
+        "event_ids": (),
+        "link_rows": (),
+        "opportunity_rows": (),
+        "signal_ids": (),
+        "chunk_ids": (),
+    }
+    if not values:
+        return empty_plan
+
+    placeholders = ",".join("?" for _ in values)
+    owner_params = (tenant_id, *values)
+    event_rows = con.execute(
+        f"SELECT event_id,source_system,source_id FROM timeline_events "
+        f"WHERE tenant_id=? AND customer_id IN ({placeholders}) AND superseded_by IS NULL "
+        "ORDER BY source_system,source_id,event_id",
+        owner_params,
+    ).fetchall()
+    event_ids = tuple(str(row["event_id"]) for row in event_rows)
+    event_pairs = tuple(
+        dict.fromkeys((str(row["source_system"]), str(row["source_id"])) for row in event_rows)
+    )
+    link_rows = tuple(
+        con.execute(
+            f"SELECT * FROM identity_links WHERE tenant_id=? AND customer_id IN ({placeholders}) "
+            "ORDER BY link_id",
+            owner_params,
+        ).fetchall()
+    )
+    opportunity_rows = tuple(
+        con.execute(
+            f"SELECT opportunity_id,source_system FROM customer_opportunities "
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders}) ORDER BY opportunity_id",
+            owner_params,
+        ).fetchall()
+    )
+    opportunity_ids = tuple(str(row["opportunity_id"]) for row in opportunity_rows)
+
+    signal_clauses = [f"customer_id IN ({placeholders})"]
+    signal_params: list[Any] = [tenant_id, *values]
+    if event_ids:
+        event_placeholders = ",".join("?" for _ in event_ids)
+        signal_clauses.extend(
+            (
+                f"event_id IN ({event_placeholders})",
+                "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(derived_signals.record_json)=1 "
+                "THEN derived_signals.record_json ELSE '{}' END,'$.source_event_ids') source_event "
+                f"WHERE CAST(source_event.value AS TEXT) IN ({event_placeholders}))",
+            )
+        )
+        signal_params.extend(event_ids)
+        signal_params.extend(event_ids)
+    if opportunity_ids:
+        opportunity_placeholders = ",".join("?" for _ in opportunity_ids)
+        signal_clauses.append(f"opportunity_id IN ({opportunity_placeholders})")
+        signal_params.extend(opportunity_ids)
+    signal_ids = tuple(
+        str(row[0])
+        for row in con.execute(
+            "SELECT signal_id FROM derived_signals WHERE tenant_id=? AND ("
+            + " OR ".join(signal_clauses)
+            + ") ORDER BY signal_id",
+            tuple(signal_params),
+        ).fetchall()
+    )
+
+    chunk_clauses = [f"customer_id IN ({placeholders})"]
+    chunk_params: list[Any] = [tenant_id, *values]
+    if event_ids:
+        chunk_clauses.append(f"event_id IN ({event_placeholders})")
+        chunk_params.extend(event_ids)
+    if opportunity_ids:
+        chunk_clauses.append(f"opportunity_id IN ({opportunity_placeholders})")
+        chunk_params.extend(opportunity_ids)
+    chunk_ids = tuple(
+        str(row[0])
+        for row in con.execute(
+            "SELECT chunk_id FROM bot_context_chunks WHERE tenant_id=? AND ("
+            + " OR ".join(chunk_clauses)
+            + ") ORDER BY chunk_id",
+            tuple(chunk_params),
+        ).fetchall()
+    )
+
+    stop_counts = {f"unexpected_projection:{key}": value for key, value in unexpected.items()}
+    stop_counts["superseded_bad_events"] = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM timeline_events WHERE tenant_id=? "
+            f"AND customer_id IN ({placeholders}) AND superseded_by IS NOT NULL",
+            owner_params,
+        ).fetchone()[0]
+    )
+    stop_counts["mixed_active_source_pairs"] = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT bad.source_system,bad.source_id FROM timeline_events bad "
+            "JOIN timeline_events other ON other.tenant_id=bad.tenant_id "
+            "AND other.source_system=bad.source_system AND other.source_id=bad.source_id "
+            f"WHERE bad.tenant_id=? AND bad.customer_id IN ({placeholders}) "
+            "AND bad.superseded_by IS NULL AND other.superseded_by IS NULL "
+            "AND other.event_id!=bad.event_id "
+            f"AND (other.customer_id IS NULL OR other.customer_id NOT IN ({placeholders})))",
+            (tenant_id, *values, *values),
+        ).fetchone()[0]
+    )
+    foreign_dependency_queries: list[tuple[str, str, tuple[Any, ...]]] = []
+    if event_ids:
+        foreign_dependency_queries.extend(
+            (
+                (
+                    "event_signal_foreign_owner",
+                    f"SELECT COUNT(*) FROM derived_signals WHERE tenant_id=? AND event_id IN ({event_placeholders}) "
+                    f"AND customer_id IS NOT NULL AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *event_ids, *values),
+                ),
+                (
+                    "event_chunk_foreign_owner",
+                    f"SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id=? AND event_id IN ({event_placeholders}) "
+                    f"AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *event_ids, *values),
+                ),
+            )
+        )
+    if opportunity_ids:
+        foreign_dependency_queries.extend(
+            (
+                (
+                    "opportunity_event_foreign_owner",
+                    f"SELECT COUNT(*) FROM timeline_events WHERE tenant_id=? "
+                    f"AND opportunity_id IN ({opportunity_placeholders}) "
+                    f"AND (customer_id IS NULL OR customer_id NOT IN ({placeholders}))",
+                    (tenant_id, *opportunity_ids, *values),
+                ),
+                (
+                    "opportunity_signal_foreign_owner",
+                    f"SELECT COUNT(*) FROM derived_signals WHERE tenant_id=? "
+                    f"AND opportunity_id IN ({opportunity_placeholders}) "
+                    f"AND customer_id IS NOT NULL AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *opportunity_ids, *values),
+                ),
+                (
+                    "opportunity_chunk_foreign_owner",
+                    f"SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id=? "
+                    f"AND opportunity_id IN ({opportunity_placeholders}) "
+                    f"AND customer_id NOT IN ({placeholders})",
+                    (tenant_id, *opportunity_ids, *values),
+                ),
+            )
+        )
+    for code, sql, params in foreign_dependency_queries:
+        stop_counts[code] = int(con.execute(sql, params).fetchone()[0])
+    stop_counts = {key: value for key, value in stop_counts.items() if value}
+
+    family_members = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM family_members_v1 WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            owner_params,
+        ).fetchone()[0]
+    )
+    customer_identities = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM customer_identities WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            owner_params,
+        ).fetchone()[0]
+    )
+    summary = {
+        "bad_literal_values": len(values),
+        "literal_counts": {key: value for key, value in literal_counts.items() if value},
+        "active_events": len(event_ids),
+        "identity_links": len(link_rows),
+        "opportunities": len(opportunity_rows),
+        "derived_signals": len(signal_ids),
+        "bot_context_chunks": len(chunk_ids),
+        "family_members": family_members,
+        "customer_identities": customer_identities,
+        "stop_counts": stop_counts,
+    }
+    return {
+        "summary": summary,
+        "bad_values": values,
+        "tenant_id": tenant_id,
+        "event_pairs": event_pairs,
+        "event_ids": event_ids,
+        "link_rows": link_rows,
+        "opportunity_rows": opportunity_rows,
+        "signal_ids": signal_ids,
+        "chunk_ids": chunk_ids,
+        "before_hash": stable_digest(summary),
+    }
+
+
+def _apply_nullish_customer_id_repair_plan(
+    store: CustomerTimelineSQLiteStore,
+    plan: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    summary = dict(plan["summary"])
+    bad_values = tuple(str(value) for value in plan["bad_values"])
+    if summary.get("stop_counts"):
+        raise RuntimeError(
+            "nullish customer identity repair blocked: "
+            + ", ".join(sorted(str(key) for key in summary["stop_counts"]))
+        )
+    if not bad_values:
+        return {
+            "writes": 0,
+            "events_quarantined": 0,
+            "links_detached": 0,
+            "opportunities_deleted": 0,
+            "signals_deleted": 0,
+            "chunks_deleted": 0,
+            "family_members_deleted": 0,
+            "customer_identities_deleted": 0,
+        }
+
+    con = store._con  # noqa: SLF001 - one existing Stage3 transaction owns the repair.
+    placeholders = ",".join("?" for _ in bad_values)
+    tenant_id = str(plan["tenant_id"])
+    event_ids = tuple(str(value) for value in plan["event_ids"])
+    chunk_ids = tuple(str(value) for value in plan["chunk_ids"])
+    signal_ids = tuple(str(value) for value in plan["signal_ids"])
+    actor = "stage3_nullish_customer_id_repair"
+    events_quarantined = 0
+    links_detached = 0
+    opportunities_deleted = 0
+    with store.bulk_write():
+        for source_system, source_id in plan["event_pairs"]:
+            result = store.quarantine_timeline_events_identity_conflict(
+                tenant_id,
+                source_system=str(source_system),
+                source_id=str(source_id),
+                reason=_NULLISH_REPAIR_REASON,
+                actor=actor,
+            )
+            events_quarantined += int(result["existing_event_quarantined"])
+        if events_quarantined != int(summary["active_events"]):
+            raise RuntimeError("nullish customer identity repair event balance changed during apply")
+
+        for row in plan["link_rows"]:
+            payload = dict(json_loads(str(row["record_json"])))
+            evidence = dict(payload.get("evidence") or {})
+            evidence["stage3_nullish_customer_id_repair"] = {
+                "reason": _NULLISH_REPAIR_REASON,
+                "previous_owner_sha256": stable_digest({"customer_id": str(row["customer_id"])}),
+            }
+            link = IdentityLink(
+                tenant_id=str(row["tenant_id"]),
+                customer_id=None,
+                link_id=str(row["link_id"]),
+                link_type=str(row["link_type"]),
+                link_value=str(row["link_value"]),
+                source_system=str(row["source_system"]),
+                source_ref=str(row["source_ref"]),
+                match_class="ambiguous",
+                confidence=0.0,
+                evidence=evidence,
+                first_seen_at=parse_aware_utc(row["first_seen_at"]),
+                last_seen_at=parse_aware_utc(row["last_seen_at"]),
+            )
+            store.upsert_identity_link(link, actor=actor)
+            links_detached += 1
+
+        if chunk_ids:
+            store._delete_bot_context_fts_for_chunk_ids(chunk_ids)  # noqa: SLF001
+            chunk_placeholders = ",".join("?" for _ in chunk_ids)
+            chunks_deleted = int(
+                con.execute(
+                    f"DELETE FROM bot_context_chunks WHERE chunk_id IN ({chunk_placeholders})",
+                    chunk_ids,
+                ).rowcount
+            )
+        else:
+            chunks_deleted = 0
+        if signal_ids:
+            signal_placeholders = ",".join("?" for _ in signal_ids)
+            signals_deleted = int(
+                con.execute(
+                    f"DELETE FROM derived_signals WHERE signal_id IN ({signal_placeholders})",
+                    signal_ids,
+                ).rowcount
+            )
+        else:
+            signals_deleted = 0
+
+        family_members_deleted = int(
+            con.execute(
+                f"DELETE FROM family_members_v1 WHERE tenant_id=? AND customer_id IN ({placeholders})",
+                (tenant_id, *bad_values),
+            ).rowcount
+        )
+        for row in plan["opportunity_rows"]:
+            result = store.delete_unreferenced_opportunity(
+                str(row["source_system"]),
+                str(row["opportunity_id"]),
+                actor=actor,
+            )
+            if result.status != "deleted":
+                raise RuntimeError("nullish customer identity repair could not delete an opportunity")
+            opportunities_deleted += 1
+        customer_identities_deleted = int(
+            con.execute(
+                f"DELETE FROM customer_identities WHERE tenant_id=? AND customer_id IN ({placeholders})",
+                (tenant_id, *bad_values),
+            ).rowcount
+        )
+        remaining = sum(
+            int(
+                con.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE tenant_id=? AND {column} IN ({placeholders})",
+                    (tenant_id, *bad_values),
+                ).fetchone()[0]
+            )
+            for table, column in CUSTOMER_ID_OWNER_COLUMNS
+            if table in _NULLISH_REPAIRABLE_OWNER_TABLES
+        )
+        if remaining:
+            raise RuntimeError("nullish customer identity repair left owner references")
+        store.append_audit_log(
+            tenant_id,
+            action="nullish_customer_identity_repaired",
+            entity_type="customer_identity",
+            entity_id=f"nullish:{stable_digest({'tenant_id': tenant_id, 'values': bad_values})[:16]}",
+            actor=actor,
+            before_hash=str(plan["before_hash"]),
+            after_hash=stable_digest({"tenant_id": tenant_id, "remaining": 0}),
+            metadata={
+                "reason": _NULLISH_REPAIR_REASON,
+                "events_quarantined": events_quarantined,
+                "links_detached": links_detached,
+                "opportunities_deleted": opportunities_deleted,
+                "signals_deleted": signals_deleted,
+                "chunks_deleted": chunks_deleted,
+                "family_members_deleted": family_members_deleted,
+                "customer_identities_deleted": customer_identities_deleted,
+            },
+        )
+        store._commit()  # noqa: SLF001 - marks the surrounding Store batch dirty.
+
+    return {
+        "writes": (
+            events_quarantined
+            + links_detached
+            + opportunities_deleted
+            + signals_deleted
+            + chunks_deleted
+            + family_members_deleted
+            + customer_identities_deleted
+        ),
+        "events_quarantined": events_quarantined,
+        "links_detached": links_detached,
+        "opportunities_deleted": opportunities_deleted,
+        "signals_deleted": signals_deleted,
+        "chunks_deleted": chunks_deleted,
+        "family_members_deleted": family_members_deleted,
+        "customer_identities_deleted": customer_identities_deleted,
+    }
+
+
+def _load_mail_identity_date_repair_plan(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    as_of: datetime,
+) -> Mapping[str, Any]:
+    repair_cutoff = as_of.astimezone(timezone.utc)
+    rows = con.execute(
+        """
+        SELECT
+          l.link_id,
+          l.tenant_id,
+          l.customer_id,
+          l.match_class,
+          l.first_seen_at,
+          l.last_seen_at,
+          e.event_id,
+          e.event_at
+        FROM identity_links l
+        LEFT JOIN timeline_events e
+          ON e.tenant_id = l.tenant_id
+         AND e.customer_id = l.customer_id
+         AND e.source_system = l.source_system
+         AND e.source_ref = l.source_ref
+         AND e.superseded_by IS NULL
+        WHERE l.tenant_id = ?
+          AND l.source_system = ?
+          AND l.link_type = 'tallanto_student_id'
+          AND (
+            (COALESCE(l.first_seen_at, '') != '' AND substr(l.first_seen_at, 1, 10) <= '1970-01-02')
+            OR (COALESCE(l.last_seen_at, '') != '' AND substr(l.last_seen_at, 1, 10) <= '1970-01-02')
+          )
+        ORDER BY l.link_id, e.event_at, e.event_id
+        """,
+        (tenant_id, MAIL_STAGE2_INGEST_SOURCE_SYSTEM),
+    ).fetchall()
+    by_link: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        by_link.setdefault(str(row["link_id"]), []).append(row)
+    counters: Counter[str] = Counter({"links_scanned": len(by_link)})
+    plan: list[Mapping[str, Any]] = []
+    match_classes: Counter[str] = Counter()
+    for link_id, candidates in by_link.items():
+        base = candidates[0]
+        first_seen_at = parse_aware_utc(base["first_seen_at"])
+        last_seen_at = parse_aware_utc(base["last_seen_at"])
+        first_corrupt = is_mail_identity_sentinel_date(base["first_seen_at"])
+        last_corrupt = is_mail_identity_sentinel_date(base["last_seen_at"])
+        if (
+            (str(base["first_seen_at"] or "").strip() and first_seen_at is None and not first_corrupt)
+            or (str(base["last_seen_at"] or "").strip() and last_seen_at is None and not last_corrupt)
+        ):
+            counters["invalid_or_naive_existing_dates"] += 1
+            continue
+        if not first_corrupt and not last_corrupt:
+            counters["invalid_or_naive_existing_dates"] += 1
+            continue
+        event_rows = [row for row in candidates if str(row["event_id"] or "").strip()]
+        evidence_event_id: str | None = None
+        unknown_reason: str | None = None
+        if not event_rows:
+            counters["missing_exact_evidence"] += 1
+            unknown_reason = "missing_exact_evidence"
+        elif len(event_rows) != 1:
+            counters["ambiguous_exact_evidence"] += 1
+            unknown_reason = "ambiguous_exact_evidence"
+        else:
+            evidence_row = event_rows[0]
+            evidence_at = parse_aware_utc(evidence_row["event_at"])
+            if evidence_at is None:
+                counters["invalid_evidence_dates"] += 1
+                unknown_reason = "invalid_evidence_date"
+            elif evidence_at <= MAIL_IDENTITY_SENTINEL_MAX:
+                counters["legacy_evidence_dates"] += 1
+                unknown_reason = "legacy_evidence_date"
+            elif evidence_at > repair_cutoff:
+                counters["future_evidence_dates"] += 1
+                unknown_reason = "future_evidence_date"
+            else:
+                new_first = evidence_at if first_corrupt else first_seen_at
+                new_last = evidence_at if last_corrupt else last_seen_at
+                if new_first is not None and new_last is not None and new_first > new_last:
+                    counters["invalid_repaired_range"] += 1
+                    unknown_reason = "invalid_exact_repaired_range"
+                else:
+                    evidence_event_id = str(evidence_row["event_id"])
+                    counters["links_exact_date"] += 1
+        if unknown_reason:
+            counters["links_date_cleared_unknown"] += 1
+        plan.append(
+            {
+                "tenant_id": str(base["tenant_id"]),
+                "link_id": link_id,
+                "evidence_event_id": evidence_event_id,
+                "unknown_reason": unknown_reason,
+            }
+        )
+        match_classes[str(base["match_class"])] += 1
+    counters["links_actionable"] = len(plan)
+    return {
+        "rows": tuple(plan),
+        "summary": {
+            **dict(counters),
+            "match_class_counts_preserved": dict(sorted(match_classes.items())),
+            "selection": (
+                "one exact active tenant+customer+source ref event -> event_at; "
+                "missing/ambiguous/invalid/future evidence -> NULL"
+            ),
+        },
+    }
+
+
+def _apply_mail_identity_date_repair_plan(
+    store: CustomerTimelineSQLiteStore,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    as_of: datetime,
+) -> Mapping[str, Any]:
+    statuses: Counter[str] = Counter()
+    with store.bulk_write():
+        for row in rows:
+            result = store.repair_identity_link_seen_at(
+                str(row["tenant_id"]),
+                link_id=str(row["link_id"]),
+                as_of=as_of,
+            )
+            statuses[result.status] += 1
+    return {
+        "links_repaired": int(statuses["updated"]),
+        "write_status_counts": dict(statuses),
+    }
 
 
 def _load_duplicate_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, Any]:
@@ -294,21 +951,28 @@ def _apply_duplicate_plan(
     groups: Sequence[Mapping[str, Any]],
 ) -> Mapping[str, int]:
     totals = Counter()
-    for group in groups:
-        result = store.mark_timeline_events_superseded(
-            str(group["tenant_id"]),
-            canonical_event_id=str(group["canonical_event_id"]),
-            duplicate_event_ids=tuple(str(item) for item in group["duplicate_event_ids"]),
-            actor="stage3_mail_cleanup",
-            reason="stage3_content_duplicate",
-        )
-        totals["groups_actioned"] += 1
-        totals["superseded_events"] += int(result["superseded_events"])
-        totals["superseded_chunks"] += int(result["superseded_chunks"])
+    with store.bulk_write():
+        for group in groups:
+            result = store.mark_timeline_events_superseded(
+                str(group["tenant_id"]),
+                canonical_event_id=str(group["canonical_event_id"]),
+                duplicate_event_ids=tuple(str(item) for item in group["duplicate_event_ids"]),
+                actor="stage3_mail_cleanup",
+                reason="stage3_content_duplicate",
+            )
+            totals["groups_actioned"] += 1
+            totals["superseded_events"] += int(result["superseded_events"])
+            totals["superseded_signals"] += int(result["superseded_signals"])
+            totals["superseded_chunks"] += int(result["superseded_chunks"])
     return dict(totals)
 
 
-def _backfill_chunk_labels(con: sqlite3.Connection, *, apply: bool) -> Mapping[str, Any]:
+def _backfill_chunk_labels(
+    con: sqlite3.Connection,
+    *,
+    apply: bool,
+    commit: bool = True,
+) -> Mapping[str, Any]:
     counters: Counter[str] = Counter()
     source_rows: Counter[str] = Counter()
     client_safe_reasons: Counter[str] = Counter()
@@ -355,15 +1019,15 @@ def _backfill_chunk_labels(con: sqlite3.Connection, *, apply: bool) -> Mapping[s
                 (json_dumps(payload), record_hash, row["chunk_id"]),
             )
             counters["chunks_updated"] += 1
-    if apply:
+    if apply and commit:
         con.commit()
     return {
         "counts": dict(counters),
         "source_rows": dict(source_rows),
         "client_safe_reason_counts": dict(client_safe_reasons),
         "policy_note": (
-            "For chunks without A2v3 semantic facts, cs_v1 is conservative: existing bot-visible chunks stay "
-            "client_safe=True by prior approval; manager-review/raw mail chunks are client_safe=False until Э4б."
+            "cs_v1 never derives client_safe from allowed_for_bot: only the canonical projection owner may "
+            "assert client_safe=True; missing owner evidence and manager-review/raw mail stay fail-closed."
         ),
     }
 
@@ -386,18 +1050,26 @@ def _chunk_label_payload(
         tags = ()
     if source_system == MAIL_STAGE2_INGEST_SOURCE_SYSTEM:
         client_safe = bool(metadata.get("client_safe")) if "client_safe" in metadata else False
-        reason = existing_reason or ("a2v3_fact_safe" if client_safe else "stage2_mail_manager_review_pending")
-        memory_status = existing_memory or "manager_review_required"
+        reason = (
+            (existing_reason or "a2v3_fact_safe")
+            if client_safe
+            else "stage2_mail_manager_review_pending"
+        )
+        memory_status = (existing_memory or "manager_review_required") if client_safe else "manager_review_required"
         tags = tags or ("email", "manager_review")
     elif allowed_for_bot and not requires_manager_review:
-        client_safe = True
-        reason = existing_reason or "preexisting_bot_visible"
-        memory_status = existing_memory or "usable_memory"
-        tags = tags or ("preexisting_bot_visible",)
+        client_safe = metadata.get("client_safe") is True
+        reason = (
+            (existing_reason or "source_owner_client_safe")
+            if client_safe
+            else "source_owner_client_safe_missing"
+        )
+        memory_status = (existing_memory or "usable_memory") if client_safe else "manager_review_required"
+        tags = tags or (("source_owner_client_safe",) if client_safe else ("client_safe_missing",))
     else:
         client_safe = bool(metadata.get("client_safe")) if "client_safe" in metadata else False
-        reason = existing_reason or "manager_review_required"
-        memory_status = existing_memory or "manager_review_required"
+        reason = (existing_reason or "manager_review_required") if client_safe else "manager_review_required"
+        memory_status = (existing_memory or "manager_review_required") if client_safe else "manager_review_required"
         tags = tags or ("manager_review",)
     return {
         "client_safe": client_safe,
@@ -419,64 +1091,45 @@ def _label_already_present(metadata: Mapping[str, Any], label: Mapping[str, Any]
 
 
 def _metrics(con: sqlite3.Connection) -> Mapping[str, Any]:
+    events = con.execute(
+        """
+        SELECT
+          COUNT(*) AS timeline_events,
+          COALESCE(SUM(CASE WHEN superseded_by IS NULL THEN 1 ELSE 0 END), 0) AS active_timeline_events,
+          COALESCE(SUM(CASE WHEN event_type = ? THEN 1 ELSE 0 END), 0) AS email_events,
+          COALESCE(SUM(CASE WHEN source_system = ? THEN 1 ELSE 0 END), 0) AS mail_stage2_events,
+          COALESCE(SUM(CASE WHEN content_key IS NULL
+            AND customer_id IS NOT NULL AND customer_id != ''
+            AND event_type = ? AND summary IS NOT NULL AND summary != '' THEN 1 ELSE 0 END), 0)
+            AS content_key_missing,
+          COALESCE(SUM(CASE WHEN superseded_by IS NOT NULL AND superseded_by != '' THEN 1 ELSE 0 END), 0)
+            AS superseded_events
+        FROM timeline_events
+        """,
+        (EMAIL_EVENT_TYPE, MAIL_STAGE2_INGEST_SOURCE_SYSTEM, EMAIL_EVENT_TYPE),
+    ).fetchone()
+    chunks = con.execute(
+        """
+        SELECT
+          COUNT(*) AS chunks,
+          COALESCE(SUM(CASE WHEN superseded_by IS NULL THEN 1 ELSE 0 END), 0) AS active_chunks,
+          COALESCE(SUM(CASE WHEN superseded_by IS NOT NULL AND superseded_by != '' THEN 1 ELSE 0 END), 0)
+            AS superseded_chunks,
+          COALESCE(SUM(CASE WHEN superseded_by IS NULL
+            AND json_extract(record_json, '$.metadata.client_safe_policy_version') IS NULL THEN 1 ELSE 0 END), 0)
+            AS chunks_missing_cs_v1,
+          COALESCE(SUM(CASE WHEN source_system = ? AND allowed_for_bot != 0 THEN 1 ELSE 0 END), 0)
+            AS mail_stage2_chunks_allowed,
+          COALESCE(SUM(CASE WHEN source_system = ? AND requires_manager_review != 1 THEN 1 ELSE 0 END), 0)
+            AS mail_stage2_chunks_without_review
+        FROM bot_context_chunks
+        """,
+        (MAIL_STAGE2_INGEST_SOURCE_SYSTEM, MAIL_STAGE2_INGEST_SOURCE_SYSTEM),
+    ).fetchone()
     return {
-        "timeline_events": _scalar(con, "SELECT count(*) FROM timeline_events"),
-        "active_timeline_events": _scalar(
-            con, "SELECT count(*) FROM timeline_events WHERE superseded_by IS NULL"
-        ),
-        "email_events": _scalar(con, "SELECT count(*) FROM timeline_events WHERE event_type = ?", (EMAIL_EVENT_TYPE,)),
-        "mail_stage2_events": _scalar(
-            con, "SELECT count(*) FROM timeline_events WHERE source_system = ?", (MAIL_STAGE2_INGEST_SOURCE_SYSTEM,)
-        ),
-        "content_key_missing": _scalar(
-            con,
-            """
-            SELECT count(*)
-            FROM timeline_events
-            WHERE content_key IS NULL
-              AND customer_id IS NOT NULL
-              AND customer_id != ''
-              AND event_type = ?
-              AND summary IS NOT NULL
-              AND summary != ''
-            """,
-            (EMAIL_EVENT_TYPE,),
-        ),
-        "superseded_events": _scalar(
-            con, "SELECT count(*) FROM timeline_events WHERE superseded_by IS NOT NULL AND superseded_by != ''"
-        ),
-        "chunks": _scalar(con, "SELECT count(*) FROM bot_context_chunks"),
-        "active_chunks": _scalar(con, "SELECT count(*) FROM bot_context_chunks WHERE superseded_by IS NULL"),
-        "superseded_chunks": _scalar(
-            con, "SELECT count(*) FROM bot_context_chunks WHERE superseded_by IS NOT NULL AND superseded_by != ''"
-        ),
-        "chunks_missing_cs_v1": _scalar(
-            con,
-            """
-            SELECT count(*)
-            FROM bot_context_chunks
-            WHERE superseded_by IS NULL
-              AND json_extract(record_json, '$.metadata.client_safe_policy_version') IS NULL
-            """,
-        ),
-        "mail_stage2_chunks_allowed": _scalar(
-            con,
-            """
-            SELECT count(*)
-            FROM bot_context_chunks
-            WHERE source_system = ? AND allowed_for_bot != 0
-            """,
-            (MAIL_STAGE2_INGEST_SOURCE_SYSTEM,),
-        ),
-        "mail_stage2_chunks_without_review": _scalar(
-            con,
-            """
-            SELECT count(*)
-            FROM bot_context_chunks
-            WHERE source_system = ? AND requires_manager_review != 1
-            """,
-            (MAIL_STAGE2_INGEST_SOURCE_SYSTEM,),
-        ),
+        key: int(row[key] or 0)
+        for row in (events, chunks)
+        for key in row.keys()
     }
 
 

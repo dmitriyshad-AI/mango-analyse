@@ -25,6 +25,19 @@ TELEGRAM_HISTORY_SOURCE_SYSTEM = "telegram_history"
 WAPPI_TELEGRAM_SOURCE_SYSTEM = "wappi_telegram"
 WAPPI_MAX_SOURCE_SYSTEM = "wappi_max"
 MANGO_PROCESSED_SOURCE_SYSTEM = "mango_processed_summary"
+BOT_SAFE_SUMMARY_SOURCE_SYSTEM = "customer_timeline_bot_safe_summary"
+BOT_SAFE_SUMMARY_CHUNK_TYPE = "bot_safe_summary"
+BOT_SAFE_SUMMARY_SCHEMA_VERSION = "customer_timeline_bot_safe_summary_v1"
+BOT_SAFE_SUMMARY_ACTOR = "customer_timeline_bot_safe_summary_builder"
+PURCHASE_HISTORY_SOURCE_SYSTEM = "customer_purchases_v1"
+PURCHASE_HISTORY_CHUNK_TYPE = "purchase_history"
+PURCHASE_HISTORY_PROJECTION_VERSION = "customer_purchases_v1_bot_neutral_v1"
+PURCHASE_HISTORY_PROJECTION_OWNER = "stage5_money_ingest"
+PURCHASE_HISTORY_SEMANTIC_SCOPE = "historical_payment_brand_neutral"
+PURCHASE_HISTORY_BOT_TEXT = (
+    "В истории клиента есть подтверждённая входящая оплата; "
+    "её бренд и текущий доступ не подтверждены."
+)
 CHANNEL_HISTORY_SOURCE_SYSTEMS = frozenset(
     {
         TELEGRAM_HISTORY_SOURCE_SYSTEM,
@@ -118,6 +131,36 @@ def assert_bot_context_chunk_source_policy(
             f"{normalize_key(source_system, 'source_system')} bot context chunks must be "
             "stored with allowed_for_bot=False and requires_manager_review=True"
         )
+
+
+def assert_canonical_bot_projection_writer(
+    *,
+    source_system: Optional[str],
+    metadata: Mapping[str, Any],
+    actor: str,
+) -> None:
+    """Reject self-declared canonical owner proof from any other writer."""
+
+    if source_system == BOT_SAFE_SUMMARY_SOURCE_SYSTEM:
+        claims_owner_proof = any(
+            key in metadata
+            for key in ("client_safe_provenance", "projection_owner", "projection_version")
+        )
+        if not claims_owner_proof:
+            return
+        if actor != BOT_SAFE_SUMMARY_ACTOR:
+            raise ValueError("canonical bot-safe summaries require their projection owner actor")
+        return
+    if source_system != PURCHASE_HISTORY_SOURCE_SYSTEM:
+        return
+    claims_owner_proof = any(
+        key in metadata
+        for key in ("client_safe_provenance", "projection_owner", "projection_version")
+    )
+    if not claims_owner_proof:
+        return
+    if actor != PURCHASE_HISTORY_PROJECTION_OWNER:
+        raise ValueError("canonical purchase history requires the Stage5 projection owner actor")
 
 
 def _is_e4b_staging_path(path: Path | str | None) -> bool:

@@ -10,8 +10,10 @@ from mango_mvp.customer_timeline.ids import (
     normalize_email,
     normalize_identity_value,
     normalize_key,
+    optional_customer_id,
     optional_text,
     require_confidence,
+    require_customer_id,
     require_ordered_datetimes,
     require_text,
     require_timezone,
@@ -214,12 +216,14 @@ class CustomerIdentity:
             raise ValueError("updated_at must be greater than or equal to created_at")
         if self.touch_count < 0:
             raise ValueError("touch_count must not be negative")
-        customer_id = optional_text(self.customer_id) or stable_customer_id(
-            tenant_id=tenant_id,
-            primary_phone=phone,
-            primary_email=email,
-            source_ref=self.source_ref,
-        )
+        customer_id = optional_customer_id(self.customer_id)
+        if customer_id is None:
+            customer_id = stable_customer_id(
+                tenant_id=tenant_id,
+                primary_phone=phone,
+                primary_email=email,
+                source_ref=self.source_ref,
+            )
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "identity_status", status)
         object.__setattr__(self, "customer_id", customer_id)
@@ -282,7 +286,7 @@ class IdentityLink:
         object.__setattr__(self, "link_value", link_value)
         object.__setattr__(self, "source_system", source_system)
         object.__setattr__(self, "source_ref", source_ref)
-        object.__setattr__(self, "customer_id", optional_text(self.customer_id))
+        object.__setattr__(self, "customer_id", optional_customer_id(self.customer_id))
         object.__setattr__(
             self,
             "link_id",
@@ -335,7 +339,7 @@ class CustomerOpportunity:
 
     def __post_init__(self) -> None:
         tenant_id = normalize_key(self.tenant_id, "tenant_id")
-        customer_id = require_text(self.customer_id, "customer_id")
+        customer_id = require_customer_id(self.customer_id)
         opportunity_type = OpportunityType(self.opportunity_type)
         source_system = normalize_key(self.source_system, "source_system")
         source_id = require_text(self.source_id, "source_id")
@@ -433,7 +437,7 @@ class TimelineEvent:
         object.__setattr__(self, "source_system", source_system)
         object.__setattr__(self, "source_id", source_id)
         object.__setattr__(self, "direction", direction)
-        object.__setattr__(self, "customer_id", optional_text(self.customer_id))
+        object.__setattr__(self, "customer_id", optional_customer_id(self.customer_id))
         object.__setattr__(self, "opportunity_id", optional_text(self.opportunity_id))
         object.__setattr__(
             self,
@@ -604,7 +608,7 @@ class DerivedSignal:
         if event_id and event_id not in source_event_ids:
             source_event_ids = (event_id,) + source_event_ids
         object.__setattr__(self, "tenant_id", tenant_id)
-        object.__setattr__(self, "customer_id", optional_text(self.customer_id))
+        object.__setattr__(self, "customer_id", optional_customer_id(self.customer_id))
         object.__setattr__(self, "signal_type", signal_type)
         object.__setattr__(self, "severity", SignalSeverity(self.severity))
         object.__setattr__(self, "evidence_text", evidence_text)
@@ -674,7 +678,7 @@ class BotContextChunk:
 
     def __post_init__(self) -> None:
         tenant_id = normalize_key(self.tenant_id, "tenant_id")
-        customer_id = require_text(self.customer_id, "customer_id")
+        customer_id = require_customer_id(self.customer_id)
         chunk_type = normalize_key(self.chunk_type, "chunk_type")
         text = require_text(self.text, "text")
         if self.event_at is not None:

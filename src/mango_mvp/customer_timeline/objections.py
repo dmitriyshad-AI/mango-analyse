@@ -9,11 +9,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.customer_timeline.call_source_identity import (
+    call_source_base_id,
+    parse_call_started_at,
+    read_call_source_snapshot,
+    stable_call_source_id,
+)
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_run_lock
 
 
 OBJECTION_EXTRACTOR_VERSION = "ob_v1"
-LEGACY_OBJECTION_EXTRACTOR_VERSIONS: tuple[str, ...] = ()
 OBJECTION_SCHEMA_VERSION = "customer_timeline_objections_v1"
 OBJECTION_TYPES = ("price", "schedule", "trust", "competitor", "child_refusal", "other")
 PRICE_SENSITIVITY_ORDER = {"low": 0, "medium": 1, "high": 2}
@@ -219,6 +225,18 @@ class ObjectionSourceText:
 class CanonicalCallText:
     transcript_client: str
     direction: str
+    source_schema: str = "canonical_calls"
+    source_db: str | None = None
+    source_row_id: str | None = None
+    original_call_id: str | None = None
+    source_filename: str | None = None
+    started_at: str | None = None
+
+
+@dataclass(frozen=True)
+class LoadedCallTexts:
+    texts: Mapping[str, CanonicalCallText]
+    report: Mapping[str, Any]
 
 
 def extract_objections_from_text(text: str) -> tuple[ObjectionExtraction, ...]:
@@ -253,76 +271,248 @@ def backfill_customer_objections_v1(
     tenant_id: str = "foton",
     apply: bool = True,
     as_of: datetime | None = None,
+    lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
     db = guard_customer_timeline_output_path(db_path, allowed_root)
     _require_existing_db(db)
-    computed_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
-    with _connect_existing_db(db, writable=apply) as con:
-        con.row_factory = sqlite3.Row
-        candidates = _load_objection_candidate_events(con, tenant_id=tenant_id)
-        canonical_calls = _load_canonical_call_texts(canonical_calls_db_path)
-        source_texts, metrics = _objection_source_texts(candidates, canonical_calls=canonical_calls)
-        rows = []
-        for source in source_texts:
-            for extraction in extract_objections_from_text(source.text):
-                if source.source_kind == "email_inbound" and not _email_objection_allowed(source.text, extraction):
-                    metrics["email_objections_skipped_non_client_price"] = (
-                        int(metrics.get("email_objections_skipped_non_client_price") or 0) + 1
-                    )
-                    continue
-                rows.append(
-                    {
-                        "tenant_id": str(source.event["tenant_id"]),
-                        "customer_id": str(source.event["customer_id"]),
-                        "source_event_id": str(source.event["event_id"]),
-                        "source_channel": _source_channel(source.event),
-                        "objection_type": extraction.objection_type,
-                        "quote_preview": extraction.quote_preview[:120],
-                        "budget_hint_rub": extraction.budget_hint_rub,
-                        "price_sensitivity": extraction.price_sensitivity,
-                        "speaker": source.speaker,
-                        "direction": source.direction,
-                        "confidence": source.confidence,
-                        "extracted_at": computed_at,
-                        "extractor_version": OBJECTION_EXTRACTOR_VERSION,
-                    }
+    preloaded_call_texts = load_call_texts(canonical_calls_db_path)
+    if apply:
+        with customer_timeline_run_lock(db, timeout_seconds=lock_timeout_seconds):
+            with CustomerTimelineSQLiteStore(db, allowed_root=allowed_root) as store:
+                return backfill_customer_objections_v1_on_connection(
+                    store._con,  # noqa: SLF001 - canonical Store owns the only writer connection.
+                    canonical_calls=preloaded_call_texts.texts,
+                    tenant_id=tenant_id,
+                    apply=True,
+                    as_of=as_of,
                 )
-        coverage_gate_passed = bool(metrics["call_match_coverage"] >= CALL_MATCH_COVERAGE_GATE)
-        if apply:
-            _ensure_objection_tables(con)
-            versions = tuple(dict.fromkeys((OBJECTION_EXTRACTOR_VERSION, *LEGACY_OBJECTION_EXTRACTOR_VERSIONS)))
-            placeholders = ",".join("?" for _ in versions)
-            con.execute(
-                f"DELETE FROM customer_objections_v1 WHERE tenant_id = ? AND extractor_version IN ({placeholders})",
-                (tenant_id, *versions),
+    with _connect_existing_db(db, writable=False) as con:
+        con.row_factory = sqlite3.Row
+        return backfill_customer_objections_v1_on_connection(
+            con,
+            canonical_calls=preloaded_call_texts.texts,
+            tenant_id=tenant_id,
+            apply=False,
+            as_of=as_of,
+        )
+
+
+def backfill_customer_objections_v1_on_connection(
+    con: sqlite3.Connection,
+    *,
+    canonical_calls_db_path: Path | str | None = None,
+    canonical_calls: Mapping[str, CanonicalCallText] | None = None,
+    tenant_id: str = "foton",
+    apply: bool = True,
+    as_of: datetime | None = None,
+) -> Mapping[str, Any]:
+    if canonical_calls_db_path is not None and canonical_calls is not None:
+        raise ValueError("pass either canonical_calls_db_path or preloaded canonical_calls, not both")
+    computed_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    con.row_factory = sqlite3.Row
+    candidates = _load_objection_candidate_events(con, tenant_id=tenant_id)
+    loaded_calls = canonical_calls if canonical_calls is not None else _load_canonical_call_texts(canonical_calls_db_path)
+    source_texts, metrics, matched_call_event_ids = _objection_source_texts(
+        candidates,
+        canonical_calls=loaded_calls,
+    )
+    legacy_preserve_event_ids = _legacy_call_event_ids(
+        candidates,
+        canonical_calls=loaded_calls,
+        matched_call_event_ids=matched_call_event_ids,
+    )
+    replacement_event_ids = {
+        str(event["event_id"]) for event in candidates
+    } - legacy_preserve_event_ids
+    rows = []
+    for source in source_texts:
+        for extraction in extract_objections_from_text(source.text):
+            if source.source_kind == "email_inbound" and not _email_objection_allowed(source.text, extraction):
+                metrics["email_objections_skipped_non_client_price"] = (
+                    int(metrics.get("email_objections_skipped_non_client_price") or 0) + 1
+                )
+                continue
+            rows.append(
+                {
+                    "tenant_id": str(source.event["tenant_id"]),
+                    "customer_id": str(source.event["customer_id"]),
+                    "source_event_id": str(source.event["event_id"]),
+                    "source_channel": _source_channel(source.event),
+                    "objection_type": extraction.objection_type,
+                    "quote_preview": extraction.quote_preview[:120],
+                    "budget_hint_rub": extraction.budget_hint_rub,
+                    "price_sensitivity": extraction.price_sensitivity,
+                    "speaker": source.speaker,
+                    "direction": source.direction,
+                    "confidence": source.confidence,
+                    "extracted_at": computed_at,
+                    "extractor_version": OBJECTION_EXTRACTOR_VERSION,
+                }
             )
-            _upsert_objection_rows(con, rows)
+    coverage_gate_passed = bool(metrics["call_match_coverage"] >= CALL_MATCH_COVERAGE_GATE)
+    replacement = {
+        "recompute_source_events": len(replacement_event_ids),
+        "legacy_preserve_source_events": len(legacy_preserve_event_ids),
+        "recomputed_objections_deleted": 0,
+        "stale_objections_deleted": 0,
+        "historical_call_objections_preserved": 0,
+    }
+    if apply:
+        _ensure_objection_tables(con)
+        replacement = _replace_objection_scope(
+            con,
+            tenant_id=tenant_id,
+            replacement_event_ids=replacement_event_ids,
+            legacy_preserve_source_events=len(legacy_preserve_event_ids),
+        )
+        _upsert_objection_rows(con, rows)
+        con.execute("DELETE FROM customer_objection_summary_v1 WHERE tenant_id = ?", (tenant_id,))
+        _refresh_objection_summary(con, tenant_id=tenant_id, extracted_at=computed_at)
+        _record_objection_run(
+            con,
+            tenant_id=tenant_id,
+            extracted_at=computed_at,
+            metrics=metrics,
+            crm_objections_enabled=coverage_gate_passed,
+        )
+        con.commit()
+    objection_table_exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'customer_objections_v1'"
+    ).fetchone() is not None
+    stored_objections_total = (
+        int(
             con.execute(
-                "DELETE FROM customer_objection_summary_v1 WHERE tenant_id = ?",
+                "SELECT count(*) FROM customer_objections_v1 WHERE tenant_id = ?",
                 (tenant_id,),
-            )
-            _refresh_objection_summary(con, tenant_id=tenant_id, extracted_at=computed_at)
-            _record_objection_run(
-                con,
-                tenant_id=tenant_id,
-                extracted_at=computed_at,
-                metrics=metrics,
-                crm_objections_enabled=coverage_gate_passed,
-            )
-            con.commit()
-        return {
-            "schema_version": OBJECTION_SCHEMA_VERSION,
-            "apply": bool(apply),
-            "candidate_events": len(candidates),
-            **metrics,
-            "coverage_gate_passed": coverage_gate_passed,
-            "objections": len(rows),
-            "objection_type_counts": dict(Counter(row["objection_type"] for row in rows)),
-            "price_sensitivity_counts": dict(Counter(row["price_sensitivity"] for row in rows)),
-            "speaker_counts": dict(Counter(row["speaker"] for row in rows)),
-            "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
-            "extractor_version": OBJECTION_EXTRACTOR_VERSION,
-        }
+            ).fetchone()[0]
+        )
+        if objection_table_exists
+        else 0
+    )
+    return {
+        "schema_version": OBJECTION_SCHEMA_VERSION,
+        "apply": bool(apply),
+        "candidate_events": len(candidates),
+        **metrics,
+        "coverage_gate_passed": coverage_gate_passed,
+        "objections": len(rows),
+        "stored_objections_total": stored_objections_total,
+        **replacement,
+        "objection_type_counts": dict(Counter(row["objection_type"] for row in rows)),
+        "price_sensitivity_counts": dict(Counter(row["price_sensitivity"] for row in rows)),
+        "speaker_counts": dict(Counter(row["speaker"] for row in rows)),
+        "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
+        "extractor_version": OBJECTION_EXTRACTOR_VERSION,
+    }
+
+
+def _legacy_call_event_ids(
+    events: Sequence[sqlite3.Row],
+    *,
+    canonical_calls: Mapping[str, CanonicalCallText],
+    matched_call_event_ids: set[str],
+) -> set[str]:
+    current_source_dbs = {
+        str(Path(call.source_db).expanduser().resolve(strict=False))
+        for call in canonical_calls.values()
+        if call.source_schema == "call_records" and call.source_db
+    }
+    result: set[str] = set()
+    for event in events:
+        event_id = str(event["event_id"])
+        if event_id in matched_call_event_ids:
+            continue
+        if str(event["event_type"]) not in {"mango_call", "call_transcript"}:
+            continue
+        source_id = str(event["source_id"] or "")
+        if not source_id.startswith("provider:"):
+            result.add(event_id)
+            continue
+        if not current_source_dbs:
+            result.add(event_id)
+            continue
+        payload = _safe_json_object(event["record_json"])
+        record = payload.get("record")
+        call_record = record.get("call") if isinstance(record, Mapping) else None
+        event_db_text = str(call_record.get("source_db") or "").strip() if isinstance(call_record, Mapping) else ""
+        if event_db_text:
+            event_db = str(Path(event_db_text).expanduser().resolve(strict=False))
+            if event_db not in current_source_dbs:
+                result.add(event_id)
+    return result
+
+
+def _replace_objection_scope(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    replacement_event_ids: set[str],
+    legacy_preserve_source_events: int,
+) -> dict[str, int]:
+    con.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS temp_objection_recompute_events (event_id TEXT PRIMARY KEY) WITHOUT ROWID"
+    )
+    con.execute("DELETE FROM temp_objection_recompute_events")
+    con.executemany(
+        "INSERT INTO temp_objection_recompute_events (event_id) VALUES (?)",
+        ((event_id,) for event_id in sorted(replacement_event_ids)),
+    )
+    superseded_filter = (
+        "AND e.superseded_by IS NULL" if _has_column(con, "timeline_events", "superseded_by") else ""
+    )
+    stale_cursor = con.execute(
+        f"""
+        DELETE FROM customer_objections_v1 AS o
+        WHERE o.tenant_id = ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM timeline_events AS e
+            WHERE e.event_id = o.source_event_id
+              AND e.tenant_id = o.tenant_id
+              AND e.customer_id = o.customer_id
+              AND (
+                (e.event_type = 'email_message' AND o.source_channel = 'email')
+                OR (e.event_type IN ('mango_call', 'call_transcript') AND o.source_channel = 'call')
+              )
+              {superseded_filter}
+          )
+        """,
+        (tenant_id,),
+    )
+    recompute_cursor = con.execute(
+        """
+        DELETE FROM customer_objections_v1
+        WHERE tenant_id = ?
+          AND source_event_id IN (SELECT event_id FROM temp_objection_recompute_events)
+        """,
+        (tenant_id,),
+    )
+    preserved = int(
+        con.execute(
+            f"""
+            SELECT count(*)
+            FROM customer_objections_v1 AS o
+            JOIN timeline_events AS e ON e.event_id = o.source_event_id
+            WHERE o.tenant_id = ?
+              AND o.source_channel = 'call'
+              AND e.tenant_id = o.tenant_id
+              AND e.customer_id = o.customer_id
+              {superseded_filter}
+              AND NOT EXISTS (
+                SELECT 1 FROM temp_objection_recompute_events AS r WHERE r.event_id = o.source_event_id
+              )
+            """,
+            (tenant_id,),
+        ).fetchone()[0]
+    )
+    con.execute("DROP TABLE temp_objection_recompute_events")
+    return {
+        "recompute_source_events": len(replacement_event_ids),
+        "legacy_preserve_source_events": legacy_preserve_source_events,
+        "recomputed_objections_deleted": max(0, int(recompute_cursor.rowcount)),
+        "stale_objections_deleted": max(0, int(stale_cursor.rowcount)),
+        "historical_call_objections_preserved": preserved,
+    }
 
 
 def _ensure_objection_tables(con: sqlite3.Connection) -> None:
@@ -388,7 +578,7 @@ def _ensure_objection_tables(con: sqlite3.Connection) -> None:
 
 def _load_objection_candidate_events(con: sqlite3.Connection, *, tenant_id: str) -> list[sqlite3.Row]:
     superseded_filter = "AND superseded_by IS NULL" if _has_column(con, "timeline_events", "superseded_by") else ""
-    return list(
+    rows = list(
         con.execute(
             f"""
             SELECT tenant_id, customer_id, event_id, event_type, source_system, event_at,
@@ -399,11 +589,18 @@ def _load_objection_candidate_events(con: sqlite3.Connection, *, tenant_id: str)
               AND customer_id IS NOT NULL
               AND event_type IN ('email_message', 'mango_call', 'call_transcript')
               {superseded_filter}
-            ORDER BY event_at ASC, event_id ASC
             """,
             (tenant_id,),
         )
     )
+    rows.sort(
+        key=lambda row: (
+            row["event_at"] is not None,
+            str(row["event_at"] or ""),
+            str(row["event_id"] or ""),
+        )
+    )
+    return rows
 
 
 def _event_text(row: sqlite3.Row) -> str:
@@ -435,9 +632,20 @@ def _objection_source_texts(
     events: Sequence[sqlite3.Row],
     *,
     canonical_calls: Mapping[str, CanonicalCallText],
-) -> tuple[list[ObjectionSourceText], dict[str, Any]]:
+) -> tuple[list[ObjectionSourceText], dict[str, Any], set[str]]:
     sources: list[ObjectionSourceText] = []
-    metrics: Counter[str] = Counter()
+    calls_by_lineage = _call_records_by_lineage(canonical_calls)
+    metrics: Counter[str] = Counter(
+        {
+            "call_events_total": 0,
+            "call_events_matched": 0,
+            "call_events_unmatched": 0,
+            "call_events_lineage_gap": 0,
+            "call_events_with_client_transcript": 0,
+            "call_events_without_client_transcript": 0,
+        }
+    )
+    matched_call_event_ids: set[str] = set()
     for event in events:
         event_type = str(event["event_type"])
         direction = str(event["direction"] or "unknown").lower()
@@ -462,11 +670,23 @@ def _objection_source_texts(
             continue
         if event_type in {"mango_call", "call_transcript"}:
             metrics["call_events_total"] += 1
-            canonical = canonical_calls.get(str(event["source_id"]))
+            direct = canonical_calls.get(str(event["source_id"]))
+            by_lineage = calls_by_lineage.get(_event_call_lineage_key(event))
+            candidates = []
+            for candidate in (direct, by_lineage):
+                if candidate is not None and candidate not in candidates:
+                    candidates.append(candidate)
+            canonical = next(
+                (candidate for candidate in candidates if _call_lineage_matches(event, candidate)),
+                None,
+            )
             if canonical is None:
                 metrics["call_events_unmatched"] += 1
+                if candidates:
+                    metrics["call_events_lineage_gap"] += 1
                 continue
             metrics["call_events_matched"] += 1
+            matched_call_event_ids.add(str(event["event_id"]))
             if not canonical.transcript_client.strip():
                 metrics["call_events_without_client_transcript"] += 1
                 continue
@@ -486,31 +706,257 @@ def _objection_source_texts(
     result = {key: int(value) for key, value in metrics.items()}
     result["call_match_coverage"] = round(call_matched / call_total, 6) if call_total else 1.0
     result["source_texts"] = len(sources)
-    return sources, result
+    return sources, result, matched_call_event_ids
+
+
+CallLineageKey = tuple[str, str, str, str, str]
+
+
+def _call_records_by_lineage(
+    canonical_calls: Mapping[str, CanonicalCallText],
+) -> dict[CallLineageKey, CanonicalCallText]:
+    result: dict[CallLineageKey, CanonicalCallText] = {}
+    ambiguous: set[CallLineageKey] = set()
+    for call in canonical_calls.values():
+        key = _canonical_call_lineage_key(call)
+        if key is None or key in ambiguous:
+            continue
+        previous = result.get(key)
+        if previous is not None and previous != call:
+            result.pop(key, None)
+            ambiguous.add(key)
+            continue
+        result[key] = call
+    return result
+
+
+def _canonical_call_lineage_key(call: CanonicalCallText) -> CallLineageKey | None:
+    if call.source_schema != "call_records":
+        return None
+    source_at = parse_call_started_at(call.started_at)
+    if not all(
+        (
+            call.source_db,
+            call.source_row_id,
+            call.original_call_id,
+            call.source_filename,
+            source_at,
+        )
+    ):
+        return None
+    return (
+        str(Path(str(call.source_db)).expanduser().resolve(strict=False)),
+        str(call.source_row_id),
+        str(call.original_call_id),
+        str(call.source_filename),
+        source_at.isoformat(),
+    )
+
+
+def _event_call_lineage_key(event: sqlite3.Row) -> CallLineageKey | None:
+    payload = _safe_json_object(event["record_json"])
+    record = payload.get("record")
+    call_record = record.get("call") if isinstance(record, Mapping) else None
+    if not isinstance(call_record, Mapping):
+        return None
+    source_db = str(call_record.get("source_db") or "").strip()
+    source_row_id = str(call_record.get("source_row_id") or "").strip()
+    original_call_id = str(call_record.get("original_call_id") or "").strip()
+    source_filename = str(call_record.get("source_filename") or "").strip()
+    source_at = parse_call_started_at(str(call_record.get("call_at") or ""))
+    if not all((source_db, source_row_id, original_call_id, source_filename, source_at)):
+        return None
+    return (
+        str(Path(source_db).expanduser().resolve(strict=False)),
+        source_row_id,
+        original_call_id,
+        source_filename,
+        source_at.isoformat(),
+    )
+
+
+def _call_lineage_matches(event: sqlite3.Row, call: CanonicalCallText) -> bool:
+    if call.source_schema == "canonical_calls":
+        return True
+    call_key = _canonical_call_lineage_key(call)
+    event_key = _event_call_lineage_key(event)
+    if call_key is None or event_key is None or call_key != event_key:
+        return False
+    payload = _safe_json_object(event["record_json"])
+    record = payload.get("record")
+    call_record = record.get("call") if isinstance(record, Mapping) else None
+    if not isinstance(call_record, Mapping):
+        return False
+    event_source_id = str(event["source_id"] or "").strip()
+    base_id = call_source_base_id(
+        source_kind="call_records",
+        row_id=str(call.source_row_id),
+        source_call_id=str(call.original_call_id),
+    )
+    suffixed_id = stable_call_source_id(
+        source_kind="call_records",
+        row_id=str(call.source_row_id),
+        source_call_id=str(call.original_call_id),
+        source_filename=call.source_filename,
+        started_at=str(call.started_at),
+        duplicate_base_ids={base_id},
+    )
+    if event_source_id not in {base_id, suffixed_id}:
+        return False
+    if str(call_record.get("call_id") or "").strip() != event_source_id:
+        return False
+    if str(call_record.get("provider_call_id") or "").strip() != event_source_id:
+        return False
+    return True
+
+
+def load_call_texts(path: Path | str | None) -> LoadedCallTexts:
+    if path is None:
+        return LoadedCallTexts(
+            texts={},
+            report={
+                "source_schema": "none",
+                "rows_eligible": 0,
+                "rows_loaded": 0,
+                "rows_using_row_id_fallback": 0,
+                "duplicate_source_ids": 0,
+                "lookup_aliases": 0,
+            },
+        )
+    db = Path(path).expanduser().resolve(strict=False)
+    identity_columns = (
+        "canonical_call_id",
+        "id",
+        "source_call_id",
+        "source_filename",
+        "started_at",
+        "call_at",
+        "event_at",
+    )
+    snapshot = read_call_source_snapshot(
+        db,
+        include_all_rows=True,
+        ready_columns=(*identity_columns, "transcript_client", "direction"),
+        all_columns=identity_columns,
+        require_analysis=None,
+        require_datetime=None,
+    )
+    source_schema = snapshot.table
+    columns = snapshot.columns
+    required = {"transcript_client", "direction"}
+    if source_schema == "canonical_calls":
+        required.add("canonical_call_id")
+    else:
+        required.add("id")
+        if not ({"started_at", "call_at", "event_at"} & columns):
+            raise ValueError("call_records misses a supported call datetime column")
+    missing = sorted(required - columns)
+    if missing:
+        raise ValueError(f"{source_schema} misses required columns: {missing}")
+    rows = snapshot.ready_rows
+    all_identity_rows = snapshot.all_rows
+    result: dict[str, CanonicalCallText] = {}
+    rows_using_row_id_fallback = 0
+    duplicate_base_ids: set[str] = set()
+    if source_schema == "call_records":
+        counts = Counter(
+            call_source_base_id(
+                source_kind="call_records",
+                row_id=_mapping_text(row, "id"),
+                source_call_id=_mapping_text(row, "source_call_id") or None,
+            )
+            for row in all_identity_rows
+            if _mapping_text(row, "id")
+            and _mapping_text(row, "started_at", "call_at", "event_at")
+        )
+        duplicate_base_ids = {
+            source_id for source_id, count in counts.items() if count > 1
+        }
+    lookup_aliases = 0
+    for row in rows:
+        if source_schema == "canonical_calls":
+            row_id = _mapping_text(row, "canonical_call_id")
+            source_id = call_source_base_id(
+                source_kind=source_schema,
+                row_id=row_id,
+                source_call_id=None,
+            )
+            provider_source_id = ""
+            source_filename = None
+            started_at = _mapping_text(row, "started_at", "call_at", "event_at")
+        else:
+            row_id = _mapping_text(row, "id")
+            provider_source_id = _mapping_text(row, "source_call_id")
+            if not provider_source_id:
+                rows_using_row_id_fallback += 1
+            source_filename = _mapping_text(row, "source_filename") or None
+            started_at = _mapping_text(row, "started_at", "call_at", "event_at")
+            source_id = stable_call_source_id(
+                source_kind="call_records",
+                row_id=row_id,
+                source_call_id=provider_source_id or None,
+                source_filename=source_filename,
+                started_at=started_at,
+                duplicate_base_ids=duplicate_base_ids,
+            )
+        if not source_id:
+            raise ValueError(f"{source_schema} contains an empty exact call id")
+        call_text = CanonicalCallText(
+            transcript_client=str(row["transcript_client"] or ""),
+            direction=str(row["direction"] or "unknown").lower(),
+            source_schema=source_schema,
+            source_db=str(db) if source_schema == "call_records" else None,
+            source_row_id=row_id if source_schema == "call_records" else None,
+            original_call_id=(provider_source_id or row_id) if source_schema == "call_records" else None,
+            source_filename=source_filename if source_schema == "call_records" else None,
+            started_at=started_at if source_schema == "call_records" else None,
+        )
+        lookup_ids = [source_id]
+        if source_schema == "call_records":
+            base_id = call_source_base_id(
+                source_kind=source_schema,
+                row_id=row_id,
+                source_call_id=provider_source_id or None,
+            )
+            if base_id not in duplicate_base_ids:
+                forced_suffix_id = stable_call_source_id(
+                    source_kind=source_schema,
+                    row_id=row_id,
+                    source_call_id=provider_source_id or None,
+                    source_filename=source_filename,
+                    started_at=started_at,
+                    duplicate_base_ids={base_id},
+                )
+                if forced_suffix_id != source_id:
+                    lookup_ids.append(forced_suffix_id)
+                    lookup_aliases += 1
+        for lookup_id in lookup_ids:
+            if lookup_id in result:
+                raise ValueError(f"{source_schema} contains duplicate exact call ids")
+            result[lookup_id] = call_text
+    return LoadedCallTexts(
+        texts=result,
+        report={
+            "source_schema": source_schema,
+            "rows_eligible": len(rows),
+            "rows_loaded": len(rows),
+            "lookup_aliases": lookup_aliases,
+            "rows_using_row_id_fallback": rows_using_row_id_fallback,
+            "duplicate_source_ids": len(duplicate_base_ids),
+        },
+    )
+
+
+def _mapping_text(row: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _load_canonical_call_texts(path: Path | str | None) -> Mapping[str, CanonicalCallText]:
-    if path is None:
-        return {}
-    db = Path(path).expanduser().resolve(strict=False)
-    if not db.exists() or not db.is_file():
-        raise FileNotFoundError(f"canonical calls DB does not exist: {db}")
-    uri = f"{db.as_uri()}?mode=ro&immutable=1"
-    with sqlite3.connect(uri, uri=True) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            """
-            SELECT canonical_call_id, transcript_client, direction
-            FROM canonical_calls
-            """
-        ).fetchall()
-    result: dict[str, CanonicalCallText] = {}
-    for row in rows:
-        result[str(row["canonical_call_id"])] = CanonicalCallText(
-            transcript_client=str(row["transcript_client"] or ""),
-            direction=str(row["direction"] or "unknown").lower(),
-        )
-    return result
+    return load_call_texts(path).texts
 
 
 def _strip_quoted_email_tail(text: str) -> str:

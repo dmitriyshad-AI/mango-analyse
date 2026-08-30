@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import plistlib
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 import pytest
 
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.mail_archive import MAIL_ARCHIVE_SCHEMA_VERSION
 from scripts import run_customer_timeline_mail_download as download
 from scripts import run_customer_timeline_mail_process as process
@@ -33,6 +35,14 @@ class FakeDiscoveryImap:
 
     def logout(self) -> tuple[str, Sequence[bytes]]:
         return "BYE", []
+
+
+def test_mail_pipeline_defaults_share_single_state_tree() -> None:
+    expected = download.ROOT / ".codex_local/staging/state/mail_pipeline"
+
+    assert Path(download.parse_args([]).state_dir) == expected
+    assert Path(process.parse_args(["--data-root", "/tmp/mail-data"]).state_dir) == expected
+    assert Path(mail_import.parse_args([]).state_dir) == expected
 
 
 def test_mail_download_discovers_exact_required_mailboxes(
@@ -134,7 +144,7 @@ def test_mail_download_updates_cursor_only_after_both_mailboxes_succeed(
         ),
     )
 
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     report = download.execute(
         download.parse_args(
             [
@@ -238,28 +248,8 @@ def _write_archive(path: Path, *, sha: str, event_at: str | None) -> None:
 
 def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as con:
-        con.executescript(
-            """
-            CREATE TABLE ingestion_cursors (
-              tenant_id TEXT,
-              source_system TEXT,
-              last_cursor_ts TEXT,
-              updated_at TEXT,
-              metadata_json TEXT,
-              PRIMARY KEY (tenant_id, source_system)
-            );
-            CREATE TABLE timeline_events (
-              tenant_id TEXT,
-              source_id TEXT,
-              customer_id TEXT,
-              match_status TEXT,
-              confidence REAL,
-              record_json TEXT,
-              source_system TEXT
-            );
-            """
-        )
+    with CustomerTimelineSQLiteStore(path, allowed_root=path.parent) as store:
+        con = store._con
         con.execute(
             "INSERT INTO ingestion_cursors VALUES (?, ?, ?, ?, ?)",
             (
@@ -276,11 +266,51 @@ def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
                 ),
             ),
         )
+        con.commit()
+
+
+def _insert_mail_timeline_event(
+    path: Path,
+    *,
+    source_id: str,
+    customer_id: str | None,
+    match_status: str,
+    confidence: float,
+    record_json: str,
+) -> None:
+    event_id = f"fixture:{source_id}"
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """
+            INSERT INTO timeline_events(
+              event_id, dedupe_key, tenant_id, customer_id, event_type, event_at,
+              source_system, source_id, direction, match_status, confidence,
+              importance, created_at, record_hash, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                event_id,
+                "foton",
+                customer_id,
+                "email_message",
+                "2026-07-12T10:02:00+00:00",
+                "mail_archive_stage2",
+                source_id,
+                "inbound",
+                match_status,
+                confidence,
+                1,
+                "2026-07-12T10:02:00+00:00",
+                source_id,
+                record_json,
+            ),
+        )
 
 
 def test_mail_process_reuses_builder_and_timeline_cursor(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
     incoming = data_root / download.CANONICAL_RELATIVE_ROOT / "incoming/regru_edu/inbox/mail_archive.sqlite"
     _write_archive(canonical, sha="a" * 64, event_at="2026-07-12T10:02:00+00:00")
@@ -327,17 +357,20 @@ def test_mail_process_reuses_builder_and_timeline_cursor(tmp_path: Path) -> None
 
 def test_mail_process_overlap_preserves_existing_strong_link_without_enrich_metadata(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     sha = "c" * 64
     canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
     _write_archive(canonical, sha=sha, event_at="2026-07-12T10:02:00+00:00")
     timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
     _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
-    with sqlite3.connect(timeline) as con:
-        con.execute(
-            "INSERT INTO timeline_events VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("foton", sha, "customer:existing", "strong_unique", 0.97, json.dumps({"metadata": {}}), "mail_archive_stage2"),
-        )
+    _insert_mail_timeline_event(
+        timeline,
+        source_id=sha,
+        customer_id="customer:existing",
+        match_status="strong_unique",
+        confidence=0.97,
+        record_json=json.dumps({"metadata": {}}),
+    )
     state.mkdir(parents=True)
     download.atomic_write_json(
         state / "mail_download_manifest.json",
@@ -372,7 +405,7 @@ def test_mail_process_overlap_preserves_existing_strong_link_without_enrich_meta
 
 def test_mail_process_missing_only_selects_absent_sha_with_fallback_date(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
     _write_archive(canonical, sha="a" * 64, event_at="2026-07-01T10:00:00+00:00")
     with sqlite3.connect(canonical) as con:
@@ -382,11 +415,14 @@ def test_mail_process_missing_only_selects_absent_sha_with_fallback_date(tmp_pat
         )
     timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
     _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
-    with sqlite3.connect(timeline) as con:
-        con.execute(
-            "INSERT INTO timeline_events VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("foton", "a" * 64, None, "unmatched", 0.0, "{}", "mail_archive_stage2"),
-        )
+    _insert_mail_timeline_event(
+        timeline,
+        source_id="a" * 64,
+        customer_id=None,
+        match_status="unmatched",
+        confidence=0.0,
+        record_json="{}",
+    )
     state.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)
     download.atomic_write_json(
@@ -447,7 +483,12 @@ def test_mail_import_reads_cursor_from_wal_mode_backup_without_sidecars(tmp_path
 
 
 def test_mail_process_rejects_prod_or_non_staging_timeline_paths(tmp_path: Path) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    staging = tmp_path / ".codex_local/staging"
+    state = staging / "state/mail_pipeline"
+    assert process.staging_root_for(
+        state_dir=state,
+        timeline_db=staging / "customer_timeline_staging.sqlite",
+    ) == staging.resolve()
     with pytest.raises(RuntimeError, match="timeline_db_outside_codex_staging"):
         process.staging_root_for(
             state_dir=state,
@@ -457,6 +498,11 @@ def test_mail_process_rejects_prod_or_non_staging_timeline_paths(tmp_path: Path)
         process.staging_root_for(
             state_dir=tmp_path / "shared/mail_pipeline",
             timeline_db=tmp_path / "shared/timeline.sqlite",
+        )
+    with pytest.raises(RuntimeError, match="mail_state_dir_not_under_codex_staging"):
+        process.staging_root_for(
+            state_dir=staging / "mail_pipeline",
+            timeline_db=staging / "customer_timeline_staging.sqlite",
         )
 
 
@@ -482,7 +528,7 @@ def test_mail_process_rejects_failed_download_manifest(tmp_path: Path) -> None:
 
 
 def test_mail_import_rejects_non_mail_config(tmp_path: Path) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = {"head": "abc", "worktree": "tree"}
@@ -516,7 +562,7 @@ def test_mail_import_rejects_non_mail_config(tmp_path: Path) -> None:
 def test_mail_import_is_fail_loud_when_incremental_gate_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)
@@ -584,10 +630,56 @@ def test_mail_import_is_fail_loud_when_incremental_gate_fails(
     assert report["cursor_before"] == report["cursor_after"]
 
 
+def test_mail_import_run_incremental_preserves_completed_process_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed_config = object()
+    monkeypatch.setattr(mail_import, "config_from_json", lambda _path: parsed_config)
+    monkeypatch.setattr(
+        mail_import,
+        "run_nightly_incremental",
+        lambda config: {
+            "schema_version": "fixture",
+            "overall_status": "ok",
+            "gate_passed": True,
+            "failed_required_sources": [],
+            "sources": [],
+            "imports": [],
+        }
+        if config is parsed_config
+        else pytest.fail("parsed config was not reused"),
+    )
+
+    completed = mail_import.run_incremental(download.ROOT, tmp_path / "config.json")
+
+    assert completed.returncode == 0
+    assert completed.args[0] == "in-process-nightly-incremental"
+    assert json.loads(completed.stdout)["gate_passed"] is True
+    assert completed.stderr == ""
+
+
+def test_mail_import_run_incremental_converts_exception_to_failed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mail_import,
+        "config_from_json",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("fixture failure")),
+    )
+
+    completed = mail_import.run_incremental(download.ROOT, tmp_path / "config.json")
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr == "RuntimeError"
+
+
 def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)
@@ -634,10 +726,20 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
         )
 
     monkeypatch.setattr(mail_import, "run_incremental", lambda *_args, **_kwargs: Result())
-    monkeypatch.setattr(
-        mail_import,
-        "enrich_mail_links",
-        lambda **_kwargs: {
+    competing_errors: list[BaseException] = []
+
+    def enrich_under_shared_lock(**_kwargs: object) -> dict[str, object]:
+        def competing_writer() -> None:
+            try:
+                with mail_import.single_run_lock(timeline, timeout_seconds=0.01):
+                    pass
+            except BaseException as exc:  # noqa: BLE001 - assertion captures thread failure.
+                competing_errors.append(exc)
+
+        thread = threading.Thread(target=competing_writer)
+        thread.start()
+        thread.join(timeout=1)
+        return {
             "target_events": 1,
             "counts": {"planned.strong": 1},
             "apply": {"counts": {"updated_events": 1, "created_chunks": 1}},
@@ -645,8 +747,9 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
                 "allowed_for_bot_changed": False,
                 "mail_stage2_allowed_for_bot_changed": False,
             },
-        },
-    )
+        }
+
+    monkeypatch.setattr(mail_import, "enrich_mail_links", enrich_under_shared_lock)
 
     report = mail_import.execute(
         mail_import.parse_args(
@@ -655,6 +758,10 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
     )
 
     assert report["status"] == "ok"
+    assert report["run_lock"]["reentrant"] is False
+    assert report["run_lock"]["path"].endswith(".nightly_service.lock")
+    assert len(competing_errors) == 1
+    assert isinstance(competing_errors[0], TimeoutError)
     assert report["mail_link_enrich"] == {
         "status": "ok",
         "error": None,
@@ -669,7 +776,7 @@ def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
 def test_mail_import_execute_restores_full_cursor_after_enrich_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    state = tmp_path / ".codex_local/staging/state/mail_pipeline"
     process_dir = state / "process"
     process_dir.mkdir(parents=True)
     runtime = download.runtime_identity(download.ROOT)

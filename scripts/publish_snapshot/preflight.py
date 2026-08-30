@@ -159,6 +159,14 @@ def nightly_manifest_report(cfg: PublishConfig) -> dict[str, Any]:
         if isinstance(failed_required_steps, Sequence) and not isinstance(failed_required_steps, (str, bytes))
         else failed_required_steps
     )
+
+    def lineage_value(key: str, default: Any) -> Any:
+        if key in manifest:
+            return manifest.get(key)
+        if key in snapshot_manifest:
+            return snapshot_manifest.get(key)
+        return default
+
     report.update(
         {
             "service_report_path": service_report_path,
@@ -167,6 +175,22 @@ def nightly_manifest_report(cfg: PublishConfig) -> dict[str, Any]:
             "failed_required_steps": failed_required_steps,
             "partial_failure": service_report.get("partial_failure"),
             "overall_status": service_report.get("overall_status"),
+            # The service report intentionally keeps only a compact pointer to the
+            # published snapshot. Lineage belongs to the full manifest already
+            # loaded above; reading it from the pointer silently erased all 14
+            # cursors and the identity/mail evidence in compact manifests.
+            "source_counts": list(lineage_value("source_counts", ()) or ()),
+            "ingestion_cursors": list(lineage_value("ingestion_cursors", ()) or ()),
+            "mail_link_enrich": dict(lineage_value("mail_link_enrich", {}) or {}),
+            "identity_integrity": dict(lineage_value("identity_integrity", {}) or {}),
+            "required_sources_check": dict(
+                lineage_value(
+                    "required_sources_check",
+                    service_report.get("required_sources_check") or {},
+                )
+                or {}
+            ),
+            "source_degradation": dict(lineage_value("source_degradation", {}) or {}),
         }
     )
     if service_report:

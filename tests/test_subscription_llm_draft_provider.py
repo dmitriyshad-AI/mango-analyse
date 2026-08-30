@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -2338,7 +2339,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
                         "internal_only": False,
-                        "freshness_check_date": "2026-08-13",
+                        "freshness_check_date": date.today().isoformat(),
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, семестр — 34 200 руб.",
@@ -2349,7 +2350,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
                         "internal_only": False,
-                        "freshness_check_date": "2026-08-13",
+                        "freshness_check_date": date.today().isoformat(),
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, год — 57 000 руб.",
@@ -2358,7 +2359,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "fact_key": "owner_2026_08_13.foton.regular.online.5_11.semester",
                         "brand": "unpk",
                         "allowed_for_client_answer": True,
-                        "freshness_check_date": "2026-08-13",
+                        "freshness_check_date": date.today().isoformat(),
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "УНПК: регулярные курсы онлайн, 5-11 классы, семестр — 41 800 руб.",
@@ -3549,6 +3550,7 @@ def _wide_pack_context(
 ) -> dict[str, object]:
     return {
         "active_brand": brand,
+        "evaluation_date": "2026-08-13",
         "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
         "conversation_intent_plan": {
             "primary_intent": primary_intent,
@@ -3698,7 +3700,7 @@ def _write_wave6_snapshot(tmp_path: Path) -> Path:
     }
     for fact in snapshot["facts"]:
         fact.update(
-            freshness_check_date="2026-08-13",
+            freshness_check_date=date.today().isoformat(),
             valid_from="2026-08-13",
             valid_until="2027-05-31",
         )
@@ -4126,6 +4128,7 @@ def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_
     unpk_message = "9 класс, математика ОГЭ онлайн по будням. Сколько стоит регулярный курс на год?"
     unpk_context = {
         "active_brand": "unpk",
+        "evaluation_date": "2026-08-13",
         "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
         DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
         LLM_RETRIEVE_ENV: "1",
@@ -4309,7 +4312,7 @@ def test_tz110_llm_retrieve_logs_scope_demoted_ids_for_wrong_scope_exact_selecti
         ]
     }
     for fact in snapshot["facts"]:
-        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
+        fact.update(freshness_check_date=date.today().isoformat(), valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "scope_snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
 
@@ -4368,7 +4371,7 @@ def test_tz119_unconfirmed_context_grade_is_soft_scope_not_hard_demotion(tmp_pat
         ]
     }
     for fact in snapshot["facts"]:
-        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
+        fact.update(freshness_check_date=date.today().isoformat(), valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "assumed_scope_snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     prompt_seen = ""
@@ -4429,7 +4432,7 @@ def test_tz119_confirmed_grade_still_scope_demotes_wrong_fact(tmp_path: Path) ->
         ]
     }
     for fact in snapshot["facts"]:
-        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
+        fact.update(freshness_check_date=date.today().isoformat(), valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "confirmed_scope_snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     context = {
@@ -4586,7 +4589,7 @@ def test_wave6_llm_retrieve_supplements_price_and_schedule_for_known_course(tmp_
         ]
     }
     for fact in snapshot["facts"]:
-        fact.update(freshness_check_date="2026-08-13", valid_from="2026-08-13", valid_until="2027-05-31")
+        fact.update(freshness_check_date=date.today().isoformat(), valid_from="2026-08-13", valid_until="2027-05-31")
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     context = {
@@ -7405,7 +7408,7 @@ def test_direct_path_legacy_context_filters_unsafe_upstream_facts() -> None:
                     "allowed_for_client_answer": True,
                     "forbidden_for_client": False,
                     "internal_only": False,
-                    "freshness_check_date": "2026-08-13",
+                    "freshness_check_date": date.today().isoformat(),
                     "valid_from": "2026-08-13",
                     "valid_until": "2027-08-31",
                     "client_safe_text": "Фотон: безопасный факт для клиента.",

@@ -38,7 +38,6 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     confirm_wappi_widget_candidates_from_amo_talks,
     enrich_wappi_widget_links_from_timeline_amo_events,
     git_worktree_provenance,
-    hydrate_wappi_widget_contacts,
     is_personal_wappi_dialog,
     load_existing_wappi_event_customers,
     load_existing_wappi_source_ids,
@@ -60,7 +59,6 @@ from mango_mvp.integrations.amo_wappi_auto_resolver import AmoAutoResolver
 from mango_mvp.integrations.amo_wappi_phase1 import WappiClientConfig, WappiPhase1Client
 from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy
 from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopPair, WappiHistoryMessage
-
 
 def test_git_worktree_provenance_ignores_parent_git_context(monkeypatch, tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
@@ -125,20 +123,6 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
         },
         {("telegram", "123456"): {"contact": {"id": 2002}, "leads": [{"id": 1001}]}},
     )
-    hydrate_calls: list[Mapping[str, Any]] = []
-
-    def fake_hydrate(**kwargs: Any) -> Mapping[str, Any]:
-        hydrate_calls.append(kwargs)
-        if len(hydrate_calls) == 1:
-            with sqlite3.connect(kwargs["timeline_db"]) as con:
-                con.execute("CREATE TABLE internal_hydrate_marker (id INTEGER PRIMARY KEY)")
-        return {"requested": 1 if len(hydrate_calls) == 1 else 0, "fetched": 1, "fetch_errors": 0}
-
-    monkeypatch.setattr(
-        "mango_mvp.customer_timeline.wappi_history_import.hydrate_wappi_widget_contacts",
-        fake_hydrate,
-    )
-
     config = WappiHistoryImportConfig(
         timeline_db=db_path,
         allowed_root=tmp_path,
@@ -160,10 +144,16 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
     assert first["validation_ok"] is True
     assert first["summary"]["linked_by_amo_widget"] == 2
     assert first["summary"]["pending_attribution"] == 0
-    assert first["summary"]["amo_widget_contact_hydrate"]["requested"] == 1
-    assert second["summary"]["amo_widget_contact_hydrate"]["requested"] == 0
+    assert first["summary"]["amo_widget_contact_hydrate"] == {
+        "status": "not_owned_by_wappi",
+        "owner": "amo_incremental_shadow",
+        "requested": 0,
+        "fetched": 0,
+        "errors": 0,
+        "applied": False,
+    }
+    assert second["summary"]["amo_widget_contact_hydrate"]["applied"] is False
     assert reused["summary"]["amo_widget_link_map"]["reused"] is True
-    assert len(hydrate_calls) == 3
     assert first["profiles"]["p-tg"]["widget_resolved_chats"] == 1
     assert first["profiles"]["p-tg"]["brand"] == "foton"
     assert first["profiles"]["p-tg"]["source_system"] == "wappi_telegram"
@@ -173,8 +163,8 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
     assert second["writes"]["status_counts"].get("updated", 0) == 0
     assert reused["writes"]["status_counts"].get("updated", 0) == 0
     assert first["writes"]["import_groups_single_transaction"] is True
-    assert first["writes"]["post_import_cleanup_same_transaction"] is False
-    assert first["writes"]["all_db_mutations_single_transaction"] is False
+    assert first["writes"]["post_import_cleanup_same_transaction"] is True
+    assert first["writes"]["all_db_mutations_single_transaction"] is True
 
     event = fetch_one_json(db_path, "timeline_events")
     chunk = fetch_one_json(db_path, "bot_context_chunks")
@@ -251,6 +241,7 @@ def test_close_resolved_wappi_conflicts_scans_once_and_leaves_neighbor_open(tmp_
             payload = {
                 **base,
                 "conflict_id": f"conflict:{message_id}",
+                "status": "active" if message_id == "message-1" else "open",
                 "metadata": {
                     "source_system": "wappi_telegram",
                     "profile_id": "p-tg",
@@ -293,12 +284,21 @@ def test_close_resolved_wappi_conflicts_scans_once_and_leaves_neighbor_open(tmp_
         ),
     )
 
-    report = close_resolved_wappi_pending_conflicts(db_path, tenant_id="foton", records=(record,))
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        report = close_resolved_wappi_pending_conflicts(
+            store,
+            tenant_id="foton",
+            records=(record,),
+        )
 
     assert report == {"resolved_pending_conflicts_closed": 1}
     with sqlite3.connect(db_path) as con:
         statuses = dict(con.execute("SELECT conflict_id, status FROM timeline_conflicts"))
+        audit_count = con.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='wappi_pending_conflict_resolved'"
+        ).fetchone()[0]
     assert statuses == {"conflict:message-1": "resolved", "conflict:message-2": "open"}
+    assert audit_count == 1
 
 
 def test_wappi_timeline_identity_preserves_evidence_and_is_not_manual() -> None:
@@ -430,6 +430,7 @@ def test_wappi_require_nonempty_profile_blocks_all_apply(
             pairs_file=None,
             auto_pairs_file=None,
             apply=True,
+            widget_link_db=tmp_path / "wappi_amo_links.sqlite",
             require_nonempty_profiles=True,
             limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
         ),
@@ -555,7 +556,6 @@ def test_wappi_history_apply_rolls_back_both_channels_on_second_source_error(
         return original_upsert_event(self, event, *args, **kwargs)
 
     monkeypatch.setattr(CustomerTimelineSQLiteStore, "upsert_event", fail_on_max)
-
     with pytest.raises(RuntimeError, match="synthetic max write failure"):
         run_wappi_history_import(
             WappiHistoryImportConfig(
@@ -565,6 +565,7 @@ def test_wappi_history_apply_rolls_back_both_channels_on_second_source_error(
                 pairs_file=None,
                 auto_pairs_file=None,
                 apply=True,
+                widget_link_db=tmp_path / "wappi_amo_links.sqlite",
                 limits=WappiFetchLimits(
                     chat_limit_per_profile=5,
                     messages_per_chat=5,
@@ -614,12 +615,13 @@ def test_wappi_apply_keeps_unknown_widget_contact_pending_without_blocking_other
             pairs_file=None,
             auto_pairs_file=None,
             apply=True,
+            widget_link_db=tmp_path / "wappi_amo_links.sqlite",
             limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
         ),
         client=client,
     )
 
-    assert report["validation_ok"] is True
+    assert report["validation_ok"] is True, report
     assert report["publish_ready"] is True
     assert report["source_accounting_complete"] is True
     assert report["mode"] == "apply"
@@ -629,11 +631,18 @@ def test_wappi_apply_keeps_unknown_widget_contact_pending_without_blocking_other
     assert report["summary"]["messages_present_in_timeline"] == 1
     assert report["summary"]["pending_attribution"] == 1
     assert report["summary"]["records_quarantined"] == 1
-    assert report["summary"]["amo_widget_missing_personal_chats"] == 1
+    assert report["summary"]["amo_widget_contact_hydrate"]["owner"] == "amo_incremental_shadow"
+    assert report["summary"]["amo_widget_contact_hydrate"]["applied"] is False
     assert report["limit_hits"] == []
     with sqlite3.connect(db_path) as con:
         assert con.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM timeline_events WHERE customer_id IS NULL").fetchone()[0] == 1
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE source_system='amocrm_snapshot'"
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM identity_links WHERE source_system='amocrm_snapshot'"
+        ).fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM timeline_conflicts").fetchone()[0] == 1
 
@@ -667,11 +676,11 @@ def test_wappi_apply_does_not_turn_optional_widget_gate_on_implicitly(
         ),
         client=FakeWappiClient(
             {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
-            {
-                ("telegram", "p-tg", "123456"): [
-                    {"id": "m-1", "body": "Цена?", "time": 1_753_000_000}
-                ]
-            },
+                {
+                    ("telegram", "p-tg", "123456"): [
+                        {"id": "m-1", "chat_id": "123456", "body": "Цена?", "time": 1_753_000_000}
+                    ]
+                },
         ),
     )
 
@@ -1983,7 +1992,9 @@ def test_wappi_history_limit_hit_fails_closed(tmp_path: Path) -> None:
     assert "p-tg:chat_limit_hit" in report["limit_hits"]
 
 
-def test_wappi_history_unions_reordered_chat_snapshots(tmp_path: Path) -> None:
+def test_wappi_history_blocks_reordered_chat_snapshots_before_message_reads(
+    tmp_path: Path,
+) -> None:
     class DriftingWappiClient(FakeWappiClient):
         def __init__(self, chats, messages):
             super().__init__(chats, messages)
@@ -2025,11 +2036,11 @@ def test_wappi_history_unions_reordered_chat_snapshots(tmp_path: Path) -> None:
         client=client,
     )
 
-    assert report["profiles"]["p-tg"]["pagination_drift_detected"] is False
+    assert report["profiles"]["p-tg"]["pagination_drift_detected"] is True
     assert report["profiles"]["p-tg"]["chat_snapshot_drift_detected"] is True
-    assert any(call.get("kind") == "messages" for call in client.calls)
-    assert "p-tg:pagination_drift_detected" not in report["limit_hits"]
-    assert report["validation_ok"] is True
+    assert not any(call.get("kind") == "messages" for call in client.calls)
+    assert "p-tg:pagination_drift_detected" in report["limit_hits"]
+    assert report["validation_ok"] is False
 
 
 def test_wappi_history_detects_message_pagination_drift(tmp_path: Path) -> None:
@@ -2127,17 +2138,11 @@ def test_wappi_history_stable_multi_page_has_no_pagination_drift(tmp_path: Path)
     assert kinds.index("messages") > max(index for index, kind in enumerate(kinds) if kind == "chats")
 
 
-def test_wappi_history_allows_append_only_growth_during_verification(tmp_path: Path) -> None:
+def test_wappi_history_allows_message_append_only_growth_during_verification(
+    tmp_path: Path,
+) -> None:
     class GrowingWappiClient(FakeWappiClient):
-        chat_second_page_calls = 0
         message_first_page_calls = 0
-
-        def list_chats(self, **kwargs):
-            if kwargs.get("offset") == 1:
-                self.chat_second_page_calls += 1
-                if self.chat_second_page_calls == 2:
-                    self.chats[kwargs["profile_id"]].append({"id": "chat-3", "type": "user"})
-            return super().list_chats(**kwargs)
 
         def get_chat_messages(self, **kwargs):
             key = (kwargs["channel"], kwargs["profile_id"], kwargs["chat_id"])
@@ -2185,7 +2190,7 @@ def test_wappi_history_allows_append_only_growth_during_verification(tmp_path: P
     assert all(call.get("order") == "asc" for call in client.calls)
 
 
-def test_wappi_history_duplicate_chat_id_between_pages_is_deduplicated(tmp_path: Path) -> None:
+def test_wappi_history_duplicate_chat_id_blocks_before_message_reads(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
     client = FakeWappiClient(
@@ -2217,7 +2222,7 @@ def test_wappi_history_duplicate_chat_id_between_pages_is_deduplicated(tmp_path:
     assert stats["chat_snapshot_drift_detected"] is False
     assert report["validation_ok"] is False
     assert any(marker.endswith("pagination_drift_detected") for marker in report["limit_hits"])
-    assert len([call for call in client.calls if call.get("kind") == "messages"]) == 1
+    assert len([call for call in client.calls if call.get("kind") == "messages"]) == 0
 
 
 def test_wappi_history_request_budget_caps_inner_pagination(tmp_path: Path) -> None:
@@ -2228,7 +2233,13 @@ def test_wappi_history_request_budget_caps_inner_pagination(tmp_path: Path) -> N
         {"p-tg": [], "p-max": [{"id": "chat-1", "type": "user"}]},
         {
             ("max", "p-max", "chat-1"): [
-                {"unexpected": index}
+                {
+                    "id": f"m-{index}",
+                    "chat_id": "chat-1",
+                    "type": "text",
+                    "body": "Текст",
+                    "time": 1_753_000_000 + index,
+                }
                 for index in range(350)
             ]
         },
@@ -3508,234 +3519,6 @@ def test_wappi_widget_coverage_only_reads_no_messages_and_writes_no_timeline(
     assert db_path.read_bytes() == before
 
 
-def test_wappi_widget_contact_hydrate_reuses_known_lead_family(tmp_path: Path) -> None:
-    db_path = tmp_path / "customer_timeline.sqlite"
-    customer_id = seed_customer_with_amo(
-        db_path,
-        tmp_path,
-        lead_id="42",
-        contact_id="99",
-    )
-
-    class ContactClient:
-        calls: list[tuple[str, Mapping[str, Any], int]] = []
-
-        def amo_api_get(self, *, path: str, params: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
-            self.calls.append((path, params, limit))
-            assert path == "contacts"
-            assert params == {"filter[id][]": ["30"], "with": "leads"}
-            assert limit == 1
-            return {
-                "_embedded": {
-                    "contacts": [
-                        {
-                            "id": 30,
-                            "name": "Parent",
-                            "created_at": 1_753_000_000,
-                            "updated_at": 1_753_000_001,
-                            "_embedded": {"leads": [{"id": 42}]},
-                        }
-                    ]
-                }
-            }
-
-    links = {
-        ("telegram", "p-tg", "chat"): {
-            "status": "resolved",
-            "contact_id": "30",
-            "lead_ids": ("42",),
-        }
-    }
-    client = ContactClient()
-    first = hydrate_wappi_widget_contacts(
-        timeline_db=db_path,
-        allowed_root=tmp_path,
-        widget_links=links,
-        amo_mcp_env_file=None,
-        amo_client=client,
-    )
-    second = hydrate_wappi_widget_contacts(
-        timeline_db=db_path,
-        allowed_root=tmp_path,
-        widget_links=links,
-        amo_mcp_env_file=None,
-        amo_client=client,
-    )
-
-    assert first["requested"] == 1
-    assert first["batches"] == 1
-    assert first["fetch_errors"] == 0
-    assert second["requested"] == 0
-    assert len(client.calls) == 1
-    with sqlite3.connect(db_path) as con:
-        owner = con.execute(
-            "SELECT customer_id FROM identity_links WHERE link_type = 'amo_contact_id' AND link_value = '30'"
-        ).fetchone()[0]
-    assert owner == customer_id
-
-
-def test_wappi_widget_contact_hydrate_refetches_id_only_stub(tmp_path: Path) -> None:
-    db_path = tmp_path / "customer_timeline.sqlite"
-    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
-        customer = CustomerIdentity(
-            tenant_id="foton",
-            identity_status=IdentityStatus.PARTIAL,
-            source_ref="wappi:widget",
-        )
-        store.upsert_customer(customer)
-        store.upsert_identity_link(
-            IdentityLink(
-                tenant_id="foton",
-                customer_id=customer.customer_id,
-                link_type="amo_contact_id",
-                link_value="30",
-                source_system="amocrm_snapshot",
-                source_ref="amocrm:contact:30",
-                match_class=IdentityMatchClass.STRONG_UNIQUE,
-                confidence=1.0,
-            )
-        )
-
-    class ContactClient:
-        calls = 0
-
-        def amo_api_get(self, *, path: str, params: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
-            self.calls += 1
-            return {
-                "_embedded": {
-                    "contacts": [{
-                        "id": 30,
-                        "name": "Parent",
-                        "created_at": 1_753_000_000,
-                        "updated_at": 1_753_000_001,
-                        "custom_fields_values": [{
-                            "field_code": "PHONE",
-                            "values": [{"value": "+79990000001"}],
-                        }],
-                        "_embedded": {"leads": []},
-                    }]
-                }
-            }
-
-    client = ContactClient()
-    report = hydrate_wappi_widget_contacts(
-        timeline_db=db_path,
-        allowed_root=tmp_path,
-        widget_links={("telegram", "p-tg", "chat"): {"status": "resolved", "contact_id": "30"}},
-        amo_mcp_env_file=None,
-        amo_client=client,
-    )
-
-    assert report["requested"] == 1
-    assert report["fetched"] == 1
-    assert client.calls == 1
-    with sqlite3.connect(db_path) as con:
-        assert con.execute(
-            "SELECT COUNT(*) FROM timeline_events WHERE event_type='amo_contact_snapshot' "
-            "AND json_extract(record_json, '$.record.entity_id')='30'"
-        ).fetchone()[0] == 1
-        assert con.execute(
-            "SELECT COUNT(*) FROM identity_links WHERE link_type='phone' AND link_value='+79990000001'"
-        ).fetchone()[0] == 1
-
-
-def test_wappi_widget_contact_hydrate_batches_exact_ids(tmp_path: Path) -> None:
-    db_path = tmp_path / "customer_timeline.sqlite"
-    seed_customer_with_amo(db_path, tmp_path, lead_id="42", contact_id="99")
-
-    class ContactClient:
-        calls: list[tuple[str, Mapping[str, Any], int]] = []
-
-        def amo_api_get(self, *, path: str, params: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
-            ids = tuple(str(value) for value in params["filter[id][]"])
-            self.calls.append((path, params, limit))
-            return {
-                "_embedded": {
-                    "contacts": [
-                        {
-                            "id": int(contact_id),
-                            "name": "Parent",
-                            "created_at": 1_753_000_000,
-                            "updated_at": 1_753_000_001,
-                            "_embedded": {"leads": [{"id": 42}]},
-                        }
-                        for contact_id in ids
-                    ]
-                }
-            }
-
-    client = ContactClient()
-    links = {
-        ("telegram", "p-tg", f"chat-{contact_id}"): {
-            "status": "resolved",
-            "contact_id": str(contact_id),
-            "lead_ids": ("42",),
-        }
-        for contact_id in range(1000, 1101)
-    }
-    report = hydrate_wappi_widget_contacts(
-        timeline_db=db_path,
-        allowed_root=tmp_path,
-        widget_links=links,
-        amo_mcp_env_file=None,
-        amo_client=client,
-    )
-
-    assert report["requested"] == 101
-    assert report["batches"] == 3
-    assert report["fetched"] == 101
-    assert len(client.calls) == 3
-    assert all(path == "contacts" and limit <= 50 for path, _params, limit in client.calls)
-
-
-def test_wappi_widget_contact_hydrate_falls_back_to_exact_contact_endpoint(tmp_path: Path) -> None:
-    db_path = tmp_path / "customer_timeline.sqlite"
-    customer_id = seed_customer_with_amo(db_path, tmp_path, lead_id="42", contact_id="99")
-
-    class ContactClient:
-        calls: list[str] = []
-
-        def amo_api_get(self, *, path: str, params: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
-            self.calls.append(path)
-            if path == "contacts":
-                return {"_embedded": {"contacts": []}}
-            assert path == "contacts/30"
-            assert params == {"with": "leads"}
-            assert limit == 1
-            return {
-                "id": 30,
-                "name": "Parent",
-                "created_at": 1_753_000_000,
-                "updated_at": 1_753_000_001,
-                "_embedded": {"leads": [{"id": 42}]},
-            }
-
-    client = ContactClient()
-    report = hydrate_wappi_widget_contacts(
-        timeline_db=db_path,
-        allowed_root=tmp_path,
-        widget_links={
-            ("telegram", "p-tg", "chat"): {
-                "status": "resolved",
-                "contact_id": "30",
-                "lead_ids": ("42",),
-            }
-        },
-        amo_mcp_env_file=None,
-        amo_client=client,
-    )
-
-    assert report["fallback_requested"] == 1
-    assert report["fallback_fetched"] == 1
-    assert report["fetch_errors"] == 0
-    assert client.calls == ["contacts", "contacts/30"]
-    with sqlite3.connect(db_path) as con:
-        owner = con.execute(
-            "SELECT customer_id FROM identity_links WHERE link_type = 'amo_contact_id' AND link_value = '30'"
-        ).fetchone()[0]
-    assert owner == customer_id
-
-
 def test_wappi_widget_missing_contact_falls_back_to_static_pair_when_optional(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
@@ -4702,7 +4485,7 @@ def test_wappi_exact_widget_link_overrides_older_non_widget_assignment(tmp_path:
 def test_wappi_provisional_cleanup_removes_only_orphan_shell(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
-        for customer_id in ("customer:orphan", "customer:referenced"):
+        for customer_id in ("customer:orphan", "customer:referenced", "customer:mapped"):
             store.upsert_customer(
                 CustomerIdentity(
                     tenant_id="foton",
@@ -4725,18 +4508,31 @@ def test_wappi_provisional_cleanup_removes_only_orphan_shell(tmp_path: Path) -> 
             ),
             actor="test",
         )
+        store.record_customer_id_mapping(
+            "foton",
+            old_customer_id="customer:legacy-mapped",
+            new_customer_id="customer:mapped",
+            reason="test_mapping_parent",
+            actor="test",
+        )
 
-    report = remove_orphaned_provisional_customers(
-        db_path,
-        tenant_id="foton",
-        customer_ids=("customer:orphan", "customer:referenced"),
-    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        report = remove_orphaned_provisional_customers(
+            store,
+            tenant_id="foton",
+            customer_ids=("customer:orphan", "customer:referenced", "customer:mapped"),
+        )
 
-    assert report == {"candidates": 2, "removed": 1, "retained_with_references": 1}
+    assert report == {"candidates": 3, "removed": 1, "retained_with_references": 2}
     with sqlite3.connect(db_path) as con:
         ids = {str(row[0]) for row in con.execute("SELECT customer_id FROM customer_identities")}
+        audit_count = con.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='wappi_provisional_customer_removed'"
+        ).fetchone()[0]
     assert "customer:orphan" not in ids
     assert "customer:referenced" in ids
+    assert "customer:mapped" in ids
+    assert audit_count == 1
 
 
 def test_wappi_required_widget_missing_profile_does_not_fall_back(tmp_path: Path) -> None:

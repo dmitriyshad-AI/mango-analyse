@@ -28,6 +28,10 @@ class ImapClient(Protocol):
 
     def fetch(self, message_set: bytes | str, message_parts: str) -> tuple[str, Sequence[Any]]: ...
 
+    def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]: ...
+
+    def response(self, code: str) -> tuple[str | None, Sequence[Any]]: ...
+
     def close(self) -> tuple[str, Sequence[bytes]]: ...
 
     def logout(self) -> tuple[str, Sequence[bytes]]: ...
@@ -68,6 +72,12 @@ class ImapLibClient:
 
     def fetch(self, message_set: bytes | str, message_parts: str) -> tuple[str, Sequence[Any]]:
         return self._imap.fetch(message_set, message_parts)
+
+    def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+        return self._imap.uid(command, *args)
+
+    def response(self, code: str) -> tuple[str | None, Sequence[Any]]:
+        return self._imap.response(code)
 
     def close(self) -> tuple[str, Sequence[bytes]]:
         return self._imap.close()

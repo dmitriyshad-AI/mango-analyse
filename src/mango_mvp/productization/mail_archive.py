@@ -79,6 +79,8 @@ MAIL_ATTACHMENT_OCR_PREFLIGHT_SCHEMA_VERSION = "mail_attachment_ocr_preflight_v1
 MAIL_ATTACHMENT_OCR_PILOT_SCHEMA_VERSION = "mail_attachment_ocr_pilot_v1"
 MANGO_PHONE_INDEX_PREVIEW_SCHEMA_VERSION = "mango_phone_index_preview_v1"
 FULL_MESSAGE_FETCH_QUERY = "(BODY.PEEK[])"
+MAIL_FETCH_ATTEMPTS = 3
+MAIL_FETCH_RETRY_DELAY_SECONDS = 3.0
 
 DEFAULT_TALLANTO_EMAIL_COLUMNS = ("E-mail", "Другой E-mail")
 DEFAULT_TALLANTO_PHONE_COLUMNS = (
@@ -1075,9 +1077,14 @@ def build_mail_archive_ingest(
         "search_criteria": search_criteria,
         "max_messages": None if config.allow_unlimited else max_messages,
         "selection_truncated": False,
+        "search_complete": False,
+        "uidvalidity": None,
+        "uidvalidity_stable": False,
         "safety": {
             "readonly_select": True,
             "fetch_uses_body_peek": True,
+            "uid_stable_message_ids": True,
+            "uidvalidity_reconnect_guard": True,
             "send_mail": False,
             "delete_or_move_mail": False,
             "write_crm": False,
@@ -1091,6 +1098,10 @@ def build_mail_archive_ingest(
         },
         "messages_found_since": 0,
         "messages_attempted": 0,
+        "messages_completed": 0,
+        "messages_unprocessed": 0,
+        "mailbox_complete": False,
+        "mailbox_tail_aborted": False,
         "messages_inserted_or_seen": 0,
         "messages_excluded_by_sha256": 0,
         "message_fetch_retries": 0,
@@ -1121,8 +1132,22 @@ def build_mail_archive_ingest(
         report["mailbox_total_messages"] = int(select_data[0]) if select_data and select_data[0] else 0
         if select_status != "OK":
             raise RuntimeError(f"IMAP SELECT failed for {config.mailbox}: {select_status}")
-        search_status, search_data = imap.search(None, *search_criteria)
+        uidvalidity = selected_mailbox_uidvalidity(imap)
+        report["uidvalidity"] = uidvalidity
+        report["uidvalidity_stable"] = True
+        try:
+            search_status, search_data = imap.uid("SEARCH", None, *search_criteria)
+        except Exception as exc:  # noqa: BLE001
+            search_status, search_data = "ERROR", []
+            report["errors"].append(
+                {"stage": "uid_search", "error": f"{type(exc).__name__}: {exc}"}
+            )
         report["search_status"] = search_status
+        report["search_complete"] = search_status == "OK"
+        if search_status != "OK" and not report["errors"]:
+            report["errors"].append(
+                {"stage": "uid_search", "error": f"IMAP UID SEARCH failed: {search_status}"}
+            )
         message_ids = parse_search_ids(search_status, search_data)
         report["messages_found_since"] = len(message_ids)
         selected_ids = (
@@ -1142,70 +1167,78 @@ def build_mail_archive_ingest(
                 report["attachments_written"] += int(fetched["attachments_written"])
                 report["text_files_written"] += int(bool(fetched["text_file_written"]))
 
-        for msg_id in selected_ids:
-            try:
-                fetched = ingest_one_message(
-                    imap,
-                    msg_id=msg_id,
-                    credentials=credentials,
-                    config=config,
-                    db_path=db_path,
-                    raw_dir=raw_dir,
-                    attachment_dir=attachment_dir,
-                    text_dir=text_dir,
-                )
-                record_fetched_message(fetched)
-            except Exception as exc:  # noqa: BLE001
-                if client is None and is_transient_imap_fetch_error(exc):
+        for msg_uid in selected_ids:
+            fetched_ok = False
+            first_error = ""
+            final_error: Exception | None = None
+            for attempt in range(MAIL_FETCH_ATTEMPTS):
+                if attempt:
                     report["message_fetch_retries"] += 1
+                    close_imap_quietly(imap)
+                    imap = None
+                    if MAIL_FETCH_RETRY_DELAY_SECONDS > 0:
+                        time.sleep(MAIL_FETCH_RETRY_DELAY_SECONDS)
                     try:
-                        imap.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        imap.logout()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        imap = open_readonly_mailbox(credentials, config.mailbox)
-                        fetched = ingest_one_message(
-                            imap,
-                            msg_id=msg_id,
-                            credentials=credentials,
-                            config=config,
-                            db_path=db_path,
-                            raw_dir=raw_dir,
-                            attachment_dir=attachment_dir,
-                            text_dir=text_dir,
+                        imap, connection_retries = open_readonly_mailbox_with_retries(
+                            credentials,
+                            config.mailbox,
                         )
-                        record_fetched_message(fetched)
+                        report["imap_connection_retries"] += connection_retries
+                        if selected_mailbox_uidvalidity(imap) != uidvalidity:
+                            report["uidvalidity_stable"] = False
+                            report["mailbox_tail_aborted"] = True
+                            final_error = RuntimeError("IMAP UIDVALIDITY changed during retry")
+                            break
+                    except Exception as exc:  # noqa: BLE001
+                        final_error = exc
+                        first_error = first_error or f"{type(exc).__name__}: {exc}"
+                        if not is_transient_imap_fetch_error(exc) or attempt + 1 >= MAIL_FETCH_ATTEMPTS:
+                            report["mailbox_tail_aborted"] = True
+                            break
                         continue
-                    except Exception as retry_exc:  # noqa: BLE001
-                        report["errors"].append(
-                            {
-                                "imap_seq": msg_id.decode("ascii", "ignore"),
-                                "error": f"{type(retry_exc).__name__}: {retry_exc}",
-                                "first_error": f"{type(exc).__name__}: {exc}",
-                            }
-                        )
-                        imap = None
+                try:
+                    if imap is None:
+                        raise RuntimeError("IMAP connection unavailable")
+                    fetched = ingest_one_message(
+                        imap,
+                        msg_id=msg_uid,
+                        credentials=credentials,
+                        config=config,
+                        db_path=db_path,
+                        raw_dir=raw_dir,
+                        attachment_dir=attachment_dir,
+                        text_dir=text_dir,
+                    )
+                    record_fetched_message(fetched)
+                    report["messages_completed"] += 1
+                    fetched_ok = True
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    final_error = exc
+                    first_error = first_error or f"{type(exc).__name__}: {exc}"
+                    if client is not None or not is_transient_imap_fetch_error(exc):
                         break
+                    if attempt + 1 >= MAIL_FETCH_ATTEMPTS:
+                        report["mailbox_tail_aborted"] = True
+                        break
+            if not fetched_ok:
                 report["errors"].append(
                     {
-                        "imap_seq": msg_id.decode("ascii", "ignore"),
-                        "error": f"{type(exc).__name__}: {exc}",
+                        "imap_uid": msg_uid.decode("ascii", "ignore"),
+                        "error": f"{type(final_error).__name__}: {final_error}",
+                        "first_error": first_error,
                     }
                 )
+                if report["mailbox_tail_aborted"]:
+                    break
     finally:
-        if imap is not None:
-            try:
-                imap.close()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                imap.logout()
-            except Exception:  # noqa: BLE001
-                pass
+        close_imap_quietly(imap)
+
+    report["messages_unprocessed"] = max(
+        0,
+        int(report["messages_attempted"]) - int(report["messages_completed"]),
+    )
+    report["mailbox_complete"] = not report["errors"] and report["messages_unprocessed"] == 0
 
     write_json(report_path, report)
     return report
@@ -1249,15 +1282,64 @@ def open_imap_client_with_retries(
     raise RuntimeError("IMAP connection retry loop exited unexpectedly")
 
 
+def close_imap_quietly(imap: ImapClient | None) -> None:
+    if imap is None:
+        return
+    try:
+        imap.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        imap.logout()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def selected_mailbox_uidvalidity(imap: ImapClient) -> str:
+    status, data = imap.response("UIDVALIDITY")
+    if str(status or "").upper() not in {"OK", "UIDVALIDITY"} or not data:
+        raise RuntimeError("IMAP UIDVALIDITY unavailable")
+    raw = data[0]
+    text = raw.decode("ascii", "ignore") if isinstance(raw, bytes) else str(raw or "")
+    match = re.search(r"\d+", text)
+    if not match:
+        raise RuntimeError("IMAP UIDVALIDITY invalid")
+    return match.group(0)
+
+
+def uid_fetch_payload(fetch_data: Sequence[Any], expected_uid: bytes | str) -> bytes:
+    expected = expected_uid.decode("ascii", "ignore") if isinstance(expected_uid, bytes) else str(expected_uid)
+    for part in fetch_data or ():
+        if not (isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], bytes)):
+            continue
+        metadata = part[0].decode("ascii", "ignore") if isinstance(part[0], bytes) else str(part[0])
+        match = re.search(r"\bUID\s+(\d+)\b", metadata, re.IGNORECASE)
+        if not match or match.group(1) != expected:
+            raise RuntimeError(f"IMAP UID FETCH response mismatch for {expected}")
+        return part[1]
+    return b""
+
+
+def open_readonly_mailbox_with_retries(
+    credentials: MailImapCredentials,
+    mailbox: str,
+) -> tuple[ImapClient, int]:
+    imap, retries = open_imap_client_with_retries(credentials)
+    try:
+        login_status, _ = imap.login(credentials.email_address, credentials.password)
+        if login_status != "OK":
+            raise RuntimeError(f"IMAP LOGIN failed during retry: {login_status}")
+        select_status, _ = imap.select(mailbox, readonly=True)
+        if select_status != "OK":
+            raise RuntimeError(f"IMAP SELECT failed during retry for {mailbox}: {select_status}")
+    except Exception:
+        close_imap_quietly(imap)
+        raise
+    return imap, retries
+
+
 def open_readonly_mailbox(credentials: MailImapCredentials, mailbox: str) -> ImapClient:
-    imap, _ = open_imap_client_with_retries(credentials)
-    login_status, _ = imap.login(credentials.email_address, credentials.password)
-    if login_status != "OK":
-        raise RuntimeError(f"IMAP LOGIN failed during retry: {login_status}")
-    select_status, _ = imap.select(mailbox, readonly=True)
-    if select_status != "OK":
-        raise RuntimeError(f"IMAP SELECT failed during retry for {mailbox}: {select_status}")
-    return imap
+    return open_readonly_mailbox_with_retries(credentials, mailbox)[0]
 
 
 def build_mail_matching_report(config: MailMatchingReportConfig) -> Mapping[str, Any]:
@@ -1401,6 +1483,10 @@ def verify_mail_archive_pilot(config: MailArchiveVerificationConfig) -> Mapping[
             blocking_risks.append("readonly_select_not_confirmed")
         if safety.get("fetch_uses_body_peek") is not True:
             blocking_risks.append("body_peek_not_confirmed")
+        if safety.get("uid_stable_message_ids") is not True:
+            blocking_risks.append("uid_stable_message_ids_not_confirmed")
+        if safety.get("uidvalidity_reconnect_guard") is not True:
+            blocking_risks.append("uidvalidity_reconnect_guard_not_confirmed")
         for key in (
             "send_mail",
             "delete_or_move_mail",
@@ -1421,8 +1507,17 @@ def verify_mail_archive_pilot(config: MailArchiveVerificationConfig) -> Mapping[
     expected_max = int(config.expected_max_messages)
     if expected_max > 0 and attempted > expected_max:
         blocking_risks.append("messages_attempted_exceeds_expected_max")
+    completed = int(ingest_report.get("messages_completed") or 0) if ingest_report else 0
     if ingest_report and ingest_report.get("errors"):
-        warnings.append("ingest_report_contains_errors")
+        blocking_risks.append("ingest_report_contains_errors")
+    if ingest_report and ingest_report.get("search_complete") is not True:
+        blocking_risks.append("uid_search_incomplete")
+    if ingest_report and ingest_report.get("uidvalidity_stable") is not True:
+        blocking_risks.append("uidvalidity_changed_or_unavailable")
+    if ingest_report and (
+        ingest_report.get("mailbox_complete") is not True or completed != attempted
+    ):
+        blocking_risks.append("mailbox_selected_window_incomplete")
 
     db_counts = empty_archive_db_counts()
     db_schema_ok = False
@@ -5750,10 +5845,10 @@ def ingest_one_message(
     attachment_dir: Path,
     text_dir: Path,
 ) -> Mapping[str, Any]:
-    fetch_status, fetch_data = imap.fetch(msg_id, FULL_MESSAGE_FETCH_QUERY)
+    fetch_status, fetch_data = imap.uid("FETCH", msg_id, FULL_MESSAGE_FETCH_QUERY)
     if fetch_status != "OK":
         raise RuntimeError(f"IMAP FETCH failed: {fetch_status}")
-    raw = first_fetch_payload(fetch_data)
+    raw = uid_fetch_payload(fetch_data, msg_id)
     if not raw:
         raise RuntimeError("IMAP FETCH returned empty payload")
     raw_sha256 = hashlib.sha256(raw).hexdigest()

@@ -924,6 +924,36 @@ def source_artifact_proof(
         if not builder_path.is_file() or _sha256_file(builder_path) != builder_sha:
             base["reason"] = "builder_lineage_mismatch"
             return "source_unavailable", base
+        download_path_raw = str(payload.get("download_manifest") or "").strip()
+        if source.source_system == "mail_archive_stage2" and not download_path_raw:
+            base["reason"] = "download_lineage_missing"
+            return "source_unavailable", base
+        if download_path_raw:
+            download_path = Path(download_path_raw).expanduser().resolve(strict=False)
+            declared_download_sha = str(payload.get("download_manifest_sha256") or "").strip().lower()
+            if download_path.parent != manifest_path.expanduser().resolve(strict=False).parent:
+                base["reason"] = "download_lineage_path_mismatch"
+                return "source_unavailable", base
+            download_bytes = download_path.read_bytes()
+            observed_download_sha = hashlib.sha256(download_bytes).hexdigest()
+            base["download_manifest_sha256"] = observed_download_sha
+            if observed_download_sha != declared_download_sha:
+                base["reason"] = "download_lineage_mismatch"
+                return "source_unavailable", base
+            download_payload = json.loads(download_bytes.decode("utf-8"))
+            reports = download_payload.get("mailbox_reports") if isinstance(download_payload, Mapping) else None
+            if (
+                not isinstance(download_payload, Mapping)
+                or download_payload.get("status") != "ok"
+                or download_payload.get("truncated") is not False
+                or int(download_payload.get("errors") or 0) != 0
+                or not isinstance(reports, Mapping)
+                or set(reports) != {"inbox", "sent"}
+                or any(not isinstance(item, Mapping) or item.get("status") != "ok" for item in reports.values())
+                or download_payload.get("runtime") != payload.get("runtime")
+            ):
+                base["reason"] = "download_lineage_not_ok"
+                return "source_unavailable", base
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         base["reason"] = "manifest_invalid"
         return "source_unavailable", base

@@ -2428,8 +2428,8 @@ def load_profiles_file(path: Path | str) -> dict[str, DraftLoopProfile]:
     return result
 
 
-def load_pairs_file(path: Path | str, *, default_source: str = "manual") -> dict[DraftLoopKey, DraftLoopPair]:
-    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+def _parse_pairs_bytes(data: bytes, *, default_source: str) -> dict[DraftLoopKey, DraftLoopPair]:
+    payload = json.loads(data.decode("utf-8"))
     rows: Iterable[Any]
     if isinstance(payload, Mapping) and isinstance(payload.get("pairs"), Sequence):
         rows = payload["pairs"]
@@ -2458,6 +2458,28 @@ def load_pairs_file(path: Path | str, *, default_source: str = "manual") -> dict
             raise DraftLoopConfigError("draft_loop_pairs entries require lead_id or contact_id and expected_brand.")
         result[key] = pair
     return result
+
+
+def load_pairs_file_snapshot(
+    path: Path | str,
+    *,
+    default_source: str = "manual",
+) -> tuple[dict[DraftLoopKey, DraftLoopPair], str]:
+    """Parse and hash the exact descriptor bytes used by this run."""
+
+    target = Path(path).expanduser()
+    with target.open("rb") as handle:
+        opened = os.fstat(handle.fileno())
+        data = handle.read()
+        after = os.fstat(handle.fileno())
+    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    if identity(opened) != identity(after):
+        raise DraftLoopConfigError(f"draft_loop_pairs changed while being read: {target}")
+    return _parse_pairs_bytes(data, default_source=default_source), hashlib.sha256(data).hexdigest()
+
+
+def load_pairs_file(path: Path | str, *, default_source: str = "manual") -> dict[DraftLoopKey, DraftLoopPair]:
+    return load_pairs_file_snapshot(path, default_source=default_source)[0]
 
 
 def _safe_int(value: Any) -> int:

@@ -784,6 +784,268 @@ def test_mail_archive_retries_transient_imap_connection(monkeypatch: pytest.Monk
     assert calls == [("mail.example.test", 993), ("mail.example.test", 993)]
 
 
+def test_mail_archive_recovers_two_disconnects_by_uid_without_skipping_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UidClient:
+        def __init__(self, messages: Mapping[bytes, bytes], *, failures: int = 0) -> None:
+            self.messages = messages
+            self.failures = failures
+
+        def login(self, _user: str, _password: str) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+        def select(self, _mailbox: str, readonly: bool = False) -> tuple[str, Sequence[bytes]]:
+            assert readonly is True
+            return "OK", [str(len(self.messages)).encode()]
+
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "SEARCH":
+                return "OK", [b"101 202"]
+            if command == "FETCH":
+                if self.failures:
+                    self.failures -= 1
+                    raise type("abort", (Exception,), {})("command: FETCH => Server shutting down")
+                uid = bytes(args[0]) if isinstance(args[0], bytearray) else args[0]
+                return "OK", [(f"1 (UID {uid.decode()})".encode(), self.messages[uid])]
+            raise AssertionError(command)
+
+        def response(self, code: str) -> tuple[str, Sequence[Any]]:
+            assert code == "UIDVALIDITY"
+            return "UIDVALIDITY", [b"123"]
+
+        def close(self) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+        def logout(self) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+    messages = {
+        b"101": _raw_message(message_id="first@example.com"),
+        b"202": _raw_message(message_id="second@example.com"),
+    }
+    initial = UidClient(messages, failures=1)
+    reconnects = iter((UidClient(messages, failures=1), UidClient(messages)))
+    monkeypatch.setattr("mango_mvp.productization.mail_archive._mail_output_commit_safe", lambda _path: True)
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.ImapLibClient", lambda **_kwargs: initial)
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.open_readonly_mailbox_with_retries",
+        lambda *_args, **_kwargs: (next(reconnects), 0),
+    )
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.MAIL_FETCH_RETRY_DELAY_SECONDS", 0)
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written"),
+        config=MailArchiveIngestConfig(
+            out_dir=tmp_path / "archive",
+            mailbox="INBOX",
+            mailbox_label="INBOX",
+            since_days=7,
+            max_messages=2,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+        ),
+    )
+
+    assert report["message_fetch_retries"] == 2
+    assert report["messages_completed"] == 2
+    assert report["messages_unprocessed"] == 0
+    assert report["mailbox_complete"] is True
+    assert report["errors"] == []
+    with sqlite3.connect(tmp_path / "archive" / "mail_archive.sqlite") as con:
+        assert con.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+        assert con.execute("SELECT COUNT(*) FROM message_sources").fetchone()[0] == 2
+
+
+def test_mail_archive_exhausted_retries_fail_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenUidClient:
+        def login(self, _user: str, _password: str) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+        def select(self, _mailbox: str, readonly: bool = False) -> tuple[str, Sequence[bytes]]:
+            assert readonly is True
+            return "OK", [b"2"]
+
+        def uid(self, command: str, *_args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "SEARCH":
+                return "OK", [b"101 202"]
+            raise type("abort", (Exception,), {})("command: FETCH => Server shutting down")
+
+        def response(self, code: str) -> tuple[str, Sequence[Any]]:
+            assert code == "UIDVALIDITY"
+            return "UIDVALIDITY", [b"123"]
+
+        def close(self) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+        def logout(self) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+    monkeypatch.setattr("mango_mvp.productization.mail_archive._mail_output_commit_safe", lambda _path: True)
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.git_check_ignored", lambda _path: True)
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.ImapLibClient", lambda **_kwargs: BrokenUidClient())
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.open_readonly_mailbox_with_retries",
+        lambda *_args, **_kwargs: (BrokenUidClient(), 0),
+    )
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.MAIL_FETCH_RETRY_DELAY_SECONDS", 0)
+    archive = tmp_path / "archive"
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written"),
+        config=MailArchiveIngestConfig(
+            out_dir=archive,
+            mailbox="INBOX",
+            mailbox_label="INBOX",
+            since_days=7,
+            max_messages=2,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+        ),
+    )
+    verification = verify_mail_archive_pilot(
+        MailArchiveVerificationConfig(archive_dir=archive, expected_max_messages=2)
+    )
+
+    assert report["mailbox_tail_aborted"] is True
+    assert report["mailbox_complete"] is False
+    assert report["messages_completed"] == 0
+    assert report["messages_unprocessed"] == 2
+    assert verification["verification_pass"] is False
+    assert "ingest_report_contains_errors" in verification["blocking_risks"]
+    assert "mailbox_selected_window_incomplete" in verification["blocking_risks"]
+
+
+def test_mail_archive_uidvalidity_change_aborts_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ChangingUidClient(FakeImapClient):
+        def __init__(self, messages: list[bytes | None], *, uidvalidity: bytes, fail_fetch: bool) -> None:
+            super().__init__(messages)
+            self.uidvalidity = uidvalidity
+            self.fail_fetch = fail_fetch
+
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "FETCH" and self.fail_fetch:
+                raise type("abort", (Exception,), {})("command: FETCH => Server shutting down")
+            return super().uid(command, *args)
+
+        def response(self, code: str) -> tuple[str, Sequence[Any]]:
+            assert code == "UIDVALIDITY"
+            return "UIDVALIDITY", [self.uidvalidity]
+
+    raw = _raw_message()
+    initial = ChangingUidClient([raw], uidvalidity=b"123", fail_fetch=True)
+    replacement = ChangingUidClient([raw], uidvalidity=b"999", fail_fetch=False)
+    monkeypatch.setattr("mango_mvp.productization.mail_archive._mail_output_commit_safe", lambda _path: True)
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.ImapLibClient", lambda **_kwargs: initial)
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.open_readonly_mailbox_with_retries",
+        lambda *_args, **_kwargs: (replacement, 0),
+    )
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.MAIL_FETCH_RETRY_DELAY_SECONDS", 0)
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written"),
+        config=MailArchiveIngestConfig(out_dir=tmp_path / "archive", max_messages=1),
+    )
+
+    assert report["uidvalidity_stable"] is False
+    assert report["mailbox_tail_aborted"] is True
+    assert report["mailbox_complete"] is False
+    assert "UIDVALIDITY changed" in report["errors"][0]["error"]
+
+
+def test_mail_archive_rejects_fetch_payload_for_another_uid(tmp_path: Path) -> None:
+    class WrongUidClient(FakeImapClient):
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "SEARCH":
+                return "OK", [b"101"]
+            if command == "FETCH":
+                return "OK", [(b"1 (UID 202)", _raw_message())]
+            raise AssertionError(command)
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written"),
+        config=MailArchiveIngestConfig(out_dir=tmp_path / "archive", max_messages=1),
+        client=WrongUidClient([_raw_message()]),
+    )
+
+    assert report["mailbox_complete"] is False
+    assert report["messages_completed"] == 0
+    assert "UID FETCH response mismatch" in report["errors"][0]["error"]
+
+
+@pytest.mark.parametrize("search_failure", ("NO", "exception"))
+def test_mail_archive_uid_search_failure_is_reported_and_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    search_failure: str,
+) -> None:
+    class SearchFailureClient(FakeImapClient):
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "SEARCH":
+                if search_failure == "exception":
+                    raise ValueError("permanent search failure")
+                return "NO", [b"search failed"]
+            return super().uid(command, *args)
+
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.git_check_ignored", lambda _path: True)
+    archive = tmp_path / "archive"
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written"),
+        config=MailArchiveIngestConfig(out_dir=archive, max_messages=2),
+        client=SearchFailureClient([_raw_message()]),
+    )
+    verification = verify_mail_archive_pilot(
+        MailArchiveVerificationConfig(archive_dir=archive, expected_max_messages=2)
+    )
+
+    assert report["search_complete"] is False
+    assert report["mailbox_complete"] is False
+    assert report["errors"][0]["stage"] == "uid_search"
+    assert verification["verification_pass"] is False
+    assert "uid_search_incomplete" in verification["blocking_risks"]
+
+
+def test_mail_archive_preserves_distinct_uids_for_identical_message_bytes(tmp_path: Path) -> None:
+    raw = _raw_message()
+
+    class DuplicateUidClient(FakeImapClient):
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "SEARCH":
+                return "OK", [b"101 202"]
+            if command == "FETCH":
+                uid = args[0].decode() if isinstance(args[0], bytes) else str(args[0])
+                return "OK", [(f"1 (UID {uid})".encode(), raw)]
+            raise AssertionError(command)
+
+    credentials = MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written")
+    config = MailArchiveIngestConfig(out_dir=tmp_path / "archive", max_messages=2)
+    first = build_mail_archive_ingest(
+        credentials=credentials,
+        config=config,
+        client=DuplicateUidClient([raw, raw]),
+    )
+    second = build_mail_archive_ingest(
+        credentials=credentials,
+        config=config,
+        client=DuplicateUidClient([raw, raw]),
+    )
+
+    assert first["mailbox_complete"] is True
+    assert second["mailbox_complete"] is True
+    with sqlite3.connect(tmp_path / "archive" / "mail_archive.sqlite") as con:
+        assert con.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM message_sources").fetchone()[0] == 2
+        assert {row[0] for row in con.execute("SELECT imap_seq FROM message_sources")} == {"101", "202"}
+
+
 def test_mail_archive_tolerates_broken_attachment_headers() -> None:
     class BrokenPart:
         def is_multipart(self) -> bool:
@@ -3338,6 +3600,21 @@ class FakeImapClient:
         if self.messages[index] is None:
             return "NO", [b"fetch failed"]
         return "OK", [(b"1 FETCH", self.messages[index])]
+
+    def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+        if command == "SEARCH":
+            return self.search(args[0], *args[1:])
+        if command == "FETCH":
+            status, data = self.fetch(args[0], args[1])
+            if status != "OK" or not data:
+                return status, data
+            uid = args[0].decode() if isinstance(args[0], bytes) else str(args[0])
+            return status, [(f"1 (UID {uid})".encode(), data[0][1])]
+        raise AssertionError(f"unexpected UID command: {command}")
+
+    def response(self, code: str) -> tuple[str, Sequence[Any]]:
+        assert code == "UIDVALIDITY"
+        return "UIDVALIDITY", [b"123"]
 
     def store(self, *_args: object, **_kwargs: object) -> None:
         raise AssertionError("STORE must not be called")

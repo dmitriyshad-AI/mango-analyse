@@ -60,6 +60,20 @@ def write_source_proof(
 ) -> None:
     builder_manifest = manifest_path.with_name("builder_manifest.json")
     builder_manifest.write_text('{"status":"ok"}\n', encoding="utf-8")
+    runtime = {"head": "test-head", "worktree": "/test/worktree"}
+    download_manifest = manifest_path.with_name("mail_download_manifest.json")
+    download_manifest.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "truncated": False,
+                "errors": 0,
+                "runtime": runtime,
+                "mailbox_reports": {"inbox": {"status": "ok"}, "sent": {"status": "ok"}},
+            }
+        ),
+        encoding="utf-8",
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -73,6 +87,9 @@ def write_source_proof(
                 "output_sha256": sha256_file(source_path),
                 "builder_manifest": str(builder_manifest),
                 "builder_manifest_sha256": sha256_file(builder_manifest),
+                "runtime": runtime,
+                "download_manifest": str(download_manifest),
+                "download_manifest_sha256": sha256_file(download_manifest),
             }
         ),
         encoding="utf-8",
@@ -465,6 +482,82 @@ def test_proved_source_is_verified_immediately_before_read(tmp_path: Path) -> No
     assert proof["status"] == "ok"
     assert proof["manifest_sha256"] == sha256_file(proof_path)
     assert proof["output_sha256"] == sha256_file(source_path)
+
+
+def test_mail_proof_rejects_new_failed_download_after_old_process_success(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    source_path.write_text("", encoding="utf-8")
+    proof_path = tmp_path / "mail_process_manifest.json"
+    download_path = tmp_path / "mail_download_manifest.json"
+    runtime = {"head": "abc", "worktree": "/repo"}
+    download_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "truncated": False,
+                "errors": 0,
+                "runtime": runtime,
+                "mailbox_reports": {"inbox": {"status": "ok"}, "sent": {"status": "ok"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_source_proof(proof_path, source_path=source_path, finished_at=datetime.now(timezone.utc))
+    payload = json.loads(proof_path.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "runtime": runtime,
+            "download_manifest": str(download_path),
+            "download_manifest_sha256": sha256_file(download_path),
+        }
+    )
+    proof_path.write_text(json.dumps(payload), encoding="utf-8")
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(IncrementalSourceConfig(
+            name="mail_stage2", source_system="mail_archive_stage2", path=source_path,
+            normalizer="mail_archive_stage2", proof_manifest_path=proof_path,
+            proof_manifest_sha256=sha256_file(proof_path), proof_max_age_hours=72,
+        ),),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+    failed = json.loads(download_path.read_text(encoding="utf-8"))
+    failed["status"] = "failed"
+    download_path.write_text(json.dumps(failed), encoding="utf-8")
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is False
+    assert report["sources"][0]["artifact_proof"]["reason"] == "download_lineage_mismatch"
+
+
+def test_mail_proof_without_download_lineage_is_unavailable(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail.jsonl"
+    source_path.write_text("", encoding="utf-8")
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(proof_path, source_path=source_path, finished_at=datetime.now(timezone.utc))
+    payload = json.loads(proof_path.read_text(encoding="utf-8"))
+    payload.pop("download_manifest")
+    payload.pop("download_manifest_sha256")
+    proof_path.write_text(json.dumps(payload), encoding="utf-8")
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(IncrementalSourceConfig(
+            name="mail_stage2", source_system="mail_archive_stage2", path=source_path,
+            normalizer="mail_archive_stage2", proof_manifest_path=proof_path,
+            proof_manifest_sha256=sha256_file(proof_path), proof_max_age_hours=72,
+        ),),
+        journal_path=tmp_path / "nightly/journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is False
+    assert report["sources"][0]["artifact_proof"]["reason"] == "download_lineage_missing"
 
 
 def test_proved_source_reads_verified_fd_across_atomic_path_replace(

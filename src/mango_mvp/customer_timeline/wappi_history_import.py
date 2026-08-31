@@ -90,7 +90,7 @@ from mango_mvp.integrations.draft_loop import (
     WappiHistoryMessage,
     _is_deferred_fetch_exception,
     build_draft_loop_code_identity,
-    load_pairs_file,
+    load_pairs_file_snapshot,
     normalize_wappi_message_page,
     wappi_message_from_raw,
 )
@@ -2143,11 +2143,14 @@ def run_wappi_history_import(
 ) -> Mapping[str, Any]:
     code_identity_start = dict(build_draft_loop_code_identity())
     code_root = Path(str(code_identity_start.get("code_root") or Path(__file__).resolve().parents[3]))
+    pairs, pair_snapshot_hashes = load_wappi_pairs_snapshot(
+        config.pairs_file,
+        config.auto_pairs_file,
+    )
     input_hashes_start = {
         "importer": file_sha256(Path(__file__)),
         "phase1_config": file_sha256(config.phase1_config),
-        "pairs_file": file_sha256(config.pairs_file),
-        "auto_pairs_file": file_sha256(config.auto_pairs_file),
+        **pair_snapshot_hashes,
         "shared_phone_stoplist": file_sha256(config.shared_phone_stoplist),
     }
     worktree_start = git_worktree_provenance(code_root)
@@ -2305,7 +2308,6 @@ def run_wappi_history_import(
             request_limit_total=config.limits.request_limit_total,
         )
         assert_readonly_wappi_client(client)
-    pairs = load_wappi_pairs(config.pairs_file, config.auto_pairs_file)
     local_phone_stoplist, local_phone_stoplist_error = (
         load_phone_stoplist(config.shared_phone_stoplist)
         if config.shared_phone_stoplist is not None
@@ -2805,10 +2807,23 @@ def run_wappi_history_import(
     input_hashes_pre_apply = {
         "importer": file_sha256(Path(__file__)),
         "phase1_config": file_sha256(config.phase1_config),
-        "pairs_file": file_sha256(config.pairs_file),
-        "auto_pairs_file": file_sha256(config.auto_pairs_file),
+        **pair_snapshot_hashes,
         "shared_phone_stoplist": file_sha256(config.shared_phone_stoplist),
     }
+    try:
+        current_pairs, pair_hashes_observed_pre_apply = load_wappi_pairs_snapshot(
+            config.pairs_file,
+            config.auto_pairs_file,
+        )
+        pair_mapping_drift = any(current_pairs.get(key) != pair for key, pair in pairs.items())
+    except FileNotFoundError:
+        pair_hashes_observed_pre_apply = {
+            "pairs_file": file_sha256(config.pairs_file),
+            "auto_pairs_file": file_sha256(config.auto_pairs_file),
+        }
+        pair_mapping_drift = True
+    if pair_mapping_drift:
+        limit_hits.append("pair_mapping_drift")
     worktree_pre_apply = git_worktree_provenance(code_root)
     db_identity_pre_apply = timeline_db_identity(config.timeline_db)
     if (
@@ -3167,6 +3182,8 @@ def run_wappi_history_import(
             "worktree_pre_apply": worktree_pre_apply,
             "input_hashes": input_hashes_pre_apply,
             "input_hashes_start": input_hashes_start,
+            "pair_hashes_observed_pre_apply": pair_hashes_observed_pre_apply,
+            "pair_mapping_drift": pair_mapping_drift,
             "timeline_db": db_identity_end,
             "timeline_db_start": db_identity_start,
             "timeline_db_validation_base": db_identity_validation_base,
@@ -6367,14 +6384,28 @@ def load_wappi_pairs(
     pairs_file: Optional[Path],
     auto_pairs_file: Optional[Path],
 ) -> dict[DraftLoopKey, DraftLoopPair]:
+    return load_wappi_pairs_snapshot(pairs_file, auto_pairs_file)[0]
+
+
+def load_wappi_pairs_snapshot(
+    pairs_file: Optional[Path],
+    auto_pairs_file: Optional[Path],
+) -> tuple[dict[DraftLoopKey, DraftLoopPair], dict[str, str | None]]:
     pairs: dict[DraftLoopKey, DraftLoopPair] = {}
-    for path, source in ((pairs_file, "manual"), (auto_pairs_file, "auto")):
+    hashes: dict[str, str | None] = {"pairs_file": None, "auto_pairs_file": None}
+    for key, path, source in (
+        ("pairs_file", pairs_file, "manual"),
+        ("auto_pairs_file", auto_pairs_file, "auto"),
+    ):
         if path is None:
             continue
         expanded = path.expanduser()
-        if expanded.exists():
-            pairs.update(load_pairs_file(expanded, default_source=source))
-    return pairs
+        if not expanded.is_file():
+            raise FileNotFoundError(f"configured Wappi pairs file is missing: {expanded}")
+        loaded, digest = load_pairs_file_snapshot(expanded, default_source=source)
+        pairs.update(loaded)
+        hashes[key] = digest
+    return pairs, hashes
 
 
 def load_existing_unmatched_wappi_records(

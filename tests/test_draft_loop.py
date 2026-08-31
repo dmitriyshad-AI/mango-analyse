@@ -38,6 +38,7 @@ from mango_mvp.integrations.draft_loop import (
     build_draft_loop_code_identity,
     classify_manager_edit_windows,
     load_pairs_file,
+    load_pairs_file_snapshot,
     load_profiles_file,
     normalize_wappi_message_page,
     persist_auto_pair,
@@ -918,6 +919,33 @@ def test_persist_auto_pair_does_not_duplicate_or_move_watermark(tmp_path: Path) 
 
     loaded = load_pairs_file(path, default_source="auto")
     assert loaded[key].not_before_ts == 1200
+
+
+def test_pairs_snapshot_keeps_opened_bytes_and_next_read_sees_atomic_replace(tmp_path: Path) -> None:
+    path = tmp_path / "auto_pairs.json"
+    first = DraftLoopPair(
+        key=DraftLoopKey("profile-foton", "chat-1"),
+        lead_id="49762441",
+        expected_brand="foton",
+        source="auto",
+    )
+    second = DraftLoopPair(
+        key=DraftLoopKey("profile-foton", "chat-2"),
+        lead_id="49832125",
+        expected_brand="foton",
+        source="auto",
+    )
+    assert persist_auto_pair(path, first) is True
+
+    pinned, pinned_sha = load_pairs_file_snapshot(path, default_source="auto")
+    replacement = tmp_path / "replacement.json"
+    assert persist_auto_pair(replacement, second) is True
+    replacement.replace(path)
+    latest, latest_sha = load_pairs_file_snapshot(path, default_source="auto")
+
+    assert set(pinned) == {first.key}
+    assert set(latest) == {second.key}
+    assert pinned_sha != latest_sha
 
 
 def test_draft_loop_quarantines_one_pair_on_allowlist_403_and_continues(tmp_path: Path) -> None:

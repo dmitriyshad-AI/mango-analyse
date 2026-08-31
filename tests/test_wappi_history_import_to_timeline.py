@@ -415,7 +415,7 @@ def test_wappi_require_nonempty_profile_blocks_all_apply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
-    seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
+    customer_id = seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
     monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-id")
     client = FakeWidgetWappiClient(
         {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
@@ -689,6 +689,110 @@ def test_wappi_apply_does_not_turn_optional_widget_gate_on_implicitly(
     assert report["limit_hits"] == []
     with sqlite3.connect(db_path) as con:
         assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("replacement_kind", ("additive", "destructive"))
+def test_wappi_atomic_pair_replace_uses_pinned_mapping_only_when_still_valid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_kind: str,
+) -> None:
+    import mango_mvp.customer_timeline.wappi_history_import as module
+
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        lead_id="1001",
+        contact_id="2002",
+    )
+    pairs_path = write_pairs(tmp_path, lead_id="1001", contact_id="2002", chat_id="123456")
+    real_snapshot = module.load_wappi_pairs_snapshot
+
+    def snapshot_then_replace(*args: Any, **kwargs: Any):
+        result = real_snapshot(*args, **kwargs)
+        replacement = tmp_path / "replacement_pairs.json"
+        replacement_payload = []
+        if replacement_kind == "additive":
+            replacement_payload = [
+                {
+                    "profile_id": "p-tg",
+                    "chat_id": "123456",
+                    "lead_id": "1001",
+                    "contact_id": "2002",
+                    "expected_brand": "foton",
+                },
+                {
+                    "profile_id": "p-tg",
+                    "chat_id": "999999",
+                    "lead_id": "9001",
+                    "contact_id": "9002",
+                    "expected_brand": "foton",
+                },
+            ]
+        replacement.write_text(json.dumps(replacement_payload), encoding="utf-8")
+        replacement.replace(pairs_path)
+        return result
+
+    monkeypatch.setattr(module, "load_wappi_pairs_snapshot", snapshot_then_replace)
+    monkeypatch.delenv("AMO_WAPPI_CRM_ID", raising=False)
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=write_phase1_config(tmp_path),
+            pairs_file=pairs_path,
+            auto_pairs_file=None,
+            apply=True,
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=5,
+                messages_per_chat=5,
+                message_limit_total=20,
+                sleep_seconds=0,
+            ),
+        ),
+        client=FakeWappiClient(
+            {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+            {
+                ("telegram", "p-tg", "123456"): [
+                    {"id": "m-1", "chat_id": "123456", "body": "Цена?", "time": 1_753_000_000}
+                ]
+            },
+        ),
+    )
+
+    provenance = report["provenance"]
+    assert provenance["input_hashes"]["pairs_file"] == provenance["input_hashes_start"]["pairs_file"]
+    assert provenance["pair_hashes_observed_pre_apply"]["pairs_file"] != provenance["input_hashes"]["pairs_file"]
+    with sqlite3.connect(db_path) as con:
+        if replacement_kind == "additive":
+            assert report["mode"] == "apply"
+            assert "pair_mapping_drift" not in report["limit_hits"]
+            assert provenance["pair_mapping_drift"] is False
+            assert con.execute("SELECT customer_id FROM timeline_events").fetchone()[0] == customer_id
+        else:
+            assert report["mode"] == "apply_blocked"
+            assert "pair_mapping_drift" in report["limit_hits"]
+            assert provenance["pair_mapping_drift"] is True
+            assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+
+
+def test_wappi_configured_missing_pairs_file_fails_closed(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
+
+    with pytest.raises(FileNotFoundError, match="configured Wappi pairs file is missing"):
+        run_wappi_history_import(
+            WappiHistoryImportConfig(
+                timeline_db=db_path,
+                allowed_root=tmp_path,
+                phase1_config=write_phase1_config(tmp_path),
+                pairs_file=tmp_path / "missing_pairs.json",
+                auto_pairs_file=None,
+                apply=True,
+            ),
+            client=FakeWappiClient({"p-tg": [], "p-max": []}, {}),
+        )
 
 
 def test_wappi_old_unmatched_event_relinks_without_network_message(
@@ -2406,6 +2510,52 @@ def test_wappi_history_apply_provenance_drift_writes_nothing(
             ),
         ),
         client=client,
+    )
+
+    assert report["mode"] == "apply_blocked"
+    assert report["writes"]["applied"] is False
+    assert "provenance_drift" in report["limit_hits"]
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+
+
+def test_wappi_history_phase_config_drift_still_blocks_apply(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    phase1 = write_phase1_config(tmp_path)
+
+    class MutatingClient(FakeWappiClient):
+        mutated = False
+
+        def list_chats(self, **kwargs: Any) -> Mapping[str, Any]:
+            if not self.mutated:
+                phase1.write_text(phase1.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+                self.mutated = True
+            return super().list_chats(**kwargs)
+
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            apply=True,
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=5,
+                messages_per_chat=5,
+                message_limit_total=20,
+                sleep_seconds=0,
+            ),
+        ),
+        client=MutatingClient(
+            {"p-tg": [{"id": "chat-1", "type": "user"}], "p-max": []},
+            {
+                ("telegram", "p-tg", "chat-1"): [
+                    {"id": "m-1", "chat_id": "chat-1", "body": "Цена?", "time": 1_753_000_000}
+                ]
+            },
+        ),
     )
 
     assert report["mode"] == "apply_blocked"

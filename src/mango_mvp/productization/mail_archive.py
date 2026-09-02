@@ -1097,6 +1097,10 @@ def build_mail_archive_ingest(
             "stable_runtime_writes": False,
         },
         "messages_found_since": 0,
+        "messages_already_archived_by_uid": 0,
+        "messages_pending_after_uid_filter": 0,
+        "uid_incremental_skip": False,
+        "uid_incremental_skip_reason": "not_checked",
         "messages_attempted": 0,
         "messages_completed": 0,
         "messages_unprocessed": 0,
@@ -1135,6 +1139,15 @@ def build_mail_archive_ingest(
         uidvalidity = selected_mailbox_uidvalidity(imap)
         report["uidvalidity"] = uidvalidity
         report["uidvalidity_stable"] = True
+        known_uids, source_count_before = known_mailbox_uids(
+            db_path,
+            account_label=config.account_label,
+            mailbox_raw=config.mailbox,
+            uidvalidity=uidvalidity,
+        )
+        report["uid_incremental_skip"] = True
+        report["uid_incremental_skip_reason"] = "per_source_uidvalidity"
+        report["source_rows_before"] = source_count_before
         try:
             search_status, search_data = imap.uid("SEARCH", None, *search_criteria)
         except Exception as exc:  # noqa: BLE001
@@ -1150,12 +1163,19 @@ def build_mail_archive_ingest(
             )
         message_ids = parse_search_ids(search_status, search_data)
         report["messages_found_since"] = len(message_ids)
+        pending_ids = [
+            item
+            for item in message_ids
+            if item.decode("ascii", "ignore") not in known_uids
+        ]
+        report["messages_already_archived_by_uid"] = len(message_ids) - len(pending_ids)
+        report["messages_pending_after_uid_filter"] = len(pending_ids)
         selected_ids = (
-            message_ids
+            pending_ids
             if config.allow_unlimited
-            else message_ids[-max_messages:] if max_messages > 0 else []
+            else pending_ids[-max_messages:] if max_messages > 0 else []
         )
-        report["selection_truncated"] = len(selected_ids) < len(message_ids)
+        report["selection_truncated"] = len(selected_ids) < len(pending_ids)
         report["messages_attempted"] = len(selected_ids)
 
         def record_fetched_message(fetched: Mapping[str, Any]) -> None:
@@ -1208,6 +1228,7 @@ def build_mail_archive_ingest(
                         raw_dir=raw_dir,
                         attachment_dir=attachment_dir,
                         text_dir=text_dir,
+                        uidvalidity=uidvalidity,
                     )
                     record_fetched_message(fetched)
                     report["messages_completed"] += 1
@@ -1239,7 +1260,6 @@ def build_mail_archive_ingest(
         int(report["messages_attempted"]) - int(report["messages_completed"]),
     )
     report["mailbox_complete"] = not report["errors"] and report["messages_unprocessed"] == 0
-
     write_json(report_path, report)
     return report
 
@@ -5844,6 +5864,7 @@ def ingest_one_message(
     raw_dir: Path,
     attachment_dir: Path,
     text_dir: Path,
+    uidvalidity: str,
 ) -> Mapping[str, Any]:
     fetch_status, fetch_data = imap.uid("FETCH", msg_id, FULL_MESSAGE_FETCH_QUERY)
     if fetch_status != "OK":
@@ -5871,6 +5892,7 @@ def ingest_one_message(
                 config.account_label,
                 config.mailbox,
                 msg_id.decode("ascii", "ignore"),
+                uidvalidity,
                 metadata["message_id"],
                 raw_sha256,
             ]
@@ -5894,6 +5916,7 @@ def ingest_one_message(
             source_key=source_key,
             msg_id=msg_id,
             config=config,
+            uidvalidity=uidvalidity,
             metadata=metadata,
             message_kind=message_kind,
             raw_path=raw_path,
@@ -6471,6 +6494,7 @@ def init_mail_archive_db(db_path: Path) -> None:
               mailbox TEXT NOT NULL,
               mailbox_raw TEXT NOT NULL,
               imap_seq TEXT NOT NULL,
+              uidvalidity TEXT NOT NULL DEFAULT '',
               source_message_id TEXT,
               ingested_at TEXT NOT NULL
             );
@@ -6496,6 +6520,19 @@ def init_mail_archive_db(db_path: Path) -> None:
             );
             """
         )
+        source_columns = {
+            str(row[1]) for row in con.execute("PRAGMA table_info(message_sources)")
+        }
+        if "uidvalidity" not in source_columns:
+            con.execute(
+                "ALTER TABLE message_sources ADD COLUMN uidvalidity TEXT NOT NULL DEFAULT ''"
+            )
+        con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_message_sources_mailbox_uid
+            ON message_sources (account_label, mailbox_raw, uidvalidity, imap_seq)
+            """
+        )
         con.executemany(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
             [
@@ -6505,6 +6542,30 @@ def init_mail_archive_db(db_path: Path) -> None:
         )
         init_mail_match_tables(con)
         con.commit()
+
+
+def known_mailbox_uids(
+    db_path: Path,
+    *,
+    account_label: str,
+    mailbox_raw: str,
+    uidvalidity: str,
+) -> tuple[set[str], int]:
+    with sqlite3.connect(str(db_path)) as con:
+        source_count = int(
+            con.execute(
+                "SELECT COUNT(*) FROM message_sources WHERE account_label = ? AND mailbox_raw = ?",
+                (account_label, mailbox_raw),
+            ).fetchone()[0]
+        )
+        rows = con.execute(
+            """
+            SELECT imap_seq FROM message_sources
+            WHERE account_label = ? AND mailbox_raw = ? AND uidvalidity = ?
+            """,
+            (account_label, mailbox_raw, uidvalidity),
+        ).fetchall()
+    return {str(row[0]) for row in rows}, source_count
 
 
 def init_mail_match_tables(con: sqlite3.Connection) -> None:
@@ -6561,6 +6622,7 @@ def upsert_message(
     source_key: str,
     msg_id: bytes,
     config: MailArchiveIngestConfig,
+    uidvalidity: str,
     metadata: Mapping[str, str],
     message_kind: str,
     raw_path: Path,
@@ -6603,8 +6665,8 @@ def upsert_message(
         """
         INSERT OR IGNORE INTO message_sources (
           source_key, message_sha256, account_label, mailbox, mailbox_raw,
-          imap_seq, source_message_id, ingested_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          imap_seq, uidvalidity, source_message_id, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             source_key,
@@ -6613,6 +6675,7 @@ def upsert_message(
             config.mailbox_label,
             config.mailbox,
             msg_id.decode("ascii", "ignore"),
+            uidvalidity,
             metadata["message_id"],
             now,
         ),

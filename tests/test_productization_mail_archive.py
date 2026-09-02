@@ -616,6 +616,9 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
     assert second["raw_eml_written"] == 0
     assert second["attachments_written"] == 0
     assert second["text_files_written"] == 0
+    assert second["messages_attempted"] == 0
+    assert second["messages_already_archived_by_uid"] == 1
+    assert fake_imap.fetch_queries == [FULL_MESSAGE_FETCH_QUERY]
 
     with sqlite3.connect(archive_db) as con:
         assert con.execute("select count(*) from messages").fetchone()[0] == 1
@@ -959,6 +962,35 @@ def test_mail_archive_uidvalidity_change_aborts_retry(
     assert report["mailbox_tail_aborted"] is True
     assert report["mailbox_complete"] is False
     assert "UIDVALIDITY changed" in report["errors"][0]["error"]
+
+
+def test_mail_archive_does_not_skip_uid_from_different_uidvalidity(tmp_path: Path) -> None:
+    class ChangedUidClient(FakeImapClient):
+        def response(self, code: str) -> tuple[str, Sequence[Any]]:
+            assert code == "UIDVALIDITY"
+            return "UIDVALIDITY", [b"999"]
+
+    credentials = MailImapCredentials(
+        "mail.example.test", 993, "school@kmipt.ru", "not-written"
+    )
+    config = MailArchiveIngestConfig(out_dir=tmp_path / "archive", max_messages=1)
+    build_mail_archive_ingest(
+        credentials=credentials,
+        config=config,
+        client=FakeImapClient([_raw_message()]),
+    )
+    changed = ChangedUidClient([_raw_message()])
+
+    report = build_mail_archive_ingest(
+        credentials=credentials,
+        config=config,
+        client=changed,
+    )
+
+    assert report["uid_incremental_skip"] is True
+    assert report["uid_incremental_skip_reason"] == "per_source_uidvalidity"
+    assert report["messages_attempted"] == 1
+    assert changed.fetch_queries == [FULL_MESSAGE_FETCH_QUERY]
 
 
 def test_mail_archive_rejects_fetch_payload_for_another_uid(tmp_path: Path) -> None:

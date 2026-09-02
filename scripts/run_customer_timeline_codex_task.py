@@ -39,6 +39,8 @@ from mango_mvp.customer_timeline.calls_two_processes import configured_calls_wor
 from mango_mvp.customer_timeline.store import customer_timeline_run_lock  # noqa: E402
 from mango_mvp.productization.mail_archive import DEFAULT_MAIL_DATA_ROOT  # noqa: E402
 from scripts.build_customer_timeline_nightly_dv2_sources import (  # noqa: E402
+    is_sha256_digest,
+    resolve_mail_process_input,
     snapshot_wappi_pair_inputs,
 )
 from scripts.run_customer_timeline_mail_download import sha256_file  # noqa: E402
@@ -195,6 +197,14 @@ def validate_nightly_config(path: Path | None = None) -> str:
     wappi_config = steps["wappi_history_incremental"].get("config")
     if not isinstance(wappi_config, Mapping) or wappi_config.get("require_widget_linkage") is not False:
         return "wappi_history_incremental must quarantine incomplete identity linkage"
+    phase1_config = Path(str(wappi_config.get("phase1_config") or "")).expanduser().resolve(strict=False)
+    if not phase1_config.is_file():
+        return "wappi_history_incremental phase1_config is missing"
+    phase1_config_sha = str(wappi_config.get("phase1_config_sha256") or "").strip().lower()
+    if not is_sha256_digest(phase1_config_sha):
+        return "wappi_history_incremental phase1_config_sha256 is missing or invalid"
+    if phase1_config_sha != sha256_file(phase1_config):
+        return "wappi_history_incremental phase1_config SHA mismatch"
     mail_config = steps["mail_link_enrich"].get("config")
     if not isinstance(mail_config, Mapping) or mail_config.get("reconsider_pending") is not True:
         return "mail_link_enrich must reconsider pending after Tallanto refresh"
@@ -300,8 +310,21 @@ def validate_nightly_config(path: Path | None = None) -> str:
         return "mail_archive_incremental proof must use the canonical process manifest"
     if float(mail_source.get("proof_max_age_hours") or 0) != 72.0:
         return "mail_archive_incremental proof freshness window must be 72 hours"
-    configured_manifest_sha = str(mail_source.get("proof_manifest_sha256") or "")
-    if process_manifest.is_file() and configured_manifest_sha != sha256_file(process_manifest):
+    configured_manifest_sha = str(mail_source.get("proof_manifest_sha256") or "").strip().lower()
+    if not is_sha256_digest(configured_manifest_sha):
+        return "mail_archive_incremental proof_manifest_sha256 is missing or invalid"
+    try:
+        mail_report = resolve_mail_process_input(expected_state_root)
+    except RuntimeError as exc:
+        return f"mail_archive_incremental process manifest is invalid: {exc}"
+    if mail_report.get("verified") is not True:
+        return f"mail_archive_incremental process manifest is not verified: {mail_report.get('reason') or 'unknown'}"
+    if process_manifest != Path(str(mail_report["process_manifest"])).expanduser().resolve(strict=False):
+        return "mail_archive_incremental proof must use the canonical process manifest"
+    source_path = Path(str(mail_source.get("path") or "")).expanduser().resolve(strict=False)
+    if source_path != Path(str(mail_report["output_jsonl"])).expanduser().resolve(strict=False):
+        return "mail_archive_incremental source path must match the verified process manifest"
+    if configured_manifest_sha != str(mail_report["process_manifest_sha256"]):
         return "mail_archive_incremental process manifest changed; rebuild config"
     sweep_script = Path(
         str(steps["mango_processed_sweep"].get("config", {}).get("producer_script") or "")
@@ -545,12 +568,26 @@ def parse_last_json(text: str) -> Mapping[str, Any]:
     return last
 
 
-def status_from_payload(payload: Mapping[str, Any], rc: int, stop_reason: str) -> tuple[str, str]:
+def status_from_payload(
+    payload: Mapping[str, Any],
+    rc: int,
+    stop_reason: str,
+    *,
+    require_data_quality: bool = False,
+) -> tuple[str, str]:
     if stop_reason:
         return "stopped", stop_reason
+    status = str(payload.get("status") or payload.get("overall_status") or "").strip()
+    data_quality_status = str(payload.get("data_quality_status") or "").strip()
+    if require_data_quality:
+        if not data_quality_status:
+            if rc != 0:
+                return "failed", f"command_rc={rc}"
+            return "stopped", "data_quality_status_missing"
+        if data_quality_status != "pass":
+            return "stopped", f"data_quality_status={data_quality_status}"
     if rc != 0:
         return "failed", f"command_rc={rc}"
-    status = str(payload.get("status") or payload.get("overall_status") or "").strip()
     if status in {"locked", "not_configured", "failed", "error"}:
         return "stopped", status
     if payload.get("partial_failure") is True:
@@ -559,7 +596,8 @@ def status_from_payload(payload: Mapping[str, Any], rc: int, stop_reason: str) -
         return "stopped", "gate_failed"
     if status == "partial":
         return "stopped", "partial"
-    data_quality_status = str(payload.get("data_quality_status") or "").strip()
+    if require_data_quality and str(payload.get("overall_status") or "").strip() != "ok":
+        return "stopped", f"overall_status={payload.get('overall_status') or 'missing'}"
     if data_quality_status and data_quality_status != "pass":
         return "stopped", f"data_quality_status={data_quality_status}"
     failed_required = payload.get("failed_required_steps")
@@ -828,7 +866,12 @@ def _run_task(task: str, *, tallanto_phone_limit: int) -> int:
         effective_stop_reason = (
             f"nightly_runtime_budget_exceeded_seconds={runtime_budget_seconds:.0f}"
         )
-    status, reason = status_from_payload(payload, rc, effective_stop_reason)
+    status, reason = status_from_payload(
+        payload,
+        rc,
+        effective_stop_reason,
+        require_data_quality=task == "nightly-warehouse",
+    )
     finished = datetime.now(timezone.utc)
     extra_metrics = [task_success_age_metric(task, status=status, finished=finished)]
     if task == "nightly-warehouse":

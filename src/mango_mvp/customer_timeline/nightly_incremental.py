@@ -72,6 +72,12 @@ class IncrementalSourceConfig:
             if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
                 raise ValueError("proof_manifest_sha256 must be a lowercase SHA256 digest")
             object.__setattr__(self, "proof_manifest_sha256", digest)
+        if (
+            self.source_system == "mail_archive_stage2"
+            and self.proof_manifest_path is not None
+            and self.proof_manifest_sha256 is None
+        ):
+            raise ValueError("mail_archive_stage2 proof_manifest_sha256 is required")
         if self.proof_max_age_hours is not None:
             max_age = float(self.proof_max_age_hours)
             if max_age <= 0:

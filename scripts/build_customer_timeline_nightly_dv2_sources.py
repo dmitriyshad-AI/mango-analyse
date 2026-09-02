@@ -77,6 +77,10 @@ REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
 WAPPI_PAIR_SNAPSHOT_DIRNAME = "input_snapshots"
 
 
+def is_sha256_digest(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
 def wappi_pair_snapshot_paths(
     state_root: Path,
     *,
@@ -219,6 +223,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     state_root.mkdir(parents=True, exist_ok=True)
     wappi_pair_snapshot = snapshot_wappi_pair_inputs(state_root)
     mail_report = resolve_mail_process_input(state_root)
+    if mail_report.get("verified") is not True:
+        raise RuntimeError(str(mail_report.get("reason") or "mail_process_manifest_unverified"))
     mail_jsonl = Path(str(mail_report["output_jsonl"]))
     mail_process_manifest = Path(str(mail_report["process_manifest"]))
     freshness_root = state_root / "freshness"
@@ -316,6 +322,17 @@ def resolve_mail_process_input(state_root: Path) -> Mapping[str, Any]:
         raise RuntimeError("mail_process_manifest_unreadable") from exc
     if not isinstance(payload, Mapping) or payload.get("status") != "ok":
         raise RuntimeError("mail_process_manifest_not_ok")
+    rows_written = payload.get("rows_written")
+    if not isinstance(rows_written, int) or isinstance(rows_written, bool) or rows_written < 0:
+        raise RuntimeError("mail_process_rows_written_invalid")
+    if rows_written > 0 and not str(payload.get("max_event_at") or "").strip():
+        raise RuntimeError("mail_process_max_event_at_missing")
+    try:
+        finished_at = datetime.fromisoformat(str(payload["finished_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError("mail_process_finished_at_invalid") from exc
+    if finished_at.tzinfo is None or finished_at.utcoffset() is None:
+        raise RuntimeError("mail_process_finished_at_invalid")
     declared_output = Path(str(payload.get("output_jsonl") or "")).expanduser().resolve(strict=False)
     declared_builder = Path(str(payload.get("builder_manifest") or "")).expanduser().resolve(strict=False)
     if declared_output != output_jsonl.resolve(strict=False):
@@ -338,7 +355,7 @@ def resolve_mail_process_input(state_root: Path) -> Mapping[str, Any]:
         "output_sha256": output_sha,
         "builder_manifest": str(builder_manifest),
         "builder_manifest_sha256": builder_sha,
-        "rows_written": int(payload.get("rows_written") or 0),
+        "rows_written": rows_written,
         "max_event_at": payload.get("max_event_at"),
         "finished_at": payload.get("finished_at"),
         "verified": True,
@@ -661,7 +678,22 @@ def build_service_config(
     wappi_auto_pairs_file = Path(pair_snapshot["auto_pairs_file"])
     wappi_pairs_sha256 = sha256_file(wappi_pairs_file)
     wappi_auto_pairs_sha256 = sha256_file(wappi_auto_pairs_file)
+    phase1_config_sha256 = sha256_file(DEFAULT_WAPPI_CONFIG)
+    if not is_sha256_digest(phase1_config_sha256):
+        raise RuntimeError("wappi_phase1_config_sha_unavailable")
     mail_root = state_root / "mail_pipeline"
+    mail_process_manifest = (
+        Path(mail_process_manifest).expanduser().resolve(strict=False)
+        if mail_process_manifest is not None
+        else (mail_root / "mail_process_manifest.json").resolve(strict=False)
+    )
+    mail_process_manifest_sha256 = str(mail_process_manifest_sha256 or "").strip().lower()
+    if not mail_process_manifest.is_file():
+        raise RuntimeError("mail_process_manifest_missing")
+    if not is_sha256_digest(mail_process_manifest_sha256):
+        raise RuntimeError("mail_process_manifest_sha256_missing")
+    if sha256_file(mail_process_manifest) != mail_process_manifest_sha256:
+        raise RuntimeError("mail_process_manifest_sha_mismatch")
     tallanto_cards_root = state_root / "tallanto_cards"
     runtime_root = state_root
     mango_sweep_jsonl = calls_root / "mango_processed_sweep.jsonl"
@@ -770,6 +802,7 @@ def build_service_config(
                 "allowed_root": str(allowed_root),
                 "env_file": str(DEFAULT_WAPPI_ENV),
                 "phase1_config": str(DEFAULT_WAPPI_CONFIG),
+                "phase1_config_sha256": phase1_config_sha256,
                 "pairs_file": str(wappi_pairs_file),
                 "auto_pairs_file": str(wappi_auto_pairs_file),
                 "pairs_file_sha256": wappi_pairs_sha256,

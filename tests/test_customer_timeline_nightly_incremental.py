@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import hashlib
 import sqlite3
@@ -8,6 +9,7 @@ import time
 import os
 import subprocess
 import sys
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -869,6 +871,60 @@ def test_nightly_incremental_cli_returns_nonzero_when_required_gate_fails(
     )
 
     assert nightly_cli.main(["--config", str(config), "--summary-only"]) == 1
+
+
+def test_nightly_service_cli_summary_only_keeps_data_quality_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_service = types.ModuleType("mango_mvp.customer_timeline.nightly_service")
+    fake_service.service_config_from_json = lambda _path: object()
+    fake_service.run_nightly_service = lambda _config: {
+        "schema_version": "customer_timeline_nightly_service_v1",
+        "run_id": "run-1",
+        "overall_status": "ok",
+        "data_quality_status": "pass_with_notes",
+        "partial_failure": False,
+        "failed_required_steps": [],
+        "required_sources_check": {"missing": ["email"], "degraded": ["email"]},
+        "degraded_steps": [{"name": "mail_archive_incremental"}],
+        "degraded_sources": {"email": {"status": "degraded"}},
+        "duration_seconds": 1.0,
+        "steps": [],
+        "snapshot_manifest": {"latest_published": True},
+        "safety": {"writes_prod_db": False},
+    }
+    monkeypatch.setitem(sys.modules, fake_service.__name__, fake_service)
+    script = Path(__file__).resolve().parents[1] / "scripts/run_customer_timeline_nightly_service.py"
+    spec = importlib.util.spec_from_file_location("nightly_service_cli_test", script)
+    nightly_service_cli = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(nightly_service_cli)
+
+    rc = nightly_service_cli.main(["--config", str(tmp_path / "config.json"), "--summary-only"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["data_quality_status"] == "pass_with_notes"
+    assert payload["required_sources_check"]["degraded"] == ["email"]
+    assert payload["degraded_steps"][0]["name"] == "mail_archive_incremental"
+    assert payload["degraded_sources"]["email"]["status"] == "degraded"
+
+
+def test_mail_archive_stage2_proof_requires_pinned_manifest_sha(tmp_path: Path) -> None:
+    source_path = tmp_path / "mail.jsonl"
+    proof_path = tmp_path / "mail_process_manifest.json"
+
+    with pytest.raises(ValueError, match="mail_archive_stage2 proof_manifest_sha256"):
+        IncrementalSourceConfig(
+            name="mail_stage2",
+            source_system="mail_archive_stage2",
+            path=source_path,
+            normalizer="mail_archive_stage2",
+            proof_manifest_path=proof_path,
+            proof_max_age_hours=72,
+        )
 
 
 def test_nightly_incremental_cli_rejects_canonical_staging_writer(

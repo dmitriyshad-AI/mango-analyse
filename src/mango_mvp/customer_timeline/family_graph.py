@@ -15,6 +15,10 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from mango_mvp.customer_profile.builder import child_name_keys, normalized_name_tokens
 from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.ids import normalize_email, normalize_key, stable_digest, stable_prefixed_id
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
+)
 from mango_mvp.customer_timeline.store import (
     authoritative_tallanto_student_owners,
     customer_timeline_readonly_uri,
@@ -344,6 +348,10 @@ def _guard_db(path: Path, *, apply: bool) -> Path:
         raise ValueError("family graph must not open prod timeline DB")
     if apply and (".codex_local" not in resolved.parts or "staging" not in resolved.parts):
         raise ValueError("family graph apply requires DB under .codex_local/staging")
+    if apply:
+        resolved = guard_customer_timeline_writable_path(
+            guard_managed_customer_timeline_staging_write(resolved)
+        )
     return resolved
 
 

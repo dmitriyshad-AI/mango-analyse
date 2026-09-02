@@ -1,18 +1,25 @@
 > TAKE 2026-09-02 13:32 | ветка codex/customer-timeline-source-gates-20260902 | codex
 
 Ветка: codex/customer-timeline-source-gates-20260902
-Зоны: scripts/build_customer_timeline_nightly_dv2_sources.py, scripts/run_customer_timeline_codex_task.py, scripts/run_customer_timeline_mail_chain.py, scripts/run_customer_timeline_mail_import.py, scripts/run_customer_timeline_nightly_incremental.py, deploy/customer_timeline_daily_captures/, src/mango_mvp/customer_timeline/nightly_incremental.py, src/mango_mvp/customer_timeline/mail_stage2_ingest.py, src/mango_mvp/customer_timeline/nightly_service.py, src/mango_mvp/customer_timeline/safety.py, src/mango_mvp/customer_timeline/store.py, src/mango_mvp/customer_timeline/wappi_history_import.py, tests/, docs/, tasks/
-Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_nightly_incremental.py tests/test_customer_timeline_codex_task.py tests/test_wappi_history_checkpoint.py
+Зоны: scripts/backfill_customer_timeline_next_steps_from_summary.py, scripts/build_customer_timeline_nightly_dv2_sources.py, scripts/repair_mail_stage2_event_dates.py, scripts/retrofit_channel_brand_tags_in_timeline.py, scripts/run_customer_timeline_codex_task.py, scripts/run_customer_timeline_mail_chain.py, scripts/run_customer_timeline_mail_import.py, scripts/run_customer_timeline_nightly_incremental.py, scripts/run_customer_timeline_nightly_service.py, deploy/customer_timeline_daily_captures/, src/mango_mvp/customer_timeline/family_graph.py, src/mango_mvp/customer_timeline/nightly_incremental.py, src/mango_mvp/customer_timeline/mail_stage2_ingest.py, src/mango_mvp/customer_timeline/nightly_service.py, src/mango_mvp/customer_timeline/safety.py, src/mango_mvp/customer_timeline/store.py, src/mango_mvp/customer_timeline/wappi_history_import.py, tests/, docs/, tasks/
+Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_nightly_incremental.py tests/test_customer_timeline_codex_task.py tests/test_customer_timeline_nightly_service.py tests/test_customer_timeline_contracts.py tests/test_customer_timeline_family_graph.py tests/test_customer_timeline_mail_stage2_ingest.py tests/test_wappi_history_checkpoint.py tests/test_wappi_history_import_to_timeline.py tests/test_retrofit_channel_brand_tags_in_timeline.py
 Семантический-аудит: да
 Feature-ID: feature.customer_timeline.stable_source_gates
 Problem-ID: problem.customer_timeline.m4_first_cycle_source_failures
 Изменение: fix
-Ключевые-символы: load_incremental_jsonl_source,parse_mail_stage2_event_at,wappi_fetch_universe_fingerprint,ensure_nightly_config
-Ключевые-слова: mail event timestamp proof,Wappi checkpoint fingerprint,immutable pair snapshot
+Ключевые-символы: load_incremental_jsonl_source,parse_mail_stage2_event_at,wappi_fetch_universe_fingerprint,ensure_nightly_config,managed_staging_writer_scope,guard_managed_customer_timeline_staging_write,activate_writer_ownership_after_success,validate_writer_ownership,run_nightly_service,resolve_chat,IncrementalSourceConfig,status_from_payload
+Ключевые-слова: mail event timestamp proof,Wappi checkpoint fingerprint,immutable pair snapshot,single writer activation boundary,Tallanto subprocess scope,partial cycle recovery,Wappi owner conflict,mail proof manifest,raw sqlite writer bypass
 
 Проверенный-донор: e4391b438c9a25fa544cf0d4adc680593d9897bb
 
 # Customer Timeline: закрыть два сбоя первого цикла M4
+
+## Примечание для preflight
+
+Текущий HEAD — исходная ревизия до исправлений. Preflight оценивает, полон ли, безопасен ли и
+реализуем ли план ниже. Нереализованные пункты 14–18 на исходном HEAD сами по себе не являются
+`PASS_WITH_FIXES`: это и есть заданная работа. `PASS_WITH_FIXES` нужен только если для их корректной реализации в ТЗ
+отсутствует обязательное решение или граница.
 
 ## Проблема
 
@@ -73,6 +80,16 @@ Problem-ID: problem.customer_timeline.m4_first_cycle_source_failures
     обновляет last-success штатной обёртки. Квитанция владения может при этом
     зафиксировать уже состоявшийся безопасный commit: владение writer и
     приёмка качества являются разными состояниями.
+14. На первом M4-цикле владение writer фиксируется после lock, проверки seed/stop-квитанции,
+    пустого WAL и совместимости Wappi-checkpoint, но до первой записи. Право writer и зелёный
+    статус цикла остаются разными фактами; partial не сжигает runtime-root.
+15. Авторизованный nightly-scope пересекает границу subprocess только для штатного Tallanto-importer;
+    тот же импортёр вне nightly-scope по-прежнему не может писать в managed staging.
+16. Все пять найденных raw-SQLite путей перед apply/restore проходят общую пару managed+writable guards;
+    read-only/dry-run контракты не меняются.
+17. Запомненный `existing_wappi_chat_customer_conflict` не может быть затёрт последующей widget-резолюцией.
+18. Обязательный Mail-источник всегда имеет существующий проверенный manifest и закреплённый SHA;
+    ноль новых писем представлен пустым валидным manifest, а не отсутствием proof.
 
 ## Границы
 
@@ -101,3 +118,6 @@ Problem-ID: problem.customer_timeline.m4_first_cycle_source_failures
 - Wappi fingerprint совпадает с переданным checkpoint;
 - изменение живого auto-pairs во время импорта не меняет frozen-вход запуска;
 - полный профильный pytest зелёный и независимый аудит не имеет P0/P1.
+- первая activation-квитанция существует до первого write-Store; kill/partial не блокируют следующий запуск;
+- дочерний Tallanto-importer пишет в managed staging только из проверенного nightly-scope;
+- raw-SQLite apply/restore вне nightly-scope, затирание Wappi-конфликта и unpinned Mail-manifest закрыты регрессионными тестами.

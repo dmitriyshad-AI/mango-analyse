@@ -217,6 +217,7 @@ def _acquire_advisory_lock_handle(
     timeout_seconds: float,
     timeout_error: type[Exception],
     timeout_message: str,
+    record_lock: bool = False,
 ) -> tuple[Any, float]:
     if timeout_seconds < 0:
         raise ValueError("lock timeout must not be negative")
@@ -227,7 +228,10 @@ def _acquire_advisory_lock_handle(
     try:
         while True:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if record_lock:
+                    fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return handle, time.monotonic() - started
             except BlockingIOError:
                 waited = time.monotonic() - started
@@ -240,6 +244,7 @@ def _acquire_advisory_lock_handle(
 
 
 _RUN_LOCK_STATE = threading.local()
+_RUN_LOCK_PROOF_STATE = threading.local()
 
 
 def _held_customer_timeline_run_locks() -> dict[str, Any]:
@@ -247,6 +252,14 @@ def _held_customer_timeline_run_locks() -> dict[str, Any]:
     if held is None:
         held = {}
         _RUN_LOCK_STATE.held = held
+    return held
+
+
+def _held_customer_timeline_run_lock_proofs() -> dict[str, Any]:
+    held = getattr(_RUN_LOCK_PROOF_STATE, "held", None)
+    if held is None:
+        held = {}
+        _RUN_LOCK_PROOF_STATE.held = held
     return held
 
 
@@ -260,6 +273,7 @@ def customer_timeline_run_lock(
 
     lock_path = customer_timeline_run_lock_path(path)
     held = _held_customer_timeline_run_locks()
+    held_proofs = _held_customer_timeline_run_lock_proofs()
     lock_key = str(lock_path)
     if lock_key in held:
         yield {"path": lock_key, "waited_seconds": 0.0, "reentrant": True}
@@ -270,8 +284,22 @@ def customer_timeline_run_lock(
         timeout_error=TimeoutError,
         timeout_message=f"customer timeline run lock timeout: {lock_path}",
     )
+    proof_path = Path(str(lock_path) + ".owner")
+    try:
+        proof_handle, _proof_waited = _acquire_advisory_lock_handle(
+            proof_path,
+            timeout_seconds=timeout_seconds,
+            timeout_error=TimeoutError,
+            timeout_message=f"customer timeline run proof lock timeout: {proof_path}",
+            record_lock=True,
+        )
+    except Exception:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+        raise
     try:
         held[lock_key] = handle
+        held_proofs[lock_key] = proof_handle
         yield {
             "path": str(lock_path),
             "waited_seconds": round(waited, 3),
@@ -279,6 +307,9 @@ def customer_timeline_run_lock(
         }
     finally:
         held.pop(lock_key, None)
+        held_proofs.pop(lock_key, None)
+        fcntl.lockf(proof_handle.fileno(), fcntl.LOCK_UN)
+        proof_handle.close()
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 

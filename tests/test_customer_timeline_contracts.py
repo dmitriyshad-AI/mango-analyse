@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -37,7 +40,13 @@ from mango_mvp.customer_timeline import (
     stable_digest,
     stable_event_id,
 )
-from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
+    managed_staging_writer_scope,
+    managed_staging_writer_subprocess_pass_fds,
+)
+from mango_mvp.customer_timeline.store import customer_timeline_run_lock
 
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
@@ -661,6 +670,321 @@ def test_customer_timeline_writable_path_rejects_hard_link(tmp_path: Path) -> No
 
     assert guard_customer_timeline_writable_path(tmp_path / "new-staging.sqlite").name == "new-staging.sqlite"
     assert guard_customer_timeline_writable_path(tmp_path) == tmp_path
+
+
+def test_managed_writer_scope_requires_held_lock_and_exact_db(tmp_path: Path) -> None:
+    db_path = _managed_staging_db(tmp_path / "owned")
+    other_db = _managed_staging_db(tmp_path / "other")
+    alias = db_path.with_name("staging-alias.sqlite")
+    os.link(db_path, alias)
+
+    with pytest.raises(ValueError, match="unified nightly service"):
+        guard_managed_customer_timeline_staging_write(db_path)
+    with pytest.raises(ValueError, match="unified nightly service"):
+        guard_managed_customer_timeline_staging_write(alias)
+    with pytest.raises(ValueError, match="held nightly service lock"):
+        with managed_staging_writer_scope(db_path):
+            pass
+
+    with customer_timeline_run_lock(db_path, timeout_seconds=1):
+        with managed_staging_writer_scope():
+            assert guard_managed_customer_timeline_staging_write(db_path) == db_path
+            with pytest.raises(ValueError, match="unified nightly service"):
+                guard_managed_customer_timeline_staging_write(other_db)
+
+    with pytest.raises(ValueError, match="unified nightly service"):
+        guard_managed_customer_timeline_staging_write(db_path)
+
+
+def test_managed_writer_scope_inherits_to_subprocess_only_for_locked_exact_db(tmp_path: Path) -> None:
+    db_path = _managed_staging_db(tmp_path / "owned")
+    other_db = _managed_staging_db(tmp_path / "other")
+
+    with customer_timeline_run_lock(db_path, timeout_seconds=1) as lock_info:
+        fake_env = os.environ.copy()
+        fake_env.update(
+            {
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_DB": str(db_path),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_LOCK": str(lock_info["path"]),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PARENT_PID": str(os.getpid()),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_LOCK": str(lock_info["path"]) + ".owner",
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_FD": "9999",
+            }
+        )
+        denied_forged_scope = _run_managed_guard_child(db_path, env=fake_env)
+        with managed_staging_writer_scope():
+            inherited_env = os.environ.copy()
+            inherited_fds = managed_staging_writer_subprocess_pass_fds()
+            allowed = _run_managed_guard_child(db_path, env=inherited_env, pass_fds=inherited_fds)
+            wrong_fd_env = dict(inherited_env)
+            wrong_fd_env["MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_FD"] = "9999"
+            denied_wrong_fd = _run_managed_guard_child(db_path, env=wrong_fd_env, pass_fds=inherited_fds)
+            denied_other = _run_managed_guard_child(other_db, env=inherited_env, pass_fds=inherited_fds)
+            with Path(str(db_path) + ".nightly_service.lock.owner").open("r") as separate_lock:
+                forged_fd_env = dict(inherited_env)
+                forged_fd_env["MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_FD"] = str(separate_lock.fileno())
+                allowed_same_parent_separate_fd = _run_managed_guard_child(
+                    db_path,
+                    env=forged_fd_env,
+                    pass_fds=(separate_lock.fileno(),),
+                )
+
+    denied_after_lock = _run_managed_guard_child(db_path, env=inherited_env)
+    denied_without_scope = _run_managed_guard_child(db_path)
+
+    assert allowed.returncode == 0, allowed.stderr
+    assert allowed.stdout.strip() == "allowed"
+    assert denied_forged_scope.returncode == 1
+    assert denied_wrong_fd.returncode == 1
+    assert denied_other.returncode == 1
+    assert allowed_same_parent_separate_fd.returncode == 0
+    assert "unified nightly service" in denied_other.stdout
+    assert denied_after_lock.returncode == 1
+    assert "unified nightly service" in denied_after_lock.stdout
+    assert denied_without_scope.returncode == 1
+    assert "unified nightly service" in denied_without_scope.stdout
+
+
+def test_managed_writer_scope_rejects_inherited_but_unlocked_descriptor(tmp_path: Path) -> None:
+    db_path = _managed_staging_db(tmp_path / "owned")
+    lock_path = Path(str(db_path) + ".nightly_service.lock")
+    proof_lock_path = Path(str(lock_path) + ".owner")
+    lock_path.touch()
+    proof_lock_path.touch()
+    with proof_lock_path.open("r+") as unlocked_handle:
+        fake_env = os.environ.copy()
+        fake_env.update(
+            {
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_DB": str(db_path),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_LOCK": str(lock_path),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PARENT_PID": str(os.getpid()),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_LOCK": str(proof_lock_path),
+                "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_FD": str(unlocked_handle.fileno()),
+            }
+        )
+        denied = _run_managed_guard_child(
+            db_path,
+            env=fake_env,
+            pass_fds=(unlocked_handle.fileno(),),
+        )
+
+    assert denied.returncode == 1
+    assert "unified nightly service" in denied.stdout
+
+
+def test_managed_writer_scope_rejects_parent_proof_without_run_lock(tmp_path: Path) -> None:
+    db_path = _managed_staging_db(tmp_path / "owned")
+    lock_path = Path(str(db_path) + ".nightly_service.lock")
+    proof_lock_path = Path(str(lock_path) + ".owner")
+    lock_path.touch()
+    proof_lock_path.touch()
+    with proof_lock_path.open("r+") as proof_handle:
+        fcntl.lockf(proof_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            fake_env = os.environ.copy()
+            fake_env.update(
+                {
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_DB": str(db_path),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_LOCK": str(lock_path),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PARENT_PID": str(os.getpid()),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_LOCK": str(proof_lock_path),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_FD": str(proof_handle.fileno()),
+                }
+            )
+            denied = _run_managed_guard_child(
+                db_path,
+                env=fake_env,
+                pass_fds=(proof_handle.fileno(),),
+            )
+        finally:
+            fcntl.lockf(proof_handle.fileno(), fcntl.LOCK_UN)
+
+    assert denied.returncode == 1
+    assert "unified nightly service" in denied.stdout
+
+
+def test_managed_writer_scope_rejects_run_lock_owned_by_unrelated_process(tmp_path: Path) -> None:
+    db_path = _managed_staging_db(tmp_path / "owned")
+    lock_path = Path(str(db_path) + ".nightly_service.lock")
+    proof_lock_path = Path(str(lock_path) + ".owner")
+    lock_path.touch()
+    proof_lock_path.touch()
+    holder_script = (
+        "import fcntl,os,sys,time; "
+        "run=open(sys.argv[1],'r+'); proof=open(sys.argv[2],'r+'); "
+        "fcntl.flock(run.fileno(),fcntl.LOCK_EX); "
+        "fcntl.lockf(proof.fileno(),fcntl.LOCK_EX); "
+        "print('ready',flush=True); time.sleep(30)"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", holder_script, str(lock_path), str(proof_lock_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "ready"
+        with proof_lock_path.open("r+") as unlocked_handle:
+            fake_env = os.environ.copy()
+            fake_env.update(
+                {
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_DB": str(db_path),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_LOCK": str(lock_path),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PARENT_PID": str(os.getpid()),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_LOCK": str(proof_lock_path),
+                    "MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PROOF_FD": str(unlocked_handle.fileno()),
+                }
+            )
+            denied = _run_managed_guard_child(
+                db_path,
+                env=fake_env,
+                pass_fds=(unlocked_handle.fileno(),),
+            )
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+
+    assert denied.returncode == 1
+    assert "unified nightly service" in denied.stdout
+
+
+def test_direct_raw_sqlite_apply_restore_paths_reject_managed_staging_without_scope(tmp_path: Path) -> None:
+    from scripts.backfill_customer_timeline_next_steps_from_summary import backfill_next_steps_from_summary
+    from scripts.repair_mail_stage2_event_dates import repair_dates
+    from scripts.retrofit_channel_brand_tags_in_timeline import (
+        RetrofitChannelBrandConfig,
+        run_retrofit_channel_brand_tags,
+    )
+    from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
+    from mango_mvp.customer_timeline.mail_stage2_ingest import (
+        MailStage2IngestConfig,
+        apply_stage2_mail_ingest,
+        restore_timeline_backup,
+    )
+
+    db_path = _managed_staging_db(tmp_path / "owned")
+    event_jsonl = tmp_path / "mail_stage2.jsonl"
+    event_jsonl.write_text("", encoding="utf-8")
+    mail_config = MailStage2IngestConfig(
+        timeline_db_path=db_path,
+        allowed_root=db_path.parent,
+        identity_db_path=tmp_path / "identity.sqlite",
+        event_jsonl_paths=(event_jsonl,),
+        out_dir=tmp_path / "mail-out",
+    )
+    cases = (
+        ("backfill", lambda: backfill_next_steps_from_summary(db_path, apply=True)),
+        (
+            "retrofit",
+            lambda: run_retrofit_channel_brand_tags(
+                RetrofitChannelBrandConfig(
+                    timeline_db=db_path,
+                    allowed_root=db_path.parent,
+                    apply=True,
+                )
+            ),
+        ),
+        (
+            "repair",
+            lambda: repair_dates(
+                db_path=db_path,
+                event_paths=(event_jsonl,),
+                archive_roots=(tmp_path,),
+                dry_run=False,
+            ),
+        ),
+        (
+            "family_graph",
+            lambda: build_family_graph(
+                FamilyGraphConfig(
+                    timeline_db=db_path,
+                    allowed_root=db_path.parent,
+                    apply=True,
+                )
+            ),
+        ),
+        ("mail_apply", lambda: apply_stage2_mail_ingest(mail_config, backup_manifest_path=tmp_path / "missing.json")),
+        ("mail_restore", lambda: restore_timeline_backup(mail_config, backup_manifest_path=tmp_path / "missing.json")),
+    )
+
+    for _name, invoke in cases:
+        with pytest.raises(ValueError, match="unified nightly service"):
+            invoke()
+
+
+def test_mail_date_repair_dry_run_opens_timeline_immutable_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.repair_mail_stage2_event_dates as repair_module
+
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "CREATE TABLE timeline_events ("
+            "event_id TEXT,source_id TEXT,source_ref TEXT,source_system TEXT,opportunity_id TEXT,"
+            "event_at TEXT,record_json TEXT)"
+        )
+    observed: list[tuple[str, bool]] = []
+    real_connect = sqlite3.connect
+
+    def observed_connect(database, *args, **kwargs):
+        observed.append((str(database), bool(kwargs.get("uri"))))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(repair_module.sqlite3, "connect", observed_connect)
+    report = repair_module.repair_dates(
+        db_path=db_path,
+        event_paths=(),
+        archive_roots=(),
+        dry_run=True,
+    )
+
+    assert report["mode"] == "dry_run"
+    assert observed == [(db_path.resolve().as_uri() + "?mode=ro&immutable=1", True)]
+
+
+def _managed_staging_db(root: Path) -> Path:
+    staging = root / ".codex_local" / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    db_path = staging / "customer_timeline_staging.sqlite"
+    db_path.write_bytes(b"")
+    state = staging / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "WRITER_OWNERSHIP.json").write_text("{}\n", encoding="utf-8")
+    return db_path.resolve(strict=False)
+
+
+def _run_managed_guard_child(
+    db_path: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    script = """
+import sys
+from mango_mvp.customer_timeline.safety import guard_managed_customer_timeline_staging_write
+try:
+    guard_managed_customer_timeline_staging_write(sys.argv[1])
+except Exception as exc:
+    print(str(exc))
+    raise SystemExit(1)
+print("allowed")
+"""
+    child_env = dict(os.environ if env is None else env)
+    repo_src = str(Path(__file__).resolve().parents[1] / "src")
+    if child_env.get("PYTHONPATH"):
+        child_env["PYTHONPATH"] = repo_src + os.pathsep + str(child_env["PYTHONPATH"])
+    else:
+        child_env["PYTHONPATH"] = repo_src
+    return subprocess.run(
+        [sys.executable, "-c", script, str(db_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=child_env,
+        pass_fds=pass_fds,
+        check=False,
+    )
 
 
 @pytest.mark.parametrize("bad_customer_id", ("None", " null ", "NaN", "undefined", "<NA>", "N/A"))

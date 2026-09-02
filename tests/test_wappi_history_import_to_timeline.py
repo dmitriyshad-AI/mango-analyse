@@ -37,6 +37,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     close_resolved_wappi_pending_conflicts,
     confirm_wappi_widget_candidates_from_amo_talks,
     enrich_wappi_widget_links_from_timeline_amo_events,
+    fetch_wappi_history_records,
     file_sha256,
     git_worktree_provenance,
     is_personal_wappi_dialog,
@@ -51,8 +52,10 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     safe_wappi_exception,
     sanitize_wappi_import_error,
     timeline_db_identity,
+    wappi_catalog_lifecycle_source_ids,
     wappi_dialog_identity_keys,
     wappi_message_to_record,
+    wappi_timeline_chat_state,
     write_json_report,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiHttpError
@@ -266,6 +269,21 @@ def test_wappi_history_import_rejects_pair_snapshot_sha_before_network(tmp_path:
     )
 
     with pytest.raises(ValueError, match="snapshot SHA mismatch"):
+        run_wappi_history_import(config, client=object())
+
+
+def test_wappi_history_import_rejects_phase1_snapshot_sha_before_network(tmp_path: Path) -> None:
+    phase1 = write_phase1_config(tmp_path)
+    config = WappiHistoryImportConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        phase1_config=phase1,
+        phase1_config_sha256="0" * 64,
+        pairs_file=None,
+        auto_pairs_file=None,
+    )
+
+    with pytest.raises(ValueError, match="phase1_config snapshot SHA mismatch"):
         run_wappi_history_import(config, client=object())
 
 
@@ -2067,6 +2085,79 @@ def test_wappi_resolver_blocks_existing_chat_customer_change(tmp_path: Path) -> 
     assert resolution.reason == "existing_wappi_chat_customer_conflict"
 
 
+def test_wappi_resolver_keeps_remembered_chat_conflict_before_widget_acceptance(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    old_customer = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        customer_id="customer:old",
+        lead_id="9001",
+        contact_id="9002",
+    )
+    new_customer = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        customer_id="customer:new",
+        lead_id="1001",
+        contact_id="2002",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=old_customer,
+                link_type="channel_session_id",
+                link_value="wappi_telegram:p-tg:123456",
+                source_system="wappi_telegram",
+                source_ref="wappi_telegram:chat:p-tg:123456",
+                match_class=IdentityMatchClass.MANUAL,
+                confidence=1.0,
+            ),
+            actor="test",
+        )
+    pair_key = DraftLoopKey("p-tg", "123456")
+    profile_spec = profile("p-tg", "foton", "telegram")
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs={
+            pair_key: DraftLoopPair(
+                key=pair_key,
+                lead_id="1001",
+                contact_id="2002",
+                expected_brand="foton",
+            )
+        },
+        widget_links={
+            ("telegram", "p-tg", "123456"): {
+                "status": "resolved",
+                "contact_id": "2002",
+                "lead_ids": ("1001",),
+                "resolution_source": "wappi_amo_widget",
+            }
+        },
+    )
+    primed = resolver.prime_pair_chat_resolution(
+        profile=profile_spec,
+        dialog={"id": "123456", "type": "user"},
+    )
+
+    resolution = resolver.resolve_chat(
+        profile=profile_spec,
+        dialog={"id": "123456", "type": "user"},
+        messages=(),
+    )
+
+    assert primed is not None
+    assert primed.reason == "existing_wappi_chat_customer_conflict"
+    assert resolution.reason == "existing_wappi_chat_customer_conflict"
+    assert set(resolution.candidate_customer_ids) == {old_customer, new_customer}
+    assert resolver.widget_calls == 1
+    assert resolver.chat_resolutions[("wappi_telegram", "p-tg", "123456")] == primed
+
+
 def test_wappi_report_is_owner_only(tmp_path: Path) -> None:
     path = tmp_path / "wappi_report.json"
     write_json_report(path, {"ok": True})
@@ -2551,6 +2642,116 @@ def test_wappi_complete_history_reads_past_per_chat_and_total_limits(tmp_path: P
     assert report["profiles"]["p-tg"]["message_limit_hit"] is False
     offsets = [call["offset"] for call in client.calls if call["kind"] == "messages"]
     assert 200 in offsets
+
+
+def test_wappi_full_audit_counts_attachment_only_historical_message_as_existing(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        customer_id="customer:attachment",
+        lead_id="1001",
+        contact_id="2002",
+    )
+    profile_spec = profile("p-tg", "foton", "telegram")
+    attachment = WappiHistoryMessage(
+        profile_id="p-tg",
+        chat_id="123456",
+        message_id="document-1",
+        text="",
+        message_type="document",
+        timestamp=1_753_000_000,
+        from_me=False,
+    )
+    batch = WappiHistoryTimelineNormalizer(
+        tenant_id="foton",
+        source_system="wappi_telegram",
+    ).normalize(
+        wappi_message_to_record(
+            profile=profile_spec,
+            message=attachment,
+            resolution=WappiChatResolution(
+                status="resolved",
+                customer_id=customer_id,
+                contact_id="2002",
+                lead_id="1001",
+                lead_ids=("1001",),
+                resolution_source="wappi_amo_widget",
+            ),
+        )
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(batch.events[0], actor="test")
+        for link in batch.identity_links:
+            store.upsert_identity_link(link, actor="test")
+    _cursors, snapshots = wappi_timeline_chat_state(db_path, tenant_id="foton")
+    local_snapshot = next(iter(snapshots["wappi_telegram:p-tg"].values()))
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs={},
+        widget_links={
+            ("telegram", "p-tg", "123456"): {
+                "status": "resolved",
+                "contact_id": "2002",
+                "lead_ids": ("1001",),
+                "resolution_source": "wappi_amo_widget",
+            }
+        },
+    )
+    resolver.prime_widget_chat_resolutions((profile_spec,))
+    verified: dict[tuple[str, str, str], set[str]] = {}
+
+    records, stats = fetch_wappi_history_records(
+        client=FakeWappiClient(
+            {"p-tg": []},
+            {
+                ("telegram", "p-tg", "123456"): [
+                    {
+                        "id": "document-1",
+                        "chat_id": "123456",
+                        "type": "document",
+                        "body": "",
+                        "caption": "",
+                        "time": 1_753_000_000,
+                    }
+                ]
+            },
+        ),
+        profiles=(profile_spec,),
+        resolver=resolver,
+        limits=WappiFetchLimits(
+            complete_message_history=True,
+            page_size=10,
+            request_limit_total=20,
+            sleep_seconds=0,
+        ),
+        tenant_id="foton",
+        checkpoint={"profiles": {}},
+        next_checkpoint={},
+        catalog_chat_classes={},
+        historical_personal_chat_snapshots={
+            ("wappi_telegram", "p-tg", "123456"): local_snapshot
+        },
+        verified_historical_personal_source_ids=verified,
+    )
+
+    source_id = "p-tg:123456:document-1"
+    assert {record.payload["timeline_source_id"] for record in records} == {source_id}
+    assert stats[("wappi_telegram", "p-tg")].historical_snapshot_source_records == 1
+    assert verified[("wappi_telegram", "p-tg", "123456")] == {source_id}
+    personal, _non_personal, source_absent, _lifecycle = wappi_catalog_lifecycle_source_ids(
+        db_path,
+        tenant_id="foton",
+        chat_classes={},
+        verified_historical_personal_source_ids={
+            key: frozenset(value) for key, value in verified.items()
+        },
+    )
+    assert personal["wappi_telegram"] == {source_id}
+    assert source_absent["wappi_telegram"] == set()
 
 
 def test_wappi_history_apply_provenance_drift_writes_nothing(

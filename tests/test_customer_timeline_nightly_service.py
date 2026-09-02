@@ -450,6 +450,66 @@ def write_service_config(tmp_path: Path, *, enabled: bool = True) -> Path:
     return path
 
 
+def write_transferred_writer_ownership(
+    config,
+    receipt_path: Path,
+    *,
+    source_config_sha256: str = "a" * 64,
+):
+    seed_sha = nightly_service_module.file_fingerprint(config.timeline_db)["sha256"]
+    stopped_at = "2026-08-30T10:00:00+00:00"
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    stop_receipt_path = receipt_path.parent / "M1_WRITER_STOP.json"
+    stop_receipt_path.write_text(
+        json.dumps(
+            {
+                "status": "STOPPED",
+                "host": "M1",
+                "service_disabled": True,
+                "writer_processes": 0,
+                "seed_sha256": seed_sha,
+                "stopped_at": stopped_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    canonical = replace(
+        config,
+        required_manifest_sources=tuple(nightly_service_module.REQUIRED_MANIFEST_SOURCE_STEP_MAP),
+        ownership_receipt_path=receipt_path,
+        source_config_sha256=source_config_sha256,
+    )
+    current_head = subprocess.check_output(
+        ["git", "-C", str(Path(nightly_service_module.__file__).resolve().parents[3]), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "status": "TRANSFERRED",
+                "from": "M1",
+                "to": "M4",
+                "seed_sha256": seed_sha,
+                "code_sha": current_head,
+                "m1_writer_stopped_at": stopped_at,
+                "m4_local_db_sha256_before_first_write": seed_sha,
+                "m4_service_config_sha256": source_config_sha256,
+                "m4_ownership_config_sha256": nightly_service_module.service_ownership_fingerprint(
+                    canonical,
+                    timeline_db=canonical.timeline_db.resolve(strict=False),
+                    allowed_root=canonical.allowed_root.resolve(strict=False),
+                    out_root=canonical.out_root.resolve(strict=False),
+                    publish_dir=canonical.publish_dir.resolve(strict=False),
+                ),
+                "m4_timeline_db": str(canonical.timeline_db.resolve(strict=False)),
+                "m1_stop_receipt_sha256": nightly_service_module.file_fingerprint(stop_receipt_path)["sha256"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return canonical
+
+
 def test_full_nightly_config_rejects_stale_schema_before_opening_db(tmp_path: Path) -> None:
     config_path = tmp_path / "full-nightly.json"
     config_path.write_text(
@@ -492,8 +552,7 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
 ) -> None:
     monkeypatch.setattr(nightly_service_module, "_tracked_worktree_is_clean", lambda _root: True)
     config = service_config_from_json(write_service_config(tmp_path))
-    config.timeline_db.write_bytes(b"frozen-seed")
-    seed_sha = nightly_service_module.file_fingerprint(config.timeline_db)["sha256"]
+    seed_customer(config.timeline_db, tmp_path)
     receipt_path = tmp_path / "state" / "WRITER_OWNERSHIP.json"
     canonical = replace(
         config,
@@ -504,51 +563,7 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
     with pytest.raises(ValueError, match="WRITER_OWNERSHIP"):
         validate_writer_ownership(canonical)
 
-    receipt_path.parent.mkdir()
-    stopped_at = "2026-08-30T10:00:00+00:00"
-    stop_receipt_path = receipt_path.parent / "M1_WRITER_STOP.json"
-    stop_receipt_path.write_text(
-        json.dumps(
-            {
-                "status": "STOPPED",
-                "host": "M1",
-                "service_disabled": True,
-                "writer_processes": 0,
-                "seed_sha256": seed_sha,
-                "stopped_at": stopped_at,
-            }
-        ),
-        encoding="utf-8",
-    )
-    current_head = subprocess.check_output(
-        ["git", "-C", str(Path(nightly_service_module.__file__).resolve().parents[3]), "rev-parse", "HEAD"],
-        text=True,
-    ).strip()
-    receipt_path.write_text(
-        json.dumps(
-            {
-                "status": "TRANSFERRED",
-                "from": "M1",
-                "to": "M4",
-                "seed_sha256": seed_sha,
-                "code_sha": current_head,
-                "m1_writer_stopped_at": stopped_at,
-                "m4_local_db_sha256_before_first_write": seed_sha,
-                "m4_service_config_sha256": "a" * 64,
-                "m4_ownership_config_sha256": nightly_service_module.service_ownership_fingerprint(
-                    canonical,
-                    timeline_db=canonical.timeline_db.resolve(strict=False),
-                    allowed_root=canonical.allowed_root.resolve(strict=False),
-                    out_root=canonical.out_root.resolve(strict=False),
-                    publish_dir=canonical.publish_dir.resolve(strict=False),
-                ),
-                "m4_timeline_db": str(config.timeline_db.resolve()),
-                "m1_stop_receipt_sha256": nightly_service_module.file_fingerprint(stop_receipt_path)["sha256"],
-            }
-        ),
-        encoding="utf-8",
-    )
-
+    canonical = write_transferred_writer_ownership(config, receipt_path)
     ownership = validate_writer_ownership(canonical)
     assert ownership["status"] == "TRANSFERRED"
     with pytest.raises(ValueError, match="config SHA mismatch"):
@@ -563,52 +578,119 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
     receipt_path.write_text(json.dumps(manually_active), encoding="utf-8")
     ownership = validate_writer_ownership(canonical)
 
-    config.timeline_db.write_bytes(b"changed-by-first-successful-run")
-    current_db_sha = nightly_service_module.file_fingerprint(config.timeline_db)["sha256"]
-    first_report = canonical.out_root / "run_run-first" / "service_report.json"
-    first_report.parent.mkdir(parents=True)
-    first_report_payload = {
-                "run_id": "run-first",
-                "overall_status": "ok",
-                "partial_failure": False,
-                "writer_ownership": ownership,
-                "config_fingerprint": nightly_service_module.service_config_fingerprint(
-                    canonical,
-                    timeline_db=canonical.timeline_db.resolve(strict=False),
-                    allowed_root=canonical.allowed_root.resolve(strict=False),
-                    out_root=canonical.out_root.resolve(strict=False),
-                    publish_dir=canonical.publish_dir.resolve(strict=False),
-                ),
-                "timeline_db": str(canonical.timeline_db.resolve(strict=False)),
-                "snapshot_manifest": {"latest_published": True, "sha256": current_db_sha},
-            }
-    first_report_payload["config_fingerprint"] = "not-a-sha256".ljust(64, "x")
-    first_report.write_text(json.dumps(first_report_payload), encoding="utf-8")
-    recovery = validate_writer_ownership(canonical, allow_activation_recovery=True)
-    assert recovery["status"] == "M4_WRITER_ACTIVATION_RECOVERY_REQUIRED"
-    assert nightly_service_module._recover_writer_activation_from_completed_report(
-        canonical, recovery
-    ) is False
+    original_db = config.timeline_db.read_bytes()
+    config.timeline_db.write_bytes(b"changed-before-activation")
+    with pytest.raises(ValueError, match="seed does not match"):
+        validate_writer_ownership(canonical)
+    config.timeline_db.write_bytes(original_db)
 
-    first_report_payload["config_fingerprint"] = nightly_service_module.service_config_fingerprint(
-        canonical,
-        timeline_db=canonical.timeline_db.resolve(strict=False),
-        allowed_root=canonical.allowed_root.resolve(strict=False),
-        out_root=canonical.out_root.resolve(strict=False),
-        publish_dir=canonical.publish_dir.resolve(strict=False),
+    order: list[str] = []
+    real_write_json = nightly_service_module.write_json
+
+    def observed_precheck(_config):
+        assert not (receipt_path.parent / "M4_WRITER_ACTIVATION.json").exists()
+        order.append("precheck")
+        return {"status": "not_required", "reason": "test"}
+
+    def observed_write_json(path, payload):
+        if path.name == "M4_WRITER_ACTIVATION.json":
+            order.append("activation")
+            assert order == ["precheck", "activation"]
+            assert payload["activation_boundary"] == "before_first_db_write"
+            assert payload["pre_activation_checks"]["wal_quiescence"] == {
+                "wal_path": str(canonical.timeline_db) + "-wal",
+                "wal_size": 0,
+                "mode": "read_only_stat",
+            }
+        return real_write_json(path, payload)
+
+    monkeypatch.setattr(nightly_service_module, "precheck_transferred_wappi_checkpoint", observed_precheck)
+    monkeypatch.setattr(nightly_service_module, "write_json", observed_write_json)
+    active, activation = nightly_service_module.activate_writer_ownership_before_first_write(
+        canonical, ownership, timeline_db=canonical.timeline_db
     )
-    first_report.write_text(json.dumps(first_report_payload), encoding="utf-8")
-    assert nightly_service_module._recover_writer_activation_from_completed_report(
-        canonical, recovery
-    ) is True
+
+    assert active["status"] == "M4_WRITER_ACTIVE"
+    assert activation["status"] == "created"
+
+    real_file_fingerprint = nightly_service_module.file_fingerprint
+
+    def reject_active_db_hash(path):
+        if Path(path).expanduser().resolve(strict=False) == canonical.timeline_db.resolve(strict=False):
+            raise AssertionError("active writer validation must not hash the timeline DB")
+        return real_file_fingerprint(path)
+
+    monkeypatch.setattr(nightly_service_module, "file_fingerprint", reject_active_db_hash)
     assert validate_writer_ownership(canonical)["status"] == "M4_WRITER_ACTIVE"
     assert validate_writer_ownership(
         replace(canonical, source_config_sha256="d" * 64)
     )["status"] == "M4_WRITER_ACTIVE"
+    monkeypatch.setattr(nightly_service_module, "file_fingerprint", real_file_fingerprint)
 
-    first_report.write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="not backed by the first successful run"):
+    activation_path = receipt_path.parent / "M4_WRITER_ACTIVATION.json"
+    bad_activation = json.loads(activation_path.read_text(encoding="utf-8"))
+    bad_activation["pre_activation_checks"]["wal_quiescence"]["wal_size"] = 1
+    activation_path.write_text(json.dumps(bad_activation), encoding="utf-8")
+    with pytest.raises(ValueError, match="pre-write gates"):
         validate_writer_ownership(canonical)
+
+
+def test_m4_activation_survives_kill_and_partial_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(nightly_service_module, "_tracked_worktree_is_clean", lambda _root: True)
+    config = service_config_from_json(write_service_config(tmp_path))
+    seed_customer(config.timeline_db, tmp_path)
+    receipt_path = tmp_path / "state" / "WRITER_OWNERSHIP.json"
+    canonical = write_transferred_writer_ownership(config, receipt_path)
+    real_write_progress = nightly_service_module.write_progress
+    killed = False
+
+    def kill_after_activation(*args, **kwargs):
+        nonlocal killed
+        if not killed:
+            killed = True
+            assert (receipt_path.parent / "M4_WRITER_ACTIVATION.json").is_file()
+            raise RuntimeError("simulated kill after activation")
+        return real_write_progress(*args, **kwargs)
+
+    monkeypatch.setattr(nightly_service_module, "write_progress", kill_after_activation)
+    with pytest.raises(RuntimeError, match="simulated kill after activation"):
+        run_nightly_service(canonical)
+    monkeypatch.setattr(nightly_service_module, "write_progress", real_write_progress)
+
+    report = run_nightly_service(canonical)
+
+    assert report["writer_ownership"]["status"] == "M4_WRITER_ACTIVE"
+    assert report["writer_activation"]["status"] == "not_required"
+    assert report["overall_status"] == "partial"
+
+
+def test_m4_activation_rejects_nonempty_wal_without_mutating_seed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(nightly_service_module, "_tracked_worktree_is_clean", lambda _root: True)
+    config = service_config_from_json(write_service_config(tmp_path))
+    seed_customer(config.timeline_db, tmp_path)
+    receipt_path = tmp_path / "state" / "WRITER_OWNERSHIP.json"
+    canonical = write_transferred_writer_ownership(config, receipt_path)
+    seed_sha = nightly_service_module.file_fingerprint(canonical.timeline_db)["sha256"]
+    wal_path = Path(str(canonical.timeline_db) + "-wal")
+    wal_path.write_bytes(b"not-quiescent")
+
+    with pytest.raises(ValueError, match="empty WAL"):
+        nightly_service_module.activate_writer_ownership_before_first_write(
+            canonical,
+            validate_writer_ownership(canonical),
+            timeline_db=canonical.timeline_db,
+        )
+
+    assert nightly_service_module.file_fingerprint(canonical.timeline_db)["sha256"] == seed_sha
+    assert not (receipt_path.parent / "M4_WRITER_ACTIVATION.json").exists()
+    wal_path.unlink()
+    assert validate_writer_ownership(canonical)["status"] == "TRANSFERRED"
 
 
 def test_nightly_run_directory_suffixes_same_second_collision(tmp_path: Path) -> None:
@@ -649,7 +731,10 @@ def test_managed_staging_store_requires_unified_nightly_scope(tmp_path: Path) ->
         CustomerTimelineSQLiteStore(timeline, allowed_root=staging)
 
     with nightly_service_module.service_lock(timeline, timeout_seconds=0):
-        CustomerTimelineSQLiteStore(timeline, allowed_root=staging).close()
+        with pytest.raises(ValueError, match="unified nightly service"):
+            CustomerTimelineSQLiteStore(timeline, allowed_root=staging).close()
+        with nightly_service_module.managed_staging_writer_scope():
+            CustomerTimelineSQLiteStore(timeline, allowed_root=staging).close()
 
 
 def test_canonical_service_config_rejects_incomplete_source_chain(tmp_path: Path) -> None:
@@ -723,6 +808,46 @@ def test_resume_fingerprint_changes_with_wappi_pair_snapshot_sha(tmp_path: Path)
     )
 
     assert after != before
+
+
+def test_resume_fingerprint_changes_with_wappi_phase1_config_sha(tmp_path: Path) -> None:
+    phase1 = tmp_path / "phase1.json"
+    phase1.write_text('{"version":1}', encoding="utf-8")
+    config_path = tmp_path / "nightly.json"
+    payload = {
+        "timeline_db": str(tmp_path / "customer_timeline.sqlite"),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "wappi_history",
+                "config": {
+                    "env_file": str(tmp_path / "wappi.env"),
+                    "phase1_config": str(phase1),
+                },
+            }
+        ],
+    }
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    config = service_config_from_json(config_path)
+    paths = nightly_service_module.validated_service_paths(config)
+    before = nightly_service_module.service_config_fingerprint(
+        config, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    )
+    ownership_before = nightly_service_module.service_ownership_fingerprint(
+        config, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    )
+
+    phase1.write_text('{"version":2}', encoding="utf-8")
+
+    assert nightly_service_module.service_config_fingerprint(
+        config, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    ) != before
+    assert nightly_service_module.service_ownership_fingerprint(
+        config, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    ) != ownership_before
 
 
 def test_ownership_fingerprint_ignores_run_pair_sha_but_not_wappi_limits(tmp_path: Path) -> None:
@@ -892,14 +1017,16 @@ def test_nightly_service_keeps_service_lock_through_manifest_publish(tmp_path: P
     config = service_config_from_json(write_service_config(tmp_path))
     state = {"locked": False}
     original_manifest = nightly_service_module.build_snapshot_manifest
+    original_service_lock = nightly_service_module.service_lock
 
     @contextmanager
     def observed_lock(*args, **kwargs):
-        state["locked"] = True
-        try:
-            yield {"path": str(tmp_path / "observed.lock"), "waited_seconds": 0.0}
-        finally:
-            state["locked"] = False
+        with original_service_lock(*args, **kwargs) as lock_info:
+            state["locked"] = True
+            try:
+                yield lock_info
+            finally:
+                state["locked"] = False
 
     def observed_manifest(*args, **kwargs):
         assert state["locked"] is True
@@ -1554,7 +1681,7 @@ def test_nightly_service_publishes_other_sources_with_wappi_degraded(
     assert report["failed_required_steps"] == []
     assert report["degraded_steps"][0]["name"] == "wappi_history_incremental"
     assert report["degraded_steps"][0]["summary"]["pending_attribution"] == 1
-    assert report["snapshot_manifest"]["latest_published"] is True
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 @pytest.mark.parametrize(
@@ -2142,6 +2269,64 @@ def test_nightly_service_runs_tallanto_money_api_importer_without_exposing_env(
     assert command[command.index("--tallanto-api-env") + 1] == str(env_file)
     assert "secret" not in " ".join(command)
     assert captured["kwargs"]["timeout"] == 3600
+
+
+def test_tallanto_money_api_child_inherits_managed_writer_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# test importer\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    staging = tmp_path / "staging"
+    (staging / "state").mkdir(parents=True)
+    (staging / "state" / "WRITER_OWNERSHIP.json").write_text("{}\n", encoding="utf-8")
+    timeline_db = staging / "customer_timeline_staging.sqlite"
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "validation_ok": True,
+                    "summary": {"status": "completed"},
+                    "api": {"modules": {}},
+                    "safety": {"write_tallanto": False, "write_product_timeline_db": True},
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(nightly_service_module.subprocess, "run", fake_run)
+    step = NightlyServiceStep(
+        name="tallanto_money_api_incremental",
+        kind="tallanto_money_api",
+        tallanto_money_api_config={
+            "importer_script": str(importer),
+            "tallanto_env_file": str(env_file),
+            "timeline_db": str(timeline_db),
+            "allowed_root": str(staging),
+            "apply": True,
+        },
+    )
+
+    with pytest.raises(ValueError, match="unified nightly service"):
+        run_tallanto_money_api_step(step, timeline_db=timeline_db, allowed_root=staging, tenant_id="foton")
+    with service_lock(timeline_db, timeout_seconds=0), nightly_service_module.managed_staging_writer_scope():
+        report = run_tallanto_money_api_step(step, timeline_db=timeline_db, allowed_root=staging, tenant_id="foton")
+
+    assert report["validation_ok"] is True
+    env = captured["kwargs"]["env"]
+    assert env["MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_DB"] == str(timeline_db.resolve(strict=False))
+    assert env["MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_LOCK"] == str(timeline_db.resolve(strict=False)) + ".nightly_service.lock"
+    assert env["MANGO_CUSTOMER_TIMELINE_MANAGED_WRITER_PARENT_PID"] == str(os.getpid())
+    assert len(captured["kwargs"]["pass_fds"]) == 1
 
 
 def test_tallanto_money_failure_diagnostic_contains_no_raw_output(tmp_path: Path, monkeypatch) -> None:
@@ -3999,7 +4184,7 @@ def test_nightly_service_email_missing_input_degrades_only_with_unchanged_state(
     assert report["overall_status"] == "ok"
     assert report["data_quality_status"] == "pass_with_notes"
     assert report["failed_required_steps"] == []
-    assert report["snapshot_manifest"]["latest_published"] is True
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 @pytest.mark.parametrize("poison", ("nonobvious_business_table", "cursor"))

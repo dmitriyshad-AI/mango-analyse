@@ -34,14 +34,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     report = run_nightly_service(service_config_from_json(Path(args.config)))
-    exit_code = 0 if report.get("overall_status") == "ok" else 1
+    exit_code = 0 if report.get("overall_status") == "ok" and report.get("data_quality_status") == "pass" else 1
     if args.summary_only:
         report = {
             "schema_version": report.get("schema_version"),
             "run_id": report.get("run_id"),
+            "started_at": report.get("started_at"),
+            "finished_at": report.get("finished_at"),
             "overall_status": report.get("overall_status"),
+            "data_quality_status": report.get("data_quality_status"),
             "partial_failure": report.get("partial_failure"),
             "failed_required_steps": report.get("failed_required_steps"),
+            "required_sources_check": report.get("required_sources_check"),
+            "degraded_steps": report.get("degraded_steps"),
+            "degraded_sources": report.get("degraded_sources"),
             "duration_seconds": report.get("duration_seconds"),
             "steps": [
                 {

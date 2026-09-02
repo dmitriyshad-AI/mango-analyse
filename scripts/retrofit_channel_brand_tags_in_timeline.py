@@ -17,7 +17,11 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 from mango_mvp.customer_timeline.ids import normalize_key, stable_digest, stable_prefixed_id
-from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_output_path,
+    guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
+)
 from mango_mvp.customer_timeline.store import (
     CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
     guard_customer_timeline_sqlite_path,
@@ -47,6 +51,10 @@ class RetrofitChannelBrandConfig:
             guard_customer_timeline_sqlite_path(Path(self.timeline_db).expanduser()),
             root,
         )
+        if self.apply:
+            db_path = guard_customer_timeline_writable_path(
+                guard_managed_customer_timeline_staging_write(db_path)
+            )
         object.__setattr__(self, "allowed_root", root)
         object.__setattr__(self, "timeline_db", db_path)
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))

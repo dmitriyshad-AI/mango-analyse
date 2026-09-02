@@ -31,6 +31,7 @@ from mango_mvp.customer_timeline.safe_copy import file_sha256
 from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
 )
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
@@ -792,7 +793,9 @@ def apply_stage2_mail_ingest(
     backup_manifest_path: Path,
     lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
-    db_path = _guard_mail_stage2_timeline_db(config)
+    db_path = guard_managed_customer_timeline_staging_write(
+        _guard_mail_stage2_timeline_db(config)
+    )
     with customer_timeline_run_lock(db_path, timeout_seconds=lock_timeout_seconds):
         return _apply_stage2_mail_ingest_unlocked(
             config,
@@ -948,9 +951,11 @@ def restore_timeline_backup(
     backup_manifest_path: Path,
     lock_timeout_seconds: float = 30.0,
 ) -> Mapping[str, Any]:
+    target = guard_managed_customer_timeline_staging_write(
+        _guard_mail_stage2_timeline_db(config)
+    )
     manifest = validate_backup_manifest(config, backup_manifest_path)
     backup_db = Path(str(manifest["backup_db_path"]))
-    target = _guard_mail_stage2_timeline_db(config)
     target.parent.mkdir(parents=True, exist_ok=True)
     # Validate the immutable source before touching the target, then restore
     # under both the workflow lock and Store writer lock. SQLite's backup API

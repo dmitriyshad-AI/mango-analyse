@@ -62,7 +62,12 @@ def _configured_calls_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.fixture(autouse=True)
-def _stable_wrapper_wappi_snapshots(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stable_wrapper_wappi_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    phase1 = tmp_path / "wappi/phase1.json"
+    phase1.parent.mkdir(parents=True, exist_ok=True)
+    phase1.write_text('{"profiles": {}}\n', encoding="utf-8")
+    monkeypatch.setattr(builder, "DEFAULT_WAPPI_CONFIG", phase1)
+
     def fake_snapshot(state_root: Path) -> dict:
         empty_sha = hashlib.sha256(b"[]\n").hexdigest()
         pairs_file, auto_pairs_file = builder.wappi_pair_snapshot_paths(
@@ -102,6 +107,50 @@ def _mail_root_with_identity(tmp_path: Path) -> Path:
     return root
 
 
+def _write_verified_mail_process_state(state_root: Path) -> tuple[Path, Path, str]:
+    mail_root = state_root / "mail_pipeline"
+    process_root = mail_root / "process"
+    process_root.mkdir(parents=True, exist_ok=True)
+    output_jsonl = process_root / "mail_archive_stage2_incremental.jsonl"
+    builder_manifest = process_root / "mail_increment_builder_manifest.json"
+    download_manifest = mail_root / "mail_download_manifest.json"
+    process_manifest = mail_root / "mail_process_manifest.json"
+    output_jsonl.write_text("", encoding="utf-8")
+    builder_manifest.write_text('{"status":"ok"}\n', encoding="utf-8")
+    runtime = {"head": "test-head", "worktree": "/test/worktree"}
+    download_manifest.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "truncated": False,
+                "errors": 0,
+                "runtime": runtime,
+                "mailbox_reports": {"inbox": {"status": "ok"}, "sent": {"status": "ok"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    process_manifest.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "finished_at": "2026-09-02T00:00:00+00:00",
+                "rows_written": 0,
+                "max_event_at": None,
+                "output_jsonl": str(output_jsonl),
+                "output_sha256": builder.sha256_file(output_jsonl),
+                "builder_manifest": str(builder_manifest),
+                "builder_manifest_sha256": builder.sha256_file(builder_manifest),
+                "download_manifest": str(download_manifest),
+                "download_manifest_sha256": builder.sha256_file(download_manifest),
+                "runtime": runtime,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return output_jsonl, process_manifest, builder.sha256_file(process_manifest)
+
+
 def test_builder_passes_mail_data_root_separately_from_repo_root(tmp_path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     mail_data_root = tmp_path / "Mango_Data"
@@ -114,6 +163,7 @@ def test_builder_passes_mail_data_root_separately_from_repo_root(tmp_path, monke
     assert builder.build_parser().parse_args([]).mail_data_root == str(builder.DEFAULT_MAIL_DATA_ROOT)
 
     monkeypatch.setattr(builder, "build_mango_freshness", lambda *args, **kwargs: {})
+    _write_verified_mail_process_state(tmp_path / "state")
 
     def fake_service_config(**kwargs):
         captured["mail_data_root"] = kwargs["mail_data_root"]
@@ -193,6 +243,9 @@ def valid_nightly_payload(staging_root: Path) -> dict:
             }
         ),
         encoding="utf-8",
+    )
+    mail_jsonl, mail_manifest, mail_manifest_sha = _write_verified_mail_process_state(
+        staging_root / "state"
     )
     limits = WappiFetchLimits(
         chat_limit_per_profile=5000,
@@ -302,6 +355,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                     "require_widget_linkage": False,
                     "checkpoint_dir": str(checkpoint_dir),
                     "phase1_config": str(phase1_path),
+                    "phase1_config_sha256": module.sha256_file(phase1_path),
                     "pairs_file": str(pairs_file),
                     "auto_pairs_file": str(auto_pairs_file),
                     "pairs_file_sha256": module.sha256_file(pairs_file),
@@ -325,10 +379,10 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                     "sources": [
                         {
                             "source_system": "mail_archive_stage2",
-                            "proof_manifest_path": str(
-                                staging_root / "state/mail_pipeline/mail_process_manifest.json"
-                            ),
-                            "proof_manifest_sha256": None,
+                            "path": str(mail_jsonl),
+                            "normalizer": "mail_archive_stage2",
+                            "proof_manifest_path": str(mail_manifest),
+                            "proof_manifest_sha256": mail_manifest_sha,
                             "proof_max_age_hours": 72.0,
                         }
                     ]
@@ -549,6 +603,62 @@ def test_status_counts_explicit_data_quality_pass_as_clean_cycle() -> None:
 
     assert status == "ok"
     assert reason == ""
+
+
+def test_status_reports_data_quality_before_command_rc() -> None:
+    status, reason = module.status_from_payload(
+        {
+            "overall_status": "ok",
+            "partial_failure": False,
+            "data_quality_status": "pass_with_notes",
+        },
+        1,
+        "",
+        require_data_quality=True,
+    )
+
+    assert status == "stopped"
+    assert reason == "data_quality_status=pass_with_notes"
+
+
+def test_status_keeps_failed_command_when_data_quality_passes() -> None:
+    status, reason = module.status_from_payload(
+        {
+            "overall_status": "ok",
+            "partial_failure": False,
+            "data_quality_status": "pass",
+        },
+        1,
+        "",
+        require_data_quality=True,
+    )
+
+    assert status == "failed"
+    assert reason == "command_rc=1"
+
+
+def test_nightly_wrapper_requires_explicit_data_quality_status() -> None:
+    status, reason = module.status_from_payload(
+        {"overall_status": "ok", "partial_failure": False},
+        0,
+        "",
+        require_data_quality=True,
+    )
+
+    assert status == "stopped"
+    assert reason == "data_quality_status_missing"
+
+
+def test_nightly_wrapper_preserves_command_error_when_payload_is_missing() -> None:
+    status, reason = module.status_from_payload(
+        {},
+        70,
+        "",
+        require_data_quality=True,
+    )
+
+    assert status == "failed"
+    assert reason == "command_rc=70"
 
 
 def test_mail_process_task_requires_fresh_download_manifest(tmp_path, monkeypatch) -> None:
@@ -1167,6 +1277,9 @@ def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, mon
         ("Wappi partial history", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(complete_message_history=False), "transferred checkpoint"),
         ("Wappi live pairs", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(auto_pairs_file=str(tmp_path / "live.json")), "content-addressed staging snapshot"),
         ("Wappi pair SHA", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("pairs_file_sha256"), "missing or invalid"),
+        ("Wappi phase1 SHA pin", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("phase1_config_sha256"), "phase1_config_sha256"),
+        ("Wappi phase1 SHA mismatch", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(phase1_config_sha256="0" * 64), "phase1_config SHA mismatch"),
+        ("mail proof SHA", lambda payload: config_step(payload, "mail_archive_incremental")["config"]["sources"][0].pop("proof_manifest_sha256"), "proof_manifest_sha256"),
         ("mail pending reconsider", lambda payload: config_step(payload, "mail_link_enrich")["config"].pop("reconsider_pending"), "reconsider pending"),
         ("mail before Tallanto", lambda payload: move_config_step_before(payload, "mail_link_enrich", "tallanto_cards_sync"), "cards before mail"),
         ("mail identity", lambda payload: config_step(payload, "mail_link_enrich")["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
@@ -1291,6 +1404,7 @@ def test_builder_reuses_verified_mail_process_output_without_rebuilding(tmp_path
                 "status": "ok",
                 "finished_at": "2026-08-28T12:00:00+00:00",
                 "rows_written": 1,
+                "max_event_at": "2026-08-28T12:00:00+00:00",
                 "output_jsonl": str(output_jsonl),
                 "output_sha256": builder.sha256_file(output_jsonl),
                 "builder_manifest": str(builder_manifest),
@@ -1420,6 +1534,9 @@ def test_builder_mail_process_input_is_missing_or_sha_verified(tmp_path) -> None
         json.dumps(
             {
                 "status": "ok",
+                "finished_at": "2026-09-02T00:00:00+00:00",
+                "rows_written": 1,
+                "max_event_at": "2026-09-02T00:00:00+00:00",
                 "output_jsonl": str(output_jsonl),
                 "output_sha256": "wrong",
                 "builder_manifest": str(builder_manifest),
@@ -1431,6 +1548,25 @@ def test_builder_mail_process_input_is_missing_or_sha_verified(tmp_path) -> None
 
     with pytest.raises(RuntimeError, match="mail_process_output_sha_mismatch"):
         builder.resolve_mail_process_input(state_root)
+
+
+def test_builder_rejects_mail_process_manifest_without_sha_pin(tmp_path) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    state_root = staging_root / "state"
+    mail_data_root = _mail_root_with_identity(tmp_path)
+    mail_jsonl, mail_manifest, _mail_manifest_sha = _write_verified_mail_process_state(state_root)
+
+    with pytest.raises(RuntimeError, match="mail_process_manifest_sha256_missing"):
+        builder.build_service_config(
+            timeline_db=staging_root / "customer_timeline_staging.sqlite",
+            state_root=state_root,
+            mail_jsonl=mail_jsonl,
+            mail_process_manifest=mail_manifest,
+            mail_process_manifest_sha256=None,
+            mango_manifest=state_root / "freshness/mango.json",
+            base_service_config=staging_root / "missing.json",
+            mail_data_root=mail_data_root,
+        )
 
 
 def test_builder_uses_measured_mango_freshness_cursor(tmp_path) -> None:
@@ -1469,12 +1605,14 @@ def test_builder_reuses_single_existing_state_tree(tmp_path) -> None:
     tasks_snapshot.parent.mkdir(parents=True)
     tasks_snapshot.write_text("task_id\n", encoding="utf-8")
     mail_data_root = _mail_root_with_identity(tmp_path)
+    mail_jsonl, mail_manifest, mail_manifest_sha = _write_verified_mail_process_state(state_root)
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
         state_root=state_root,
-        mail_jsonl=state_root / "mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
-        mail_process_manifest=state_root / "mail_pipeline/mail_process_manifest.json",
+        mail_jsonl=mail_jsonl,
+        mail_process_manifest=mail_manifest,
+        mail_process_manifest_sha256=mail_manifest_sha,
         mango_manifest=state_root / "freshness/mango.json",
         base_service_config=staging_root / "missing.json",
         mail_data_root=mail_data_root,
@@ -1513,18 +1651,25 @@ def test_builder_reuses_single_existing_state_tree(tmp_path) -> None:
         state_root / "tallanto_cards"
     )
     assert payload["out_root"] == str(state_root / "nightly_service_runs")
+    assert steps["wappi_history_incremental"]["config"]["phase1_config_sha256"] == builder.sha256_file(
+        builder.DEFAULT_WAPPI_CONFIG
+    )
     assert "nightly_dv2_sources" not in json.dumps(payload)
 
 
 def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     mail_data_root = _mail_root_with_identity(tmp_path)
+    mail_jsonl, mail_manifest, mail_manifest_sha = _write_verified_mail_process_state(
+        staging_root / "state"
+    )
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
         state_root=staging_root / "state",
-        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
-        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mail_jsonl=mail_jsonl,
+        mail_process_manifest=mail_manifest,
+        mail_process_manifest_sha256=mail_manifest_sha,
         mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=staging_root / "missing.json",
         mail_data_root=mail_data_root,
@@ -1541,6 +1686,7 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
     wappi = steps["wappi_history_incremental"]
     assert wappi["config"]["require_widget_linkage"] is False
+    assert wappi["config"]["phase1_config_sha256"] == builder.sha256_file(builder.DEFAULT_WAPPI_CONFIG)
     expected_pairs, expected_auto_pairs = builder.wappi_pair_snapshot_paths(
         staging_root / "state",
         pairs_sha256=wappi["config"]["pairs_file_sha256"],
@@ -1595,12 +1741,16 @@ def test_builder_uses_explicit_existing_tallanto_identity_db_without_mail_root(t
     identity_db = tmp_path / "readonly/tallanto_identity.sqlite"
     identity_db.parent.mkdir(parents=True)
     identity_db.touch()
+    mail_jsonl, mail_manifest, mail_manifest_sha = _write_verified_mail_process_state(
+        staging_root / "state"
+    )
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
         state_root=staging_root / "state",
-        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
-        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mail_jsonl=mail_jsonl,
+        mail_process_manifest=mail_manifest,
+        mail_process_manifest_sha256=mail_manifest_sha,
         mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=staging_root / "missing.json",
         mail_data_root=tmp_path / "missing-mail-root",
@@ -1622,6 +1772,9 @@ def test_builder_uses_explicit_existing_tallanto_identity_db_without_mail_root(t
 def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     mail_data_root = _mail_root_with_identity(tmp_path)
+    mail_jsonl, mail_manifest, mail_manifest_sha = _write_verified_mail_process_state(
+        staging_root / "state"
+    )
     base = staging_root / "nightly_service/base.json"
     base.parent.mkdir(parents=True)
     base.write_text(
@@ -1657,8 +1810,9 @@ def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
         state_root=staging_root / "state",
-        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
-        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mail_jsonl=mail_jsonl,
+        mail_process_manifest=mail_manifest,
+        mail_process_manifest_sha256=mail_manifest_sha,
         mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=base,
         mail_data_root=mail_data_root,
@@ -1673,6 +1827,9 @@ def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) 
 def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     mail_data_root = _mail_root_with_identity(tmp_path)
+    mail_jsonl, mail_manifest, mail_manifest_sha = _write_verified_mail_process_state(
+        staging_root / "state"
+    )
     base = staging_root / "nightly_service/base.json"
     base.parent.mkdir(parents=True)
     base.write_text(
@@ -1717,8 +1874,9 @@ def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
         state_root=staging_root / "state",
-        mail_jsonl=staging_root / "state/mail_pipeline/process/mail_archive_stage2_incremental.jsonl",
-        mail_process_manifest=staging_root / "state/mail_pipeline/mail_process_manifest.json",
+        mail_jsonl=mail_jsonl,
+        mail_process_manifest=mail_manifest,
+        mail_process_manifest_sha256=mail_manifest_sha,
         mango_manifest=staging_root / "state/freshness/mango.json",
         base_service_config=base,
         mail_data_root=mail_data_root,

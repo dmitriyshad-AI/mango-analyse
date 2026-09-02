@@ -19,7 +19,14 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.customer_timeline.ids import stable_digest  # noqa: E402
 from mango_mvp.customer_timeline.mail_stage2_ingest import file_sha256  # noqa: E402
-from mango_mvp.customer_timeline.store import scrub_timeline_persisted_json  # noqa: E402
+from mango_mvp.customer_timeline.safety import (  # noqa: E402
+    guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
+)
+from mango_mvp.customer_timeline.store import (  # noqa: E402
+    customer_timeline_readonly_uri,
+    scrub_timeline_persisted_json,
+)
 from mango_mvp.productization.mail_archive import (  # noqa: E402
     CANONICAL_MAIL_ARCHIVE_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
@@ -110,7 +117,10 @@ def load_archive_date_index(message_shas: set[str], archive_roots: tuple[Path, .
         if len(result) == len(message_shas):
             break
         try:
-            con = sqlite3.connect(db_path)
+            con = sqlite3.connect(
+                customer_timeline_readonly_uri(db_path) + "&immutable=1",
+                uri=True,
+            )
             con.row_factory = sqlite3.Row
             has_messages = con.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
@@ -198,8 +208,17 @@ def repair_dates(
     archive_roots: tuple[Path, ...],
     dry_run: bool,
 ) -> Mapping[str, Any]:
+    if not dry_run:
+        db_path = guard_customer_timeline_writable_path(
+            guard_managed_customer_timeline_staging_write(db_path)
+        )
     repaired_at = datetime.now(timezone.utc).isoformat()
-    with sqlite3.connect(db_path) as con:
+    timeline_target = (
+        customer_timeline_readonly_uri(db_path) + "&immutable=1"
+        if dry_run
+        else str(db_path)
+    )
+    with sqlite3.connect(timeline_target, uri=dry_run) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             """

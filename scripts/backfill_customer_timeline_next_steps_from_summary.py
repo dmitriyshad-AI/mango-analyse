@@ -10,6 +10,10 @@ from typing import Any, Mapping
 
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.next_step_resolver import extract_next_step_action
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
+)
 from mango_mvp.customer_timeline.store import json_dumps, json_loads, scrub_timeline_persisted_json
 
 
@@ -57,6 +61,10 @@ def main() -> int:
 
 
 def backfill_next_steps_from_summary(db_path: Path, *, apply: bool, limit: int | None = None) -> BackfillReport:
+    if apply:
+        db_path = guard_customer_timeline_writable_path(
+            guard_managed_customer_timeline_staging_write(db_path)
+        )
     if not db_path.exists():
         raise FileNotFoundError(db_path)
 

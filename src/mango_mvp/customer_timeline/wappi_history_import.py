@@ -115,8 +115,15 @@ RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY = {
 WAPPI_TRUSTED_PENDING_RELINK_AUTHORITIES = frozenset(
     {*WAPPI_EXACT_AMO_AUTHORITIES, "draft_loop_pair"}
 )
+WAPPI_ATTACHMENT_MESSAGE_TYPES = frozenset(
+    {"audio", "document", "file", "image", "photo", "video", "voice"}
+)
 WAPPI_MESSAGE_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
 WAPPI_MESSAGE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?7|8)(?:[\s()\-]*\d){10}(?!\d)")
+
+
+def _wappi_message_will_persist(message: WappiHistoryMessage) -> bool:
+    return bool(message.text.strip() or message.message_type in WAPPI_ATTACHMENT_MESSAGE_TYPES)
 
 
 def _is_exact_authority_override(
@@ -233,6 +240,7 @@ class WappiHistoryImportConfig:
     phase1_config: Path = DEFAULT_AMO_WAPPI_CONFIG_PATH
     pairs_file: Optional[Path] = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
     auto_pairs_file: Optional[Path] = Path.home() / ".mango_secrets" / "draft_loop_auto_pairs.json"
+    phase1_config_sha256: Optional[str] = None
     pairs_file_sha256: Optional[str] = None
     auto_pairs_file_sha256: Optional[str] = None
     amo_auto_resolver_enabled: bool = False
@@ -267,7 +275,7 @@ class WappiHistoryImportConfig:
         object.__setattr__(self, "phase1_config", Path(self.phase1_config).expanduser())
         object.__setattr__(self, "pairs_file", Path(self.pairs_file).expanduser() if self.pairs_file else None)
         object.__setattr__(self, "auto_pairs_file", Path(self.auto_pairs_file).expanduser() if self.auto_pairs_file else None)
-        for name in ("pairs_file_sha256", "auto_pairs_file_sha256"):
+        for name in ("phase1_config_sha256", "pairs_file_sha256", "auto_pairs_file_sha256"):
             value = str(getattr(self, name) or "").strip().lower() or None
             if value is not None and (
                 len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)
@@ -2172,6 +2180,11 @@ def run_wappi_history_import(
         and not canonical_writer_authorized
     ):
         raise ValueError("canonical Wappi staging writes are owned by the nightly service")
+    if (
+        config.phase1_config_sha256 is not None
+        and file_sha256(config.phase1_config) != config.phase1_config_sha256
+    ):
+        raise ValueError("configured Wappi phase1_config snapshot SHA mismatch")
     code_identity_start = dict(build_draft_loop_code_identity())
     code_root = Path(str(code_identity_start.get("code_root") or Path(__file__).resolve().parents[3]))
     pairs, pair_snapshot_hashes = load_wappi_pairs_snapshot(
@@ -4052,6 +4065,13 @@ class WappiPairCustomerResolver:
             ):
                 widget_resolution = None
         if widget_resolution is not None:
+            primed = self._chat_resolutions.get((profile.source_system, profile.profile_id, chat_id))
+            if (
+                primed is not None
+                and primed.reason == "existing_wappi_chat_customer_conflict"
+                and is_personal_wappi_dialog(profile, dialog)
+            ):
+                return primed
             guarded = self._guard_chat_customer(profile, chat_id, widget_resolution)
             if is_personal_wappi_dialog(profile, dialog) and chat_id:
                 key = (profile.source_system, profile.profile_id, chat_id)
@@ -4831,15 +4851,7 @@ def fetch_wappi_history_records(
             nonlocal total_messages, profile_messages
             for message in messages:
                 stats.messages_seen += 1
-                if not message.text.strip() and message.message_type not in {
-                    "audio",
-                    "document",
-                    "file",
-                    "image",
-                    "photo",
-                    "video",
-                    "voice",
-                }:
+                if not _wappi_message_will_persist(message):
                     stats.skipped_empty += 1
                     continue
                 source_id = wappi_source_id(profile, message)
@@ -5158,7 +5170,7 @@ def fetch_wappi_history_records(
                     wappi_source_id(profile, message),
                 )
                 for message in historical_messages
-                if message.text.strip()
+                if _wappi_message_will_persist(message)
             }
             local_tokens = set(local_by_token)
             source_tokens = set(source_by_token)

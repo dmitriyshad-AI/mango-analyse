@@ -536,6 +536,13 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
                 "m1_writer_stopped_at": stopped_at,
                 "m4_local_db_sha256_before_first_write": seed_sha,
                 "m4_service_config_sha256": "a" * 64,
+                "m4_ownership_config_sha256": nightly_service_module.service_ownership_fingerprint(
+                    canonical,
+                    timeline_db=canonical.timeline_db.resolve(strict=False),
+                    allowed_root=canonical.allowed_root.resolve(strict=False),
+                    out_root=canonical.out_root.resolve(strict=False),
+                    publish_dir=canonical.publish_dir.resolve(strict=False),
+                ),
                 "m4_timeline_db": str(config.timeline_db.resolve()),
                 "m1_stop_receipt_sha256": nightly_service_module.file_fingerprint(stop_receipt_path)["sha256"],
             }
@@ -578,6 +585,9 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
         service_report_path=first_report,
     )
     assert validate_writer_ownership(canonical)["status"] == "M4_WRITER_ACTIVE"
+    assert validate_writer_ownership(
+        replace(canonical, source_config_sha256="d" * 64)
+    )["status"] == "M4_WRITER_ACTIVE"
 
     first_report.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="not backed by the first successful run"):
@@ -614,6 +624,96 @@ def test_resume_fingerprint_changes_with_config_schema(tmp_path: Path, monkeypat
     )
 
     assert after != before
+
+
+def test_resume_fingerprint_changes_with_wappi_pair_snapshot_sha(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    config_path = tmp_path / "nightly.json"
+    payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "wappi_history",
+                "config": {
+                    "env_file": str(tmp_path / "wappi.env"),
+                    "phase1_config": str(tmp_path / "phase1.json"),
+                    "pairs_file_sha256": "a" * 64,
+                    "auto_pairs_file_sha256": "b" * 64,
+                },
+            }
+        ],
+    }
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    first = service_config_from_json(config_path)
+    paths = nightly_service_module.validated_service_paths(first)
+    before = nightly_service_module.service_config_fingerprint(
+        first, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    )
+    payload["steps"][0]["config"]["auto_pairs_file_sha256"] = "c" * 64
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    second = service_config_from_json(config_path)
+    after = nightly_service_module.service_config_fingerprint(
+        second, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    )
+
+    assert after != before
+
+
+def test_ownership_fingerprint_ignores_run_pair_sha_but_not_wappi_limits(tmp_path: Path) -> None:
+    config_path = tmp_path / "nightly.json"
+    payload = {
+        "timeline_db": str(tmp_path / "customer_timeline.sqlite"),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "wappi_history",
+                "config": {
+                    "env_file": str(tmp_path / "wappi.env"),
+                    "phase1_config": str(tmp_path / "phase1.json"),
+                    "pairs_file": str(tmp_path / "snap-a/manual.json"),
+                    "auto_pairs_file": str(tmp_path / "snap-a/auto.json"),
+                    "pairs_file_sha256": "a" * 64,
+                    "auto_pairs_file_sha256": "b" * 64,
+                    "messages_per_chat": 50000,
+                    "complete_message_history": True,
+                },
+            }
+        ],
+    }
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    first = service_config_from_json(config_path)
+    paths = nightly_service_module.validated_service_paths(first)
+    stable_before = nightly_service_module.service_ownership_fingerprint(
+        first, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    )
+    payload["steps"][0]["config"].update(
+        auto_pairs_file=str(tmp_path / "snap-b/auto.json"),
+        auto_pairs_file_sha256="c" * 64,
+    )
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    second = service_config_from_json(config_path)
+    assert nightly_service_module.service_ownership_fingerprint(
+        second, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3]
+    ) == stable_before
+
+    payload["steps"][0]["config"]["messages_per_chat"] = 100
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    changed_limit = service_config_from_json(config_path)
+    assert nightly_service_module.service_ownership_fingerprint(
+        changed_limit,
+        timeline_db=paths[0],
+        allowed_root=paths[1],
+        out_root=paths[2],
+        publish_dir=paths[3],
+    ) != stable_before
+
 
 def test_nightly_service_publishes_manifest_and_second_run_has_no_changes(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"

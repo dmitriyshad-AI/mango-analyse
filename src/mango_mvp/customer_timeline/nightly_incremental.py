@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.ingestion import (
     TimelineNormalizer,
     TimelineSourceRecord,
 )
+from mango_mvp.customer_timeline.mail_stage2_ingest import parse_mail_stage2_event_at
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     customer_timeline_run_lock,
@@ -243,10 +244,10 @@ class MailArchiveStage2IncrementalNormalizer(TimelineNormalizer):
                 {
                     "source_ref": record.source_ref,
                     "subject": payload.get("subject"),
-                    "event_at": normalized_timestamp(payload),
+                    "event_at": parse_mail_stage2_event_at(payload).isoformat(),
                 }
             )
-        event_at = parse_datetime(normalized_timestamp(payload), "event_at")
+        event_at = parse_mail_stage2_event_at(payload)
         customer_id = optional_string(payload.get("customer_id") or payload.get("resolved_customer_id"))
         subject = optional_string(payload.get("subject")) or "Email message"
         summary = optional_string(
@@ -741,9 +742,13 @@ def load_incremental_jsonl_source(
             source_handle.close()
     selected_rows = []
     max_ts: Optional[datetime] = None
+    max_event_ts: Optional[datetime] = None
     affected: set[str] = set()
     records: list[TimelineSourceRecord] = []
     for row in rows:
+        if source.normalizer == "mail_archive_stage2":
+            event_ts = parse_mail_stage2_event_at(row)
+            max_event_ts = event_ts if max_event_ts is None else max(max_event_ts, event_ts)
         ts = parse_datetime(normalized_timestamp(row), "source_timestamp")
         max_ts = ts if max_ts is None else max(max_ts, ts)
         if fetch_from is not None and ts < fetch_from:
@@ -768,7 +773,8 @@ def load_incremental_jsonl_source(
         if declared_max_event_at
         else None
     )
-    if artifact_proof is not None and declared_max_ts != max_ts:
+    proof_max_ts = max_event_ts if source.normalizer == "mail_archive_stage2" else max_ts
+    if artifact_proof is not None and declared_max_ts != proof_max_ts:
         return SourceLoadResult(
             source=source,
             cursor_before=cursor.last_cursor_ts.isoformat() if cursor else None,
@@ -784,13 +790,13 @@ def load_incremental_jsonl_source(
                 **dict(artifact_proof or {}),
                 "status": "unavailable",
                 "reason": "max_event_at_mismatch",
-                "computed_max_event_at": max_ts.isoformat() if max_ts else None,
+                "computed_max_event_at": proof_max_ts.isoformat() if proof_max_ts else None,
             },
         )
     if artifact_proof is not None:
         artifact_proof = {
             **dict(artifact_proof),
-            "max_event_at_verified": max_ts.isoformat() if max_ts else None,
+            "max_event_at_verified": proof_max_ts.isoformat() if proof_max_ts else None,
         }
     return SourceLoadResult(
         source=source,

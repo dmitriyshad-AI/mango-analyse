@@ -12,6 +12,7 @@ from mango_mvp.productization.mail_archive import (
     CANONICAL_MAIL_ARCHIVE_ROOT,
     CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION,
     CANONICAL_MAIL_IDENTITY_DB,
+    CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     MAIL_ARCHIVE_SCHEMA_VERSION,
     assert_canonical_mail_archive_ready,
     canonical_mail_archive_dbs,
@@ -87,6 +88,97 @@ def test_canonical_resolver_and_builder_cover_all_archive_parts(tmp_path: Path) 
     rows = [json.loads(line) for line in (tmp_path / "out/mail.jsonl").read_text(encoding="utf-8").splitlines()]
     assert {row["message_sha256"] for row in rows} == {"a" * 64, "b" * 64}
     assert (tmp_path / "out/mail.jsonl").stat().st_mode & 0o777 == 0o600
+
+
+def test_mail_builder_keeps_old_event_that_arrived_after_cursor(tmp_path: Path) -> None:
+    root = tmp_path / "Mango_Data"
+    archive = root / CANONICAL_MAIL_ARCHIVE_DB
+    _write_archive(archive, sha="a" * 64, schema=CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION)
+    with sqlite3.connect(archive) as con:
+        con.execute(
+            "UPDATE messages SET message_date_iso=?, updated_at=? WHERE sha256=?",
+            ("2026-06-01T10:00:00+00:00", "2026-09-02T10:00:00+00:00", "a" * 64),
+        )
+
+    report = builder.build_mail_increment(
+        root,
+        out_jsonl=tmp_path / "out/mail.jsonl",
+        manifest_path=tmp_path / "out/manifest.json",
+        since=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        text_limit=1200,
+    )
+    row = json.loads((tmp_path / "out/mail.jsonl").read_text(encoding="utf-8"))
+
+    assert report["rows_written"] == 1
+    assert row["event_at"] == "2026-06-01T10:00:00+00:00"
+    assert row["updated_at"] == "2026-09-02T10:00:00+00:00"
+
+
+def test_stage2_mail_builder_keeps_old_event_that_arrived_after_cursor(tmp_path: Path) -> None:
+    root = tmp_path / "Mango_Data"
+    _write_archive(
+        root / CANONICAL_MAIL_ARCHIVE_DB,
+        sha="a" * 64,
+        schema=CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION,
+    )
+    delta = root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS
+    delta.parent.mkdir(parents=True, exist_ok=True)
+    delta.write_text(
+        json.dumps(
+            {
+                "message_sha256": "b" * 64,
+                "date_first": "2026-08-31T12:00:00+00:00",
+                "updated_at": "2026-09-02T10:00:00+00:00",
+                "summary": "Проверка",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = builder.build_mail_increment(
+        root,
+        out_jsonl=tmp_path / "out/mail.jsonl",
+        manifest_path=tmp_path / "out/manifest.json",
+        since=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        text_limit=1200,
+    )
+    rows = [json.loads(line) for line in (tmp_path / "out/mail.jsonl").read_text(encoding="utf-8").splitlines()]
+
+    assert report["rows_written"] == 1
+    assert rows[0]["message_sha256"] == "b" * 64
+    assert rows[0]["event_at"] == "2026-08-31T12:00:00+00:00"
+
+
+def test_stage2_mail_builder_rejects_invalid_increment_cursor(tmp_path: Path) -> None:
+    root = tmp_path / "Mango_Data"
+    _write_archive(
+        root / CANONICAL_MAIL_ARCHIVE_DB,
+        sha="a" * 64,
+        schema=CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION,
+    )
+    delta = root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS
+    delta.parent.mkdir(parents=True, exist_ok=True)
+    delta.write_text(
+        json.dumps(
+            {
+                "message_sha256": "b" * 64,
+                "date_first": "2026-08-31T12:00:00+00:00",
+                "updated_at": "not-a-date",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="updated_at is invalid"):
+        builder.build_mail_increment(
+            root,
+            out_jsonl=tmp_path / "out/mail.jsonl",
+            manifest_path=tmp_path / "out/manifest.json",
+            since=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            text_limit=1200,
+        )
 
 
 @pytest.mark.parametrize(("schema", "stamped"), (("unknown", True), (MAIL_ARCHIVE_SCHEMA_VERSION, False)))

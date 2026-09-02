@@ -225,6 +225,8 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         "m4_service_config_sha256",
         "m1_stop_receipt_sha256",
     )
+    if payload.get("m4_ownership_config_sha256"):
+        sha256_fields = (*sha256_fields, "m4_ownership_config_sha256")
     if any(len(str(payload[key])) != 64 or any(ch not in "0123456789abcdef" for ch in str(payload[key])) for key in sha256_fields):
         raise ValueError("writer ownership receipt has invalid sha256")
     code_sha = str(payload["code_sha"])
@@ -249,8 +251,6 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         raise ValueError("writer ownership stop receipt is in the future")
     if payload["seed_sha256"] != payload["m4_local_db_sha256_before_first_write"]:
         raise ValueError("writer ownership seed SHA mismatch")
-    if payload["m4_service_config_sha256"] != config.source_config_sha256:
-        raise ValueError("writer ownership service config SHA mismatch")
     stop_receipt_path = expected_path.parent / "M1_WRITER_STOP.json"
     if not stop_receipt_path.is_file() or file_fingerprint(stop_receipt_path)["sha256"] != payload["m1_stop_receipt_sha256"]:
         raise ValueError("M1 writer stop receipt is missing or has wrong SHA")
@@ -265,6 +265,19 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     ):
         raise ValueError("M1 writer stop receipt does not prove a stopped writer")
     ownership_sha256 = str(file_fingerprint(expected_path)["sha256"])
+    ownership_config_sha256 = service_ownership_fingerprint(
+        config,
+        timeline_db=config.timeline_db.resolve(strict=False),
+        allowed_root=config.allowed_root.resolve(strict=False),
+        out_root=config.out_root.resolve(strict=False),
+        publish_dir=config.publish_dir.resolve(strict=False),
+    )
+    declared_ownership_sha256 = str(payload.get("m4_ownership_config_sha256") or "")
+    if declared_ownership_sha256:
+        if declared_ownership_sha256 != ownership_config_sha256:
+            raise ValueError("writer ownership stable config SHA mismatch")
+    elif payload["m4_service_config_sha256"] != config.source_config_sha256:
+        raise ValueError("writer ownership service config SHA mismatch")
     activation_path = expected_path.parent / "M4_WRITER_ACTIVATION.json"
     if activation_path.is_file():
         activation = json.loads(activation_path.read_text(encoding="utf-8"))
@@ -282,6 +295,8 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
             "first_successful_service_report_path",
             "first_successful_service_report_sha256",
         }
+        if declared_ownership_sha256:
+            activation_required.add("m4_ownership_config_sha256")
         if any(not str(activation.get(key) or "").strip() for key in activation_required):
             raise ValueError("M4 writer activation receipt is incomplete")
         report_path = Path(str(activation["first_successful_service_report_path"])).expanduser().resolve(strict=False)
@@ -303,7 +318,11 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
             and activation.get("ownership_receipt_sha256") == ownership_sha256
             and activation.get("seed_sha256") == payload["seed_sha256"]
             and activation.get("code_sha") == code_sha
-            and activation.get("m4_service_config_sha256") == config.source_config_sha256
+            and (
+                activation.get("m4_ownership_config_sha256") == ownership_config_sha256
+                if declared_ownership_sha256
+                else activation.get("m4_service_config_sha256") == config.source_config_sha256
+            )
             and Path(str(activation.get("m4_timeline_db"))).expanduser().resolve(strict=False)
             == config.timeline_db.resolve(strict=False)
             and parse_aware_utc(str(activation.get("activated_at"))) is not None
@@ -320,6 +339,8 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
             raise ValueError("M4 writer activation receipt is not backed by the first successful run")
         status = "M4_WRITER_ACTIVE"
     else:
+        if payload["m4_service_config_sha256"] != config.source_config_sha256:
+            raise ValueError("transferred writer service config SHA mismatch")
         actual_seed_sha = file_fingerprint(config.timeline_db).get("sha256")
         if actual_seed_sha != payload["seed_sha256"]:
             raise ValueError("transferred writer seed does not match the actual timeline DB")
@@ -332,6 +353,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         "ownership_receipt_sha256": ownership_sha256,
         "seed_sha256": str(payload["seed_sha256"]),
         "code_sha": code_sha,
+        "ownership_config_sha256": ownership_config_sha256,
     }
 
 
@@ -366,6 +388,7 @@ def activate_writer_ownership_after_success(
         "seed_sha256": writer_ownership["seed_sha256"],
         "code_sha": writer_ownership["code_sha"],
         "m4_service_config_sha256": config.source_config_sha256,
+        "m4_ownership_config_sha256": writer_ownership["ownership_config_sha256"],
         "m4_timeline_db": str(config.timeline_db.resolve(strict=False)),
         "activated_at": datetime.now(timezone.utc).isoformat(),
         "first_successful_run_id": run_id,
@@ -1641,6 +1664,12 @@ def service_step_from_json(
             phase1_config=Path(str(raw_config["phase1_config"])),
             pairs_file=Path(str(raw_config["pairs_file"])) if raw_config.get("pairs_file") else None,
             auto_pairs_file=Path(str(raw_config["auto_pairs_file"])) if raw_config.get("auto_pairs_file") else None,
+            pairs_file_sha256=str(raw_config["pairs_file_sha256"]) if raw_config.get("pairs_file_sha256") else None,
+            auto_pairs_file_sha256=(
+                str(raw_config["auto_pairs_file_sha256"])
+                if raw_config.get("auto_pairs_file_sha256")
+                else None
+            ),
             amo_auto_resolver_enabled=bool(raw_config.get("amo_auto_resolver_enabled", False)),
             amo_mcp_env_file=Path(str(raw_config["amo_mcp_env_file"])) if raw_config.get("amo_mcp_env_file") else None,
             shared_phone_stoplist=Path(str(raw_config["shared_phone_stoplist"])) if raw_config.get("shared_phone_stoplist") else None,
@@ -3312,6 +3341,39 @@ def service_config_fingerprint(
     files, which is all these dataclasses ever carry.
     """
     payload = dict(_fingerprint_value(config))
+    payload["config_schema_version"] = NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
+    payload["timeline_db"] = str(timeline_db)
+    payload["allowed_root"] = str(allowed_root)
+    payload["out_root"] = str(out_root)
+    payload["publish_dir"] = str(publish_dir)
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def service_ownership_fingerprint(
+    config: NightlyServiceConfig,
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    out_root: Path,
+    publish_dir: Path,
+) -> str:
+    """Hash stable writer topology while leaving run-scoped evidence mutable."""
+
+    payload = dict(_fingerprint_value(config))
+    payload["source_config_sha256"] = None
+    for step in payload.get("steps") or ():
+        wappi = step.get("wappi_history_config")
+        if isinstance(wappi, dict):
+            wappi["pairs_file"] = "<run-pair-snapshot>"
+            wappi["auto_pairs_file"] = "<run-auto-pair-snapshot>"
+            wappi["pairs_file_sha256"] = None
+            wappi["auto_pairs_file_sha256"] = None
+        incremental = step.get("config")
+        if not isinstance(incremental, dict):
+            continue
+        for source in incremental.get("sources") or ():
+            if isinstance(source, dict) and source.get("source_system") == "mail_archive_stage2":
+                source["proof_manifest_sha256"] = None
     payload["config_schema_version"] = NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
     payload["timeline_db"] = str(timeline_db)
     payload["allowed_root"] = str(allowed_root)

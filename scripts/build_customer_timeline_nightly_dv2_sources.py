@@ -9,6 +9,7 @@ runs ASR, or invokes LLM.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -33,13 +34,16 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     existing_tallanto_identity_dbs,
 )
 from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
+from mango_mvp.customer_timeline.mail_stage2_ingest import parse_mail_stage2_event_at  # noqa: E402
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
 from mango_mvp.customer_timeline.calls_two_processes import configured_calls_working_db  # noqa: E402
 from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     DEFAULT_TALLANTO_CARDS_MAX_PAGES,
     NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
     REQUIRED_MANIFEST_SOURCE_STEP_MAP,
+    atomic_publish_latest,
 )
+from mango_mvp.integrations.draft_loop import load_pairs_file_snapshot  # noqa: E402
 from scripts.run_customer_timeline_mail_download import (  # noqa: E402
     atomic_write_json,
     sha256_file,
@@ -69,6 +73,78 @@ DEFAULT_WAPPI_AUTO_PAIRS = Path.home() / ".mango_local" / "draft_loop" / "empty_
 DEFAULT_WAPPI_AMO_ENV = Path.home() / ".mango_secrets" / "foton_crm_readonly_mcp_connector.env"
 DEFAULT_WAPPI_STOPLIST = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
+WAPPI_PAIR_SNAPSHOT_DIRNAME = "input_snapshots"
+
+
+def wappi_pair_snapshot_paths(
+    state_root: Path,
+    *,
+    pairs_sha256: str,
+    auto_pairs_sha256: str,
+) -> tuple[Path, Path]:
+    snapshot_id = hashlib.sha256(
+        f"{pairs_sha256}:{auto_pairs_sha256}".encode("ascii")
+    ).hexdigest()
+    root = (
+        Path(state_root).resolve(strict=False)
+        / "wappi"
+        / WAPPI_PAIR_SNAPSHOT_DIRNAME
+        / snapshot_id
+    )
+    return root / "manual_pairs.json", root / "auto_pairs.json"
+
+
+def snapshot_wappi_pair_inputs(
+    state_root: Path,
+    *,
+    pairs_source: Path | None = None,
+    auto_pairs_source: Path | None = None,
+) -> Mapping[str, Any]:
+    sources = (
+        ("pairs_file", Path(pairs_source or DEFAULT_WAPPI_PAIRS).expanduser(), "manual"),
+        ("auto_pairs_file", Path(auto_pairs_source or DEFAULT_WAPPI_AUTO_PAIRS).expanduser(), "auto"),
+    )
+    source_snapshots = {
+        label: load_pairs_file_snapshot(source, default_source=default_source)[1]
+        for label, source, default_source in sources
+    }
+    targets = wappi_pair_snapshot_paths(
+        state_root,
+        pairs_sha256=source_snapshots["pairs_file"],
+        auto_pairs_sha256=source_snapshots["auto_pairs_file"],
+    )
+    targets[0].parent.mkdir(parents=True, exist_ok=True)
+    targets[0].parent.chmod(0o700)
+    files: dict[str, Mapping[str, Any]] = {}
+    for (label, source, default_source), target in zip(sources, targets):
+        source_sha = source_snapshots[label]
+        created = not target.exists()
+        if created:
+            atomic_publish_latest(source, target)
+        target.chmod(0o600)
+        _, snapshot_sha = load_pairs_file_snapshot(target, default_source=default_source)
+        if source_sha != snapshot_sha:
+            if created:
+                target.unlink(missing_ok=True)
+            raise RuntimeError(f"{label} changed while creating the nightly snapshot")
+        files[label] = {
+            "source_path": str(source.resolve(strict=False)),
+            "snapshot_path": str(target),
+            "source_sha256": source_sha,
+            "snapshot_sha256": snapshot_sha,
+        }
+    manifest_path = targets[0].parent / "pair_snapshot_manifest.json"
+    if not manifest_path.exists():
+        atomic_write_json(
+            manifest_path,
+            {
+                "schema_version": "wappi_pair_snapshot_v1",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "files": files,
+            },
+        )
+    manifest_path.chmod(0o600)
+    return {"pairs_file": targets[0], "auto_pairs_file": targets[1], "manifest": manifest_path, "files": files}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,6 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError("state_root must be the single <staging>/state tree")
     out_root.mkdir(parents=True, exist_ok=True)
     state_root.mkdir(parents=True, exist_ok=True)
+    wappi_pair_snapshot = snapshot_wappi_pair_inputs(state_root)
     mail_report = resolve_mail_process_input(state_root)
     mail_jsonl = Path(str(mail_report["output_jsonl"]))
     mail_process_manifest = Path(str(mail_report["process_manifest"]))
@@ -145,6 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             explicit=args.amo_tasks_snapshot,
         ),
         tallanto_identity_dbs=args.tallanto_identity_db,
+        wappi_pair_snapshot=wappi_pair_snapshot,
     )
     config_out = (
         Path(args.service_config_out).expanduser().resolve(strict=False)
@@ -167,6 +245,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "service_config": str(config_out),
         "mail": mail_report,
         "mango_api_freshness": mango_report,
+        "wappi_pair_snapshot": {
+            "manifest": str(wappi_pair_snapshot["manifest"]),
+            "files": wappi_pair_snapshot["files"],
+        },
         "safety": {
             "writes_prod_db": False,
             "opens_prod_db": False,
@@ -279,13 +361,9 @@ def build_mail_increment(
         count_before = len(rows)
         if path.is_file():
             for row in read_jsonl(path):
-                event_at = parse_optional_dt(
-                    row.get("date_last")
-                    or row.get("date_first")
-                    or row.get("event_at")
-                    or row.get("updated_at")
-                )
-                if event_at is None or (not missing_only and event_at < since):
+                event_at = parse_mail_stage2_event_at(row)
+                updated_at = parse_mail_updated_at(row.get("updated_at"), fallback=event_at)
+                if not missing_only and updated_at < since:
                     continue
                 message_sha = str(row.get("message_sha256") or row.get("sha256") or "").strip()
                 if not message_sha or message_sha in seen:
@@ -303,7 +381,7 @@ def build_mail_increment(
                             "source_ref": f"mail_stage2:{path.name}:{message_sha[:16]}",
                             "message_sha256": message_sha,
                             "event_at": event_at.isoformat(),
-                            "updated_at": event_at.isoformat(),
+                            "updated_at": updated_at.isoformat(),
                             "date_first": row.get("date_first"),
                             "date_last": row.get("date_last"),
                             "customer_id": row.get("customer_id") or None,
@@ -459,7 +537,11 @@ def read_archive_messages(db_path: Path, *, since: datetime | None, text_limit: 
         ):
             primary_event_at = parse_optional_dt(row["message_date_iso"])
             event_at = primary_event_at or parse_optional_dt(row["updated_at"]) or parse_optional_dt(row["first_ingested_at"])
-            if event_at is None or (since is not None and event_at < since):
+            updated_at = parse_mail_updated_at(
+                row["updated_at"],
+                fallback=parse_optional_dt(row["first_ingested_at"]) or event_at,
+            )
+            if event_at is None or (since is not None and (updated_at is None or updated_at < since)):
                 continue
             text = read_text_preview(row["extracted_text_path"], text_limit) or str(row["subject"] or "").strip()
             sha = str(row["sha256"] or "").strip()
@@ -469,9 +551,7 @@ def read_archive_messages(db_path: Path, *, since: datetime | None, text_limit: 
                     "source_ref": f"mail_stage2:{db_path.parent.parent.name}:{sha[:16]}",
                     "message_sha256": sha,
                     "event_at": event_at.isoformat(),
-                    "updated_at": parse_optional_dt(row["updated_at"]).isoformat()
-                    if parse_optional_dt(row["updated_at"])
-                    else event_at.isoformat(),
+                    "updated_at": updated_at.isoformat(),
                     "subject": row["subject"] or "Email message",
                     "summary": text[:text_limit],
                     "text_preview": text[:240],
@@ -511,6 +591,15 @@ def build_mango_freshness(source_root: Path, manifest_path: Path) -> Mapping[str
     return report
 
 
+def parse_mail_updated_at(raw: Any, *, fallback: datetime) -> datetime:
+    if raw is None or not str(raw).strip():
+        return fallback
+    parsed = parse_optional_dt(raw)
+    if parsed is None:
+        raise ValueError("mail source updated_at is invalid")
+    return parsed
+
+
 def build_service_config(
     *,
     timeline_db: Path,
@@ -524,6 +613,7 @@ def build_service_config(
     mail_data_root: Path = DEFAULT_MAIL_DATA_ROOT,
     amo_tasks_snapshot: Path | None = None,
     tallanto_identity_dbs: Sequence[Path | str] | None = None,
+    wappi_pair_snapshot: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     allowed_root = timeline_db.parent.resolve(strict=False)
     state_root = Path(state_root).resolve(strict=False)
@@ -534,6 +624,11 @@ def build_service_config(
     calls_root = state_root / "calls"
     amo_root = state_root / "amo_incremental"
     wappi_root = state_root / "wappi"
+    pair_snapshot = wappi_pair_snapshot or snapshot_wappi_pair_inputs(state_root)
+    wappi_pairs_file = Path(pair_snapshot["pairs_file"])
+    wappi_auto_pairs_file = Path(pair_snapshot["auto_pairs_file"])
+    wappi_pairs_sha256 = sha256_file(wappi_pairs_file)
+    wappi_auto_pairs_sha256 = sha256_file(wappi_auto_pairs_file)
     mail_root = state_root / "mail_pipeline"
     tallanto_cards_root = state_root / "tallanto_cards"
     runtime_root = state_root
@@ -643,8 +738,10 @@ def build_service_config(
                 "allowed_root": str(allowed_root),
                 "env_file": str(DEFAULT_WAPPI_ENV),
                 "phase1_config": str(DEFAULT_WAPPI_CONFIG),
-                "pairs_file": str(DEFAULT_WAPPI_PAIRS),
-                "auto_pairs_file": str(DEFAULT_WAPPI_AUTO_PAIRS),
+                "pairs_file": str(wappi_pairs_file),
+                "auto_pairs_file": str(wappi_auto_pairs_file),
+                "pairs_file_sha256": wappi_pairs_sha256,
+                "auto_pairs_file_sha256": wappi_auto_pairs_sha256,
                 "amo_mcp_env_file": str(DEFAULT_WAPPI_AMO_ENV),
                 "shared_phone_stoplist": str(DEFAULT_WAPPI_STOPLIST),
                 "amo_auto_resolver_enabled": True,
@@ -656,7 +753,7 @@ def build_service_config(
                 "require_widget_linkage": False,
                 "refresh_widget_links": True,
                 "chat_limit_per_profile": 5000,
-                "messages_per_chat": 100,
+                "messages_per_chat": 50000,
                 "message_limit_total": 50000,
                 "request_limit_total": 50000,
                 "page_size": 100,

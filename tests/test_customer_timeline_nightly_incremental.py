@@ -373,6 +373,115 @@ def test_nightly_incremental_imports_mail_archive_stage2_manager_only(tmp_path: 
     assert chunk == (0, 1)
 
 
+@pytest.mark.parametrize(
+    ("event_at", "updated_at"),
+    (
+        ("2026-08-30T09:00:00+00:00", "2026-08-31T10:00:00+00:00"),
+        ("2026-08-31T10:00:00+00:00", "2026-08-31T10:00:00+00:00"),
+    ),
+)
+def test_mail_proof_uses_business_time_and_cursor_uses_update_time(
+    tmp_path: Path,
+    event_at: str,
+    updated_at: str,
+) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail_stage2.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "message_sha256": "b" * 64,
+                "customer_id": "customer:test-1",
+                "event_at": event_at,
+                "updated_at": updated_at,
+                "subject": "Вопрос по расписанию",
+            }
+        ],
+    )
+    proof_path = tmp_path / "mail_process_manifest.json"
+    write_source_proof(
+        proof_path,
+        source_path=source_path,
+        finished_at=datetime.now(timezone.utc),
+        rows_written=1,
+        max_event_at=event_at,
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                source_ref="nightly-test:mail",
+                normalizer="mail_archive_stage2",
+                proof_manifest_path=proof_path,
+                proof_manifest_sha256=sha256_file(proof_path),
+                proof_max_age_hours=72,
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+    )
+
+    report = run_nightly_incremental(config)
+
+    with sqlite3.connect(config.timeline_db) as con:
+        stored_event_at, record_json = con.execute(
+            "SELECT event_at, record_json FROM timeline_events WHERE source_id = ?",
+            ("b" * 64,),
+        ).fetchone()
+        cursor_at = con.execute(
+            "SELECT last_cursor_ts FROM ingestion_cursors "
+            "WHERE source_system = 'mail_archive_stage2'"
+        ).fetchone()[0]
+    assert report["gate_passed"] is True
+    assert report["sources"][0]["artifact_proof"]["max_event_at_verified"] == event_at
+    assert stored_event_at == event_at
+    assert json.loads(record_json)["metadata"]["source_updated_at"] == updated_at
+    assert cursor_at == updated_at
+
+
+def test_mail_invalid_business_time_does_not_fall_back_to_updated_at(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail_stage2.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "message_sha256": "c" * 64,
+                "customer_id": "customer:test-1",
+                "event_at": "not-a-date",
+                "updated_at": "2026-08-31T10:00:00+00:00",
+                "subject": "Некорректная дата письма",
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                normalizer="mail_archive_stage2",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["gate_passed"] is False
+    assert report["source_errors"][0]["reason"] == "source_exception:ValueError"
+    with sqlite3.connect(config.timeline_db) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 0
+
+
 def test_nightly_incremental_preserves_mail_link_enrich_pending_state(tmp_path: Path) -> None:
     seed_customer(tmp_path)
     source_path = tmp_path / "mail_stage2_pending.jsonl"

@@ -36,7 +36,20 @@ from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     validate_mutating_nightly_chain,
 )
 from mango_mvp.customer_timeline.calls_two_processes import configured_calls_working_db  # noqa: E402
+from mango_mvp.customer_timeline.wappi_history_import import (  # noqa: E402
+    WappiFetchLimits,
+    load_wappi_history_checkpoint,
+    profiles_from_phase1_config,
+    usable_wappi_checkpoint_profiles,
+    wappi_fetch_universe_fingerprint,
+    wappi_timeline_state,
+)
+from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config  # noqa: E402
 from mango_mvp.productization.mail_archive import DEFAULT_MAIL_DATA_ROOT  # noqa: E402
+from scripts.build_customer_timeline_nightly_dv2_sources import (  # noqa: E402
+    snapshot_wappi_pair_inputs,
+    wappi_pair_snapshot_paths,
+)
 from scripts.run_customer_timeline_mail_download import sha256_file  # noqa: E402
 
 NIGHTLY_HOME = Path(
@@ -191,9 +204,84 @@ def validate_nightly_config(path: Path | None = None) -> str:
     wappi_config = steps["wappi_history_incremental"].get("config")
     if not isinstance(wappi_config, Mapping) or wappi_config.get("require_widget_linkage") is not False:
         return "wappi_history_incremental must quarantine incomplete identity linkage"
+    configured_pairs = Path(str(wappi_config.get("pairs_file") or "")).expanduser().resolve(strict=False)
+    configured_auto_pairs = Path(str(wappi_config.get("auto_pairs_file") or "")).expanduser().resolve(strict=False)
+    expected_shas: dict[str, str] = {}
+    for label, sha_key in (
+        ("pairs_file", "pairs_file_sha256"),
+        ("auto_pairs_file", "auto_pairs_file_sha256"),
+    ):
+        expected_sha = str(wappi_config.get(sha_key) or "").strip().lower()
+        if len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha):
+            return f"wappi_history_incremental {label} snapshot SHA is missing or invalid"
+        expected_shas[label] = expected_sha
+    expected_pairs, expected_auto_pairs = wappi_pair_snapshot_paths(
+        expected_state_root,
+        pairs_sha256=expected_shas["pairs_file"],
+        auto_pairs_sha256=expected_shas["auto_pairs_file"],
+    )
+    if configured_pairs != expected_pairs or configured_auto_pairs != expected_auto_pairs:
+        return "wappi_history_incremental frozen staging pair snapshots must be content-addressed"
+    for label, configured_path in (
+        ("pairs_file", configured_pairs),
+        ("auto_pairs_file", configured_auto_pairs),
+    ):
+        expected_sha = expected_shas[label]
+        try:
+            observed_sha = sha256_file(configured_path)
+        except OSError:
+            return f"wappi_history_incremental {label} frozen snapshot is unavailable"
+        if observed_sha != expected_sha:
+            return f"wappi_history_incremental {label} snapshot SHA mismatch"
+    if wappi_config.get("complete_message_history") is not True or wappi_config.get("messages_per_chat") != 50000:
+        return "wappi_history_incremental must preserve the transferred checkpoint fingerprint"
     checkpoint_dir = Path(str(wappi_config.get("checkpoint_dir") or "")).expanduser().resolve(strict=False)
-    if not path_is_within(checkpoint_dir, STAGING_ROOT):
-        return "wappi_history_incremental checkpoint is outside persistent staging root"
+    if checkpoint_dir != (expected_state_root / "wappi/checkpoint").resolve(strict=False):
+        return "wappi_history_incremental checkpoint must use the transferred state path"
+    phase1_path = Path(str(wappi_config.get("phase1_config") or "")).expanduser()
+    try:
+        profiles = profiles_from_phase1_config(AmoWappiPhase1Config.from_file(phase1_path))
+        checkpoint_payload = load_wappi_history_checkpoint(checkpoint_dir)
+        checkpoint_profiles = checkpoint_payload.get("profiles") or {}
+        limits = WappiFetchLimits(
+            chat_limit_per_profile=int(wappi_config.get("chat_limit_per_profile", 5000)),
+            messages_per_chat=int(wappi_config.get("messages_per_chat", 100)),
+            message_limit_total=int(wappi_config.get("message_limit_total", 50000)),
+            request_limit_total=int(wappi_config.get("request_limit_total", 10000)),
+            page_size=int(wappi_config.get("page_size", 100)),
+            sleep_seconds=float(wappi_config.get("sleep_seconds", 0.2)),
+            show_all_chats=bool(wappi_config.get("show_all_chats", True)),
+            complete_message_history=bool(wappi_config.get("complete_message_history", False)),
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return "wappi_history_incremental transferred checkpoint inputs are unreadable"
+    if not profiles:
+        return "wappi_history_incremental phase1 profile set is empty"
+    try:
+        timeline_state = wappi_timeline_state(
+            STAGING_TIMELINE_DB,
+            tenant_id=str(payload.get("tenant_id") or "foton"),
+            profiles=profiles,
+        )
+    except (OSError, sqlite3.Error):
+        return "wappi_history_incremental staging timeline is unreadable"
+    usable_checkpoint_profiles = usable_wappi_checkpoint_profiles(
+        checkpoint_payload,
+        db_row_counts={key: int(value["rows"]) for key, value in timeline_state.items()},
+        db_source_digests={
+            key: str(value["source_digest"]) for key, value in timeline_state.items()
+        },
+    )
+    for profile in profiles:
+        key = f"{profile.source_system}:{profile.profile_id}"
+        entry = checkpoint_profiles.get(key)
+        expected_fingerprint = wappi_fetch_universe_fingerprint(
+            profile, limits, tenant_id=str(payload.get("tenant_id") or "foton")
+        )
+        if not isinstance(entry, Mapping) or entry.get("fingerprint") != expected_fingerprint:
+            return f"wappi_history_incremental transferred checkpoint fingerprint mismatch: {key}"
+        if key not in usable_checkpoint_profiles:
+            return f"wappi_history_incremental transferred checkpoint timeline mismatch: {key}"
     mail_config = steps["mail_link_enrich"].get("config")
     if not isinstance(mail_config, Mapping) or mail_config.get("reconsider_pending") is not True:
         return "mail_link_enrich must reconsider pending after Tallanto refresh"
@@ -354,12 +442,39 @@ def repo_python_env() -> dict[str, str]:
 
 
 def ensure_nightly_config() -> str:
-    current_reason = validate_nightly_config()
-    if not current_reason:
-        return ""
     if not STAGING_TIMELINE_DB.is_file():
         return f"cannot rebuild nightly config: staging DB is missing: {STAGING_TIMELINE_DB}"
     state_root = STAGING_ROOT / "state"
+    try:
+        pair_snapshot = snapshot_wappi_pair_inputs(state_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"wappi pair snapshot failed: {type(exc).__name__}"
+    current_reason = validate_nightly_config()
+    if not current_reason:
+        try:
+            payload = json.loads(NIGHTLY_DV2_CONFIG.read_text(encoding="utf-8"))
+            wappi_config = next(
+                item["config"]
+                for item in payload["steps"]
+                if item.get("name") == "wappi_history_incremental"
+            )
+            snapshot_paths = {
+                "pairs_file": Path(pair_snapshot["pairs_file"]).resolve(strict=False),
+                "auto_pairs_file": Path(pair_snapshot["auto_pairs_file"]).resolve(strict=False),
+            }
+            snapshot_shas = {
+                key: sha256_file(path) for key, path in snapshot_paths.items()
+            }
+            config_has_current_pairs = all(
+                Path(str(wappi_config.get(key) or "")).expanduser().resolve(strict=False) == path
+                and str(wappi_config.get(f"{key}_sha256") or "").lower() == snapshot_shas[key]
+                for key, path in snapshot_paths.items()
+            )
+        except (KeyError, OSError, StopIteration, TypeError, json.JSONDecodeError):
+            config_has_current_pairs = False
+        if config_has_current_pairs:
+            return ""
+        current_reason = "wappi pair inputs changed"
     command = (
         sys.executable,
         "scripts/build_customer_timeline_nightly_dv2_sources.py",

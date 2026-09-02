@@ -153,15 +153,10 @@ def _now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _parse_event_at(event: Mapping[str, Any]) -> datetime:
+def parse_mail_stage2_event_at(event: Mapping[str, Any]) -> datetime:
     for field in (
-        "date_iso",
-        "date_first",
-        "date_last",
-        "date",
-        "message_date_iso",
-        "first_ingested_at",
-        "updated_at",
+        "event_at", "date_iso", "date_first", "date_last", "date", "message_date_iso",
+        "first_ingested_at", "updated_at",
     ):
         raw = clean_text(event.get(field))
         if not raw:
@@ -180,6 +175,10 @@ def _parse_event_at(event: Mapping[str, Any]) -> datetime:
             return parsed.astimezone(timezone.utc)
         raise ValueError("mail stage2 event requires a valid timestamp")
     raise ValueError("mail stage2 event requires a valid timestamp")
+
+
+# Backward compatibility for the existing A2 importer and its tests.
+_parse_event_at = parse_mail_stage2_event_at
 
 
 def _event_direction(event: Mapping[str, Any]) -> TimelineDirection:
@@ -475,7 +474,7 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
     }
     for item in prepared:
         event = item["event"]
-        event_at = _parse_event_at(event)
+        event_at = parse_mail_stage2_event_at(event)
         message_sha = _message_sha(event)
         if not clean_text(event.get("message_sha256") or event.get("sha")):
             counters["fallback_sha"] += 1

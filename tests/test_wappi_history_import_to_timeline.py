@@ -180,6 +180,22 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
     assert link["link_value"] == "wappi_telegram:p-tg:123456"
 
 
+def test_wappi_history_import_rejects_pair_snapshot_sha_before_network(tmp_path: Path) -> None:
+    pairs_file = tmp_path / "pairs.json"
+    pairs_file.write_text("[]\n", encoding="utf-8")
+    config = WappiHistoryImportConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        phase1_config=tmp_path / "missing-phase1.json",
+        pairs_file=pairs_file,
+        auto_pairs_file=None,
+        pairs_file_sha256="0" * 64,
+    )
+
+    with pytest.raises(ValueError, match="snapshot SHA mismatch"):
+        run_wappi_history_import(config, client=object())
+
+
 @pytest.mark.parametrize("timestamp", (0, -1, float("inf"), -(10**100)))
 def test_wappi_invalid_timestamp_is_deterministic_epoch(timestamp: object) -> None:
     profile = WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram")
@@ -4298,6 +4314,137 @@ def test_wappi_pending_event_skips_non_exact_local_relink(tmp_path: Path) -> Non
     )
 
     assert records == ()
+
+
+def test_changed_pair_relinks_pending_history_without_message_refetch(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        lead_id="1001",
+        contact_id="2002",
+        brand="foton",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                event_type=TimelineEventType.TELEGRAM_MESSAGE,
+                event_at=datetime.fromtimestamp(1_753_000_000, tz=timezone.utc),
+                source_system="wappi_telegram",
+                source_id="pending-pair-message",
+                direction=TimelineDirection.INBOUND,
+                text_preview="Старое сообщение",
+                record={
+                    "message": {
+                        "channel": "telegram",
+                        "brand": "foton",
+                        "message_id": "pending-pair-message",
+                        "text": "Старое сообщение",
+                    }
+                },
+                metadata={
+                    "profile_id": "p-tg",
+                    "chat_id": "123456",
+                    "message_id": "pending-pair-message",
+                    "identity_authority": "pending_attribution",
+                },
+            ),
+            actor="test",
+        )
+    from mango_mvp.integrations.draft_loop import load_pairs_file
+
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs=load_pairs_file(
+            write_pairs(tmp_path, lead_id="1001", contact_id="2002", chat_id="123456")
+        ),
+    )
+    resolution = resolver.prime_pair_chat_resolution(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"},
+    )
+    records = load_existing_unmatched_wappi_records(
+        db_path,
+        tenant_id="foton",
+        chat_resolutions=resolver.chat_resolutions,
+    )
+
+    assert resolution is not None and resolution.resolved is True
+    assert len(records) == 1
+    assert records[0].payload["resolved_customer_id"] == customer_id
+    assert records[0].payload["identity_authority"] == "draft_loop_pair"
+
+
+def test_completed_checkpoint_applies_new_pair_without_refetching_messages(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        lead_id="1001",
+        contact_id="2002",
+        brand="foton",
+    )
+    phase1 = write_phase1_config(tmp_path)
+    checkpoint_dir = tmp_path / "checkpoint"
+    limits = WappiFetchLimits(
+        page_size=10,
+        request_limit_total=100,
+        complete_message_history=True,
+        sleep_seconds=0,
+    )
+    chats = {"p-tg": [{"id": "123456", "type": "user", "last_timestamp": 1_753_000_000}]}
+    messages = {
+        ("telegram", "p-tg", "123456"): [
+            {
+                "id": "pending-pair-message",
+                "chat_id": "123456",
+                "type": "text",
+                "body": "Старое сообщение",
+                "time": 1_753_000_000,
+            }
+        ]
+    }
+    first_client = FakeWappiClient(chats, messages)
+    base_config = WappiHistoryImportConfig(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        phase1_config=phase1,
+        pairs_file=None,
+        auto_pairs_file=None,
+        apply=True,
+        checkpoint_dir=checkpoint_dir,
+        limits=limits,
+    )
+
+    first = run_wappi_history_import(base_config, client=first_client)
+    assert first["validation_ok"] is True
+    assert any(call["kind"] == "messages" for call in first_client.calls)
+
+    second_client = FakeWappiClient(chats, messages)
+    second = run_wappi_history_import(
+        replace(
+            base_config,
+            pairs_file=write_pairs(
+                tmp_path,
+                lead_id="1001",
+                contact_id="2002",
+                chat_id="123456",
+            ),
+        ),
+        client=second_client,
+    )
+
+    assert second["validation_ok"] is True
+    assert any(call["kind"] == "chats" for call in second_client.calls)
+    assert not any(call["kind"] == "messages" for call in second_client.calls)
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?",
+            ("p-tg:123456:pending-pair-message",),
+        ).fetchone()
+    assert row == (customer_id, "manual")
 
 
 def test_wappi_inbound_email_is_only_identity_candidate_not_sender_truth(tmp_path: Path) -> None:

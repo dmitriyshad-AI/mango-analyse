@@ -229,6 +229,8 @@ class WappiHistoryImportConfig:
     phase1_config: Path = DEFAULT_AMO_WAPPI_CONFIG_PATH
     pairs_file: Optional[Path] = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
     auto_pairs_file: Optional[Path] = Path.home() / ".mango_secrets" / "draft_loop_auto_pairs.json"
+    pairs_file_sha256: Optional[str] = None
+    auto_pairs_file_sha256: Optional[str] = None
     amo_auto_resolver_enabled: bool = False
     amo_mcp_env_file: Optional[Path] = DEFAULT_AMO_MCP_ENV_PATH
     shared_phone_stoplist: Optional[Path] = DEFAULT_STOPLIST_PATH
@@ -261,6 +263,13 @@ class WappiHistoryImportConfig:
         object.__setattr__(self, "phase1_config", Path(self.phase1_config).expanduser())
         object.__setattr__(self, "pairs_file", Path(self.pairs_file).expanduser() if self.pairs_file else None)
         object.__setattr__(self, "auto_pairs_file", Path(self.auto_pairs_file).expanduser() if self.auto_pairs_file else None)
+        for name in ("pairs_file_sha256", "auto_pairs_file_sha256"):
+            value = str(getattr(self, name) or "").strip().lower() or None
+            if value is not None and (
+                len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)
+            ):
+                raise ValueError(f"{name} must be a SHA256 hex digest")
+            object.__setattr__(self, name, value)
         object.__setattr__(self, "amo_mcp_env_file", Path(self.amo_mcp_env_file).expanduser() if self.amo_mcp_env_file else None)
         object.__setattr__(self, "shared_phone_stoplist", Path(self.shared_phone_stoplist).expanduser() if self.shared_phone_stoplist else None)
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
@@ -2147,6 +2156,12 @@ def run_wappi_history_import(
         config.pairs_file,
         config.auto_pairs_file,
     )
+    for key, expected in (
+        ("pairs_file", config.pairs_file_sha256),
+        ("auto_pairs_file", config.auto_pairs_file_sha256),
+    ):
+        if expected is not None and pair_snapshot_hashes.get(key) != expected:
+            raise ValueError(f"configured Wappi {key} snapshot SHA mismatch")
     input_hashes_start = {
         "importer": file_sha256(Path(__file__)),
         "phase1_config": file_sha256(config.phase1_config),
@@ -3918,6 +3933,29 @@ class WappiPairCustomerResolver:
             )
         return resolution
 
+    def prime_pair_chat_resolution(
+        self,
+        *,
+        profile: WappiProfileSpec,
+        dialog: Mapping[str, Any],
+    ) -> WappiChatResolution | None:
+        """Apply a changed pair from the catalog without refetching message history."""
+
+        chat_id = extract_chat_id(dialog)
+        if not chat_id or DraftLoopKey(profile.profile_id, chat_id) not in self._resolutions:
+            return None
+        key = (profile.source_system, profile.profile_id, chat_id)
+        primed = self._chat_resolutions.get(key)
+        if primed is not None and primed.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES:
+            return primed
+        guarded = self._guard_chat_customer(
+            profile,
+            chat_id,
+            self._guard_pair_context(profile, chat_id, dialog, self.resolve(profile=profile, chat_id=chat_id)),
+        )
+        self._remember_chat_resolution(profile, chat_id, dialog, guarded)
+        return guarded
+
     def resolve_chat(
         self,
         *,
@@ -5166,6 +5204,7 @@ def fetch_wappi_history_records(
             dialog_marker = _safe_int(dialog.get("last_timestamp"))
             saved_marker = chat_markers.get(chat_token)
             dialog_is_personal = is_personal_wappi_dialog(profile, dialog)
+            resolver.prime_pair_chat_resolution(profile=profile, dialog=dialog)
             if chat_token in strict_reconciled_current_tokens:
                 stats.checkpoint_chats_skipped += 1
                 continue
@@ -6452,10 +6491,10 @@ def load_existing_unmatched_wappi_records(
                 continue
             existing_customer = str(row["customer_id"] or "").strip()
             existing_authority = str(row["identity_authority"] or "").strip()
-            if (
-                existing_authority == "pending_attribution"
-                and resolution.resolution_source not in WAPPI_EXACT_AMO_AUTHORITIES
-            ):
+            if existing_authority == "pending_attribution" and resolution.resolution_source not in {
+                *WAPPI_EXACT_AMO_AUTHORITIES,
+                "draft_loop_pair",
+            }:
                 continue
             if (
                 existing_customer

@@ -4,7 +4,7 @@ import json
 import re
 import subprocess
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -2339,7 +2339,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
                         "internal_only": False,
-                        "freshness_check_date": date.today().isoformat(),
+                        "freshness_check_date": datetime.now(timezone.utc).date().isoformat(),
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, семестр — 34 200 руб.",
@@ -2350,7 +2350,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "allowed_for_client_answer": True,
                         "forbidden_for_client": False,
                         "internal_only": False,
-                        "freshness_check_date": date.today().isoformat(),
+                        "freshness_check_date": datetime.now(timezone.utc).date().isoformat(),
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "Фотон: регулярные курсы онлайн, 5-11 классы, год — 57 000 руб.",
@@ -2359,7 +2359,7 @@ def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_k
                         "fact_key": "owner_2026_08_13.foton.regular.online.5_11.semester",
                         "brand": "unpk",
                         "allowed_for_client_answer": True,
-                        "freshness_check_date": date.today().isoformat(),
+                        "freshness_check_date": datetime.now(timezone.utc).date().isoformat(),
                         "valid_from": "2026-08-13",
                         "valid_until": "2099-07-01",
                         "client_safe_text": "УНПК: регулярные курсы онлайн, 5-11 классы, семестр — 41 800 руб.",

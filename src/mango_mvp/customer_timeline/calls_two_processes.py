@@ -1809,6 +1809,7 @@ def scrub_daily_counters(value: Any, key: str = "") -> Any:
         "command",
         "sha",
         "pid",
+        "bytes",
         "diagnostic",
     )
     if any(marker in key.casefold() for marker in blocked_key_markers):

@@ -871,6 +871,37 @@ def test_nightly_incremental_cli_returns_nonzero_when_required_gate_fails(
     assert nightly_cli.main(["--config", str(config), "--summary-only"]) == 1
 
 
+def test_nightly_incremental_cli_rejects_canonical_staging_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(tmp_path / "customer_timeline_staging.sqlite"),
+                "allowed_root": str(tmp_path),
+                "journal_path": str(tmp_path / "journal.jsonl"),
+                "sources": [
+                    {
+                        "source_system": "mail_archive_stage2",
+                        "path": str(tmp_path / "mail.jsonl"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        nightly_cli,
+        "run_nightly_incremental",
+        lambda _config: pytest.fail("direct CLI must stop before opening the writer"),
+    )
+
+    with pytest.raises(RuntimeError, match="owned_by_nightly_service"):
+        nightly_cli.main(["--config", str(config)])
+
+
 def test_nightly_incremental_cli_starts_without_external_pythonpath() -> None:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)

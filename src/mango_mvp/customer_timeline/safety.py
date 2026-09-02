@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 
 CUSTOMER_TIMELINE_SAFETY_SCHEMA_VERSION = "customer_timeline_safety_v1"
+_MANAGED_STAGING_WRITE_ALLOWED: ContextVar[bool] = ContextVar(
+    "customer_timeline_managed_staging_write_allowed",
+    default=False,
+)
 
 
 def customer_timeline_safety_contract() -> Mapping[str, Any]:
@@ -69,6 +75,46 @@ def is_stable_runtime_path(path: Path | str) -> bool:
 
 def is_customer_timeline_prod_path(path: Path | str) -> bool:
     return any("customer_timeline_prod_" in part.casefold() for part in Path(path).parts)
+
+
+def is_canonical_customer_timeline_staging_path(
+    path: Path | str,
+    *,
+    allowed_root: Path | str,
+) -> bool:
+    """Identify the single-writer staging DB, including hard-link aliases."""
+
+    resolved = Path(path).expanduser().resolve(strict=False)
+    canonical = Path(allowed_root).expanduser().resolve(strict=False) / "customer_timeline_staging.sqlite"
+    if resolved == canonical:
+        return True
+    try:
+        return resolved.is_file() and canonical.is_file() and resolved.samefile(canonical)
+    except OSError:
+        return False
+
+
+@contextmanager
+def managed_staging_writer_scope() -> Iterator[None]:
+    """Authorize the verified unified nightly writer in this execution context."""
+
+    token = _MANAGED_STAGING_WRITE_ALLOWED.set(True)
+    try:
+        yield
+    finally:
+        _MANAGED_STAGING_WRITE_ALLOWED.reset(token)
+
+
+def guard_managed_customer_timeline_staging_write(path: Path | str) -> Path:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    ownership_receipt = resolved.parent / "state" / "WRITER_OWNERSHIP.json"
+    if (
+        resolved.name == "customer_timeline_staging.sqlite"
+        and ownership_receipt.is_file()
+        and not _MANAGED_STAGING_WRITE_ALLOWED.get()
+    ):
+        raise ValueError("managed customer timeline staging writes require the unified nightly service")
+    return resolved
 
 
 def guard_customer_timeline_writable_path(path: Path | str) -> Path:

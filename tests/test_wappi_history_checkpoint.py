@@ -764,14 +764,20 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
         ),
     )
 
-    assert raced_absent["publish_ready"] is False
-    assert raced_absent["writes"]["applied"] is False
-    assert raced_absent["checkpoint"]["committed"] is False
-    assert raced_absent["profiles"]["p-tg"]["message_page_drift_reason"] == (
-        "full_history_pagination_drift"
-    )
-    assert checkpoint_path.read_bytes() == checkpoint_before
-    assert active_wappi_row_count(db_path) == 2
+    assert raced_absent["publish_ready"] is True
+    assert raced_absent["writes"]["applied"] is True
+    assert raced_absent["checkpoint"]["committed"] is True
+    assert raced_absent["profiles"]["p-tg"]["full_history_drift_retries"] == 1
+    assert raced_absent["profiles"]["p-tg"]["full_history_drift_retry_successes"] == 1
+    assert raced_absent["profiles"]["p-tg"]["full_history_drift_retry_exhausted"] == 0
+    assert checkpoint_path.read_bytes() != checkpoint_before
+    assert active_wappi_row_count(db_path) == 3
+
+    messages[("telegram", "p-tg", "c0000")] = [
+        item
+        for item in messages[("telegram", "p-tg", "c0000")]
+        if item["id"] != "c0000-race"
+    ]
 
     original_head = dict(messages[("telegram", "p-tg", "c0000")][0])
     messages[("telegram", "p-tg", "c0000")][0] = {
@@ -882,7 +888,7 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
     assert excluded["publish_ready"] is True
     assert excluded["source_lifecycle"]["verified_historical_personal_source_records"] == 0
     assert not any(request[1] == "c0000" for request in grouped_client.message_request_calls)
-    assert excluded["source_lifecycle"]["retired_events"] == 2
+    assert excluded["source_lifecycle"]["retired_events"] == 3
     assert active_wappi_row_count(db_path) == 1
 
     absent_after_exclusion = run_wappi_history_import(
@@ -893,7 +899,7 @@ def test_resolved_historical_personal_chat_requires_exact_snapshot_and_active_hi
     assert absent_after_exclusion["publish_ready"] is True
     assert absent_after_exclusion["source_lifecycle"]["unmatched_rows"] == 0
     assert absent_after_exclusion["source_lifecycle"]["verified_historical_personal_source_records"] == 0
-    assert absent_after_exclusion["source_lifecycle"]["catalog_non_personal_source_records"] == 2
+    assert absent_after_exclusion["source_lifecycle"]["catalog_non_personal_source_records"] == 3
     assert active_wappi_row_count(db_path) == 1
 
 
@@ -1822,13 +1828,20 @@ def test_pagination_drift_blocks_write_and_checkpoint(tmp_path: Path) -> None:
     chats, messages = build_universe(2, messages_per_chat=20)
 
     class DriftingClient(CheckpointFakeClient):
+        drift_reads = 0
+
         def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
             payload = super().get_chat_messages(**kwargs)
             items = list(payload.get("messages") or ())
             if kwargs.get("chat_id") == "c0000" and kwargs.get("offset") == 0 and items:
-                self.message_calls.append(("drift", "c0000", -1))
-                if len([call for call in self.message_calls if call[0] == "drift"]) > 1:
-                    return {"messages": [{**dict(items[0]), "id": "drifted"}, *items[1:]]}
+                self.drift_reads += 1
+                self.message_calls.append(("drift", "c0000", self.drift_reads))
+                return {
+                    "messages": [
+                        {**dict(items[0]), "id": f"drifted-{self.drift_reads}"},
+                        *items[1:],
+                    ]
+                }
             return payload
 
     report = run_wappi_history_import(
@@ -1840,8 +1853,60 @@ def test_pagination_drift_blocks_write_and_checkpoint(tmp_path: Path) -> None:
     assert report["mode"] == "apply_blocked"  # drift is never deferred
     assert report["validation_ok"] is False
     assert report["checkpoint"]["committed"] is False
+    assert report["profiles"]["p-tg"]["full_history_drift_retries"] == 1
+    assert report["profiles"]["p-tg"]["full_history_drift_retry_exhausted"] == 1
     assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
     assert wappi_row_count(db_path) == 0
+
+
+def test_pagination_drift_commits_only_previously_confirmed_chat_progress(
+    tmp_path: Path,
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2, messages_per_chat=20)
+
+    class SecondChatDriftsForever(CheckpointFakeClient):
+        drift_reads = 0
+
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            payload = super().get_chat_messages(**kwargs)
+            items = list(payload.get("messages") or ())
+            if kwargs.get("chat_id") == "c0001" and kwargs.get("offset") == 0 and items:
+                self.drift_reads += 1
+                return {
+                    "messages": [
+                        {**dict(items[0]), "id": f"drifted-{self.drift_reads}"},
+                        *items[1:],
+                    ]
+                }
+            return payload
+
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+    )
+    partial = run_wappi_history_import(
+        config,
+        client=SecondChatDriftsForever({"p-tg": chats, "p-max": []}, messages),
+    )
+
+    assert partial["validation_ok"] is False
+    assert partial["publish_ready"] is False
+    assert partial["writes"]["applied"] is True
+    assert partial["checkpoint"]["committed"] is True
+    assert partial["profiles"]["p-tg"]["checkpoint_chats_confirmed"] == 1
+    assert wappi_row_count(db_path) == 20
+
+    completed = run_wappi_history_import(
+        config,
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+    assert completed["validation_ok"] is True
+    assert completed["publish_ready"] is True
+    assert completed["checkpoint"]["complete"] is True
+    assert wappi_row_count(db_path) == 40
 
 
 def test_checkpoint_dropped_when_confirmed_rows_disappear(tmp_path: Path) -> None:

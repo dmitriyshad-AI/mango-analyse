@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ from mango_mvp.customer_timeline.stage4b_bot_opening import (
     run_stage4b_bot_opening,
 )
 from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
+from mango_mvp.customer_timeline.safety import managed_staging_writer_scope
 from mango_mvp.customer_timeline.bot_safe_summary import BotSafeSummaryBuildConfig, build_bot_safe_summaries
 from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
 from mango_mvp.customer_timeline.tallanto_attendance_import import (
@@ -183,7 +185,11 @@ class NightlyServiceConfig:
     source_config_sha256: Optional[str] = None
 
 
-def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]:
+def validate_writer_ownership(
+    config: NightlyServiceConfig,
+    *,
+    allow_activation_recovery: bool = False,
+) -> Mapping[str, str]:
     """Fail closed for the canonical cross-host writer before any filesystem write."""
 
     canonical_target = (
@@ -212,6 +218,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         "m1_writer_stopped_at",
         "m4_local_db_sha256_before_first_write",
         "m4_service_config_sha256",
+        "m4_ownership_config_sha256",
         "m4_timeline_db",
         "m1_stop_receipt_sha256",
     }
@@ -225,8 +232,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         "m4_service_config_sha256",
         "m1_stop_receipt_sha256",
     )
-    if payload.get("m4_ownership_config_sha256"):
-        sha256_fields = (*sha256_fields, "m4_ownership_config_sha256")
+    sha256_fields = (*sha256_fields, "m4_ownership_config_sha256")
     if any(len(str(payload[key])) != 64 or any(ch not in "0123456789abcdef" for ch in str(payload[key])) for key in sha256_fields):
         raise ValueError("writer ownership receipt has invalid sha256")
     code_sha = str(payload["code_sha"])
@@ -272,13 +278,26 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         out_root=config.out_root.resolve(strict=False),
         publish_dir=config.publish_dir.resolve(strict=False),
     )
-    declared_ownership_sha256 = str(payload.get("m4_ownership_config_sha256") or "")
-    if declared_ownership_sha256:
-        if declared_ownership_sha256 != ownership_config_sha256:
-            raise ValueError("writer ownership stable config SHA mismatch")
-    elif payload["m4_service_config_sha256"] != config.source_config_sha256:
-        raise ValueError("writer ownership service config SHA mismatch")
+    declared_ownership_sha256 = str(payload["m4_ownership_config_sha256"])
+    if declared_ownership_sha256 != ownership_config_sha256:
+        raise ValueError("writer ownership stable config SHA mismatch")
+    ownership_summary = {
+        "status": "TRANSFERRED",
+        "from": "M1",
+        "to": "M4",
+        "receipt_path": str(expected_path),
+        "ownership_receipt_sha256": ownership_sha256,
+        "seed_sha256": str(payload["seed_sha256"]),
+        "code_sha": code_sha,
+        "service_config_sha256": str(payload["m4_service_config_sha256"]),
+        "ownership_config_sha256": ownership_config_sha256,
+    }
     activation_path = expected_path.parent / "M4_WRITER_ACTIVATION.json"
+    actual_seed_sha: str | None = None
+    if not activation_path.is_file():
+        actual_seed_sha = str(file_fingerprint(config.timeline_db).get("sha256") or "")
+        if actual_seed_sha != payload["seed_sha256"] and allow_activation_recovery:
+            return {**ownership_summary, "status": "M4_WRITER_ACTIVATION_RECOVERY_REQUIRED"}
     if activation_path.is_file():
         activation = json.loads(activation_path.read_text(encoding="utf-8"))
         if not isinstance(activation, Mapping):
@@ -295,8 +314,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
             "first_successful_service_report_path",
             "first_successful_service_report_sha256",
         }
-        if declared_ownership_sha256:
-            activation_required.add("m4_ownership_config_sha256")
+        activation_required.add("m4_ownership_config_sha256")
         if any(not str(activation.get(key) or "").strip() for key in activation_required):
             raise ValueError("M4 writer activation receipt is incomplete")
         report_path = Path(str(activation["first_successful_service_report_path"])).expanduser().resolve(strict=False)
@@ -318,11 +336,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
             and activation.get("ownership_receipt_sha256") == ownership_sha256
             and activation.get("seed_sha256") == payload["seed_sha256"]
             and activation.get("code_sha") == code_sha
-            and (
-                activation.get("m4_ownership_config_sha256") == ownership_config_sha256
-                if declared_ownership_sha256
-                else activation.get("m4_service_config_sha256") == config.source_config_sha256
-            )
+            and activation.get("m4_ownership_config_sha256") == ownership_config_sha256
             and Path(str(activation.get("m4_timeline_db"))).expanduser().resolve(strict=False)
             == config.timeline_db.resolve(strict=False)
             and parse_aware_utc(str(activation.get("activated_at"))) is not None
@@ -341,20 +355,10 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     else:
         if payload["m4_service_config_sha256"] != config.source_config_sha256:
             raise ValueError("transferred writer service config SHA mismatch")
-        actual_seed_sha = file_fingerprint(config.timeline_db).get("sha256")
         if actual_seed_sha != payload["seed_sha256"]:
             raise ValueError("transferred writer seed does not match the actual timeline DB")
         status = "TRANSFERRED"
-    return {
-        "status": status,
-        "from": "M1",
-        "to": "M4",
-        "receipt_path": str(expected_path),
-        "ownership_receipt_sha256": ownership_sha256,
-        "seed_sha256": str(payload["seed_sha256"]),
-        "code_sha": code_sha,
-        "ownership_config_sha256": ownership_config_sha256,
-    }
+    return {**ownership_summary, "status": status}
 
 
 def _tracked_worktree_is_clean(repo_root: Path) -> bool:
@@ -387,7 +391,7 @@ def activate_writer_ownership_after_success(
         "ownership_receipt_sha256": writer_ownership["ownership_receipt_sha256"],
         "seed_sha256": writer_ownership["seed_sha256"],
         "code_sha": writer_ownership["code_sha"],
-        "m4_service_config_sha256": config.source_config_sha256,
+        "m4_service_config_sha256": writer_ownership["service_config_sha256"],
         "m4_ownership_config_sha256": writer_ownership["ownership_config_sha256"],
         "m4_timeline_db": str(config.timeline_db.resolve(strict=False)),
         "activated_at": datetime.now(timezone.utc).isoformat(),
@@ -402,19 +406,63 @@ def activate_writer_ownership_after_success(
     write_json(activation_path, payload)
 
 
+def _recover_writer_activation_from_completed_report(
+    config: NightlyServiceConfig,
+    writer_ownership: Mapping[str, Any],
+) -> bool:
+    """Recover only the narrow crash window after a green report was persisted."""
+
+    expected_ownership_fingerprint = str(writer_ownership["ownership_config_sha256"])
+    current_db_sha = file_fingerprint(config.timeline_db).get("sha256")
+    for report_path in sorted(config.out_root.glob("run_*/service_report.json"), reverse=True):
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        report_writer = report.get("writer_ownership") if isinstance(report, Mapping) else None
+        snapshot = report.get("snapshot_manifest") if isinstance(report, Mapping) else None
+        if not (
+            report.get("overall_status") == "ok"
+            and report.get("partial_failure") is False
+            and _is_sha256(report.get("config_fingerprint"))
+            and report.get("timeline_db") == str(config.timeline_db.resolve(strict=False))
+            and isinstance(report_writer, Mapping)
+            and report_writer.get("status") == "TRANSFERRED"
+            and report_writer.get("ownership_receipt_sha256")
+            == writer_ownership.get("ownership_receipt_sha256")
+            and report_writer.get("ownership_config_sha256")
+            == expected_ownership_fingerprint
+            and isinstance(snapshot, Mapping)
+            and snapshot.get("latest_published") is True
+            and snapshot.get("sha256") == current_db_sha
+        ):
+            continue
+        activate_writer_ownership_after_success(
+            config,
+            {**writer_ownership, "status": "TRANSFERRED"},
+            run_id=str(report["run_id"]),
+            service_report_path=report_path,
+        )
+        return True
+    return False
+
+
+def _allocate_unique_run_dir(out_root: Path, base_run_id: str) -> tuple[str, Path]:
+    for attempt in range(1000):
+        run_id = base_run_id if attempt == 0 else f"{base_run_id}_{attempt:03d}"
+        run_dir = out_root / f"run_{run_id}"
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            continue
+        return run_id, run_dir
+    raise RuntimeError("nightly service could not allocate a unique run directory")
+
+
 def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     run_id = started.strftime("%Y%m%dT%H%M%SZ")
     timeline_db, allowed_root, out_root, publish_dir = validated_service_paths(config)
-    writer_ownership = validate_writer_ownership(config)
-    timeline_db.parent.mkdir(parents=True, exist_ok=True)
-    out_root.mkdir(parents=True, exist_ok=True)
-    publish_dir.mkdir(parents=True, exist_ok=True)
-    timeline_db.parent.chmod(0o700)
-    out_root.chmod(0o700)
-    publish_dir.chmod(0o700)
-    if timeline_db.exists():
-        timeline_db.chmod(0o600)
     # B2: fingerprint of the full normalized, immutable service config (every
     # step field, target DB/allowed/out/publish paths, tenant, required
     # sources, timeouts -- never secrets or env *values*, only env *paths*).
@@ -430,6 +478,23 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         publish_dir=publish_dir,
     )
     with service_lock(timeline_db, timeout_seconds=config.lock_timeout_seconds) as lock_info:
+        writer_ownership = validate_writer_ownership(
+            config, allow_activation_recovery=True
+        )
+        if writer_ownership.get("status") == "M4_WRITER_ACTIVATION_RECOVERY_REQUIRED":
+            if not _recover_writer_activation_from_completed_report(config, writer_ownership):
+                raise ValueError(
+                    "changed transferred writer DB has no recoverable successful activation report"
+                )
+            writer_ownership = validate_writer_ownership(config)
+        timeline_db.parent.mkdir(parents=True, exist_ok=True)
+        out_root.mkdir(parents=True, exist_ok=True)
+        publish_dir.mkdir(parents=True, exist_ok=True)
+        timeline_db.parent.chmod(0o700)
+        out_root.chmod(0o700)
+        publish_dir.chmod(0o700)
+        if timeline_db.exists():
+            timeline_db.chmod(0o600)
         # B2 resume: reuse an interrupted run's directory/run_id and carry its
         # already-"ok" leading steps forward instead of redoing them from
         # step 1. Selection happens only now, *after* the lock is held, so
@@ -448,9 +513,8 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
             run_dir = resumed_run_dir
             run_as_of = resumed_as_of
         else:
-            run_dir = out_root / f"run_{run_id}"
+            run_id, run_dir = _allocate_unique_run_dir(out_root, run_id)
             run_as_of = started
-        run_dir.mkdir(parents=True, exist_ok=True)
         run_dir.chmod(0o700)
         report: dict[str, Any] = {
             "schema_version": NIGHTLY_SERVICE_SCHEMA_VERSION,
@@ -463,6 +527,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
             "publish_dir": str(publish_dir),
             "tenant_id": config.tenant_id,
             "writer_ownership": writer_ownership,
+            "config_fingerprint": config_fingerprint,
             "resumed_from_run_id": resumed_run_id,
             "steps": list(resumed_steps),
             "safety": {
@@ -933,7 +998,13 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         timeline_db,
                         tenant_id=config.tenant_id,
                     )
-                    step_report = run_wappi_history_import(step.wappi_history_config)
+                    step_report = run_wappi_history_import(
+                        step.wappi_history_config,
+                        canonical_writer_authorized=writer_ownership.get("status")
+                        in {"TRANSFERRED", "M4_WRITER_ACTIVE"},
+                        allow_checkpoint_rebuild=writer_ownership.get("status")
+                        == "M4_WRITER_ACTIVE",
+                    )
                     owners_after = wappi_existing_owner_state(
                         timeline_db,
                         tenant_id=config.tenant_id,
@@ -1449,16 +1520,19 @@ def service_config_from_json(path: Path) -> NightlyServiceConfig:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise ValueError("nightly service config must be a JSON object")
+    timeline_db = Path(str(payload["timeline_db"]))
     required_sources = tuple(str(item) for item in payload.get("required_manifest_sources") or ())
-    if payload.get("config_schema_version") is not None and (
-        payload.get("config_schema_version") != NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
-    ):
+    canonical_target = timeline_db.expanduser().resolve(strict=False).name == "customer_timeline_staging.sqlite"
+    if canonical_target and set(required_sources) != set(REQUIRED_MANIFEST_SOURCE_STEP_MAP):
+        raise ValueError("canonical nightly config requires the complete source manifest")
+    if (
+        canonical_target or payload.get("config_schema_version") is not None
+    ) and payload.get("config_schema_version") != NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION:
         raise ValueError("full nightly service config schema is stale")
-    if set(required_sources) == set(REQUIRED_MANIFEST_SOURCE_STEP_MAP):
+    if canonical_target or set(required_sources) == set(REQUIRED_MANIFEST_SOURCE_STEP_MAP):
         chain_reason = validate_mutating_nightly_chain(payload)
         if chain_reason:
             raise ValueError(chain_reason)
-    timeline_db = Path(str(payload["timeline_db"]))
     allowed_root = Path(str(payload.get("allowed_root") or timeline_db.parent))
     canonical_full_config = set(required_sources) == set(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
     if canonical_full_config or payload.get("state_root") is not None:
@@ -2189,6 +2263,20 @@ def wappi_structured_degradation_ok(
     report: Mapping[str, Any],
     evidence: Mapping[str, bool],
 ) -> bool:
+    publication_blockers = tuple(report.get("limit_hits") or ()) + tuple(
+        report.get("attribution_warnings") or ()
+    )
+    if any(
+        str(marker).endswith(
+            (
+                "pagination_drift_detected",
+                "message_reconciliation_gap",
+                "existing_customer_conflict",
+            )
+        )
+        for marker in publication_blockers
+    ):
+        return False
     return report.get("publish_ready") is False and bool(evidence) and all(
         value is True for value in evidence.values()
     )
@@ -3103,7 +3191,11 @@ def file_fingerprint(path: Path) -> Mapping[str, Any]:
     }
 
 
-service_lock = single_run_lock
+@contextmanager
+def service_lock(db_path: Path, *, timeout_seconds: float) -> Iterator[Mapping[str, Any]]:
+    with single_run_lock(db_path, timeout_seconds=timeout_seconds) as lock_info:
+        with managed_staging_writer_scope():
+            yield lock_info
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -3295,6 +3387,35 @@ def validate_mutating_nightly_chain(payload: Mapping[str, Any]) -> str:
     if positions != sorted(positions):
         names = " -> ".join(name for name, _kind in REQUIRED_MUTATING_NIGHTLY_CHAIN)
         return f"nightly config required step order must be {names}"
+    state_root = Path(str(payload.get("state_root") or "")).expanduser().resolve(strict=False)
+    wappi_step = next(
+        step for step in raw_steps if isinstance(step, Mapping) and step.get("name") == "wappi_history_incremental"
+    )
+    wappi_config = wappi_step.get("config")
+    if not isinstance(wappi_config, Mapping):
+        return "nightly config wappi_history_incremental requires config"
+    if wappi_config.get("complete_message_history") is not True or wappi_config.get("messages_per_chat") != 50000:
+        return "nightly config Wappi limits do not match the transferred checkpoint"
+    shas: list[str] = []
+    for key in ("pairs_file_sha256", "auto_pairs_file_sha256"):
+        value = str(wappi_config.get(key) or "").lower()
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            return f"nightly config {key} is missing or invalid"
+        shas.append(value)
+    snapshot_id = hashlib.sha256(f"{shas[0]}:{shas[1]}".encode("ascii")).hexdigest()
+    snapshot_root = state_root / "wappi" / "input_snapshots" / snapshot_id
+    for key, expected_name, expected_sha in (
+        ("pairs_file", "manual_pairs.json", shas[0]),
+        ("auto_pairs_file", "auto_pairs.json", shas[1]),
+    ):
+        configured = Path(str(wappi_config.get(key) or "")).expanduser().resolve(strict=False)
+        if configured != snapshot_root / expected_name:
+            return f"nightly config {key} must be the content-addressed staging snapshot"
+        if file_fingerprint(configured).get("sha256") != expected_sha:
+            return f"nightly config {key} snapshot SHA mismatch"
+    checkpoint_dir = Path(str(wappi_config.get("checkpoint_dir") or "")).expanduser().resolve(strict=False)
+    if checkpoint_dir != state_root / "wappi" / "checkpoint":
+        return "nightly config Wappi checkpoint must use the transferred state tree"
     return ""
 
 

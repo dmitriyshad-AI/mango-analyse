@@ -37,6 +37,9 @@ from mango_mvp.customer_timeline.nightly_incremental import (  # noqa: E402
     single_run_lock,
     summarize_report,
 )
+from mango_mvp.customer_timeline.safety import (  # noqa: E402
+    is_canonical_customer_timeline_staging_path,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore  # noqa: E402
 from mango_mvp.productization.mail_archive import (  # noqa: E402
     DEFAULT_MAIL_DATA_ROOT,
@@ -209,6 +212,11 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
         )
         timeline_db = Path(str(config["timeline_db"])).resolve()
         allowed_root = Path(str(config["allowed_root"])).resolve()
+        if is_canonical_customer_timeline_staging_path(
+            timeline_db,
+            allowed_root=allowed_root,
+        ):
+            raise RuntimeError("canonical_staging_mail_import_is_owned_by_nightly")
         lock_timeout = float(config.get("lock_timeout_seconds", 30.0))
         with single_run_lock(timeline_db, timeout_seconds=lock_timeout) as run_lock:
             cursor_before_state = read_mail_cursor_state(timeline_db)

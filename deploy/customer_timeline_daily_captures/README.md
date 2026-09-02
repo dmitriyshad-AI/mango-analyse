@@ -15,10 +15,10 @@ locks, or logs.
   capture wrapper. It does not run ASR unless the wrapped command is explicitly
   configured by the owner through `MANGO_CAPTURE_COMMAND_FILE`.
 - `com.mango.customer-timeline-mail-chain` at 02:00: runs
-  `mail-download -> mail-process -> mail-import` sequentially through
+  `mail-download -> mail-process` sequentially through
   `scripts/run_customer_timeline_codex_task.py`. `mail-process` starts only
-  after successful download; `mail-import` starts only after successful
-  process. The chain stops on the first `stopped`/failed stage.
+  after successful download. The chain stops on the first `stopped`/failed
+  stage; the single nightly writer imports the prepared increment.
 - The older split templates `com.mango.customer-timeline-mail-download`,
   `com.mango.customer-timeline-mail-process`, and
   `com.mango.customer-timeline-mail-import` are disabled compatibility
@@ -71,7 +71,7 @@ bash scripts/install_customer_timeline_nightly_service.sh \
 Uninstall uses the same generic dry-run-safe uninstaller with the matching
 `--target` and `--apply`.
 
-Do not install or bootstrap these templates before three clean manual cycles,
+Do not install or bootstrap these templates before two clean manual cycles,
 an audit pack, and a separate owner approval. The code worktree in the installed
 template is a permanent runtime dependency while the agent is installed; do not
 remove or switch it.

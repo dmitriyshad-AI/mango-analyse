@@ -114,6 +114,23 @@ def test_mail_builder_keeps_old_event_that_arrived_after_cursor(tmp_path: Path) 
     assert row["updated_at"] == "2026-09-02T10:00:00+00:00"
 
 
+def test_mail_builder_rejects_nonempty_invalid_message_date(tmp_path: Path) -> None:
+    root = tmp_path / "Mango_Data"
+    archive = root / CANONICAL_MAIL_ARCHIVE_DB
+    _write_archive(archive, sha="a" * 64, schema=CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION)
+    with sqlite3.connect(archive) as con:
+        con.execute("UPDATE messages SET message_date_iso='not-a-date'")
+
+    with pytest.raises(ValueError, match="message_date_iso is invalid"):
+        builder.build_mail_increment(
+            root,
+            out_jsonl=tmp_path / "out/mail.jsonl",
+            manifest_path=tmp_path / "out/manifest.json",
+            since=None,
+            text_limit=1200,
+        )
+
+
 def test_stage2_mail_builder_keeps_old_event_that_arrived_after_cursor(tmp_path: Path) -> None:
     root = tmp_path / "Mango_Data"
     _write_archive(

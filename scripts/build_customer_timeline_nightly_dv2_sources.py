@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -118,10 +119,8 @@ def snapshot_wappi_pair_inputs(
     files: dict[str, Mapping[str, Any]] = {}
     for (label, source, default_source), target in zip(sources, targets):
         source_sha = source_snapshots[label]
-        created = not target.exists()
-        if created:
-            atomic_publish_latest(source, target)
-        target.chmod(0o600)
+        created = _publish_content_addressed_input(source, target) if not target.exists() else False
+        target.chmod(0o400)
         _, snapshot_sha = load_pairs_file_snapshot(target, default_source=default_source)
         if source_sha != snapshot_sha:
             if created:
@@ -145,6 +144,29 @@ def snapshot_wappi_pair_inputs(
         )
     manifest_path.chmod(0o600)
     return {"pairs_file": targets[0], "auto_pairs_file": targets[1], "manifest": manifest_path, "files": files}
+
+
+def _publish_content_addressed_input(source: Path, target: Path) -> bool:
+    """Publish once without letting a losing concurrent writer replace the winner."""
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, candidate_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".candidate", dir=str(target.parent)
+    )
+    os.close(fd)
+    candidate = Path(candidate_name)
+    candidate.unlink()
+    created = False
+    try:
+        atomic_publish_latest(source, candidate)
+        try:
+            os.link(candidate, target)
+            created = True
+        except FileExistsError:
+            pass
+        return created
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -418,7 +440,8 @@ def build_mail_increment(
         inputs.append({"path": str(db_path), "exists": True, "rows_selected": len(rows) - count_before})
     rows.sort(key=lambda item: str(item.get("event_at") or ""))
     write_jsonl(out_jsonl, rows)
-    max_event_at = max((str(row.get("event_at") or "") for row in rows), default=None)
+    parsed_event_times = [parse_dt(str(row["event_at"])) for row in rows]
+    max_event_at = max(parsed_event_times).isoformat() if parsed_event_times else None
     manifest = {
         "schema_version": "mail_archive_stage2_incremental_manifest_v1",
         "tenant_id": tenant_id,
@@ -535,8 +558,17 @@ def read_archive_messages(db_path: Path, *, since: datetime | None, text_limit: 
             ORDER BY COALESCE(message_date_iso, updated_at, first_ingested_at), sha256
             """
         ):
-            primary_event_at = parse_optional_dt(row["message_date_iso"])
-            event_at = primary_event_at or parse_optional_dt(row["updated_at"]) or parse_optional_dt(row["first_ingested_at"])
+            fallback_event_at = parse_optional_dt(row["updated_at"]) or parse_optional_dt(row["first_ingested_at"])
+            raw_message_date = str(row["message_date_iso"] or "").strip()
+            try:
+                primary_event_at = (
+                    parse_mail_stage2_event_at({"message_date_iso": raw_message_date})
+                    if raw_message_date
+                    else None
+                )
+            except ValueError as exc:
+                raise ValueError("mail archive message_date_iso is invalid") from exc
+            event_at = primary_event_at or fallback_event_at
             updated_at = parse_mail_updated_at(
                 row["updated_at"],
                 fallback=parse_optional_dt(row["first_ingested_at"]) or event_at,
@@ -591,7 +623,7 @@ def build_mango_freshness(source_root: Path, manifest_path: Path) -> Mapping[str
     return report
 
 
-def parse_mail_updated_at(raw: Any, *, fallback: datetime) -> datetime:
+def parse_mail_updated_at(raw: Any, *, fallback: datetime | None) -> datetime | None:
     if raw is None or not str(raw).strip():
         return fallback
     parsed = parse_optional_dt(raw)

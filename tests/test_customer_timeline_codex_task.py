@@ -8,6 +8,7 @@ import json
 import sqlite3
 import textwrap
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -19,6 +20,13 @@ from mango_mvp.customer_timeline.nightly_service import (
     REQUIRED_MANIFEST_SOURCE_STEP_MAP,
     SOURCE_PROOF_BUILDERS,
 )
+from mango_mvp.customer_timeline.wappi_history_import import (
+    WappiFetchLimits,
+    profiles_from_phase1_config,
+    wappi_fetch_universe_fingerprint,
+    wappi_timeline_state,
+)
+from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_customer_timeline_codex_task.py"
 spec = importlib.util.spec_from_file_location("run_customer_timeline_codex_task", SCRIPT)
@@ -57,7 +65,7 @@ def _configured_calls_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 def _stable_wrapper_wappi_snapshots(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_snapshot(state_root: Path) -> dict:
         empty_sha = hashlib.sha256(b"[]\n").hexdigest()
-        pairs_file, auto_pairs_file = module.wappi_pair_snapshot_paths(
+        pairs_file, auto_pairs_file = builder.wappi_pair_snapshot_paths(
             state_root,
             pairs_sha256=empty_sha,
             auto_pairs_sha256=empty_sha,
@@ -166,7 +174,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
     with sqlite3.connect(mail_identity_db):
         pass
     empty_sha = hashlib.sha256(b"[]\n").hexdigest()
-    pairs_file, auto_pairs_file = module.wappi_pair_snapshot_paths(
+    pairs_file, auto_pairs_file = builder.wappi_pair_snapshot_paths(
         staging_root / "state",
         pairs_sha256=empty_sha,
         auto_pairs_sha256=empty_sha,
@@ -186,7 +194,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
         ),
         encoding="utf-8",
     )
-    limits = module.WappiFetchLimits(
+    limits = WappiFetchLimits(
         chat_limit_per_profile=5000,
         messages_per_chat=50000,
         message_limit_total=50000,
@@ -196,10 +204,10 @@ def valid_nightly_payload(staging_root: Path) -> dict:
         show_all_chats=True,
         complete_message_history=True,
     )
-    profile = module.profiles_from_phase1_config(
-        module.AmoWappiPhase1Config.from_file(phase1_path)
+    profile = profiles_from_phase1_config(
+        AmoWappiPhase1Config.from_file(phase1_path)
     )[0]
-    timeline_state = module.wappi_timeline_state(
+    timeline_state = wappi_timeline_state(
         timeline_db,
         tenant_id="foton",
         profiles=(profile,),
@@ -213,7 +221,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 "schema_version": "customer_timeline_wappi_history_checkpoint_v1",
                 "profiles": {
                     profile_key: {
-                        "fingerprint": module.wappi_fetch_universe_fingerprint(
+                        "fingerprint": wappi_fetch_universe_fingerprint(
                             profile, limits, tenant_id="foton"
                         ),
                         "complete": True,
@@ -513,6 +521,36 @@ def test_status_marks_failed_incremental_gate_as_stopped() -> None:
     assert reason == "gate_failed"
 
 
+def test_status_does_not_count_pass_with_notes_as_clean_cycle() -> None:
+    status, reason = module.status_from_payload(
+        {
+            "overall_status": "ok",
+            "partial_failure": False,
+            "data_quality_status": "pass_with_notes",
+        },
+        0,
+        "",
+    )
+
+    assert status == "stopped"
+    assert reason == "data_quality_status=pass_with_notes"
+
+
+def test_status_counts_explicit_data_quality_pass_as_clean_cycle() -> None:
+    status, reason = module.status_from_payload(
+        {
+            "overall_status": "ok",
+            "partial_failure": False,
+            "data_quality_status": "pass",
+        },
+        0,
+        "",
+    )
+
+    assert status == "ok"
+    assert reason == ""
+
+
 def test_mail_process_task_requires_fresh_download_manifest(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(module, "MAIL_STATE_DIR", tmp_path)
 
@@ -522,28 +560,9 @@ def test_mail_process_task_requires_fresh_download_manifest(tmp_path, monkeypatc
     assert "stage manifest is missing" in task.stop_reason
 
 
-def test_mail_import_task_uses_mail_only_import_wrapper(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(module, "MAIL_STATE_DIR", tmp_path)
-    monkeypatch.setattr(module, "current_runtime", lambda: {"head": "abc", "worktree": "tree"})
-    (tmp_path / "mail_process_manifest.json").write_text(
-        json.dumps(
-            {
-                "status": "ok",
-                "finished_at": module.datetime.now(module.timezone.utc).isoformat(),
-                "runtime": {"head": "abc", "worktree": "tree"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    task = module.build_task_spec("mail-import", tallanto_phone_limit=1)
-
-    assert task.stop_reason == ""
-    assert task.command[1:] == (
-        "scripts/run_customer_timeline_mail_import.py",
-        "--state-dir",
-        str(tmp_path),
-    )
+def test_mail_import_is_not_available_as_a_scheduled_task() -> None:
+    with pytest.raises(ValueError, match="Unknown task"):
+        module.build_task_spec("mail-import", tallanto_phone_limit=1)
 
 
 def test_mail_process_uses_persistent_staging_timeline_db(tmp_path, monkeypatch) -> None:
@@ -794,6 +813,35 @@ def test_run_task_does_not_execute_command_after_preflight_stop(tmp_path, monkey
     assert calls == []
 
 
+def test_nightly_wrapper_lock_covers_config_preflight(tmp_path, monkeypatch) -> None:
+    held = False
+    observations: list[bool] = []
+
+    @contextmanager
+    def fake_lock(path, *, timeout_seconds):
+        nonlocal held
+        assert path == tmp_path / "state/nightly-warehouse-wrapper"
+        assert timeout_seconds == 0
+        held = True
+        try:
+            yield {}
+        finally:
+            held = False
+
+    def preflight() -> str:
+        observations.append(held)
+        return "synthetic stop"
+
+    monkeypatch.setattr(module, "TASK_STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(module, "LOG_ROOT", tmp_path / "logs")
+    monkeypatch.setattr(module, "FOTON_DAILY", tmp_path / "daily")
+    monkeypatch.setattr(module, "customer_timeline_run_lock", fake_lock)
+    monkeypatch.setattr(module, "ensure_nightly_config", preflight)
+
+    assert module.run_task("nightly-warehouse", tallanto_phone_limit=1) == 78
+    assert observations == [True]
+
+
 def _pid_is_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -966,7 +1014,7 @@ def test_nightly_rebuilds_config_when_wappi_pair_inputs_change(tmp_path, monkeyp
     config.parent.mkdir(parents=True)
     config.write_text(json.dumps(payload), encoding="utf-8")
     changed_sha = hashlib.sha256(b'[{"changed":true}]\n').hexdigest()
-    changed_pairs = module.wappi_pair_snapshot_paths(
+    changed_pairs = builder.wappi_pair_snapshot_paths(
         staging_root / "state",
         pairs_sha256=changed_sha,
         auto_pairs_sha256=changed_sha,
@@ -1115,10 +1163,10 @@ def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, mon
         ("AMO page size", lambda payload: config_step(payload, "amo_incremental_shadow")["config"].update(page_limit=50), "page_limit"),
         ("Wappi checkpoint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("checkpoint_dir"), "checkpoint"),
         ("Wappi strict nightly", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(require_widget_linkage=True), "quarantine"),
-        ("Wappi old fingerprint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(messages_per_chat=100), "checkpoint fingerprint"),
-        ("Wappi partial history", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(complete_message_history=False), "checkpoint fingerprint"),
-        ("Wappi live pairs", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(auto_pairs_file=str(tmp_path / "live.json")), "frozen staging pair"),
-        ("Wappi pair SHA", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("pairs_file_sha256"), "snapshot SHA"),
+        ("Wappi old fingerprint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(messages_per_chat=100), "transferred checkpoint"),
+        ("Wappi partial history", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(complete_message_history=False), "transferred checkpoint"),
+        ("Wappi live pairs", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(auto_pairs_file=str(tmp_path / "live.json")), "content-addressed staging snapshot"),
+        ("Wappi pair SHA", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("pairs_file_sha256"), "missing or invalid"),
         ("mail pending reconsider", lambda payload: config_step(payload, "mail_link_enrich")["config"].pop("reconsider_pending"), "reconsider pending"),
         ("mail before Tallanto", lambda payload: move_config_step_before(payload, "mail_link_enrich", "tallanto_cards_sync"), "cards before mail"),
         ("mail identity", lambda payload: config_step(payload, "mail_link_enrich")["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
@@ -1132,59 +1180,22 @@ def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, mon
         assert expected in module.validate_nightly_config(config)
 
 
-def test_nightly_config_rejects_missing_or_incompatible_transferred_wappi_checkpoint(
+def test_nightly_config_defers_checkpoint_state_to_verified_writer_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
     monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
     payload = valid_nightly_payload(staging_root)
-    config = tmp_path / "nightly.json"
-    config.write_text(json.dumps(payload), encoding="utf-8")
     checkpoint = staging_root / "state/wappi/checkpoint/wappi_history_checkpoint.json"
-
     checkpoint.unlink()
-    assert "checkpoint fingerprint mismatch" in module.validate_nightly_config(config)
-
-    valid_nightly_payload(staging_root)
-    checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
-    next(iter(checkpoint_payload["profiles"].values()))["fingerprint"] = "0" * 64
-    checkpoint.write_text(json.dumps(checkpoint_payload), encoding="utf-8")
-    assert "checkpoint fingerprint mismatch" in module.validate_nightly_config(config)
-
-
-def test_nightly_config_accepts_compatible_partial_wappi_checkpoint_for_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    staging_root = tmp_path / ".codex_local/staging"
-    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
-    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
-    payload = valid_nightly_payload(staging_root)
-    checkpoint = staging_root / "state/wappi/checkpoint/wappi_history_checkpoint.json"
-    checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
-    next(iter(checkpoint_payload["profiles"].values()))["complete"] = False
-    checkpoint.write_text(json.dumps(checkpoint_payload), encoding="utf-8")
     config = tmp_path / "nightly.json"
     config.write_text(json.dumps(payload), encoding="utf-8")
 
+    # The wrapper validates only immutable config inputs. The importer enforces
+    # checkpoint compatibility before network access, using verified ownership
+    # passed by the locked nightly service rather than trusting a marker file.
     assert module.validate_nightly_config(config) == ""
-
-
-def test_nightly_config_rejects_checkpoint_from_another_timeline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    staging_root = tmp_path / ".codex_local/staging"
-    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
-    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
-    payload = valid_nightly_payload(staging_root)
-    checkpoint = staging_root / "state/wappi/checkpoint/wappi_history_checkpoint.json"
-    checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
-    next(iter(checkpoint_payload["profiles"].values()))["timeline_source_digest"] = "0" * 64
-    checkpoint.write_text(json.dumps(checkpoint_payload), encoding="utf-8")
-    config = tmp_path / "nightly.json"
-    config.write_text(json.dumps(payload), encoding="utf-8")
-
-    assert "checkpoint timeline mismatch" in module.validate_nightly_config(config)
 
 
 def test_nightly_self_heal_rebuilds_stale_on_disk_config(tmp_path, monkeypatch) -> None:
@@ -1347,7 +1358,7 @@ def test_wappi_pair_inputs_are_private_frozen_snapshots(tmp_path: Path, monkeypa
     auto_source.write_text("[]\n", encoding="utf-8")
 
     assert auto_snapshot.read_bytes() == frozen_bytes
-    assert auto_snapshot.stat().st_mode & 0o777 == 0o600
+    assert auto_snapshot.stat().st_mode & 0o777 == 0o400
     assert Path(first["manifest"]).stat().st_mode & 0o777 == 0o600
     second = REAL_SNAPSHOT_WAPPI_PAIR_INPUTS(state_root)
     assert Path(second["auto_pairs_file"]) != auto_snapshot
@@ -1372,6 +1383,22 @@ def test_wappi_pair_snapshot_rejects_source_change_during_copy(tmp_path: Path, m
 
     with pytest.raises(RuntimeError, match="changed while creating"):
         REAL_SNAPSHOT_WAPPI_PAIR_INPUTS(tmp_path / "staging/state")
+
+
+def test_wappi_pair_snapshot_keeps_concurrent_winner(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.json"
+    target = tmp_path / "snapshots/manual.json"
+    source.write_text("[]\n", encoding="utf-8")
+    winner = b'{"pairs": []}\n'
+
+    def raced_link(_candidate: Path, destination: Path) -> None:
+        destination.write_bytes(winner)
+        raise FileExistsError
+
+    monkeypatch.setattr(builder.os, "link", raced_link)
+
+    assert builder._publish_content_addressed_input(source, target) is False
+    assert target.read_bytes() == winner
 
 
 def test_builder_mail_process_input_is_missing_or_sha_verified(tmp_path) -> None:

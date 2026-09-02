@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run mail download -> process -> import as one fail-fast chain."""
+"""Run mail download -> process as one fail-fast producer chain."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 from scripts import run_customer_timeline_codex_task as codex_task  # noqa: E402
 
-STAGES = ("mail-download", "mail-process", "mail-import")
+STAGES = ("mail-download", "mail-process")
 
 
 @dataclass(frozen=True)

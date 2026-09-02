@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import plistlib
 import threading
@@ -884,6 +885,85 @@ def test_mail_chain_stops_after_busy_stage_and_does_not_start_next(tmp_path: Pat
     assert report["stop_reason"] == "mail-process:already_running"
     assert calls == ["mail-download", "mail-process"]
     assert report["stages"][1]["status"] == "stopped"
+
+
+def test_mail_chain_prepares_input_but_never_writes_timeline(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def runner(task: str) -> mail_chain.StageRun:
+        calls.append(task)
+        return mail_chain.StageRun(task=task, rc=0, payload={"status": "ok"})
+
+    report = mail_chain.run_chain(
+        lock_path=tmp_path / "mail_chain.lock",
+        runner=runner,
+        preflight=lambda _task: "",
+    )
+
+    assert report["status"] == "ok"
+    assert calls == ["mail-download", "mail-process"]
+
+
+def test_direct_mail_import_rejects_canonical_staging_writer(tmp_path: Path, monkeypatch) -> None:
+    nightly_home = tmp_path / "nightly"
+    monkeypatch.setenv("CUSTOMER_TIMELINE_NIGHTLY_HOME", str(nightly_home))
+    staging = nightly_home / ".codex_local/staging"
+    state = staging / "state/mail_pipeline"
+    state.mkdir(parents=True)
+    timeline = staging / "customer_timeline_staging.sqlite"
+    sqlite3.connect(timeline).close()
+    config_path = state / "process/config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        mail_import,
+        "load_inputs",
+        lambda **_kwargs: (
+            {},
+            config_path,
+            {"timeline_db": str(timeline), "allowed_root": str(staging)},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned_by_nightly"):
+        mail_import.execute(
+            mail_import.parse_args(
+                ["--code-root", str(download.ROOT), "--state-dir", str(state)]
+            )
+        )
+
+
+def test_direct_mail_import_rejects_hardlink_alias_of_canonical_writer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    nightly_home = tmp_path / "nightly"
+    monkeypatch.setenv("CUSTOMER_TIMELINE_NIGHTLY_HOME", str(tmp_path / "wrong-home"))
+    staging = nightly_home / ".codex_local/staging"
+    state = staging / "state/mail_pipeline"
+    state.mkdir(parents=True)
+    canonical = staging / "customer_timeline_staging.sqlite"
+    sqlite3.connect(canonical).close()
+    alias = staging / "mail-alias.sqlite"
+    os.link(canonical, alias)
+    config_path = state / "process/config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        mail_import,
+        "load_inputs",
+        lambda **_kwargs: (
+            {},
+            config_path,
+            {"timeline_db": str(alias), "allowed_root": str(staging)},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned_by_nightly"):
+        mail_import.execute(
+            mail_import.parse_args(
+                ["--code-root", str(download.ROOT), "--state-dir", str(state)]
+            )
+        )
 
 
 @pytest.mark.parametrize(

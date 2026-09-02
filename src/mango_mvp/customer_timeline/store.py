@@ -43,6 +43,7 @@ from mango_mvp.customer_timeline.safety import (
     customer_timeline_safety_contract,
     guard_customer_timeline_output_path,
     guard_customer_timeline_writable_path,
+    guard_managed_customer_timeline_staging_write,
 )
 from mango_mvp.customer_timeline.source_policy import (
     BOT_SAFE_SUMMARY_ACTOR,
@@ -1162,6 +1163,7 @@ class CustomerTimelineSQLiteStore:
         guard_customer_timeline_sqlite_path(self.db_path)
         self.read_only = bool(read_only)
         if not self.read_only:
+            guard_managed_customer_timeline_staging_write(self.db_path)
             guard_customer_timeline_writable_path(self.db_path)
         self._clock = clock or now_utc
         self._bulk_write_depth = 0

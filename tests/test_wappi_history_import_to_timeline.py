@@ -37,6 +37,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     close_resolved_wappi_pending_conflicts,
     confirm_wappi_widget_candidates_from_amo_talks,
     enrich_wappi_widget_links_from_timeline_amo_events,
+    file_sha256,
     git_worktree_provenance,
     is_personal_wappi_dialog,
     load_existing_wappi_event_customers,
@@ -178,6 +179,78 @@ def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
     assert chunk["requires_manager_review"] is True
     assert link["link_type"] == "channel_session_id"
     assert link["link_value"] == "wappi_telegram:p-tg:123456"
+
+
+def test_wappi_history_import_preserves_attachment_without_caption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-id")
+    client = FakeWidgetWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "123456"): [
+                {
+                    "id": "document-1",
+                    "chat_id": "123456",
+                    "type": "document",
+                    "body": "",
+                    "caption": "",
+                    "time": 1_753_000_000,
+                }
+            ]
+        },
+        {("telegram", "123456"): {"contact": {"id": 2002}, "leads": [{"id": 1001}]}},
+    )
+
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=write_phase1_config(tmp_path),
+            pairs_file=None,
+            auto_pairs_file=None,
+            apply=True,
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=5,
+                messages_per_chat=5,
+                message_limit_total=20,
+                sleep_seconds=0,
+            ),
+        ),
+        client=client,
+    )
+
+    assert report["summary"]["messages_newly_saved"] == 1
+    with sqlite3.connect(db_path) as con:
+        raw = con.execute(
+            "SELECT record_json FROM timeline_events WHERE source_id=?",
+            ("p-tg:123456:document-1",),
+        ).fetchone()[0]
+        chunks = con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE source_ref=?",
+            ("wappi_telegram:p-tg:123456:document-1",),
+        ).fetchone()[0]
+    assert json.loads(raw)["record"]["message"]["message_type"] == "document"
+    assert chunks == 0
+
+
+def test_wappi_history_import_rejects_direct_canonical_staging_write(
+    tmp_path: Path,
+) -> None:
+    config = WappiHistoryImportConfig(
+        timeline_db=tmp_path / "customer_timeline_staging.sqlite",
+        allowed_root=tmp_path,
+        phase1_config=tmp_path / "missing-phase1.json",
+        pairs_file=None,
+        auto_pairs_file=None,
+        apply=True,
+    )
+
+    with pytest.raises(ValueError, match="owned by the nightly service"):
+        run_wappi_history_import(config, client=object())
 
 
 def test_wappi_history_import_rejects_pair_snapshot_sha_before_network(tmp_path: Path) -> None:
@@ -778,19 +851,13 @@ def test_wappi_atomic_pair_replace_uses_pinned_mapping_only_when_still_valid(
     )
 
     provenance = report["provenance"]
-    assert provenance["input_hashes"]["pairs_file"] == provenance["input_hashes_start"]["pairs_file"]
-    assert provenance["pair_hashes_observed_pre_apply"]["pairs_file"] != provenance["input_hashes"]["pairs_file"]
+    assert provenance["input_hashes"]["pairs_file"] != provenance["input_hashes_start"]["pairs_file"]
+    assert provenance["pair_hashes_observed_pre_apply"]["pairs_file"] == provenance["input_hashes"]["pairs_file"]
     with sqlite3.connect(db_path) as con:
-        if replacement_kind == "additive":
-            assert report["mode"] == "apply"
-            assert "pair_mapping_drift" not in report["limit_hits"]
-            assert provenance["pair_mapping_drift"] is False
-            assert con.execute("SELECT customer_id FROM timeline_events").fetchone()[0] == customer_id
-        else:
-            assert report["mode"] == "apply_blocked"
-            assert "pair_mapping_drift" in report["limit_hits"]
-            assert provenance["pair_mapping_drift"] is True
-            assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+        assert report["mode"] == "apply_blocked"
+        assert "pair_mapping_drift" in report["limit_hits"]
+        assert provenance["pair_mapping_drift"] is True
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
 
 
 def test_wappi_configured_missing_pairs_file_fails_closed(tmp_path: Path) -> None:
@@ -901,7 +968,7 @@ def test_wappi_readonly_connection_sees_uncheckpointed_wal(tmp_path: Path) -> No
         writer.close()
 
 
-def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
+def test_wappi_apply_quarantines_widget_conflict_and_blocks_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1001,7 +1068,7 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
     assert report["mode"] == "apply"
     assert report["summary"]["blocked_chat_relink_conflicts"] == 1
     assert report["validation_ok"] is True
-    assert report["publish_ready"] is True
+    assert report["publish_ready"] is False
     assert report["source_accounting_complete"] is True
     assert report["summary"]["attribution_complete"] is False
     assert report["summary"]["messages_newly_saved"] == 1
@@ -2213,10 +2280,12 @@ def test_wappi_history_detects_message_pagination_drift(tmp_path: Path) -> None:
         client=client,
     )
 
-    assert report["profiles"]["p-tg"]["pagination_drift_detected"] is True
-    assert report["profiles"]["p-tg"]["message_page_drift_detected"] is True
-    assert "p-tg:pagination_drift_detected" in report["limit_hits"]
-    assert report["validation_ok"] is False
+    stats = report["profiles"]["p-tg"]
+    assert stats["pagination_drift_detected"] is False
+    assert stats["message_page_drift_detected"] is False
+    assert stats["full_history_drift_retries"] == 1
+    assert stats["full_history_drift_retry_successes"] == 1
+    assert report["validation_ok"] is True
 
 
 def test_wappi_history_stable_multi_page_has_no_pagination_drift(tmp_path: Path) -> None:
@@ -4352,6 +4421,33 @@ def test_changed_pair_relinks_pending_history_without_message_refetch(tmp_path: 
             ),
             actor="test",
         )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                event_type=TimelineEventType.TELEGRAM_MESSAGE,
+                event_at=datetime.fromtimestamp(1_753_000_001, tz=timezone.utc),
+                source_system="wappi_telegram",
+                source_id="pending-pair-attachment",
+                direction=TimelineDirection.INBOUND,
+                text_preview="",
+                record={
+                    "message": {
+                        "channel": "telegram",
+                        "brand": "foton",
+                        "message_id": "pending-pair-attachment",
+                        "message_type": "document",
+                        "text": "",
+                    }
+                },
+                metadata={
+                    "profile_id": "p-tg",
+                    "chat_id": "123456",
+                    "message_id": "pending-pair-attachment",
+                    "identity_authority": "pending_attribution",
+                },
+            ),
+            actor="test",
+        )
     from mango_mvp.integrations.draft_loop import load_pairs_file
 
     resolver = WappiPairCustomerResolver.from_store(
@@ -4372,9 +4468,12 @@ def test_changed_pair_relinks_pending_history_without_message_refetch(tmp_path: 
     )
 
     assert resolution is not None and resolution.resolved is True
-    assert len(records) == 1
-    assert records[0].payload["resolved_customer_id"] == customer_id
-    assert records[0].payload["identity_authority"] == "draft_loop_pair"
+    assert {record.payload["timeline_source_id"] for record in records} == {
+        "pending-pair-message",
+        "pending-pair-attachment",
+    }
+    assert all(record.payload["resolved_customer_id"] == customer_id for record in records)
+    assert all(record.payload["identity_authority"] == "draft_loop_pair" for record in records)
 
 
 def test_completed_checkpoint_applies_new_pair_without_refetching_messages(tmp_path: Path) -> None:
@@ -4422,17 +4521,24 @@ def test_completed_checkpoint_applies_new_pair_without_refetching_messages(tmp_p
     assert first["validation_ok"] is True
     assert any(call["kind"] == "messages" for call in first_client.calls)
 
+    pairs_file = write_pairs(
+        tmp_path,
+        lead_id="1001",
+        contact_id="2002",
+        chat_id="123456",
+    )
+    auto_pairs_file = tmp_path / "auto_pairs.json"
+    auto_pairs_file.write_text("[]\n", encoding="utf-8")
     second_client = FakeWappiClient(chats, messages)
+    strict_config = replace(
+        base_config,
+        pairs_file=pairs_file,
+        auto_pairs_file=auto_pairs_file,
+        pairs_file_sha256=file_sha256(pairs_file),
+        auto_pairs_file_sha256=file_sha256(auto_pairs_file),
+    )
     second = run_wappi_history_import(
-        replace(
-            base_config,
-            pairs_file=write_pairs(
-                tmp_path,
-                lead_id="1001",
-                contact_id="2002",
-                chat_id="123456",
-            ),
-        ),
+        strict_config,
         client=second_client,
     )
 
@@ -4445,6 +4551,114 @@ def test_completed_checkpoint_applies_new_pair_without_refetching_messages(tmp_p
             ("p-tg:123456:pending-pair-message",),
         ).fetchone()
     assert row == (customer_id, "manual")
+
+    checkpoint_path = checkpoint_dir / "wappi_history_checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    next(iter(checkpoint["profiles"].values()))["fingerprint"] = "0" * 64
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    stopped_client = FakeWappiClient(chats, messages)
+    with pytest.raises(ValueError, match="checkpoint fingerprint mismatch"):
+        run_wappi_history_import(strict_config, client=stopped_client)
+    assert stopped_client.calls == []
+
+    activation = db_path.parent / "state/M4_WRITER_ACTIVATION.json"
+    activation.parent.mkdir(parents=True, exist_ok=True)
+    activation.write_text("{}\n", encoding="utf-8")
+    recovery_client = FakeWappiClient(chats, messages)
+    with pytest.raises(ValueError, match="checkpoint fingerprint mismatch"):
+        run_wappi_history_import(strict_config, client=recovery_client)
+    assert recovery_client.calls == []
+
+    recovered = run_wappi_history_import(
+        strict_config,
+        client=recovery_client,
+        allow_checkpoint_rebuild=True,
+    )
+    assert recovered["validation_ok"] is True
+    assert any(call["kind"] == "chats" for call in recovery_client.calls)
+    rebuilt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert next(iter(rebuilt["profiles"].values()))["fingerprint"] != "0" * 64
+
+
+def test_completed_checkpoint_blocks_changed_pair_from_replacing_exact_owner(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    old_customer = seed_customer_with_amo(
+        db_path, tmp_path, customer_id="customer:old", lead_id="1001", contact_id="2002"
+    )
+    seed_customer_with_amo(
+        db_path, tmp_path, customer_id="customer:new", lead_id="3001", contact_id="4002"
+    )
+    phase1 = write_phase1_config(tmp_path)
+    checkpoint_dir = tmp_path / "checkpoint"
+    limits = WappiFetchLimits(
+        page_size=10,
+        request_limit_total=100,
+        complete_message_history=True,
+        sleep_seconds=0,
+    )
+    chats = {"p-tg": [{"id": "123456", "type": "user", "last_timestamp": 1_753_000_000}]}
+    messages = {
+        ("telegram", "p-tg", "123456"): [
+            {
+                "id": "conflicting-message",
+                "chat_id": "123456",
+                "type": "text",
+                "body": "Старое сообщение",
+                "time": 1_753_000_000,
+            }
+        ]
+    }
+    base_config = WappiHistoryImportConfig(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        phase1_config=phase1,
+        pairs_file=None,
+        auto_pairs_file=None,
+        apply=True,
+        checkpoint_dir=checkpoint_dir,
+        limits=limits,
+    )
+    run_wappi_history_import(base_config, client=FakeWappiClient(chats, messages))
+    with sqlite3.connect(db_path) as con:
+        source_id = "p-tg:123456:conflicting-message"
+        raw = con.execute(
+            "SELECT record_json FROM timeline_events WHERE source_id=?", (source_id,)
+        ).fetchone()[0]
+        payload = json.loads(raw)
+        payload.setdefault("metadata", {})["identity_authority"] = "wappi_amo_widget"
+        con.execute(
+            "UPDATE timeline_events SET customer_id=?, match_status='strong_unique', record_json=? WHERE source_id=?",
+            (old_customer, json.dumps(payload, ensure_ascii=False), source_id),
+        )
+
+    pairs_file = write_pairs(
+        tmp_path, lead_id="3001", contact_id="4002", chat_id="123456"
+    )
+    auto_pairs_file = tmp_path / "auto_pairs.json"
+    auto_pairs_file.write_text("[]\n", encoding="utf-8")
+    client = FakeWappiClient(chats, messages)
+    report = run_wappi_history_import(
+        replace(
+            base_config,
+            pairs_file=pairs_file,
+            auto_pairs_file=auto_pairs_file,
+            pairs_file_sha256=file_sha256(pairs_file),
+            auto_pairs_file_sha256=file_sha256(auto_pairs_file),
+        ),
+        client=client,
+    )
+
+    assert not any(call["kind"] == "messages" for call in client.calls)
+    assert report["summary"]["blocked_chat_relink_conflicts"] == 1
+    assert report["attribution_complete"] is False
+    assert report["publish_ready"] is False
+    assert "wappi_amo_widget:existing_customer_conflict" in report["attribution_warnings"]
+    with sqlite3.connect(db_path) as con:
+        owner = con.execute(
+            "SELECT customer_id FROM timeline_events WHERE source_id=?",
+            ("p-tg:123456:conflicting-message",),
+        ).fetchone()[0]
+    assert owner == old_customer
 
 
 def test_wappi_inbound_email_is_only_identity_candidate_not_sender_truth(tmp_path: Path) -> None:

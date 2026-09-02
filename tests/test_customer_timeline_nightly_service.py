@@ -34,7 +34,6 @@ from mango_mvp.customer_timeline.nightly_service import (
     NightlyServiceStep,
     _SourceProofContext,
     _proof_bot_safe_chunks_and_dossier,
-    activate_writer_ownership_after_success,
     _proof_family_child_graph,
     run_nightly_service,
     run_tallanto_money_api_step,
@@ -565,25 +564,43 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
     ownership = validate_writer_ownership(canonical)
 
     config.timeline_db.write_bytes(b"changed-by-first-successful-run")
-    first_report = canonical.out_root / "run-first" / "service_report.json"
+    current_db_sha = nightly_service_module.file_fingerprint(config.timeline_db)["sha256"]
+    first_report = canonical.out_root / "run_run-first" / "service_report.json"
     first_report.parent.mkdir(parents=True)
-    first_report.write_text(
-        json.dumps(
-            {
+    first_report_payload = {
                 "run_id": "run-first",
                 "overall_status": "ok",
                 "partial_failure": False,
                 "writer_ownership": ownership,
+                "config_fingerprint": nightly_service_module.service_config_fingerprint(
+                    canonical,
+                    timeline_db=canonical.timeline_db.resolve(strict=False),
+                    allowed_root=canonical.allowed_root.resolve(strict=False),
+                    out_root=canonical.out_root.resolve(strict=False),
+                    publish_dir=canonical.publish_dir.resolve(strict=False),
+                ),
+                "timeline_db": str(canonical.timeline_db.resolve(strict=False)),
+                "snapshot_manifest": {"latest_published": True, "sha256": current_db_sha},
             }
-        ),
-        encoding="utf-8",
-    )
-    activate_writer_ownership_after_success(
+    first_report_payload["config_fingerprint"] = "not-a-sha256".ljust(64, "x")
+    first_report.write_text(json.dumps(first_report_payload), encoding="utf-8")
+    recovery = validate_writer_ownership(canonical, allow_activation_recovery=True)
+    assert recovery["status"] == "M4_WRITER_ACTIVATION_RECOVERY_REQUIRED"
+    assert nightly_service_module._recover_writer_activation_from_completed_report(
+        canonical, recovery
+    ) is False
+
+    first_report_payload["config_fingerprint"] = nightly_service_module.service_config_fingerprint(
         canonical,
-        ownership,
-        run_id="run-first",
-        service_report_path=first_report,
+        timeline_db=canonical.timeline_db.resolve(strict=False),
+        allowed_root=canonical.allowed_root.resolve(strict=False),
+        out_root=canonical.out_root.resolve(strict=False),
+        publish_dir=canonical.publish_dir.resolve(strict=False),
     )
+    first_report.write_text(json.dumps(first_report_payload), encoding="utf-8")
+    assert nightly_service_module._recover_writer_activation_from_completed_report(
+        canonical, recovery
+    ) is True
     assert validate_writer_ownership(canonical)["status"] == "M4_WRITER_ACTIVE"
     assert validate_writer_ownership(
         replace(canonical, source_config_sha256="d" * 64)
@@ -592,6 +609,19 @@ def test_canonical_nightly_requires_verified_writer_ownership_receipt(
     first_report.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="not backed by the first successful run"):
         validate_writer_ownership(canonical)
+
+
+def test_nightly_run_directory_suffixes_same_second_collision(tmp_path: Path) -> None:
+    first_id, first_dir = nightly_service_module._allocate_unique_run_dir(
+        tmp_path, "20260902T120000Z"
+    )
+    second_id, second_dir = nightly_service_module._allocate_unique_run_dir(
+        tmp_path, "20260902T120000Z"
+    )
+
+    assert first_id == "20260902T120000Z"
+    assert second_id == "20260902T120000Z_001"
+    assert first_dir != second_dir
 
 
 def test_canonical_timeline_path_cannot_bypass_ownership_with_short_source_list(tmp_path: Path) -> None:
@@ -607,6 +637,38 @@ def test_canonical_timeline_path_cannot_bypass_ownership_with_short_source_list(
                 required_manifest_sources=("calls",),
             )
         )
+
+
+def test_managed_staging_store_requires_unified_nightly_scope(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    (staging / "state").mkdir(parents=True)
+    (staging / "state/WRITER_OWNERSHIP.json").write_text("{}\n", encoding="utf-8")
+    timeline = staging / "customer_timeline_staging.sqlite"
+
+    with pytest.raises(ValueError, match="unified nightly service"):
+        CustomerTimelineSQLiteStore(timeline, allowed_root=staging)
+
+    with nightly_service_module.service_lock(timeline, timeout_seconds=0):
+        CustomerTimelineSQLiteStore(timeline, allowed_root=staging).close()
+
+
+def test_canonical_service_config_rejects_incomplete_source_chain(tmp_path: Path) -> None:
+    config = tmp_path / "service.json"
+    config.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(tmp_path / "customer_timeline_staging.sqlite"),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [{"name": "one-source", "kind": "monitor"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="complete source manifest"):
+        service_config_from_json(config)
 
 
 def test_resume_fingerprint_changes_with_config_schema(tmp_path: Path, monkeypatch) -> None:
@@ -1356,7 +1418,7 @@ def test_nightly_service_runs_wappi_then_refreshes_family_graph(
     seed_customer(db_path, staging)
     calls: list[str] = []
 
-    def fake_wappi(config):
+    def fake_wappi(config, **_kwargs):
         calls.append("wappi")
         assert config.require_widget_linkage is True
         assert config.limits.show_all_chats is True
@@ -1458,7 +1520,7 @@ def test_nightly_service_publishes_other_sources_with_wappi_degraded(
     monkeypatch.setattr(
         nightly_service_module,
         "run_wappi_history_import",
-        lambda _config: proved_partial_wappi_report(),
+        lambda _config, **_kwargs: proved_partial_wappi_report(),
     )
     config_path = staging / "service.json"
     config_path.write_text(
@@ -1493,6 +1555,60 @@ def test_nightly_service_publishes_other_sources_with_wappi_degraded(
     assert report["degraded_steps"][0]["name"] == "wappi_history_incremental"
     assert report["degraded_steps"][0]["summary"]["pending_attribution"] == 1
     assert report["snapshot_manifest"]["latest_published"] is True
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    ("pagination_drift_detected", "message_reconciliation_gap"),
+)
+def test_nightly_service_wappi_source_gap_blocks_latest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocker: str
+) -> None:
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+    drift = proved_partial_wappi_report()
+    marker = f"wappi_telegram:p1:{blocker}"
+    drift["limit_hits"] = [marker]
+    drift["checkpoint"]["deferred_limit_hits"] = [marker]
+    drift["checkpoint"]["profiles"]["wappi_telegram:p1"][
+        "stop_reason"
+    ] = blocker
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_wappi_history_import",
+        lambda _config, **_kwargs: drift,
+    )
+    config_path = staging / "service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(staging),
+                "out_root": str(staging / "runs"),
+                "publish_dir": str(staging / "published"),
+                "steps": [
+                    {
+                        "name": "wappi_history_incremental",
+                        "kind": "wappi_history",
+                        "required": True,
+                        "config": {
+                            "env_file": str(tmp_path / "wappi.env"),
+                            "phase1_config": str(tmp_path / "phase1.json"),
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["steps"][0]["status"] == "failed"
+    assert report["overall_status"] == "partial"
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 def test_nightly_service_wappi_degraded_blocks_owner_replacement_with_same_count(
@@ -1530,7 +1646,7 @@ def test_nightly_service_wappi_degraded_blocks_owner_replacement_with_same_count
             )
         )
 
-    def replace_owner_then_report(_config):
+    def replace_owner_then_report(_config, **_kwargs):
         with sqlite3.connect(db_path) as con:
             con.execute(
                 "UPDATE timeline_events SET customer_id='customer:nightly-2',"
@@ -1646,7 +1762,7 @@ def test_nightly_service_wappi_degraded_blocks_existing_owned_row_mutation(
             )
         )
 
-    def mutate_existing_owner_then_report(_config):
+    def mutate_existing_owner_then_report(_config, **_kwargs):
         with sqlite3.connect(db_path) as con:
             if poisoned_table == "bot_context_chunks":
                 con.execute(
@@ -1724,7 +1840,7 @@ def test_nightly_service_unproved_wappi_partial_blocks_latest(
     monkeypatch.setattr(
         nightly_service_module,
         "run_wappi_history_import",
-        lambda _config: partial,
+        lambda _config, **_kwargs: partial,
     )
     config_path = staging / "service.json"
     config_path.write_text(
@@ -1769,7 +1885,7 @@ def test_nightly_service_optional_wappi_unproved_report_still_blocks_latest(
     monkeypatch.setattr(
         nightly_service_module,
         "run_wappi_history_import",
-        lambda _config: {"publish_ready": False, "attribution_complete": False},
+        lambda _config, **_kwargs: {"publish_ready": False, "attribution_complete": False},
     )
     config_path = staging / "service.json"
     config_path.write_text(json.dumps({
@@ -1804,7 +1920,7 @@ def test_nightly_service_wappi_exception_blocks_without_leaking_error(
     latest_path.parent.mkdir(parents=True)
     latest_path.write_text("PREVIOUS-GOOD-LATEST", encoding="utf-8")
 
-    def partial_write_then_fail(_config):
+    def partial_write_then_fail(_config, **_kwargs):
         with sqlite3.connect(db_path) as con:
             con.execute(
                 "UPDATE customer_identities SET display_name='partial-write'"
@@ -2889,7 +3005,7 @@ def test_nightly_service_runs_required_tallanto_attendance_api_step(
     monkeypatch.setattr(
         nightly_service_module,
         "run_tallanto_attendance_api_increment",
-        lambda config: {
+        lambda config, **_kwargs: {
             "status": "completed",
             "validation_ok": True,
             "unresolved_count": 1,
@@ -2950,7 +3066,7 @@ def test_nightly_service_marks_required_tallanto_partial_and_does_not_publish_la
     monkeypatch.setattr(
         nightly_service_module,
         "run_tallanto_attendance_api_increment",
-        lambda config: {
+        lambda config, **_kwargs: {
             "status": "partial",
             "validation_ok": False,
             "unresolved_count": 2,
@@ -3592,7 +3708,7 @@ def test_nightly_service_wappi_proof_is_independent_per_channel(
     monkeypatch.setattr(
         nightly_service_module,
         "run_wappi_history_import",
-        lambda config: {
+        lambda config, **_kwargs: {
             "validation_ok": True,
             "fetch_complete": True,
             "source_persistence_complete": True,

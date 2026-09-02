@@ -19,6 +19,9 @@ from mango_mvp.customer_timeline.nightly_incremental import (  # noqa: E402
     run_nightly_incremental,
     summarize_report,
 )
+from mango_mvp.customer_timeline.safety import (  # noqa: E402
+    is_canonical_customer_timeline_staging_path,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,7 +92,13 @@ def source_from_json(payload: Any) -> IncrementalSourceConfig:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = run_nightly_incremental(config_from_json(Path(args.config)))
+    config = config_from_json(Path(args.config))
+    if is_canonical_customer_timeline_staging_path(
+        config.timeline_db,
+        allowed_root=config.allowed_root,
+    ):
+        raise RuntimeError("canonical_staging_incremental_is_owned_by_nightly_service")
+    report = run_nightly_incremental(config)
     output = summarize_report(report) if args.summary_only else report
     print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
     failed_required = report.get("failed_required_sources") or []

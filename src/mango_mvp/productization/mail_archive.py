@@ -81,6 +81,7 @@ MANGO_PHONE_INDEX_PREVIEW_SCHEMA_VERSION = "mango_phone_index_preview_v1"
 FULL_MESSAGE_FETCH_QUERY = "(BODY.PEEK[])"
 MAIL_FETCH_ATTEMPTS = 3
 MAIL_FETCH_RETRY_DELAY_SECONDS = 3.0
+MAIL_FETCH_BATCH_SIZE = 20
 
 DEFAULT_TALLANTO_EMAIL_COLUMNS = ("E-mail", "Другой E-mail")
 DEFAULT_TALLANTO_PHONE_COLUMNS = (
@@ -1110,6 +1111,7 @@ def build_mail_archive_ingest(
         "messages_excluded_by_sha256": 0,
         "message_fetch_retries": 0,
         "imap_connection_retries": 0,
+        "imap_fetch_batch_size": MAIL_FETCH_BATCH_SIZE,
         "raw_eml_written": 0,
         "attachments_written": 0,
         "text_files_written": 0,
@@ -1177,6 +1179,8 @@ def build_mail_archive_ingest(
         )
         report["selection_truncated"] = len(selected_ids) < len(pending_ids)
         report["messages_attempted"] = len(selected_ids)
+        if client is None and len(selected_ids) > 1:
+            imap = BatchedUidFetchClient(imap, selected_ids)
 
         def record_fetched_message(fetched: Mapping[str, Any]) -> None:
             if fetched.get("excluded_by_sha256"):
@@ -1209,6 +1213,7 @@ def build_mail_archive_ingest(
                             report["mailbox_tail_aborted"] = True
                             final_error = RuntimeError("IMAP UIDVALIDITY changed during retry")
                             break
+                        imap = BatchedUidFetchClient(imap, selected_ids)
                     except Exception as exc:  # noqa: BLE001
                         final_error = exc
                         first_error = first_error or f"{type(exc).__name__}: {exc}"
@@ -1329,15 +1334,71 @@ def selected_mailbox_uidvalidity(imap: ImapClient) -> str:
 
 def uid_fetch_payload(fetch_data: Sequence[Any], expected_uid: bytes | str) -> bytes:
     expected = expected_uid.decode("ascii", "ignore") if isinstance(expected_uid, bytes) else str(expected_uid)
+    saw_other_uid = False
     for part in fetch_data or ():
         if not (isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], bytes)):
             continue
         metadata = part[0].decode("ascii", "ignore") if isinstance(part[0], bytes) else str(part[0])
         match = re.search(r"\bUID\s+(\d+)\b", metadata, re.IGNORECASE)
-        if not match or match.group(1) != expected:
-            raise RuntimeError(f"IMAP UID FETCH response mismatch for {expected}")
-        return part[1]
+        if match and match.group(1) == expected:
+            return part[1]
+        saw_other_uid = saw_other_uid or bool(match)
+    if saw_other_uid:
+        raise RuntimeError(f"IMAP UID FETCH response mismatch for {expected}")
     return b""
+
+
+class BatchedUidFetchClient:
+    """Coalesce sequential full-message fetches without changing callers."""
+
+    def __init__(
+        self,
+        delegate: ImapClient,
+        message_ids: Sequence[bytes],
+        *,
+        batch_size: int = MAIL_FETCH_BATCH_SIZE,
+    ) -> None:
+        self._delegate = delegate
+        self._ids = tuple(message_ids)
+        self._positions = {
+            item.decode("ascii", "ignore"): index for index, item in enumerate(self._ids)
+        }
+        self._batch_size = max(1, int(batch_size))
+        self._cache: dict[str, Sequence[Any]] = {}
+
+    def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+        if command != "FETCH" or len(args) < 2 or args[1] != FULL_MESSAGE_FETCH_QUERY:
+            return self._delegate.uid(command, *args)
+        requested = args[0].decode("ascii", "ignore") if isinstance(args[0], bytes) else str(args[0])
+        cached = self._cache.pop(requested, None)
+        if cached is not None:
+            return "OK", cached
+        position = self._positions.get(requested)
+        if position is None:
+            return self._delegate.uid(command, *args)
+        batch = self._ids[position : position + self._batch_size]
+        try:
+            status, data = self._delegate.uid(
+                "FETCH",
+                b",".join(batch),
+                FULL_MESSAGE_FETCH_QUERY,
+            )
+        except (KeyError, TypeError, ValueError):
+            return self._delegate.uid(command, *args)
+        if status != "OK":
+            return self._delegate.uid(command, *args) if len(batch) > 1 else (status, data)
+        for message_id in batch:
+            key = message_id.decode("ascii", "ignore")
+            try:
+                raw = uid_fetch_payload(data, message_id)
+            except RuntimeError:
+                continue
+            if raw:
+                self._cache[key] = [(f"1 (UID {key})".encode("ascii"), raw)]
+        return status, self._cache.pop(requested, data)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
 
 
 def open_readonly_mailbox_with_retries(

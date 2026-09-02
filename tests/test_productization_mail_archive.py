@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 import pytest
 
 from mango_mvp.productization.mail_archive import (
+    BatchedUidFetchClient,
     FULL_MESSAGE_FETCH_QUERY,
     MailArchiveIngestConfig,
     MailArchivePreflightConfig,
@@ -991,6 +992,27 @@ def test_mail_archive_does_not_skip_uid_from_different_uidvalidity(tmp_path: Pat
     assert report["uid_incremental_skip_reason"] == "per_source_uidvalidity"
     assert report["messages_attempted"] == 1
     assert changed.fetch_queries == [FULL_MESSAGE_FETCH_QUERY]
+
+
+def test_batched_uid_fetch_client_reuses_one_network_response() -> None:
+    first = _raw_message(message_id="first")
+    second = _raw_message(message_id="second")
+
+    class Delegate:
+        calls = 0
+
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            assert command == "FETCH"
+            assert args == (b"1,2", FULL_MESSAGE_FETCH_QUERY)
+            self.calls += 1
+            return "OK", [(b"1 (UID 1)", first), (b"2 (UID 2)", second)]
+
+    delegate = Delegate()
+    client = BatchedUidFetchClient(delegate, [b"1", b"2"])
+
+    assert client.uid("FETCH", b"1", FULL_MESSAGE_FETCH_QUERY)[1][0][1] == first
+    assert client.uid("FETCH", b"2", FULL_MESSAGE_FETCH_QUERY)[1][0][1] == second
+    assert delegate.calls == 1
 
 
 def test_mail_archive_rejects_fetch_payload_for_another_uid(tmp_path: Path) -> None:

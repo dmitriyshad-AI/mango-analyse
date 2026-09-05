@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import email
 import hashlib
+import imaplib
 import io
 import json
 import logging
@@ -1143,6 +1144,7 @@ def build_mail_archive_ingest(
         report["uidvalidity_stable"] = True
         known_uids, source_count_before = known_mailbox_uids(
             db_path,
+            account_key=imap_account_key(credentials),
             account_label=config.account_label,
             mailbox_raw=config.mailbox,
             uidvalidity=uidvalidity,
@@ -1377,16 +1379,22 @@ class BatchedUidFetchClient:
         if position is None:
             return self._delegate.uid(command, *args)
         batch = self._ids[position : position + self._batch_size]
+        if len(batch) == 1:
+            return self._delegate.uid(command, *args)
         try:
             status, data = self._delegate.uid(
                 "FETCH",
                 b",".join(batch),
                 FULL_MESSAGE_FETCH_QUERY,
             )
-        except (KeyError, TypeError, ValueError):
+        except imaplib.IMAP4.abort:
+            raise
+        except (imaplib.IMAP4.error, KeyError, TypeError, ValueError):
+            self._batch_size = 1
             return self._delegate.uid(command, *args)
         if status != "OK":
-            return self._delegate.uid(command, *args) if len(batch) > 1 else (status, data)
+            self._batch_size = 1
+            return self._delegate.uid(command, *args)
         for message_id in batch:
             key = message_id.decode("ascii", "ignore")
             try:
@@ -1395,7 +1403,8 @@ class BatchedUidFetchClient:
                 continue
             if raw:
                 self._cache[key] = [(f"1 (UID {key})".encode("ascii"), raw)]
-        return status, self._cache.pop(requested, data)
+        cached = self._cache.pop(requested, None)
+        return (status, cached) if cached is not None else self._delegate.uid(command, *args)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
@@ -5950,6 +5959,7 @@ def ingest_one_message(
     source_key = hashlib.sha256(
         "|".join(
             [
+                imap_account_key(credentials),
                 config.account_label,
                 config.mailbox,
                 msg_id.decode("ascii", "ignore"),
@@ -5977,6 +5987,7 @@ def ingest_one_message(
             source_key=source_key,
             msg_id=msg_id,
             config=config,
+            account_key=imap_account_key(credentials),
             uidvalidity=uidvalidity,
             metadata=metadata,
             message_kind=message_kind,
@@ -6556,6 +6567,7 @@ def init_mail_archive_db(db_path: Path) -> None:
               mailbox_raw TEXT NOT NULL,
               imap_seq TEXT NOT NULL,
               uidvalidity TEXT NOT NULL DEFAULT '',
+              account_key TEXT NOT NULL DEFAULT '',
               source_message_id TEXT,
               ingested_at TEXT NOT NULL
             );
@@ -6588,6 +6600,10 @@ def init_mail_archive_db(db_path: Path) -> None:
             con.execute(
                 "ALTER TABLE message_sources ADD COLUMN uidvalidity TEXT NOT NULL DEFAULT ''"
             )
+        if "account_key" not in source_columns:
+            con.execute(
+                "ALTER TABLE message_sources ADD COLUMN account_key TEXT NOT NULL DEFAULT ''"
+            )
         con.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_message_sources_mailbox_uid
@@ -6605,9 +6621,16 @@ def init_mail_archive_db(db_path: Path) -> None:
         con.commit()
 
 
+def imap_account_key(credentials: MailImapCredentials) -> str:
+    # Preserve login case: unlike a host, an IMAP account may be case-sensitive.
+    identity = [credentials.host.lower(), int(credentials.port), credentials.email_address]
+    return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+
+
 def known_mailbox_uids(
     db_path: Path,
     *,
+    account_key: str,
     account_label: str,
     mailbox_raw: str,
     uidvalidity: str,
@@ -6622,9 +6645,9 @@ def known_mailbox_uids(
         rows = con.execute(
             """
             SELECT imap_seq FROM message_sources
-            WHERE account_label = ? AND mailbox_raw = ? AND uidvalidity = ?
+            WHERE account_label = ? AND mailbox_raw = ? AND uidvalidity = ? AND account_key = ?
             """,
-            (account_label, mailbox_raw, uidvalidity),
+            (account_label, mailbox_raw, uidvalidity, account_key),
         ).fetchall()
     return {str(row[0]) for row in rows}, source_count
 
@@ -6683,6 +6706,7 @@ def upsert_message(
     source_key: str,
     msg_id: bytes,
     config: MailArchiveIngestConfig,
+    account_key: str,
     uidvalidity: str,
     metadata: Mapping[str, str],
     message_kind: str,
@@ -6726,8 +6750,8 @@ def upsert_message(
         """
         INSERT OR IGNORE INTO message_sources (
           source_key, message_sha256, account_label, mailbox, mailbox_raw,
-          imap_seq, uidvalidity, source_message_id, ingested_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          imap_seq, uidvalidity, account_key, source_message_id, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             source_key,
@@ -6737,6 +6761,7 @@ def upsert_message(
             config.mailbox,
             msg_id.decode("ascii", "ignore"),
             uidvalidity,
+            account_key,
             metadata["message_id"],
             now,
         ),

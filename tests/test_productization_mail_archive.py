@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import imaplib
 import io
 import json
 import sqlite3
 import subprocess
 import zipfile
+from dataclasses import replace
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -62,6 +64,7 @@ from mango_mvp.productization.mail_archive import (
     guard_git_ignored_output,
     iter_attachment_parts,
     is_transient_imap_fetch_error,
+    init_mail_archive_db,
     load_tallanto_customer_address_book,
     message_metadata,
     message_participants,
@@ -70,6 +73,7 @@ from mango_mvp.productization.mail_archive import (
     normalize_phone,
     open_imap_client_with_retries,
     run_tesseract_ocr,
+    uid_fetch_payload,
     verify_mail_archive_pilot,
 )
 from mango_mvp.productization.mail_imap_snapshot import MailImapCredentials
@@ -1013,6 +1017,128 @@ def test_batched_uid_fetch_client_reuses_one_network_response() -> None:
     assert client.uid("FETCH", b"1", FULL_MESSAGE_FETCH_QUERY)[1][0][1] == first
     assert client.uid("FETCH", b"2", FULL_MESSAGE_FETCH_QUERY)[1][0][1] == second
     assert delegate.calls == 1
+
+
+@pytest.mark.parametrize("changed", [
+    {"email_address": "other@example.test"},
+    {"email_address": "School@kmipt.ru"},
+    {"host": "other.example.test"},
+    {"port": 994},
+])
+def test_mail_archive_uid_skip_is_bound_to_actual_account(tmp_path: Path, changed: dict) -> None:
+    class AccountClient(FakeImapClient):
+        def login(self, user: str, password: str) -> tuple[str, Sequence[bytes]]:
+            return "OK", []
+
+    credentials = MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written")
+    config = MailArchiveIngestConfig(out_dir=tmp_path / "archive", max_messages=1)
+    build_mail_archive_ingest(credentials=credentials, config=config, client=FakeImapClient([_raw_message()]))
+    other = replace(credentials, **changed)
+    report = build_mail_archive_ingest(
+        credentials=other, config=config, client=AccountClient([_raw_message(message_id="other")]),
+    )
+    assert report["messages_attempted"] == report["messages_completed"] == 1
+    assert report["messages_already_archived_by_uid"] == 0
+    assert report["mailbox_complete"] is True
+    rerun = build_mail_archive_ingest(
+        credentials=replace(other, password="rotated", host=other.host.upper()),
+        config=config, client=AccountClient([_raw_message(message_id="other")]),
+    )
+    assert rerun["messages_attempted"] == 0
+    with sqlite3.connect(config.out_dir / "mail_archive.sqlite") as con:
+        assert con.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+        assert con.execute("SELECT COUNT(DISTINCT account_key) FROM message_sources").fetchone()[0] == 2
+
+
+def test_mail_archive_legacy_account_is_not_assumed_and_rerun_is_empty(tmp_path: Path) -> None:
+    config = MailArchiveIngestConfig(out_dir=tmp_path / "archive", max_messages=1)
+    config.out_dir.mkdir()
+    db = config.out_dir / "mail_archive.sqlite"
+    with sqlite3.connect(db) as con:
+        con.execute("""CREATE TABLE message_sources (
+            source_key TEXT PRIMARY KEY, message_sha256 TEXT, account_label TEXT,
+            mailbox TEXT, mailbox_raw TEXT, imap_seq TEXT, uidvalidity TEXT,
+            source_message_id TEXT, ingested_at TEXT)""")
+        con.execute("INSERT INTO message_sources VALUES ('legacy','legacy',?,'INBOX','INBOX','1','123','','')",
+                    (config.account_label,))
+    init_mail_archive_db(db)
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT account_key FROM message_sources").fetchone()[0] == ""
+    credentials = MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written")
+    first = build_mail_archive_ingest(credentials=credentials, config=config, client=FakeImapClient([_raw_message()]))
+    second = build_mail_archive_ingest(credentials=credentials, config=config, client=FakeImapClient([_raw_message()]))
+    assert first["messages_attempted"] == first["messages_completed"] == 1
+    assert second["messages_attempted"] == 0
+    assert second["messages_already_archived_by_uid"] == 1
+
+
+@pytest.mark.parametrize("mode", ["BAD", "NO", "partial", "empty"])
+def test_batch_fallback_keeps_valid_neighbors_and_uses_single_fetch(mode: str) -> None:
+    class Delegate:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            assert command == "FETCH" and args[1] == FULL_MESSAGE_FETCH_QUERY
+            self.calls.append(args[0])
+            if b"," in args[0]:
+                if mode == "BAD":
+                    raise imaplib.IMAP4.error("unsupported UID set")
+                if mode == "NO":
+                    return "NO", []
+                return "OK", [(b"2 (UID 2)", b"second")] if mode == "partial" else []
+            uid = args[0]
+            return "OK", [(b"1 (UID " + uid + b")", b"first" if uid == b"1" else b"second")]
+
+    delegate = Delegate()
+    client = BatchedUidFetchClient(delegate, [b"1", b"2"])
+    assert uid_fetch_payload(client.uid("FETCH", b"1", FULL_MESSAGE_FETCH_QUERY)[1], b"1") == b"first"
+    assert uid_fetch_payload(client.uid("FETCH", b"2", FULL_MESSAGE_FETCH_QUERY)[1], b"2") == b"second"
+    assert delegate.calls == ([b"1,2", b"1"] if mode == "partial" else [b"1,2", b"1", b"2"])
+
+
+def test_batch_abort_reaches_connection_recovery_without_single_retry() -> None:
+    class Delegate:
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            assert args[0] == b"1,2"
+            raise imaplib.IMAP4.abort("connection closed")
+
+    client = BatchedUidFetchClient(Delegate(), [b"1", b"2"])
+    with pytest.raises(imaplib.IMAP4.abort):
+        client.uid("FETCH", b"1", FULL_MESSAGE_FETCH_QUERY)
+
+
+def test_batch_fallback_does_not_accept_a_different_uid() -> None:
+    class Delegate:
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            return "OK", [(b"8 (UID 8)", b"not the requested message")]
+
+    client = BatchedUidFetchClient(Delegate(), [b"1", b"2"])
+    with pytest.raises(RuntimeError, match="mismatch"):
+        uid_fetch_payload(client.uid("FETCH", b"1", FULL_MESSAGE_FETCH_QUERY)[1], b"1")
+
+
+def test_ingest_batch_bad_falls_back_through_real_wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class BatchRejectingClient(FakeImapClient):
+        batch_attempts = 0
+
+        def uid(self, command: str, *args: Any) -> tuple[str, Sequence[Any]]:
+            if command == "FETCH" and b"," in args[0]:
+                self.batch_attempts += 1
+                raise imaplib.IMAP4.error("unsupported UID set")
+            return super().uid(command, *args)
+
+    client = BatchRejectingClient([_raw_message(message_id="first"), _raw_message(message_id="second")])
+    monkeypatch.setattr("mango_mvp.productization.mail_archive.open_imap_client_with_retries", lambda _: (client, 0))
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials("mail.example.test", 993, "school@kmipt.ru", "not-written"),
+        config=MailArchiveIngestConfig(out_dir=tmp_path / "_external_handoffs" / "archive", max_messages=2),
+    )
+    assert report["errors"] == []
+    assert report["mailbox_complete"] is True
+    assert report["messages_completed"] == 2
+    assert client.batch_attempts == 1
+    assert client.fetch_queries == [FULL_MESSAGE_FETCH_QUERY, FULL_MESSAGE_FETCH_QUERY]
 
 
 def test_mail_archive_rejects_fetch_payload_for_another_uid(tmp_path: Path) -> None:

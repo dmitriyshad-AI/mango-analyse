@@ -1156,6 +1156,157 @@ def test_old_fts_key_schema_is_backfilled_without_retokenizing(tmp_path: Path) -
     reopened.close()
 
 
+@pytest.mark.parametrize("size", [1, 10, 100])
+def test_bulk_unlinked_fts_checks_are_bounded_and_rerun_is_empty(tmp_path: Path, monkeypatch, size: int) -> None:
+    with open_store(tmp_path) as store:
+        customer = identity()
+        store.upsert_customer(customer)
+        originals = [replace(event(customer, source_id=f"missing-{i}"), customer_id=None) for i in range(size)]
+        contexts = [replace(chunk(replace(ev, customer_id=customer.customer_id)), event_id=None) for ev in originals]
+        with store.bulk_write():
+            store.upsert_event(event(customer, source_id="indexed-control", summary="RetainedControl"))
+            for ev, context in zip(originals, contexts):
+                store.upsert_event(ev)
+                store.upsert_bot_context_chunk(context)
+                store.retire_bot_context_chunk(context.chunk_id, reason="synthetic-test")
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        monkeypatch.setattr(store, "_rebuild_fts_indexes", lambda: pytest.fail("unneeded full rebuild"))
+        changed = [replace(ev, summary="ChangedUnlinked") for ev in originals]
+
+        def apply_changes():
+            with store.bulk_write():
+                for ev, context in zip(changed, contexts):
+                    with store.bulk_write():
+                        store.upsert_event(ev)
+                        store.upsert_bot_context_chunk(replace(context, text="ChangedChunk"))
+
+        apply_changes()
+        repairs = [s for s in statements if "THEN MIN(rowid)" in s]
+        assert len(repairs) == 2
+        assert not [s for s in statements if "SELECT rowid AS fts_rowid FROM" in s]
+        assert not store._bulk_fts_keys_ready
+        assert store.search_timeline("foton", "RetainedControl")["items"]
+        assert not store.search_timeline("foton", "ChangedUnlinked")["items"]
+        statements.clear()
+        apply_changes()
+        assert not [s for s in statements if "THEN MIN(rowid)" in s or "SELECT rowid AS fts_rowid FROM" in s]
+
+
+@pytest.mark.parametrize("kind", ["event", "chunk"])
+def test_bulk_fts_key_repair_rolls_back_and_rechecks_next_bulk(tmp_path: Path, kind: str) -> None:
+    with open_store(tmp_path) as store:
+        customer = identity()
+        ev = event(customer, summary="OriginalSearchTerm")
+        obj = ev if kind == "event" else replace(chunk(ev), text="OriginalSearchTerm")
+        fts, keys, column = (
+            ("timeline_event_fts", "timeline_event_fts_keys", "event_id") if kind == "event"
+            else ("bot_context_chunk_fts", "bot_context_chunk_fts_keys", "chunk_id")
+        )
+        selected_id = getattr(obj, column)
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(chunk(ev))
+        store._con.execute(f"DELETE FROM {keys} WHERE {column}=?", (selected_id,))
+        store._con.execute(f"INSERT INTO {keys} VALUES ('stale-map-only', 999999)")
+        store._con.commit()
+        apply = store.upsert_event if kind == "event" else store.upsert_bot_context_chunk
+        changed = replace(obj, summary="ChangedSearchTerm") if kind == "event" else replace(obj, text="ChangedSearchTerm")
+        with pytest.raises(RuntimeError, match="abort repair"):
+            with store.bulk_write():
+                apply(changed)
+                assert store._con.execute(f"SELECT COUNT(*) FROM {keys} WHERE {column}=?", (selected_id,)).fetchone()[0] == 1
+                assert store._con.execute(f"SELECT COUNT(*) FROM {keys} WHERE {column}='stale-map-only'").fetchone()[0] == 0
+                with sqlite3.connect(f"file:{store.db_path}?mode=ro", uri=True) as reader:
+                    assert reader.execute(f"SELECT COUNT(*) FROM {keys} WHERE {column}=?", (selected_id,)).fetchone()[0] == 0
+                    assert reader.execute(f"SELECT COUNT(*) FROM {keys} WHERE {column}='stale-map-only'").fetchone()[0] == 1
+                    assert reader.execute(f"SELECT COUNT(*) FROM {fts} WHERE {fts} MATCH 'ChangedSearchTerm'").fetchone()[0] == 0
+                raise RuntimeError("abort repair")
+        assert not store._bulk_fts_keys_ready
+        assert store._con.execute(f"SELECT COUNT(*) FROM {keys} WHERE {column}=?", (selected_id,)).fetchone()[0] == 0
+        assert store._con.execute(f"SELECT COUNT(*) FROM {keys} WHERE {column}='stale-map-only'").fetchone()[0] == 1
+        assert not store.search_timeline("foton", "ChangedSearchTerm")["items"]
+        with store.bulk_write():
+            apply(changed)
+        assert store._con.execute(f"SELECT COUNT(*) FROM {fts} WHERE {column}=?", (selected_id,)).fetchone()[0] == 1
+        assert store.search_timeline("foton", "ChangedSearchTerm")["items"]
+        with sqlite3.connect(f"file:{store.db_path}?mode=ro", uri=True) as reader:
+            assert reader.execute(f"SELECT COUNT(*) FROM {fts} WHERE {fts} MATCH 'ChangedSearchTerm'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("kind", ["event", "chunk"])
+@pytest.mark.parametrize("key_present", [False, True])
+def test_bulk_fts_duplicate_orphans_defer_one_rebuild(tmp_path: Path, monkeypatch, kind: str, key_present: bool) -> None:
+    with open_store(tmp_path) as store:
+        customer = identity()
+        ev = event(customer, summary="OriginalSearchTerm")
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(chunk(ev))
+        fts, keys = ("timeline_event_fts", "timeline_event_fts_keys") if kind == "event" else ("bot_context_chunk_fts", "bot_context_chunk_fts_keys")
+        store._con.execute(f"INSERT INTO {fts} SELECT * FROM {fts}")
+        if not key_present:
+            store._con.execute(f"DELETE FROM {keys}")
+        store._con.commit()
+        rebuild = store._rebuild_fts_indexes
+        rebuilds = []
+        monkeypatch.setattr(store, "_rebuild_fts_indexes", lambda: (rebuilds.append(1), rebuild())[1])
+        with store.bulk_write():
+            assert store._prepare_bulk_fts_keys(fts, keys, "event_id" if kind == "event" else "chunk_id")
+            assert store._bulk_fts_rebuild
+            assert fts not in store._bulk_fts_keys_ready
+            assert store._delete_fts_rows_by_keys(fts_table=fts, key_table=keys, key_column="event_id" if kind == "event" else "chunk_id", keys=("not-in-index",)) is False
+        assert len(rebuilds) == 1
+        assert store._con.execute(f"SELECT COUNT(*) FROM {fts}").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("kind", ["event", "chunk"])
+def test_bulk_fts_null_legacy_key_keeps_rebuild_path(tmp_path: Path, monkeypatch, kind: str) -> None:
+    with open_store(tmp_path) as store:
+        customer = identity()
+        ev = event(customer)
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(chunk(ev))
+        fts, keys, column = ("timeline_event_fts", "timeline_event_fts_keys", "event_id") if kind == "event" else ("bot_context_chunk_fts", "bot_context_chunk_fts_keys", "chunk_id")
+        store._con.execute(f"UPDATE {keys} SET fts_rowid=NULL")
+        store._con.commit()
+        statements = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            assert store._prepare_bulk_fts_keys(fts, keys, column)
+            assert store._bulk_fts_rebuild
+            assert not [s for s in statements if "THEN MIN(rowid)" in s]
+            store._commit()
+        assert store._con.execute(f"SELECT COUNT(*) FROM {keys} WHERE fts_rowid IS NULL").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("kind", ["event", "chunk"])
+def test_bulk_fts_delete_repairs_orphans_and_bounds_absent_probes(tmp_path: Path, monkeypatch, kind: str) -> None:
+    with open_store(tmp_path) as store:
+        customer = identity()
+        ev = event(customer)
+        context = chunk(ev)
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(context)
+        fts, keys, column, selected_id = (
+            ("timeline_event_fts", "timeline_event_fts_keys", "event_id", ev.event_id) if kind == "event"
+            else ("bot_context_chunk_fts", "bot_context_chunk_fts_keys", "chunk_id", context.chunk_id)
+        )
+        store._con.execute(f"DELETE FROM {keys} WHERE {column}=?", (selected_id,))
+        store._con.commit()
+        monkeypatch.setattr(store, "_rebuild_fts_indexes", lambda: pytest.fail("unneeded rebuild"))
+        statements = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            for identifier in (selected_id, *(f"missing-{i}" for i in range(100))):
+                assert store._delete_fts_rows_by_keys(fts_table=fts, key_table=keys, key_column=column, keys=(identifier,))
+        assert len([s for s in statements if "THEN MIN(rowid)" in s]) == 1
+        assert not [s for s in statements if f"SELECT 1 FROM {fts} WHERE {column}" in s]
+        assert store._con.execute(f"SELECT COUNT(*) FROM {fts}").fetchone()[0] == 0
+
+
 def test_missing_single_fts_key_is_repaired_without_duplicate(tmp_path: Path) -> None:
     store = open_store(tmp_path)
     customer = identity()
@@ -3364,7 +3515,7 @@ def test_reconcile_event_dependency_owners_uses_multi_source_index(tmp_path: Pat
     store.close()
 
 
-def test_reconcile_event_dependency_owners_rebuilds_missing_fts_once(
+def test_reconcile_event_dependency_owners_repairs_missing_fts_keys_without_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
@@ -3395,7 +3546,10 @@ def test_reconcile_event_dependency_owners_rebuilds_missing_fts_once(
     monkeypatch.setattr(store, "_rebuild_fts_indexes", counted_rebuild)
 
     assert store.reconcile_event_dependency_owners("foton", actor="test") == 2
-    assert rebuilds == 1
+    assert rebuilds == 0
+    assert store._con.execute("SELECT COUNT(*) FROM bot_context_chunk_fts").fetchone()[0] == 0
+    assert store._con.execute("SELECT COUNT(*) FROM bot_context_chunk_fts_keys").fetchone()[0] == 0
+    assert store._con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 2
     assert store.search_timeline("foton", "стоимость", mode="fts")["backend"] == "fts5"
     store.close()
 

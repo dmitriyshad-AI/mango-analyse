@@ -1200,6 +1200,7 @@ class CustomerTimelineSQLiteStore:
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
         self._bulk_fts_rebuild = False
+        self._bulk_fts_keys_ready: set[str] = set()
         self._writer_lock_path: Optional[Path] = None
         self._writer_lock_handle: Any = None
         if not self.read_only:
@@ -1242,6 +1243,7 @@ class CustomerTimelineSQLiteStore:
         outermost = self._bulk_write_depth == 0
         if outermost:
             self._bulk_fts_rebuild = False
+            self._bulk_fts_keys_ready.clear()
         self._bulk_write_depth += 1
         try:
             yield self
@@ -1264,6 +1266,7 @@ class CustomerTimelineSQLiteStore:
             if outermost:
                 self._bulk_write_dirty = False
                 self._bulk_fts_rebuild = False
+                self._bulk_fts_keys_ready.clear()
 
     @property
     def open_result(self) -> CustomerTimelineSQLiteOpenResult:
@@ -4824,13 +4827,43 @@ class CustomerTimelineSQLiteStore:
             (row["chunk_id"], cursor.lastrowid),
         )
 
+    def _prepare_bulk_fts_keys(self, fts_table: str, key_table: str, key_column: str) -> bool:
+        if self._bulk_write_depth == 0:
+            return False
+        if self._bulk_fts_rebuild or fts_table in self._bulk_fts_keys_ready:
+            return True
+        if self._fetch_one(f"SELECT 1 FROM {key_table} WHERE fts_rowid IS NULL LIMIT 1"):
+            self._bulk_fts_rebuild = True
+            return True
+        # ponytail: one metadata pass per changed bulk, not one FTS scan per missing ID.
+        self._con.execute(f"DELETE FROM {key_table}")
+        self._con.execute(
+            f"INSERT INTO {key_table}({key_column}, fts_rowid) "
+            f"SELECT {key_column}, CASE WHEN COUNT(*) = 1 THEN MIN(rowid) END "
+            f"FROM {fts_table} GROUP BY {key_column}"
+        )
+        self._commit()
+        if self._fetch_one(f"SELECT 1 FROM {key_table} WHERE fts_rowid IS NULL LIMIT 1"):
+            self._bulk_fts_rebuild = True
+        else:
+            self._bulk_fts_keys_ready.add(fts_table)
+        return True
+
     def _sync_event_fts(self, event_id: str, *, created: bool = False) -> None:
         if not self._fts_enabled and not self._detect_existing_fts():
             return
         existing_fts = self._fetch_one(
             "SELECT fts_rowid FROM timeline_event_fts_keys WHERE event_id = ?", (event_id,)
         )
-        if existing_fts is None and not created:
+        if existing_fts is None and not created and self._prepare_bulk_fts_keys(
+            "timeline_event_fts", "timeline_event_fts_keys", "event_id"
+        ):
+            if self._bulk_fts_rebuild:
+                return
+            existing_fts = self._fetch_one(
+                "SELECT fts_rowid FROM timeline_event_fts_keys WHERE event_id = ?", (event_id,)
+            )
+        if existing_fts is None and not created and "timeline_event_fts" not in self._bulk_fts_keys_ready:
             orphan = self._fetch_one("SELECT rowid AS fts_rowid FROM timeline_event_fts WHERE event_id = ? LIMIT 1", (event_id,))
             if orphan is not None:
                 self._con.execute(
@@ -4866,7 +4899,15 @@ class CustomerTimelineSQLiteStore:
         existing_fts = self._fetch_one(
             "SELECT fts_rowid FROM bot_context_chunk_fts_keys WHERE chunk_id = ?", (chunk_id,)
         )
-        if existing_fts is None and not created:
+        if existing_fts is None and not created and self._prepare_bulk_fts_keys(
+            "bot_context_chunk_fts", "bot_context_chunk_fts_keys", "chunk_id"
+        ):
+            if self._bulk_fts_rebuild:
+                return
+            existing_fts = self._fetch_one(
+                "SELECT fts_rowid FROM bot_context_chunk_fts_keys WHERE chunk_id = ?", (chunk_id,)
+            )
+        if existing_fts is None and not created and "bot_context_chunk_fts" not in self._bulk_fts_keys_ready:
             orphan = self._fetch_one(
                 "SELECT rowid AS fts_rowid FROM bot_context_chunk_fts WHERE chunk_id = ? LIMIT 1", (chunk_id,)
             )
@@ -5389,6 +5430,8 @@ class CustomerTimelineSQLiteStore:
         key_column: str,
         keys: Sequence[str],
     ) -> bool:
+        if self._bulk_fts_rebuild:
+            return False
         selected = tuple(dict.fromkeys(str(item) for item in keys if str(item)))
         if not selected or self._fetch_one(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (fts_table,)
@@ -5399,11 +5442,17 @@ class CustomerTimelineSQLiteStore:
             f"SELECT {key_column}, fts_rowid FROM {key_table} WHERE {key_column} IN ({placeholders})",
             selected,
         ).fetchall()
+        if len(rows) < len(selected) and self._prepare_bulk_fts_keys(fts_table, key_table, key_column):
+            if self._bulk_fts_rebuild:
+                return False
+            rows = self._con.execute(
+                f"SELECT {key_column}, fts_rowid FROM {key_table} WHERE {key_column} IN ({placeholders})", selected
+            ).fetchall()
         if any(row["fts_rowid"] is None for row in rows):
             return False
         keyed = {str(row[key_column]) for row in rows}
         missing = tuple(key for key in selected if key not in keyed)
-        if missing:
+        if missing and fts_table not in self._bulk_fts_keys_ready:
             missing_placeholders = ", ".join("?" for _ in missing)
             orphan = self._fetch_one(
                 f"SELECT 1 FROM {fts_table} WHERE {key_column} IN ({missing_placeholders}) LIMIT 1",

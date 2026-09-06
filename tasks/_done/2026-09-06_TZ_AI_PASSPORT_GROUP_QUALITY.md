@@ -1,3 +1,7 @@
+> DONE 2026-09-06 20:25 | ветка codex/ai-passport-group-quality-20260906 | codex
+
+> TAKE 2026-09-06 20:24 | ветка codex/ai-passport-group-quality-20260906 | codex
+
 > DONE 2026-09-06 20:16 | ветка codex/ai-passport-group-quality-20260906 | codex
 
 > TAKE 2026-09-06 17:33 | ветка codex/ai-passport-group-quality-20260906 | codex
@@ -12,12 +16,27 @@
 Семантический-аудит: да
 Feature-ID: feature.customer_timeline.student_passport_export
 Problem-ID: problem.customer_timeline.student_passport_truncation_attribution
-Исход: attempt_complete
+Исход: problem_closed
+Closure-evidence: audits/_inbox/ai_passport_group_quality_20260906T140900Z/google_write_readback.json; SHA256 93de749529d6dda69d6933b42a0cd31db8b4dd69db1e17e797274bcc89854859; Godel final PASS; code commit 89a3ca97.
 Изменение: extend
 Ключевые-символы: list_events_by_customer,split_thread_context,load_cache_rows,build_customer_dossier
 Ключевые-слова: student passport,full communication history,child attribution,manager summary,email summary cache,event_child_attribution_v1
 
 # Полезные паспорта одной группы без повторной выгрузки
+## Закрытие проблемы после Google receipt
+
+Main выполнил Google-write/readback; receipt от 06.09.2026 17:22:42 UTC проверен
+по сохранённому файлу и хешам принятого пакета. A5:W18: все 322 ячейки совпали;
+A5:S1581: все 29963 ячейки совпали; 12 формул без ошибок. Godel final PASS.
+Изменены только согласованные presentation-поля: точный H5, заголовок истории
+«№», короткие B3/B4 с полным пояснением в notes; бизнес-данные не менялись.
+Problem-ID закрыт для этого экспорта 13 паспортов. Google выполнял main, этот
+исполнитель проверил receipt, не повторял MCP-запись или чтение всей таблицы.
+Границы: фиксированный срез 06.09.2026 18:01:48 МСК, прежнее покрытие звонков,
+неразрешённые семейные связи и metadata-only источники сохранены. Смысловой аудит
+охватывал 13 паспортов и целевые первоисточники, не ручную проверку всех 1576
+событий. Merge и удаление worktree не выполнены; дальнейшие writer-циклы не блокируют закрытие.
+
 ## Допуск плана до кода: точная команда
 
 Для этого code-plan review проверяется достаточность плана, не существование

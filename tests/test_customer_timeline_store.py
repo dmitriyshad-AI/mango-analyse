@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import stat
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3376,7 +3377,422 @@ def test_identity_conflict_quarantine_retires_summary_without_source_event(tmp_p
     store.close()
 
 
-def test_event_owner_change_retires_signal_when_secondary_source_event_moves(tmp_path: Path) -> None:
+def _bulk_signal_builds(statements: list[str]) -> list[str]:
+    return [sql for sql in statements if sql.startswith("INSERT OR IGNORE INTO bulk_signal_sources") and "FROM derived_signals" in sql]
+
+
+def _bulk_signal_row(store: CustomerTimelineSQLiteStore, signal_id: str) -> dict:
+    return dict(store._con.execute("SELECT * FROM derived_signals WHERE signal_id=?", (signal_id,)).fetchone())
+
+
+def _bulk_signal_snapshot(store: CustomerTimelineSQLiteStore) -> dict:
+    tables = (
+        "timeline_events", "derived_signals", "bot_context_chunks", "audit_log",
+        "timeline_event_fts", "timeline_event_fts_keys", "bot_context_chunk_fts", "bot_context_chunk_fts_keys",
+    )
+    return {table: [tuple(row) for row in store._con.execute(f"SELECT * FROM {table} ORDER BY 1")] for table in tables}
+
+
+def _seed_bulk_signal_events(store: CustomerTimelineSQLiteStore, count: int = 3) -> tuple:
+    owner = replace(identity(), customer_id="customer:bulk-owner")
+    target = replace(identity(), customer_id="customer:bulk-target", primary_phone=None, primary_email=None)
+    store.upsert_customer(owner)
+    store.upsert_customer(target)
+    events = tuple(event(owner, source_id=f"bulk-source-{i}", summary=f"BulkSource{i}") for i in range(count))
+    for item in events:
+        store.upsert_event(item)
+    return owner, target, events
+
+
+@pytest.mark.parametrize("size", [1, 10, 100])
+@pytest.mark.parametrize("status", ["active", "stale", "resolved"])
+@pytest.mark.parametrize("operation", ["owner_change", "quarantine"])
+def test_bulk_signal_matches_nonbulk_dependencies_and_audit(
+    tmp_path: Path, size: int, status: str, operation: str,
+) -> None:
+    snapshots = []
+    for bulk in (False, True):
+        with CustomerTimelineSQLiteStore(tmp_path / f"baseline-{bulk}.sqlite", allowed_root=tmp_path, clock=lambda: NOW) as store:
+            with store.bulk_write():
+                owner, target, events = _seed_bulk_signal_events(store, size + 1)
+                retained, *moving = events
+                control = replace(signal(retained), status=status)
+                store.upsert_signal(control)
+                store.upsert_bot_context_chunk(chunk(retained))
+                summary = BotContextChunk(
+                    tenant_id=owner.tenant_id, customer_id=owner.customer_id,
+                    source_ref=f"bot-safe:{owner.customer_id}", source_system="customer_timeline_bot_safe_summary",
+                    chunk_type="bot_safe_summary", text="Synthetic summary", created_at=NOW,
+                )
+                store.upsert_bot_context_chunk(summary)
+                for ev in moving:
+                    for form in ("direct", "singleton", "multi", "empty", "missing", "duplicates"):
+                        derived = replace(
+                            signal(ev), signal_id=f"signal:{ev.source_id}:{form}", signal_type=form, status=status,
+                            event_id=retained.event_id if form == "multi" else ev.event_id if form in {"direct", "empty", "missing"} else None,
+                            source_event_ids=(ev.event_id, retained.event_id) if form == "multi" else
+                            (ev.event_id, ev.event_id, retained.event_id) if form == "duplicates" else (ev.event_id,),
+                        )
+                        store.upsert_signal(derived)
+                        if form in {"empty", "missing"}:
+                            expression = "json_set(record_json,'$.source_event_ids',json('[]'))" if form == "empty" else "json_remove(record_json,'$.source_event_ids')"
+                            store._con.execute(f"UPDATE derived_signals SET record_json={expression} WHERE signal_id=?", (derived.signal_id,))
+                    store.upsert_bot_context_chunk(chunk(ev))
+            control_before = _bulk_signal_row(store, control.signal_id)
+            statements: list[str] = []
+            store._con.set_trace_callback(statements.append)
+            with store.bulk_write() if bulk else nullcontext():
+                for ev in moving:
+                    if operation == "owner_change":
+                        store.upsert_event(replace(ev, customer_id=target.customer_id))
+                    else:
+                        store.quarantine_timeline_events_identity_conflict(
+                            owner.tenant_id, source_system=ev.source_system, source_id=ev.source_id, reason="identity_conflict",
+                        )
+            store._con.set_trace_callback(None)
+            assert len(_bulk_signal_builds(statements)) == int(bulk)
+            assert not store._bulk_signal_sources_ready
+            assert _bulk_signal_row(store, control.signal_id) == control_before
+            retired = store._con.execute("SELECT record_json FROM audit_log WHERE action='event_dependencies_retired'").fetchall()
+            assert len(retired) == size
+            assert [json.loads(row[0])["metadata"]["signals"] for row in retired] == [6] * size
+            for ev in moving:
+                for form in ("direct", "singleton", "multi", "empty", "missing", "duplicates"):
+                    row = _bulk_signal_row(store, f"signal:{ev.source_id}:{form}")
+                    payload = json.loads(row["record_json"])
+                    assert row["status"] == payload["status"] == ("stale" if status == "active" else status)
+                    assert payload["source_event_ids"] == ([retained.event_id] if form in {"multi", "duplicates"} else [])
+                    assert row["event_id"] == payload["event_id"] == (retained.event_id if form == "multi" else None)
+                    assert row["record_hash"] == store_module.stable_digest(payload)
+                assert store.search_timeline(owner.tenant_id, f"BulkSource{ev.source_id.rsplit('-', 1)[1]}", customer_id=owner.customer_id)["items"] == []
+            assert store.search_timeline(owner.tenant_id, "BulkSource0", customer_id=owner.customer_id)["items"]
+            summary_row = store._con.execute("SELECT superseded_by FROM bot_context_chunks WHERE chunk_id=?", (summary.chunk_id,)).fetchone()
+            assert bool(summary_row[0]) == (operation == "quarantine")
+            snapshots.append(_bulk_signal_snapshot(store))
+    assert snapshots[0] == snapshots[1]
+
+
+@pytest.mark.parametrize("quarantine", [False, True])
+def test_bulk_signal_keeps_current_owner_and_isolates_warmed_tenants(tmp_path: Path, quarantine: bool) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        foreign_owner = replace(identity(tenant_id="unpk"), customer_id="customer:foreign-owner")
+        foreign_target = replace(foreign_owner, customer_id="customer:foreign-target")
+        for customer in (foreign_owner, foreign_target):
+            store.upsert_customer(customer)
+        foreign_warm = event(foreign_owner, source_id="foreign-warm")
+        foreign_event = event(foreign_owner, source_id="foreign-event")
+        for ev in (foreign_warm, foreign_event):
+            store.upsert_event(ev)
+        records = []
+        for label, customer_id in (("old", owner.customer_id), ("kept", target.customer_id), ("null", None)):
+            item = replace(signal(moving), signal_id=f"signal:{label}", event_id=None)
+            store.upsert_signal(item)
+            # Legacy owners cannot be introduced through the guarded public writer.
+            store._con.execute(
+                "UPDATE derived_signals SET customer_id=?,record_json=json_set(record_json,'$.customer_id',?) WHERE signal_id=?",
+                (customer_id, customer_id, item.signal_id),
+            )
+            records.append(item)
+        foreign = replace(signal(foreign_event), event_id=None)
+        store.upsert_signal(foreign)
+        store._con.execute(
+            "UPDATE derived_signals SET record_json=json_set(record_json,'$.source_event_ids',json(?)) WHERE signal_id=?",
+            (json.dumps([moving.event_id]), foreign.signal_id),
+        )
+        store._con.commit()
+        kept_before = _bulk_signal_row(store, records[1].signal_id)
+        foreign_before = _bulk_signal_row(store, foreign.signal_id)
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            store.upsert_event(replace(foreign_warm, customer_id=foreign_target.customer_id))
+            assert store._bulk_signal_sources_ready == {"unpk"}
+            store.upsert_event(replace(warm, customer_id=target.customer_id))
+            assert store._bulk_signal_sources_ready == {"foton", "unpk"}
+            if quarantine:
+                store.quarantine_timeline_events_identity_conflict("foton", source_system=moving.source_system, source_id=moving.source_id, reason="identity_conflict")
+            else:
+                store.upsert_event(replace(moving, customer_id=target.customer_id))
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 2
+        assert _bulk_signal_row(store, foreign.signal_id) == foreign_before
+        for item in records if quarantine else (records[0], records[2]):
+            payload = json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])
+            assert payload["source_event_ids"] == [] and payload["status"] == "stale"
+        if not quarantine:
+            assert _bulk_signal_row(store, records[1].signal_id) == kept_before
+        assert not store._bulk_signal_sources_ready
+
+
+@pytest.mark.parametrize("change", ["new", "changed", "physical", "json", "duplicate"])
+def test_bulk_signal_mixed_writes_append_without_rebuilding(tmp_path: Path, change: str) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, anchor, *events) = _seed_bulk_signal_events(store, 12)
+        signals = [replace(signal(ev), signal_id=f"signal:mixed-{i}", event_id=None) for i, ev in enumerate(events)]
+        for item in signals:
+            if change != "new":
+                store.upsert_signal(replace(item, source_event_ids=(anchor.event_id,)) if change == "changed" else item)
+            if change == "physical":
+                store._con.execute("UPDATE derived_signals SET event_id=? WHERE signal_id=?", (anchor.event_id, item.signal_id))
+            if change == "json":
+                store._con.execute("UPDATE derived_signals SET record_json=json_set(record_json,'$.source_event_ids',json('[]')) WHERE signal_id=?", (item.signal_id,))
+        store._con.commit()
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            store.upsert_event(replace(warm, customer_id=target.customer_id))
+            for item, ev in zip(signals, events):
+                result = store.upsert_signal(item)
+                assert result.status == ("created" if change == "new" else "duplicate" if change == "duplicate" else "updated")
+                if change in {"physical", "json"}:
+                    audit = json.loads(store._con.execute("SELECT record_json FROM audit_log WHERE audit_id=?", (result.audit_id,)).fetchone()[0])
+                    if change == "physical":
+                        assert "event_id" in audit["metadata"]["physical_columns_repaired"]
+                    else:
+                        assert audit["metadata"]["record_json_repaired"] is True
+                store.upsert_event(replace(ev, customer_id=target.customer_id))
+                payload = json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])
+                assert payload["source_event_ids"] == [] and payload["status"] == "stale"
+            before_anchor = [_bulk_signal_row(store, item.signal_id) for item in signals]
+            store.upsert_event(replace(anchor, customer_id=target.customer_id))
+            assert [_bulk_signal_row(store, item.signal_id) for item in signals] == before_anchor
+        store._con.set_trace_callback(None)
+        builds = _bulk_signal_builds(statements)
+        writes = [sql for sql in statements if sql.startswith("INSERT OR IGNORE INTO bulk_signal_sources")]
+        assert len(builds) == 1
+        assert len(writes) - len(builds) == (0 if change == "duplicate" else len(signals))
+        assert not store._bulk_signal_sources_ready
+
+
+def test_bulk_signal_appends_to_empty_ready_map(tmp_path: Path) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        item = replace(signal(moving), event_id=None)
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            store.upsert_event(replace(warm, customer_id=target.customer_id))
+            assert store._bulk_signal_sources_ready == {owner.tenant_id}
+            assert store._con.execute("SELECT COUNT(*) FROM bulk_signal_sources").fetchone()[0] == 0
+            store.upsert_signal(item)
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 1
+        assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == []
+
+
+def test_bulk_signal_removed_reference_can_be_restored_under_same_key(tmp_path: Path) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        item = replace(signal(moving), event_id=None)
+        store.upsert_signal(item)
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            store.upsert_event(replace(warm, customer_id=target.customer_id))
+            store.upsert_signal(replace(item, source_event_ids=()))
+            detached = _bulk_signal_row(store, item.signal_id)
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+            assert _bulk_signal_row(store, item.signal_id) == detached
+            assert store._con.execute("SELECT COUNT(*) FROM audit_log WHERE action='event_dependencies_retired'").fetchone()[0] == 0
+            store.upsert_event(moving)
+            store.upsert_signal(item)
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+            assert store._con.execute("SELECT COUNT(*) FROM bulk_signal_sources WHERE signal_id=?", (item.signal_id,)).fetchone()[0] == 1
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 1
+        payload = json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])
+        assert payload["source_event_ids"] == [] and payload["status"] == "stale"
+        audits = store._con.execute("SELECT record_json FROM audit_log WHERE action='event_dependencies_retired'").fetchall()
+        assert [json.loads(row[0])["metadata"]["signals"] for row in audits] == [1]
+
+
+def test_bulk_signal_observes_writes_between_successful_batches(tmp_path: Path) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        first = replace(signal(warm), event_id=None)
+        store.upsert_signal(first)
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            store.upsert_event(replace(warm, customer_id=target.customer_id))
+        assert not store._bulk_signal_sources_ready
+        item = replace(signal(moving), event_id=None)
+        store.upsert_signal(item)
+        with store.bulk_write():
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+            assert store._con.execute("SELECT COUNT(*) FROM bulk_signal_sources WHERE signal_id=?", (first.signal_id,)).fetchone()[0] == 0
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 2
+        assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == []
+        assert not store._bulk_signal_sources_ready
+        assert store._con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='bulk_signal_sources'").fetchone()[0] == 0
+    with open_store(tmp_path) as reopened:
+        assert reopened._con.execute("SELECT COUNT(*) FROM sqlite_temp_master WHERE name='bulk_signal_sources'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("phase", ["after_build", "after_retire"])
+def test_bulk_signal_rollback_restores_memory_and_retry_rebuilds(tmp_path: Path, phase: str) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        item = replace(signal(moving), event_id=None)
+        store.upsert_signal(item)
+        store.upsert_bot_context_chunk(chunk(moving))
+        before = _bulk_signal_snapshot(store)
+        with pytest.raises(RuntimeError, match="abort signal batch"):
+            with store.bulk_write():
+                with store.bulk_write():
+                    store.upsert_event(replace(warm, customer_id=target.customer_id))
+                    if phase == "after_retire":
+                        store.upsert_event(replace(moving, customer_id=target.customer_id))
+                raise RuntimeError("abort signal batch")
+        assert _bulk_signal_snapshot(store) == before
+        assert not store._bulk_signal_sources_ready and store._bulk_write_depth == 0
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 1
+        assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == []
+        assert store.search_timeline(owner.tenant_id, "BulkSource1", customer_id=owner.customer_id)["items"] == []
+        assert store.search_timeline(owner.tenant_id, "BulkSource1", customer_id=target.customer_id)["items"]
+        assert not store._bulk_signal_sources_ready
+
+
+def test_bulk_signal_caught_nested_error_keeps_outer_transaction_and_map(tmp_path: Path) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        item = replace(signal(warm), event_id=None, source_event_ids=(warm.event_id, moving.event_id))
+        store.upsert_signal(item)
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+        with store.bulk_write():
+            with pytest.raises(RuntimeError, match="caught inner error"):
+                with store.bulk_write():
+                    store.upsert_event(replace(warm, customer_id=target.customer_id))
+                    raise RuntimeError("caught inner error")
+            assert store._bulk_write_depth == 1 and store._bulk_signal_sources_ready == {owner.tenant_id}
+            assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == [moving.event_id]
+            with store.bulk_write():
+                store.upsert_event(replace(moving, customer_id=target.customer_id))
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 1
+        assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == []
+        assert not store._bulk_signal_sources_ready and store._bulk_write_depth == 0
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_bulk_signal_caught_point_add_error_rebuilds_from_pending_main_write(tmp_path: Path, existing: bool) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, anchor, moving) = _seed_bulk_signal_events(store)
+        item = replace(signal(moving), event_id=None)
+        if existing:
+            store.upsert_signal(replace(item, source_event_ids=(anchor.event_id,)))
+        statements: list[str] = []
+        store._con.set_trace_callback(statements.append)
+
+        def deny_map_insert(action, table, column, database, trigger):
+            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_INSERT and database == "temp" and table == "bulk_signal_sources" else sqlite3.SQLITE_OK
+
+        with store.bulk_write():
+            store.upsert_event(replace(warm, customer_id=target.customer_id))
+            store._con.set_authorizer(deny_map_insert)
+            try:
+                with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                    store.upsert_signal(item)
+            finally:
+                # Python 3.9 does not support disabling the authorizer with None.
+                store._con.set_authorizer(lambda *_args: sqlite3.SQLITE_OK)
+            assert owner.tenant_id not in store._bulk_signal_sources_ready
+            assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == [moving.event_id]
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+            assert store._bulk_signal_sources_ready == {owner.tenant_id}
+        store._con.set_trace_callback(None)
+        assert len(_bulk_signal_builds(statements)) == 2
+        payload = json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])
+        assert payload["source_event_ids"] == [] and payload["status"] == "stale"
+        assert not store._bulk_signal_sources_ready
+
+
+@pytest.mark.parametrize("references", [[123, None, "", "unrelated"], ["123", "123", "unrelated"]])
+@pytest.mark.parametrize("bulk", [False, True])
+def test_bulk_signal_valid_legacy_json_preserves_nonmatching_values(tmp_path: Path, references: list, bulk: bool) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, original, retained) = _seed_bulk_signal_events(store)
+        moving = replace(original, event_id="123", source_id="numeric-legacy")
+        store.upsert_event(moving)
+        item = replace(signal(moving), event_id=None)
+        store.upsert_signal(item)
+        store._con.execute(
+            "UPDATE derived_signals SET record_json=json_set(record_json,'$.source_event_ids',json(?)) WHERE signal_id=?",
+            (json.dumps(references), item.signal_id),
+        )
+        store._con.commit()
+        with store.bulk_write() if bulk else nullcontext():
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+        payload = json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])
+        assert payload["source_event_ids"] == ([None, "", "unrelated"] if references[0] == 123 else ["unrelated"])
+        assert payload["status"] == "stale"
+
+
+@pytest.mark.parametrize("references_count", [1, 10, 100])
+def test_bulk_signal_source_retirement_does_not_count_temp_map_writes(tmp_path: Path, references_count: int) -> None:
+    results = []
+    for bulk in (False, True):
+        with open_store(tmp_path / str(bulk)) as store:
+            owner, target, events = _seed_bulk_signal_events(store, references_count + 1)
+            selected = replace(events[0], event_id=None, source_system="wappi_telegram", source_id="empty-dependencies")
+            store.upsert_event(selected)
+            neighbor = replace(signal(events[1]), event_id=None, source_event_ids=tuple(ev.event_id for ev in events[1:]))
+            store.upsert_signal(neighbor)
+            before = _bulk_signal_row(store, neighbor.signal_id)
+            statements: list[str] = []
+            store._con.set_trace_callback(statements.append)
+            with store.bulk_write() if bulk else nullcontext():
+                result = store.set_timeline_source_records_active(
+                    owner.tenant_id, source_records={selected.source_system: (selected.source_id,)}, active=False,
+                    retirement_marker=store_module.WAPPI_EXPECTED_EXCLUDED_RETIREMENT_PREFIX + "a" * 16,
+                    retirement_reason="expected_excluded",
+                )
+                if bulk:
+                    assert store._con.execute("SELECT COUNT(*) FROM bulk_signal_sources").fetchone()[0] == references_count
+            store._con.set_trace_callback(None)
+            assert result == {"matched_events": 1, "changed_events": 1, "dependency_changes": 0, "rewritten_events": 0}
+            assert len(_bulk_signal_builds(statements)) == int(bulk)
+            assert _bulk_signal_row(store, neighbor.signal_id) == before
+            audit = json.loads(store._con.execute("SELECT record_json FROM audit_log WHERE action='timeline_source_records_retired'").fetchone()[0])
+            assert audit["metadata"]["dependency_changes"] == 0
+            results.append(result)
+    assert results[0] == results[1]
+
+
+def test_bulk_signal_invalid_json_in_owner_excluded_row_fails_loudly(tmp_path: Path) -> None:
+    with open_store(tmp_path) as store:
+        owner, target, (warm, moving, retained) = _seed_bulk_signal_events(store)
+        target_event = event(target, source_id="target-event")
+        store.upsert_event(target_event)
+        item = replace(signal(target_event), event_id=None)
+        store.upsert_signal(item)
+        # Simulate corrupt storage; the expression index normally rejects this fixture.
+        store._con.execute("DROP INDEX ix_signals_multi_source")
+        store._con.execute("UPDATE derived_signals SET record_json='{' WHERE signal_id=?", (item.signal_id,))
+        store._con.commit()
+        before = _bulk_signal_snapshot(store)
+        with pytest.raises(sqlite3.DatabaseError, match="malformed JSON"):
+            with store.bulk_write():
+                store.upsert_event(replace(moving, customer_id=target.customer_id))
+        assert _bulk_signal_snapshot(store) == before
+        assert not store._bulk_signal_sources_ready
+        assert store.upsert_signal(item).status == "updated"
+        with store.bulk_write():
+            store.upsert_event(replace(moving, customer_id=target.customer_id))
+        assert json.loads(_bulk_signal_row(store, item.signal_id)["record_json"])["source_event_ids"] == [target_event.event_id]
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+def test_event_owner_change_retires_signal_when_secondary_source_event_moves(tmp_path: Path, bulk: bool) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
     first_customer = identity(phone="+79000000021")
     second_customer = identity(phone="+79000000022")
@@ -3398,7 +3814,11 @@ def test_event_owner_change_retires_signal_when_secondary_source_event_moves(tmp
     )
     store.upsert_signal(hot_streak)
 
-    store.upsert_event(replace(first_event, customer_id=second_customer.customer_id))
+    statements: list[str] = []
+    store._con.set_trace_callback(statements.append)
+    with store.bulk_write() if bulk else nullcontext():
+        store.upsert_event(replace(first_event, customer_id=second_customer.customer_id))
+    store._con.set_trace_callback(None)
 
     row = store._con.execute(
         "SELECT event_id,status,record_json FROM derived_signals WHERE signal_id=?",
@@ -3408,17 +3828,16 @@ def test_event_owner_change_retires_signal_when_secondary_source_event_moves(tmp
     assert row["event_id"] == last_event.event_id
     assert row["status"] == "stale"
     assert payload["source_event_ids"] == [last_event.event_id]
-    plan = " ".join(
-        str(item)
-        for row in store._con.execute(
-            "EXPLAIN QUERY PLAN SELECT signal_id FROM derived_signals WHERE tenant_id=? "
-            "AND json_array_length(record_json,'$.source_event_ids')>1 "
-            "AND EXISTS (SELECT 1 FROM json_each(record_json,'$.source_event_ids') WHERE value=?)",
-            ("foton", first_event.event_id),
-        )
-        for item in row
-    )
-    assert "ix_signals_multi_source" in plan
+    query = next(sql for sql in statements if sql.startswith("SELECT signal_id,status,record_json") and "json_each" in sql)
+    plan = " ".join(str(row[3]) for row in store._con.execute("EXPLAIN QUERY PLAN " + query))
+    assert "json_array_length" not in query
+    assert "CAST(source_event.value AS TEXT)" in query
+    assert plan
+    if bulk:
+        assert "SEARCH bulk_signal_sources USING PRIMARY KEY" in plan
+        assert "SCAN derived_signals" not in plan and "SCAN bulk_signal_sources" not in plan
+    else:
+        assert "bulk_signal_sources" not in query
     store.close()
 
 
@@ -3455,7 +3874,7 @@ def test_reconcile_event_dependency_owners_repairs_legacy_mismatch(tmp_path: Pat
     store.close()
 
 
-def test_reconcile_event_dependency_owners_uses_multi_source_index(tmp_path: Path) -> None:
+def test_reconcile_event_dependency_owners_uses_captured_runtime_sql(tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
     first_customer = identity(phone="+79000000031")
     second_customer = identity(phone="+79000000032")
@@ -3482,29 +3901,19 @@ def test_reconcile_event_dependency_owners_uses_multi_source_index(tmp_path: Pat
     )
     store._commit()
 
-    plan = " ".join(
-        str(item)
-        for row in store._con.execute(
-            "EXPLAIN QUERY PLAN SELECT d.signal_id FROM derived_signals d,"
-            "json_each(d.record_json,'$.source_event_ids') source_event "
-            "WHERE d.tenant_id=? AND json_array_length(d.record_json,'$.source_event_ids')>1",
-            ("foton",),
-        )
-        for item in row
-    )
-    assert "ix_signals_multi_source" in plan
-    chunk_plan = " ".join(
-        str(item)
-        for row in store._con.execute(
-            "EXPLAIN QUERY PLAN SELECT e.event_id FROM bot_context_chunks b "
-            "JOIN timeline_events e ON e.tenant_id=b.tenant_id AND e.event_id=b.event_id "
-            "WHERE b.tenant_id=? AND b.event_id IS NOT NULL",
-            ("foton",),
-        )
-        for item in row
-    )
-    assert "ix_chunks_event_owner" in chunk_plan
+    statements: list[str] = []
+    store._con.set_trace_callback(statements.append)
     assert store.reconcile_event_dependency_owners("foton", actor="test") == 1
+    store._con.set_trace_callback(None)
+    query = next(sql for sql in statements if sql.startswith("WITH signal_refs AS MATERIALIZED"))
+    plan = " ".join(str(row[3]) for row in store._con.execute("EXPLAIN QUERY PLAN " + query))
+    assert "json_array_length" not in query
+    assert "bot_context_chunks b" in query and "r.customer_id!=e.customer_id" in query
+    assert "MATERIALIZE signal_refs" in plan
+    lookup = next(sql for sql in statements if sql.startswith("SELECT signal_id,status,record_json FROM bulk_signal_sources"))
+    lookup_plan = " ".join(str(row[3]) for row in store._con.execute("EXPLAIN QUERY PLAN " + lookup))
+    assert "SEARCH bulk_signal_sources USING PRIMARY KEY" in lookup_plan
+    assert "SCAN derived_signals" not in lookup_plan and "SCAN bulk_signal_sources" not in lookup_plan
     assert store.reconcile_event_dependency_owners("foton", actor="test") == 0
     payload = json.loads(
         store._con.execute(

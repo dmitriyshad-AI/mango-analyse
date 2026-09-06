@@ -1201,6 +1201,7 @@ class CustomerTimelineSQLiteStore:
         self._bulk_write_dirty = False
         self._bulk_fts_rebuild = False
         self._bulk_fts_keys_ready: set[str] = set()
+        self._bulk_signal_sources_ready: set[str] = set()
         self._writer_lock_path: Optional[Path] = None
         self._writer_lock_handle: Any = None
         if not self.read_only:
@@ -1244,6 +1245,7 @@ class CustomerTimelineSQLiteStore:
         if outermost:
             self._bulk_fts_rebuild = False
             self._bulk_fts_keys_ready.clear()
+            self._bulk_signal_sources_ready.clear()
         self._bulk_write_depth += 1
         try:
             yield self
@@ -1267,6 +1269,7 @@ class CustomerTimelineSQLiteStore:
                 self._bulk_write_dirty = False
                 self._bulk_fts_rebuild = False
                 self._bulk_fts_keys_ready.clear()
+                self._bulk_signal_sources_ready.clear()
 
     @property
     def open_result(self) -> CustomerTimelineSQLiteOpenResult:
@@ -2055,6 +2058,23 @@ class CustomerTimelineSQLiteStore:
                 now=self._now(),
             )
 
+    def _prepare_bulk_signal_sources(self, tenant: str) -> None:
+        if tenant in self._bulk_signal_sources_ready:
+            return
+        self._con.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS bulk_signal_sources ("
+            "tenant_id TEXT,source_event_id TEXT,signal_id TEXT,"
+            "PRIMARY KEY(tenant_id,source_event_id,signal_id)) WITHOUT ROWID"
+        )
+        self._con.execute("DELETE FROM bulk_signal_sources WHERE tenant_id=?", (tenant,))
+        self._con.execute(
+            "INSERT OR IGNORE INTO bulk_signal_sources "
+            "SELECT tenant_id,CAST(source.value AS TEXT),signal_id FROM derived_signals,"
+            "json_each(derived_signals.record_json,'$.source_event_ids') source "
+            "WHERE tenant_id=? AND source.value IS NOT NULL", (tenant,),
+        )
+        self._bulk_signal_sources_ready.add(tenant)
+
     def _retire_signal_dependencies(
         self,
         tenant_id: str,
@@ -2078,12 +2098,21 @@ class CustomerTimelineSQLiteStore:
                 f"WHERE tenant_id=? AND event_id=?{owner_clause}",
                 (tenant, reference, *owner_params),
             ).fetchall()
+            secondary_from = "derived_signals"
+            source_clause = ""
+            source_params: tuple[str, ...] = ()
+            if self._bulk_write_depth:
+                self._prepare_bulk_signal_sources(tenant)
+                # The map is a candidate superset; current JSON and ownership remain authoritative.
+                secondary_from = "bulk_signal_sources CROSS JOIN derived_signals USING (tenant_id,signal_id)"
+                source_clause = " AND source_event_id=?"
+                source_params = (reference,)
             secondary_rows = self._con.execute(
-                "SELECT signal_id,status,record_json FROM derived_signals "
+                f"SELECT signal_id,status,record_json FROM {secondary_from} "
                 "WHERE tenant_id=? AND (event_id IS NULL OR event_id!=?) "
                 "AND EXISTS (SELECT 1 FROM json_each(derived_signals.record_json,'$.source_event_ids') "
-                f"AS source_event WHERE CAST(source_event.value AS TEXT)=?){owner_clause}",
-                (tenant, reference, reference, *owner_params),
+                f"AS source_event WHERE CAST(source_event.value AS TEXT)=?){owner_clause}{source_clause}",
+                (tenant, reference, reference, *owner_params, *source_params),
             ).fetchall()
             rows = [*direct_rows, *secondary_rows]
         else:
@@ -2756,6 +2785,8 @@ class CustomerTimelineSQLiteStore:
                 )
                 rewritten_events += int(bool(cursor.rowcount))
             else:
+                if self._bulk_write_depth:
+                    self._prepare_bulk_signal_sources(tenant)
                 before = self._con.total_changes
                 self._retire_dependencies(
                     tenant,
@@ -4425,6 +4456,14 @@ class CustomerTimelineSQLiteStore:
             """,
             tuple(all_columns.values()),
         )
+        if table == "derived_signals" and self._bulk_write_depth and tenant in self._bulk_signal_sources_ready:
+            self._bulk_signal_sources_ready.remove(tenant)
+            self._con.execute(
+                "INSERT OR IGNORE INTO bulk_signal_sources "
+                "SELECT ?,CAST(value AS TEXT),? FROM json_each(?,'$.source_event_ids') WHERE value IS NOT NULL",
+                (tenant, key, payload_json),
+            )
+            self._bulk_signal_sources_ready.add(tenant)
         audit = self._append_audit_log(
             tenant_id=tenant,
             action=f"{record_type}_{action}",

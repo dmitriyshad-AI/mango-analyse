@@ -1029,6 +1029,56 @@ def test_current_runtime_ignores_parent_git_context(monkeypatch, tmp_path) -> No
     assert module.current_runtime() == expected
 
 
+def test_parse_last_json_preserves_outer_warning_prefixed_report() -> None:
+    payload = {"overall_status": "ok", "data_quality_status": "pass",
+               "steps": [{"summary": {"safety": {"writes_prod": False}}}],
+               "text": 'quoted "value" with {braces} and \\ escape'}
+    assert module.parse_last_json("urllib3 warning\n" + json.dumps(payload, indent=2)) == payload
+
+
+def test_parse_last_json_uses_last_whole_report() -> None:
+    first = {"overall_status": "ok", "data_quality_status": "pass"}
+    last = {"overall_status": "partial", "data_quality_status": "fail", "inner": first}
+    payload = module.parse_last_json(json.dumps(first) + "\n" + json.dumps(last))
+    assert payload == last
+    assert module.status_from_payload(payload, 0, "", require_data_quality=True)[0] == "stopped"
+
+
+@pytest.mark.parametrize("text", [
+    "", "warning only", "{}", "[]", '"literal {text}"',
+    '[{"overall_status":"ok","data_quality_status":"pass"}]',
+    '{"outer":{"overall_status":"ok","data_quality_status":"pass"}',
+    '{"status":"ok"}\n{"outer":{"status":"ok"}',
+    '{"status":"ok"}\n[]', '{"status":"ok"}\n{}',
+    '{"status":"ok"}\n"a string"', '{"status":"ok"}\ntrue',
+    '{"status":"ok"}\nwarning after report', '[' * 2000 + ']',
+])
+def test_parse_last_json_fails_closed_without_stale_fallback(text) -> None:
+    payload = module.parse_last_json(text)
+    assert payload == {"status": "error", "error": "invalid_json_output"}
+    assert payload  # The caller must not read a previous expected_output.
+    assert module.status_from_payload(payload, 0, "")[0] == "stopped"
+    assert module.status_from_payload(payload, 0, "", require_data_quality=True)[0] == "stopped"
+
+
+def test_nightly_invalid_stdout_cannot_reuse_previous_success(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(module, "LOG_ROOT", tmp_path / "logs")
+    monkeypatch.setattr(module, "TASK_STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(module, "FOTON_DAILY", tmp_path / "daily")
+    monkeypatch.setattr(module, "ensure_nightly_config", lambda: "")
+    monkeypatch.setattr(module, "prod_snapshot_staleness_metric", lambda now: "not_checked")
+    latest = tmp_path / "latest.json"
+    old = json.dumps({"overall_status": "ok", "data_quality_status": "pass"})
+    latest.write_text(old, encoding="utf-8")
+    monkeypatch.setattr(module, "build_task_spec", lambda *a, **kw: module.TaskSpec(
+        task="nightly-warehouse", command=("unused",), expected_output=latest, stop_reason=""))
+    monkeypatch.setattr(module, "nightly_runtime_budget_seconds", lambda: 42.0)
+    monkeypatch.setattr(module, "run_with_runtime_budget", lambda *a, **kw: module.BoundedRunResult(
+        rc=0, stdout="warning\n{\"outer\":" + old, timed_out=False))
+    assert module.run_task("nightly-warehouse", tallanto_phone_limit=1) != 0
+    assert latest.read_text(encoding="utf-8") == old
+
+
 def test_nightly_task_timeout_reports_stopped_and_leaves_latest_untouched(tmp_path, monkeypatch) -> None:
     """B3 proof: run_task() enforces the runtime budget for nightly-warehouse
     specifically (not the unbounded subprocess.run other tasks still use),

@@ -545,26 +545,21 @@ def build_task_spec(
 
 
 def parse_last_json(text: str) -> Mapping[str, Any]:
-    stripped = text.strip()
-    if stripped:
-        try:
-            value = json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-        else:
-            if isinstance(value, Mapping):
-                return value
     decoder = json.JSONDecoder()
-    last: Mapping[str, Any] = {}
-    for idx, char in enumerate(text):
-        if char != "{":
-            continue
+    invalid = {"status": "error", "error": "invalid_json_output"}
+    last: Mapping[str, Any] = invalid
+    idx = 0
+    while idx < len(text) and text[idx] not in '{["':
+        idx += 1
+    # ponytail: reject ambiguous suffixes; never resync inside broken JSON.
+    while idx < len(text):
         try:
-            value, _ = decoder.raw_decode(text[idx:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, Mapping):
-            last = value
+            value, idx = decoder.raw_decode(text, idx)
+        except (ValueError, RecursionError):
+            return invalid
+        last = value if isinstance(value, Mapping) and value else invalid
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
     return last
 
 

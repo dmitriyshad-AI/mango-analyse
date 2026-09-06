@@ -5584,26 +5584,19 @@ def fetch_wappi_history_records(
                         fetch_chat_messages,
                         "last_tail_page_count" if tail_mode else "last_full_pages", 0,
                     ) or 0)
-                    stats.message_page_drift_phase = (
-                        "tail" if tail_mode else str(getattr(fetch_chat_messages, "last_full_drift_phase", ""))
-                    )
-                    stats.message_page_drift_duplicates = (
-                        0 if tail_mode else int(getattr(fetch_chat_messages, "last_full_duplicate_count", 0))
-                    )
-                    stats.message_page_drift_cursor_kind = (
-                        "full_history" if not tail_mode
-                        else "empty_baseline" if cursor_is_empty_baseline else "message_digest"
-                    )
-                    stats.message_page_drift_marker_relation = (
-                        "new" if not tail_mode else "regressed" if marker_is_regressed
-                        else "append" if marker_is_append else "unavailable"
-                    )
-                    stats.message_page_drift_first_signature = (
-                        str(getattr(fetch_chat_messages, "last_tail_first_signature", "") or "") if tail_mode else ""
-                    )
-                    stats.message_page_drift_head_signature = (
-                        str(getattr(fetch_chat_messages, "last_tail_head_signature", "") or "") if tail_mode else ""
-                    )
+                    if tail_mode:
+                        stats.message_page_drift_phase = "tail"
+                        stats.message_page_drift_cursor_kind = "empty_baseline" if cursor_is_empty_baseline else "message_digest"
+                        stats.message_page_drift_marker_relation = (
+                            "regressed" if marker_is_regressed else "append" if marker_is_append else "unavailable"
+                        )
+                        stats.message_page_drift_first_signature = str(getattr(fetch_chat_messages, "last_tail_first_signature", "") or "")
+                        stats.message_page_drift_head_signature = str(getattr(fetch_chat_messages, "last_tail_head_signature", "") or "")
+                    else:
+                        stats.message_page_drift_phase = str(getattr(fetch_chat_messages, "last_full_drift_phase", ""))
+                        stats.message_page_drift_duplicates = int(getattr(fetch_chat_messages, "last_full_duplicate_count", 0))
+                        stats.message_page_drift_cursor_kind = "full_history"
+                        stats.message_page_drift_marker_relation = "new"
                 stats.pagination_drift_detected = True
                 if checkpoint_enabled and not tail_mode and not stats.request_limit_hit:
                     if chat_token == active_chat_token:

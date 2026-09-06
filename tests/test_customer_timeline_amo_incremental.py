@@ -1022,15 +1022,14 @@ def test_run_amo_incremental_checkpoint_completes_large_backlog_across_bounded_r
         ).fetchone()[0] == 1
 
     lead_page_calls = [page for path, page in client.calls if path == "leads"]
-    assert lead_page_calls == [
-        1, 2, 3, 4, 5,
-        5, 6, 7, 8, 9, 10,
-        10, 11, 12, 13, 14, 15,
-        15, 16, 17, 18, 19, 20,
-        20, 21, 22, 23, 24, 25,
-    ]
-    assert sum(path == "contacts" for path, _page in client.calls) == 1
-    assert sum(path == "events" for path, _page in client.calls) == 1
+    expected_calls = []
+    for first in range(1, 26, 5):
+        anchor = [first - 1] if first > 1 else []
+        batch = list(range(first, first + 5))
+        expected_calls.extend(anchor + batch + batch + anchor)
+    assert lead_page_calls == expected_calls
+    assert sum(path == "contacts" for path, _page in client.calls) == 2
+    assert sum(path == "events" for path, _page in client.calls) == 2
     for source_path in (tmp_path / "out" / "amo_incremental_sources").glob("*.jsonl"):
         assert source_path.stat().st_mode & 0o777 == 0o600
     checkpoint = json.loads((tmp_path / "out" / "amo_incremental_checkpoint.json").read_text())
@@ -1080,7 +1079,10 @@ def test_fetch_endpoint_checkpointed_blocks_conflicting_duplicate_ids(tmp_path) 
     assert stats["complete"] is False
     assert stats["pagination_drift_detected"] is True
     assert stats["conflicting_duplicates"] == 1
-    assert next_checkpoint == {}
+    assert next_checkpoint["amo_leads_updated_at"]["items"] == []
+    assert next_checkpoint["amo_leads_updated_at"]["unverified_items"] == [
+        {"id": "same", "name": "A"}, {"id": "same", "name": "B"},
+    ]
 
 
 def test_fetch_endpoint_checkpointed_resumes_on_match_and_restarts_on_fingerprint_change(tmp_path) -> None:
@@ -1128,7 +1130,7 @@ def test_fetch_endpoint_checkpointed_resumes_on_match_and_restarts_on_fingerprin
         next_checkpoint=first_checkpoint,
     )
     assert stats1["complete"] is False
-    assert client.calls == [1]
+    assert client.calls == [1, 1]
     saved_checkpoint = {"endpoints": first_checkpoint}
 
     # A DIFFERENT lower_bound (the universe moved) must not resume the
@@ -1148,7 +1150,7 @@ def test_fetch_endpoint_checkpointed_resumes_on_match_and_restarts_on_fingerprin
     )
     assert stats2["start_page_this_run"] == 1
     assert stats2["carried_over_from_checkpoint"] == 0
-    assert client.calls == [1, 1]
+    assert client.calls == [1, 1, 1, 1]
 
     # The SAME lower_bound as the original call must resume at the saved
     # next_page, carrying the previously-fetched items forward.
@@ -1167,7 +1169,7 @@ def test_fetch_endpoint_checkpointed_resumes_on_match_and_restarts_on_fingerprin
     assert stats3["start_page_this_run"] == 2
     assert stats3["carried_over_from_checkpoint"] == 2
     assert len(items3) == 4
-    assert client.calls == [1, 1, 1, 2]
+    assert client.calls == [1, 1, 1, 1, 1, 2, 2, 1]
 
 
 def test_fetch_endpoint_checkpointed_restarts_when_boundary_page_changes(tmp_path) -> None:
@@ -1230,8 +1232,13 @@ def test_fetch_endpoint_checkpointed_restarts_when_boundary_page_changes(tmp_pat
     assert stats["checkpoint_reset_reason"] == "pagination_universe_changed"
     assert stats["start_page_this_run"] == 1
     assert stats["carried_over_from_checkpoint"] == 0
-    assert [item["id"] for item in items] == ["x", "a"]
-    assert client.calls == [1, 1, 1]
+    assert items == []  # An incomplete new interval is not confirmed output.
+    saved = restarted_checkpoint["amo_leads_updated_at"]
+    assert [item["id"] for item in saved["window_pending_items"]] == ["x", "a"]
+    assert saved["upper_bound"] == next_checkpoint["amo_leads_updated_at"]["upper_bound"]
+    assert saved["window_width"] == 43200
+    assert stats["boundary_ids_not_in_cache"] == 1
+    assert client.calls == [1, 1, 1, 1]
 
 
 def test_updated_lead_versions_get_distinct_event_at() -> None:
@@ -1498,6 +1505,218 @@ def test_task_cursor_is_db_truth_when_no_retry_checkpoint_exists(tmp_path, monke
 
     assert report["validation_ok"] is True
     assert report["fetch"]["amo_tasks_updated_at"]["balance_ok"] is True
+
+
+class TimeWindowAmoClient:
+    def __init__(self, rows):
+        self.rows, self.calls = rows, []
+
+    def amo_api_get(self, *, path, params=None, limit=20):
+        field = "created_at" if path == "events" else "updated_at"
+        left, right, page = params[f"filter[{field}][from]"], params[f"filter[{field}][to]"], params.get("page", 1)
+        self.calls.append((left, right, page))
+        rows = [row for row in self.rows if left <= row[field] <= right]
+        offset = (page - 1) * limit
+        result = {"_embedded": {path: rows[offset:offset + limit]}}
+        if len(rows) > offset + limit:
+            result["_links"] = {"next": {"href": "next"}}
+        return result
+
+
+def _time_window_args(tmp_path, *, end=86399, max_pages=3, page_limit=10):
+    lower = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = int(lower.timestamp())
+    config = AmoIncrementalConfig(source_db=tmp_path / "unused.sqlite", out_root=tmp_path / "cache",
+        mcp_env=tmp_path / "unused.env", max_pages=max_pages, page_limit=page_limit, sleep_sec=0)
+    params = {"filter[updated_at][from]": base, "order[id]": "asc"}
+    fingerprint = amo_incremental_module.universe_fingerprint(path="leads", lower_bound=lower, params=params, page_limit=page_limit)
+    entry = {"fingerprint": fingerprint, "upper_bound": datetime.fromtimestamp(base + end, timezone.utc).isoformat(),
+        "items": [], "window_next": base, "window_width": 86400, "verified_windows": [], "pages_fetched": 0, "complete": False}
+    return base, dict(key="leads", path="leads", embedded_key="leads", params=params,
+        lower_bound=lower, config=config, checkpoint={"endpoints": {"leads": entry}})
+
+
+@pytest.mark.parametrize("count", [1, 10, 100])
+def test_time_windows_complete_without_repeating_confirmed_ranges(tmp_path, count) -> None:
+    base, args = _time_window_args(tmp_path, end=99)
+    client = TimeWindowAmoClient([{"id": i + 1, "updated_at": base + i} for i in range(count)])
+    confirmed = set()
+    for _ in range(32):
+        before, saved = len(client.calls), {}
+        rows, stats = fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved)
+        assert stats["pages_this_run"] <= 3 and stats["verification_pages"] <= 3
+        assert stats["client_get_calls"] <= 6
+        assert not any((left, right) in confirmed for left, right, _ in client.calls[before:])
+        entry = saved["leads"]
+        confirmed.update(tuple(item) for item in entry["verified_windows"])
+        assert json.loads((tmp_path / "cache/amo_incremental_checkpoint.json").read_text())["endpoints"]["leads"] == entry
+        args["checkpoint"] = {"endpoints": saved}
+        if stats["complete"]:
+            break
+    else:
+        pytest.fail("fixed ranges did not complete")
+    assert [item["id"] for item in rows] == list(range(1, count + 1))
+    assert entry["window_next"] == base + 100
+    before = len(client.calls)
+    rows2, stats2 = fetch_endpoint_checkpointed(client, **args, next_checkpoint={})
+    assert rows2 == rows and stats2["complete"] is True and len(client.calls) == before
+
+
+def test_window_cap_persists_reduced_width_without_completed_rows(tmp_path) -> None:
+    base, args = _time_window_args(tmp_path, max_pages=1, page_limit=1)
+    client = TimeWindowAmoClient([{"id": 1, "updated_at": base}, {"id": 2, "updated_at": base + 50000}])
+    saved = {}
+    _, stats = fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved)
+    assert stats["complete"] is False and saved["leads"]["window_width"] == 43200
+    assert saved["leads"]["verified_windows"] == []
+    upper = saved["leads"]["upper_bound"]
+    args["checkpoint"], before, saved2 = {"endpoints": saved}, len(client.calls), {}
+    rows, _ = fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved2)
+    assert client.calls[before] == (base, base + 43199, 1)
+    assert rows == [{"id": 1, "updated_at": base}] and saved2["leads"]["upper_bound"] == upper
+
+
+def test_one_second_over_budget_never_claims_complete(tmp_path) -> None:
+    base, args = _time_window_args(tmp_path, end=0, max_pages=1, page_limit=1)
+    client = TimeWindowAmoClient([{"id": 1, "updated_at": base}, {"id": 2, "updated_at": base}])
+    rows, stats = fetch_endpoint_checkpointed(client, **args, next_checkpoint={})
+    assert rows == [] and stats["complete"] is False
+    assert stats["blocked_reason"] == "one_second_window_unproven" and len(client.calls) == 1
+
+
+@pytest.mark.parametrize("where", ["middle", "terminal"])
+def test_window_verification_rejects_page_or_terminal_mutation(tmp_path, where) -> None:
+    base, args = _time_window_args(tmp_path, end=0, max_pages=3, page_limit=1)
+    class ChangingClient(TimeWindowAmoClient):
+        def amo_api_get(self, **kwargs):
+            result = super().amo_api_get(**kwargs)
+            if where == "middle" and len(self.calls) == 5:
+                result["_embedded"]["leads"] = [{"id": "changed", "updated_at": base}]
+            if where == "terminal" and len(self.calls) == 6:
+                result["_links"] = {"next": {"href": "new-page"}}
+            return result
+    client, saved = ChangingClient([{"id": i, "updated_at": base} for i in range(3)]), {}
+    _, stats = fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved)
+    assert stats["complete"] is False and stats["pagination_drift_detected"] is True
+    assert saved["leads"]["verified_windows"] == []
+
+
+def test_resume_prefix_mutating_after_anchor_is_not_confirmed(tmp_path) -> None:
+    base, args = _time_window_args(tmp_path, end=10, max_pages=1, page_limit=1)
+    initial = args["checkpoint"]["endpoints"]["leads"]
+    old = {"id": 1, "updated_at": base}
+    entry = {"fingerprint": initial["fingerprint"], "upper_bound": initial["upper_bound"], "next_page": 2,
+        "last_page": 1, "last_page_anchor": amo_incremental_module.page_anchor([old]),
+        "items": [old], "pages_fetched": 1, "complete": False}
+    args["checkpoint"] = {"endpoints": {"leads": entry}}
+    class ShrinkingClient(TimeWindowAmoClient):
+        def amo_api_get(self, **kwargs):
+            if len(self.calls) == 1:
+                self.rows = self.rows[1:]
+            return super().amo_api_get(**kwargs)
+    client, saved = ShrinkingClient([old, {"id": 2, "updated_at": base}]), {}
+    _, stats = fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved)
+    assert stats["complete"] is False and stats["boundary_probes"] == 2
+    assert saved["leads"]["items"] == [] and old in saved["leads"]["unverified_items"]
+
+
+def test_completed_endpoints_survive_fourth_endpoint_exception(tmp_path, monkeypatch) -> None:
+    db = tmp_path / "timeline.sqlite"
+    CustomerTimelineSQLiteStore(db, allowed_root=tmp_path).close()
+    class FailingFourth(BigBacklogAmoClient):
+        def amo_api_get(self, *, path, params=None, limit=20):
+            if path == "tasks":
+                raise RuntimeError("synthetic fourth endpoint failure")
+            return super().amo_api_get(path=path, params=params, limit=limit)
+    monkeypatch.setattr(amo_incremental_module, "read_mcp_env", lambda _: object())
+    monkeypatch.setattr(amo_incremental_module, "AmoMcpClient", lambda _: FailingFourth(total_leads=0))
+    config = AmoIncrementalConfig(source_db=db, timeline_db=db, allowed_root=tmp_path, copy_db=False,
+        out_root=tmp_path / "cache", mcp_env=tmp_path / "unused", sleep_sec=0,
+        tasks_snapshot=_write_verified_task_snapshot(tmp_path))
+    with pytest.raises(RuntimeError, match="fourth endpoint"):
+        run_amo_incremental(config)
+    saved = amo_incremental_module.load_amo_incremental_checkpoint(config.out_root)["endpoints"]
+    assert all(saved[key]["complete"] for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at"))
+    assert all(value is None for value in amo_incremental_module.load_cursor_snapshot(db, "foton").values())
+
+
+def test_empty_nonterminal_window_never_confirms_coverage(tmp_path) -> None:
+    _, args = _time_window_args(tmp_path, end=0, max_pages=1)
+    class EmptyNext(TimeWindowAmoClient):
+        def amo_api_get(self, **kwargs):
+            return {"_embedded": {"leads": []}, "_links": {"next": {"href": "next"}}}
+    saved = {}
+    _, stats = fetch_endpoint_checkpointed(EmptyNext([]), **args, next_checkpoint=saved)
+    assert stats["complete"] is False and saved["leads"]["verified_windows"] == []
+
+
+@pytest.mark.parametrize("payload", [{"_embedded": {"leads": None}}, {"_embedded": {"leads": [None]}}, {"_embedded": []}])
+def test_malformed_collection_is_not_silently_empty(tmp_path, payload) -> None:
+    _, args = _time_window_args(tmp_path, end=0)
+    class Malformed(TimeWindowAmoClient):
+        def amo_api_get(self, **kwargs):
+            return payload
+    with pytest.raises(amo_incremental_module.AmoMcpError, match="malformed"):
+        fetch_endpoint_checkpointed(Malformed([]), **args, next_checkpoint={})
+
+
+def test_small_successful_window_recovers_width(tmp_path) -> None:
+    base, args = _time_window_args(tmp_path, end=86399, max_pages=3)
+    args["checkpoint"]["endpoints"]["leads"]["window_width"] = 1
+    saved = {}
+    _, stats = fetch_endpoint_checkpointed(TimeWindowAmoClient([]), **args, next_checkpoint=saved)
+    assert saved["leads"]["window_next"] == base + 7
+    assert saved["leads"]["window_width"] == 8 and stats["client_get_calls"] == 6
+
+
+def test_retry_calls_respect_endpoint_budget(tmp_path, monkeypatch) -> None:
+    base, args = _time_window_args(tmp_path, end=0, max_pages=2, page_limit=1)
+    monkeypatch.setattr(amo_incremental_module.time, "sleep", lambda _: None)
+    class RetryClient(TimeWindowAmoClient):
+        attempts = 0
+        def amo_api_get(self, **kwargs):
+            self.attempts += 1
+            if self.attempts % 2:
+                raise amo_incremental_module.AmoMcpError("429 synthetic")
+            return super().amo_api_get(**kwargs)
+    client = RetryClient([{"id": 1, "updated_at": base}, {"id": 2, "updated_at": base}])
+    saved = {}
+    with pytest.raises(amo_incremental_module.AmoMcpError, match="budget exhausted"):
+        fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved)
+    assert client.attempts == 6 and not saved
+
+
+def test_completed_window_cache_requires_contiguous_coverage(tmp_path) -> None:
+    base, args = _time_window_args(tmp_path, end=10)
+    args["checkpoint"]["endpoints"]["leads"].update(complete=True, window_next=base + 11, verified_windows=[[base + 1, base + 10]])
+    client = TimeWindowAmoClient([])
+    with pytest.raises(ValueError, match="not contiguous"):
+        fetch_endpoint_checkpointed(client, **args, next_checkpoint={})
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_missing_legacy_anchor_is_not_empty_string_proof(tmp_path, complete) -> None:
+    base, args = _time_window_args(tmp_path, end=0)
+    entry = args["checkpoint"]["endpoints"]["leads"]
+    for key in ("window_next", "window_width", "verified_windows"):
+        del entry[key]
+    entry.update(next_page=201, pages_fetched=200, complete=complete)
+    client, saved = TimeWindowAmoClient([{"id": 1, "updated_at": base}]), {}
+    rows, stats = fetch_endpoint_checkpointed(client, **args, next_checkpoint=saved)
+    assert stats["checkpoint_reset_reason"] == "pagination_universe_changed"
+    assert client.calls == [(base, base, 1), (base, base, 1)]
+    assert rows == [{"id": 1, "updated_at": base}]
+
+
+@pytest.mark.parametrize("left,right,conflicts,winner", [
+    ({"id": 1, "created_at": 1, "name": "A"}, {"id": 1, "created_at": 1, "name": "B"}, 1, "A"),
+    ({"id": 1, "updated_at": 1, "name": "A"}, {"id": 1, "updated_at": 1, "name": "B"}, 1, "A"),
+    ({"id": 1, "updated_at": 1, "name": "A"}, {"id": 1, "updated_at": 2, "name": "B"}, 0, "B"),
+])
+def test_only_proven_newer_duplicate_versions_win(left, right, conflicts, winner) -> None:
+    rows, _, actual = amo_incremental_module._dedupe_collection_items([left, right], allow_newer_versions=True)
+    assert actual == conflicts and rows[0]["name"] == winner
 
 
 def test_tasks_checkpoint_ahead_of_missing_cursor_blocks(tmp_path, monkeypatch) -> None:

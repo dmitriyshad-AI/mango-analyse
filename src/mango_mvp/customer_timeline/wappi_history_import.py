@@ -1796,10 +1796,13 @@ class WappiFetchStats:
     catalog_boundary_proven: bool = False
     catalog_passes: int = 0
     message_page_drift_detected: bool = False
+    message_page_drift_kinds: Counter[str] = field(default_factory=Counter)
     message_page_drift_chat_token: str = ""
     message_page_drift_reason: str = ""
     message_page_drift_offset: int = 0
     message_page_drift_pages: int = 0
+    message_page_drift_phase: str = ""
+    message_page_drift_duplicates: int = 0
     message_page_drift_cursor_kind: str = ""
     message_page_drift_marker_relation: str = ""
     message_page_drift_first_signature: str = ""
@@ -1872,10 +1875,13 @@ class WappiFetchStats:
             "catalog_boundary_proven": self.catalog_boundary_proven,
             "catalog_passes": self.catalog_passes,
             "message_page_drift_detected": self.message_page_drift_detected,
+            "message_page_drift_kinds": dict(self.message_page_drift_kinds),
             "message_page_drift_chat_token": self.message_page_drift_chat_token,
             "message_page_drift_reason": self.message_page_drift_reason,
             "message_page_drift_offset": self.message_page_drift_offset,
             "message_page_drift_pages": self.message_page_drift_pages,
+            "message_page_drift_phase": self.message_page_drift_phase,
+            "message_page_drift_duplicates": self.message_page_drift_duplicates,
             "message_page_drift_cursor_kind": self.message_page_drift_cursor_kind,
             "message_page_drift_marker_relation": self.message_page_drift_marker_relation,
             "message_page_drift_first_signature": self.message_page_drift_first_signature,
@@ -2937,7 +2943,22 @@ def run_wappi_history_import(
             for profile_id, profile_report in profile_reports.items()
             if profile_report.get("message_page_drift_detected")
             and profile_report.get("message_page_drift_cursor_kind") == "full_history"
-            and int(profile_report.get("checkpoint_chats_confirmed") or 0) > 0
+            and set(profile_report.get("message_page_drift_kinds") or {}) == {"full_history"}
+            and profile_report.get("catalog_boundary_proven") is True
+            and not profile_report.get("chat_snapshot_drift_detected")
+            and profile_report.get("historical_snapshot_checks") == profile_report.get("historical_snapshot_verified")
+            and (
+                int(profile_report.get("checkpoint_chats_confirmed") or 0) > 0
+                or any(
+                    other.get("catalog_boundary_proven") is True
+                    and int(other.get("records_built") or 0) > 0
+                    and any(
+                        entry.get("complete") is True and checkpoint_key.endswith(":" + other_id)
+                        for checkpoint_key, entry in next_checkpoint.items()
+                    )
+                    for other_id, other in profile_reports.items() if other_id != profile_id
+                )
+            )
         }
         checkpoint_deferred = [
             marker
@@ -5370,6 +5391,7 @@ def fetch_wappi_history_records(
             if marker <= 0
         }
         active_chat_token = str(active_chat.get("chat") or "")
+        failed_active_chat: Mapping[str, Any] = {}
 
         def dialog_resume_rank(item: Mapping[str, Any]) -> int:
             token = wappi_checkpoint_token(extract_chat_id(item))
@@ -5482,6 +5504,7 @@ def fetch_wappi_history_records(
             )
             if is_tail_check and not use_tail_boundary:
                 stats.incremental_tail_fallbacks += 1
+                stats.message_page_drift_kinds["tail"] += 1
                 stats.pagination_drift_detected = True
                 stop_reason = "tail_boundary_unproven"
                 break
@@ -5545,40 +5568,48 @@ def fetch_wappi_history_records(
                 stats.message_limit_hit = True
             if bool(getattr(fetch_chat_messages, "last_pagination_drift_detected", False)):
                 tail_mode = bool(getattr(fetch_chat_messages, "last_tail_mode", False))
-                stats.message_page_drift_detected = True
-                stats.message_page_drift_chat_token = chat_token
-                stats.message_page_drift_reason = (
-                    str(getattr(fetch_chat_messages, "last_tail_drift_reason", "") or "unknown")
-                    if tail_mode else "full_history_pagination_drift"
-                )
-                stats.message_page_drift_offset = (
-                    int(getattr(fetch_chat_messages, "last_tail_page_offset", 0) or 0)
-                    if tail_mode else 0
-                )
-                stats.message_page_drift_pages = (
-                    int(getattr(fetch_chat_messages, "last_tail_page_count", 0) or 0)
-                    if tail_mode else 0
-                )
-                stats.message_page_drift_cursor_kind = (
-                    "full_history" if not tail_mode
-                    else "empty_baseline" if cursor_is_empty_baseline
-                    else "message_digest"
-                )
-                stats.message_page_drift_marker_relation = (
-                    "new" if not tail_mode
-                    else "regressed" if marker_is_regressed
-                    else "append" if marker_is_append
-                    else "unavailable"
-                )
-                stats.message_page_drift_first_signature = (
-                    str(getattr(fetch_chat_messages, "last_tail_first_signature", "") or "")
-                    if tail_mode else ""
-                )
-                stats.message_page_drift_head_signature = (
-                    str(getattr(fetch_chat_messages, "last_tail_head_signature", "") or "")
-                    if tail_mode else ""
-                )
+                stats.message_page_drift_kinds["tail" if tail_mode else "full_history"] += 1
+                if not stats.message_page_drift_detected:
+                    stats.message_page_drift_detected = True
+                    stats.message_page_drift_chat_token = chat_token
+                    stats.message_page_drift_reason = str(getattr(
+                        fetch_chat_messages,
+                        "last_tail_drift_reason" if tail_mode else "last_full_drift_reason", "",
+                    ) or "unknown")
+                    stats.message_page_drift_offset = int(getattr(
+                        fetch_chat_messages,
+                        "last_tail_page_offset" if tail_mode else "last_full_drift_offset", 0,
+                    ) or 0)
+                    stats.message_page_drift_pages = int(getattr(
+                        fetch_chat_messages,
+                        "last_tail_page_count" if tail_mode else "last_full_pages", 0,
+                    ) or 0)
+                    stats.message_page_drift_phase = (
+                        "tail" if tail_mode else str(getattr(fetch_chat_messages, "last_full_drift_phase", ""))
+                    )
+                    stats.message_page_drift_duplicates = (
+                        0 if tail_mode else int(getattr(fetch_chat_messages, "last_full_duplicate_count", 0))
+                    )
+                    stats.message_page_drift_cursor_kind = (
+                        "full_history" if not tail_mode
+                        else "empty_baseline" if cursor_is_empty_baseline else "message_digest"
+                    )
+                    stats.message_page_drift_marker_relation = (
+                        "new" if not tail_mode else "regressed" if marker_is_regressed
+                        else "append" if marker_is_append else "unavailable"
+                    )
+                    stats.message_page_drift_first_signature = (
+                        str(getattr(fetch_chat_messages, "last_tail_first_signature", "") or "") if tail_mode else ""
+                    )
+                    stats.message_page_drift_head_signature = (
+                        str(getattr(fetch_chat_messages, "last_tail_head_signature", "") or "") if tail_mode else ""
+                    )
                 stats.pagination_drift_detected = True
+                if checkpoint_enabled and not tail_mode and not stats.request_limit_hit:
+                    if chat_token == active_chat_token:
+                        failed_active_chat = active_chat
+                        active_chat = {}
+                    continue
                 break
             resolution = resolver.resolve_chat(profile=profile, dialog=dialog, messages=messages)
             stats.amo_auto_calls = resolver.amo_auto_calls - profile_amo_calls_start
@@ -5638,6 +5669,7 @@ def fetch_wappi_history_records(
                 for item in dialogs_snapshot
                 if extract_chat_id(item)
             }
+            active_chat = active_chat or failed_active_chat
             profile_complete = not (
                 stats.request_limit_hit
                 or stats.checkpoint_network_error
@@ -5825,7 +5857,11 @@ def fetch_chat_messages(
     page_signatures: list[
         tuple[int, int, tuple[str, ...], int, Optional[bool], bool]
     ] = []
-    seen_message_ids: set[str] = set()
+    seen_message_ids: dict[str, str] = {}
+    drift_reason = ""
+    drift_offset = offset
+    drift_phase = "read"
+    duplicate_count = 0
     if offset > 0 and resume_anchor and not request_limit_hit:
         # Re-read the last CONFIRMED message page: if it drifted, the saved
         # offset points at the wrong place, so restart this chat from zero.
@@ -5857,6 +5893,7 @@ def fetch_chat_messages(
         )
         if not anchor_page.valid:
             pagination_drift_detected = True
+            drift_reason, drift_offset, drift_phase = anchor_page.reason, anchor_offset, "anchor"
         else:
             current_anchor = wappi_checkpoint_anchor(
                 anchor_page.message_ids
@@ -5904,13 +5941,16 @@ def fetch_chat_messages(
         )
         if not page.valid:
             pagination_drift_detected = True
+            drift_reason, drift_offset = page.reason, offset
             break
         if strict_snapshot_verification and not page.pagination_metadata_well_formed:
             pagination_drift_detected = True
+            drift_reason, drift_offset = "malformed_pagination_metadata", offset
             break
         if not page.raw_count:
             if strict_snapshot_verification and page.has_more is True:
                 pagination_drift_detected = True
+                drift_reason, drift_offset = "empty_nonterminal_page", offset
                 break
             if strict_snapshot_verification:
                 page_signatures.append(
@@ -5919,10 +5959,22 @@ def fetch_chat_messages(
             break
         raw_messages = page.items
         page_ids = page.message_ids
-        if seen_message_ids.intersection(page_ids):
+        signatures = dict(zip(page_ids, page.semantic_signatures))
+        new_ids = signatures.keys() - seen_message_ids.keys()
+        duplicate_count += len(signatures) - len(new_ids)
+        conflicting = any(
+            seen_message_ids[mid] != signatures[mid]
+            for mid in signatures.keys() & seen_message_ids.keys()
+        )
+        no_progress = not new_ids and (
+            page.has_more is True or (not page.terminal and page.raw_count >= page_limit)
+        )
+        if conflicting or no_progress:
             pagination_drift_detected = True
+            drift_reason = "duplicate_payload_changed" if conflicting else "page_without_progress"
+            drift_offset = offset
             break
-        seen_message_ids.update(page_ids)
+        seen_message_ids.update(signatures)
         page_signatures.append(
             (
                 offset,
@@ -5936,7 +5988,9 @@ def fetch_chat_messages(
         page_anchor_value = wappi_checkpoint_anchor(page_ids)
         page_anchor_offset = offset
         next_offset = offset + page.raw_count
-        for raw in raw_messages:
+        for raw, message_id in zip(raw_messages, page_ids):
+            if message_id not in new_ids:
+                continue
             item = wappi_message_from_raw(profile.profile_id, {**dict(raw), "chat_id": chat_id})
             if item is None:
                 request_counter.skipped_bad_message += 1
@@ -5957,7 +6011,7 @@ def fetch_chat_messages(
             continue
         if page.raw_count < page_limit:
             break
-        offset += page_limit
+        offset += page.raw_count
         if not limits.complete_message_history and len(messages) >= limits.messages_per_chat:
             limit_hit = True
         elif request_count >= request_budget:
@@ -5999,12 +6053,14 @@ def fetch_chat_messages(
         )
         if not verification_page.valid:
             pagination_drift_detected = True
+            drift_reason, drift_offset, drift_phase = verification_page.reason, verification_offset, "verify"
             break
         if (
             strict_snapshot_verification
             and not verification_page.pagination_metadata_well_formed
         ):
             pagination_drift_detected = True
+            drift_reason, drift_offset, drift_phase = "malformed_pagination_metadata", verification_offset, "verify"
             break
         verification_signatures = verification_page.semantic_signatures
         if strict_snapshot_verification:
@@ -6020,6 +6076,7 @@ def fetch_chat_messages(
             )
         if verification_changed:
             pagination_drift_detected = True
+            drift_reason, drift_offset, drift_phase = "page_signature_changed", verification_offset, "verify"
     if (
         retry_on_pagination_drift
         and pagination_drift_detected
@@ -6057,6 +6114,11 @@ def fetch_chat_messages(
     setattr(fetch_chat_messages, "last_limit_hit", limit_hit)
     setattr(fetch_chat_messages, "last_request_limit_hit", request_limit_hit)
     setattr(fetch_chat_messages, "last_pagination_drift_detected", pagination_drift_detected)
+    setattr(fetch_chat_messages, "last_full_drift_reason", drift_reason)
+    setattr(fetch_chat_messages, "last_full_drift_phase", drift_phase)
+    setattr(fetch_chat_messages, "last_full_drift_offset", drift_offset)
+    setattr(fetch_chat_messages, "last_full_pages", len(page_signatures))
+    setattr(fetch_chat_messages, "last_full_duplicate_count", duplicate_count)
     setattr(fetch_chat_messages, "last_next_offset", next_offset)
     setattr(fetch_chat_messages, "last_page_anchor", page_anchor_value)
     setattr(fetch_chat_messages, "last_page_offset", page_anchor_offset)
@@ -6674,6 +6736,16 @@ def load_wappi_pairs_snapshot(
     return pairs, hashes
 
 
+def _wappi_existing_identity_authority(metadata: Mapping[str, Any]) -> str:
+    if (
+        pending_attribution_truthy(metadata.get("pending_attribution"))
+        and str(metadata.get("resolution_reason") or "")
+        in {"existing_wappi_chat_customer_conflict", "existing_wappi_source_customer_conflict"}
+    ):
+        return "pending_attribution"
+    return str(metadata.get("identity_authority") or "").strip()
+
+
 def load_existing_unmatched_wappi_records(
     db_path: Path,
     *,
@@ -6693,7 +6765,6 @@ def load_existing_unmatched_wappi_records(
             """
             SELECT event.source_system, event.source_id, event.source_ref, event.record_json,
                    event.customer_id,
-                   COALESCE(json_extract(event.record_json, '$.metadata.identity_authority'), '') AS identity_authority,
                    COALESCE(json_extract(customer.record_json, '$.metadata.provisional_wappi_family'), 0) AS provisional
             FROM timeline_events AS event
             LEFT JOIN customer_identities AS customer
@@ -6717,7 +6788,7 @@ def load_existing_unmatched_wappi_records(
             if resolution is None or not resolution.resolved:
                 continue
             existing_customer = str(row["customer_id"] or "").strip()
-            existing_authority = str(row["identity_authority"] or "").strip()
+            existing_authority = _wappi_existing_identity_authority(metadata)
             if (
                 existing_authority == "pending_attribution"
                 and resolution.resolution_source not in WAPPI_TRUSTED_PENDING_RELINK_AUTHORITIES
@@ -6875,16 +6946,7 @@ def load_existing_wappi_event_customers(
                     customer_id = str(row["customer_id"] or "").strip()
                     payload = json.loads(str(row["record_json"] or "{}"))
                     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
-                    pending_conflict = (
-                        pending_attribution_truthy(metadata.get("pending_attribution"))
-                        and str(metadata.get("resolution_reason") or "")
-                        in {"existing_wappi_chat_customer_conflict", "existing_wappi_source_customer_conflict"}
-                    )
-                    authority = (
-                        "pending_attribution"
-                        if pending_conflict
-                        else str(metadata.get("identity_authority") or "")
-                    )
+                    authority = _wappi_existing_identity_authority(metadata)
                     if source_id and (customer_id or authority == "pending_attribution"):
                         found[(str(row["source_system"]), source_id)] = (
                             customer_id,

@@ -1823,7 +1823,7 @@ def test_checkpoint_disabled_keeps_current_fail_closed_behaviour(tmp_path: Path)
     assert wappi_row_count(db_path) == 0
 
 
-def test_pagination_drift_blocks_write_and_checkpoint(tmp_path: Path) -> None:
+def test_pagination_drift_blocks_bad_chat_but_preserves_next_verified_chat(tmp_path: Path) -> None:
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(2, messages_per_chat=20)
 
@@ -1850,13 +1850,19 @@ def test_pagination_drift_blocks_write_and_checkpoint(tmp_path: Path) -> None:
     )
 
     assert any("pagination_drift_detected" in marker for marker in report["limit_hits"])
-    assert report["mode"] == "apply_blocked"  # drift is never deferred
+    assert report["mode"] == "apply"
     assert report["validation_ok"] is False
-    assert report["checkpoint"]["committed"] is False
+    assert report["publish_ready"] is False
+    assert report["checkpoint"]["committed"] is True
+    assert report["checkpoint"]["complete"] is False
     assert report["profiles"]["p-tg"]["full_history_drift_retries"] == 1
     assert report["profiles"]["p-tg"]["full_history_drift_retry_exhausted"] == 1
-    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
-    assert wappi_row_count(db_path) == 0
+    saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert wappi_checkpoint_token("c0000") not in saved["full_audit_markers"]
+    assert wappi_checkpoint_token("c0001") in saved["full_audit_markers"]
+    assert wappi_row_count(db_path) == 20
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT count(*) FROM timeline_events WHERE source_id LIKE '%c0000%'").fetchone()[0] == 0
 
 
 def test_pagination_drift_commits_only_previously_confirmed_chat_progress(
@@ -3253,3 +3259,118 @@ def test_moving_head_blocks_all_writes_and_checkpoint_progress(tmp_path: Path) -
     assert wappi_row_count(db_path) == rows_before
     assert checkpoint_path.read_bytes() == checkpoint_bytes_before
     assert read_checkpoint(checkpoint_dir) == checkpoint_before
+
+
+@pytest.mark.parametrize("fault", ["none", "payload", "middle", "repeat", "budget"])
+def test_full_history_cross_page_overlap_preserves_verification(fault: str) -> None:
+    _, messages = build_universe(1, messages_per_chat=201)
+    source = messages[("telegram", "p-tg", "c0000")]
+
+    class OverlapClient(CheckpointFakeClient):
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            super().get_chat_messages(**kwargs)
+            offset = int(kwargs["offset"])
+            rows = source[:100] if offset == 0 else source[100:200] if offset == 100 else [source[199], source[200], source[200]]
+            if fault == "payload" and offset == 200:
+                rows = [{**source[199], "body": "Изменённое содержимое"}, source[200], source[200]]
+            if fault == "repeat" and offset == 100:
+                rows = source[:100]
+            if fault == "middle" and offset == 100 and len(self.message_calls) > 3:
+                rows = [{**rows[0], "body": "Изменена средняя страница"}, *rows[1:]]
+            return {"messages": rows}
+
+    client = OverlapClient({}, {})
+    rows = wappi_history_module.fetch_chat_messages(
+        client, profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        chat_id="c0000", limits=WappiFetchLimits(page_size=100, complete_message_history=True, sleep_seconds=0),
+        request_counter=wappi_history_module.WappiFetchStats(), request_budget=4 if fault == "budget" else 10,
+    )
+    helper = wappi_history_module.fetch_chat_messages
+    if fault == "none":
+        assert len(rows) == len({row.message_id for row in rows}) == 201
+        assert [call[2] for call in client.message_calls] == [0, 100, 200, 0, 100, 200]
+        assert helper.last_full_duplicate_count == 1
+        assert helper.last_pagination_drift_detected is False
+        assert helper.last_request_limit_hit is False
+    elif fault == "budget":
+        assert helper.last_request_limit_hit is True
+        assert [call[2] for call in client.message_calls] == [0, 100, 200, 0]
+    else:
+        assert helper.last_pagination_drift_detected is True
+        assert helper.last_full_drift_reason == {
+            "payload": "duplicate_payload_changed", "middle": "page_signature_changed",
+            "repeat": "page_without_progress",
+        }[fault]
+        assert helper.last_full_drift_offset == (200 if fault == "payload" else 100)
+
+
+@pytest.mark.parametrize("valid_cursor", [False, True], ids=["unproven-tail", "active-poison-valid-tail"])
+def test_poison_full_chat_preserves_tail_contract(valid_cursor: bool) -> None:
+    w = wappi_history_module
+    chats, messages = build_universe(2)
+    bad, tail = (chat["id"] for chat in chats)
+    bad_token, tail_token = map(wappi_checkpoint_token, (bad, tail))
+    old = messages[("telegram", "p-tg", tail)][0]
+    messages[("telegram", "p-tg", tail)].append({**old, "id": "new-tail", "time": old["time"] + 1})
+    chats[1] = {**chats[1], "last_timestamp": 0}
+    profile = WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram")
+    limits = WappiFetchLimits(page_size=10, request_limit_total=100, complete_message_history=True, sleep_seconds=0)
+    active = {"chat": bad_token, "message_offset": 1, "page_offset": 0,
+        "page_anchor": wappi_checkpoint_anchor((messages[("telegram", "p-tg", bad)][0]["id"],))}
+    cursor = {"message_digest": w.wappi_message_checkpoint_token("p-tg", tail, old["id"]), "timestamp": old["time"]}
+    entry = {"fingerprint": wappi_fetch_universe_fingerprint(profile, limits, tenant_id="foton"),
+        "complete": False, "incremental_cycle": False, "full_audit_at": "",
+        "chats_done": [tail_token], "full_audit_markers": {tail_token: 0},
+        "chat_cursors": {tail_token: cursor} if valid_cursor else {}, "active_chat": active}
+    class PoisonClient(CheckpointFakeClient):
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            payload = super().get_chat_messages(**kwargs)
+            if kwargs["chat_id"] == bad:
+                return {"messages": [{"id": "bad", "chat_id": "foreign", "time": 1, "body": "synthetic"}]}
+            return payload
+    client, pending = PoisonClient({"p-tg": chats}, messages), {}
+    records, by_profile = w.fetch_wappi_history_records(
+        client=client, profiles=(profile,), limits=limits, tenant_id="foton",
+        resolver=w.WappiPairCustomerResolver({}, db_path=Path("/not-opened"), tenant_id="foton"),
+        checkpoint={"profiles": {"wappi_telegram:p-tg": entry}}, next_checkpoint=pending,
+    )
+    stats, saved = by_profile[("wappi_telegram", "p-tg")], pending["wappi_telegram:p-tg"]
+    assert stats.message_page_drift_reason == "message_foreign_chat"
+    assert stats.message_page_drift_chat_token == bad_token
+    assert dict(stats.message_page_drift_kinds) == ({"full_history": 1} if valid_cursor else {"full_history": 1, "tail": 1})
+    assert stats.incremental_tail_fallbacks == int(not valid_cursor)
+    assert bool([call for call in client.message_calls if call[1] == tail]) is valid_cursor
+    assert len(records) == int(valid_cursor) and all(record.payload["chat_id"] == tail for record in records)
+    assert saved["active_chat"] == active and bad_token not in saved["full_audit_markers"]
+    assert saved["full_audit_at"] == "" and saved["complete"] is False
+    assert stats.catalog_boundary_proven and not stats.request_limit_hit
+
+
+def test_bad_full_history_chat_does_not_starve_good_chat(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+
+    class PoisonClient(CheckpointFakeClient):
+        def get_chat_messages(self, **kwargs: Any) -> Mapping[str, Any]:
+            payload = super().get_chat_messages(**kwargs)
+            if kwargs["chat_id"] == "c0000":
+                return {"messages": [{"id": "broken", "chat_id": "wrong-chat", "time": 1, "body": "test"}]}
+            return payload
+
+    client = PoisonClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=client)
+    stats = report["profiles"]["p-tg"]
+    assert any(call[1] == "c0001" for call in client.message_calls)
+    assert stats["message_page_drift_kinds"] == {"full_history": 1}
+    assert report["writes"]["applied"] is True
+    assert report["checkpoint"]["committed"] is True
+    assert report["checkpoint"]["complete"] is False
+    assert report["validation_ok"] is False
+    assert report["publish_ready"] is False
+    assert wappi_row_count(db_path) == 1
+    saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert wappi_checkpoint_token("c0000") not in saved["full_audit_markers"]
+    rerun = run_wappi_history_import(config, client=client)
+    assert wappi_row_count(db_path) == 1
+    assert rerun["checkpoint"]["complete"] is False

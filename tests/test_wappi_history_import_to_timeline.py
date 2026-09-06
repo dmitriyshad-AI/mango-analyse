@@ -4563,7 +4563,14 @@ def test_wappi_widget_map_primes_old_unmatched_history(tmp_path: Path) -> None:
     assert records[0].payload["resolved_customer_id"] == customer_id
 
 
-def test_wappi_pending_event_skips_non_exact_local_relink(tmp_path: Path) -> None:
+@pytest.mark.parametrize("pending_metadata", [
+    {"identity_authority": "pending_attribution"},
+    {"identity_authority": "timeline_identity", "pending_attribution": True,
+     "resolution_reason": "existing_wappi_chat_customer_conflict"},
+    {"identity_authority": "amo_auto_resolver", "pending_attribution": True,
+     "resolution_reason": "existing_wappi_source_customer_conflict"},
+])
+def test_wappi_pending_event_skips_non_exact_local_relink(tmp_path: Path, pending_metadata) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         store.upsert_event(
@@ -4580,12 +4587,14 @@ def test_wappi_pending_event_skips_non_exact_local_relink(tmp_path: Path) -> Non
                     "profile_id": "p-tg",
                     "chat_id": "123456",
                     "message_id": "pending-message",
-                    "identity_authority": "pending_attribution",
+                    **pending_metadata,
                 },
             ),
             actor="test",
         )
 
+    with open_readonly_sqlite(db_path) as con:
+        before = tuple(con.execute("SELECT * FROM timeline_events WHERE source_id='pending-message'").fetchone())
     records = load_existing_unmatched_wappi_records(
         db_path,
         tenant_id="foton",
@@ -4599,6 +4608,8 @@ def test_wappi_pending_event_skips_non_exact_local_relink(tmp_path: Path) -> Non
     )
 
     assert records == ()
+    with open_readonly_sqlite(db_path) as con:
+        assert tuple(con.execute("SELECT * FROM timeline_events WHERE source_id='pending-message'").fetchone()) == before
 
 
 def test_changed_pair_relinks_pending_history_without_message_refetch(tmp_path: Path) -> None:

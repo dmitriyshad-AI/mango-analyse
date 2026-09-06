@@ -2016,12 +2016,14 @@ def test_same_row_count_with_different_source_ids_drops_checkpoint() -> None:
 def test_timeline_state_digest_changes_when_source_ids_change(tmp_path: Path) -> None:
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(2)
-    run_wappi_history_import(
+    imported = run_wappi_history_import(
         make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir),
         client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
     )
+    assert imported["validation_ok"], {key: imported.get(key) for key in ("errors", "limit_hits", "mode")}
     profiles = (WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),)
     before = wappi_timeline_state(db_path, tenant_id="foton", profiles=profiles)
+    assert before["wappi_telegram:p-tg"]["rows"] == 2
     with sqlite3.connect(db_path) as con:
         con.execute(
             "UPDATE timeline_events SET source_id = ? WHERE rowid = ("

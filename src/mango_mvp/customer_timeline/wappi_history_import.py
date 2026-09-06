@@ -2679,21 +2679,36 @@ def run_wappi_history_import(
         )
         proposed_customer = str(record.payload.get("resolved_customer_id") or "").strip()
         proposed_authority = str(record.payload.get("identity_authority") or "")
+        alias_equivalent = bool(
+            existing_customer and proposed_customer
+            and existing_customer != proposed_customer
+            and resolver.canonical_customer_id(existing_customer)
+            and resolver.canonical_customer_id(existing_customer) == resolver.canonical_customer_id(proposed_customer)
+        )
+        if alias_equivalent and existing_authority not in {"pending_attribution", "wappi_provisional"}:
+            # Identity comparison is not a migration of event/opportunity ownership.
+            unresolved_kept_existing += 1
+            outcome_source_ids[scope]["linked"].add(source_id)
+            outcome_reason_counts[scope]["linked"]["preserved_existing_attribution"] += 1
+            continue
         if existing_authority == "pending_attribution" and not (
             proposed_customer
             and proposed_authority in WAPPI_TRUSTED_PENDING_RELINK_AUTHORITIES
         ):
             unresolved_kept_existing += 1
-            blocked_customer_relink_conflicts += 1
+            blocked_customer_relink_conflicts += int(bool(proposed_customer))
             outcome_source_ids[scope]["quarantine"].add(source_id)
             outcome_reason_counts[scope]["quarantine"]["preserved_existing_pending"] += 1
             continue
         candidate_customers = {
-            str(item)
+            resolver.canonical_customer_id(str(item)) or str(item)
             for item in (record.payload.get("candidate_customer_ids") or ())
             if str(item)
         }
-        rival_candidates = candidate_customers - {existing_customer, proposed_customer}
+        comparison_customers = {
+            resolver.canonical_customer_id(item) or item for item in (existing_customer, proposed_customer)
+        }
+        rival_candidates = candidate_customers - comparison_customers
         exact_override = _is_exact_authority_override(
             existing_customer,
             existing_authority,
@@ -2714,7 +2729,7 @@ def run_wappi_history_import(
             exact_authority_overrides += 1
         elif existing_customer and (
             (proposed_authority == "wappi_provisional" and not rival_candidates)
-            or (not proposed_customer and not (candidate_customers - {existing_customer}))
+            or (not proposed_customer and not (candidate_customers - comparison_customers))
         ):
             # A missing/provisional answer is not a rival identity. Keep the
             # previously proven event byte-for-byte and do not spam conflicts.
@@ -3465,6 +3480,46 @@ class _DryRunStore:
     pass
 
 
+def _wappi_customer_aliases(con: sqlite3.Connection, tenant_id: str) -> dict[str, str | None]:
+    """Resolve only explicit aliases; retain invalid paths as ambiguity."""
+    if not sqlite_table_exists(con, "customer_id_mappings"):
+        return {}
+    customers = {
+        str(row[0]) for row in con.execute(
+            "SELECT customer_id FROM customer_identities WHERE tenant_id = ?", (tenant_id,)
+        )
+    }
+    edges: dict[str, set[tuple[str, str]]] = {}
+    for row in con.execute(
+        "SELECT old_customer_id, new_customer_id, mapping_kind FROM customer_id_mappings "
+        "WHERE tenant_id = ? AND resolution_status = 'active'", (tenant_id,)
+    ):
+        edges.setdefault(str(row[0]), set()).add((str(row[2]), str(row[1])))
+    resolved: dict[str, str | None] = {}
+    for old in edges:
+        cursor, path = old, set()
+        while cursor not in path and cursor not in resolved:
+            if cursor not in edges:
+                target = cursor if cursor in customers else None
+                break
+            path.add(cursor)
+            choices = edges[cursor]
+            if len(choices) != 1 or next(iter(choices))[0] != "alias":
+                target = None
+                break
+            next_id = next(iter(choices))[1]
+            if next_id == cursor:
+                # M1 records canonical identities as alias A->A (a no-op).
+                target = cursor if cursor in customers else None
+                break
+            cursor = next_id
+        else:
+            target = resolved.get(cursor)
+        for item in path:
+            resolved[item] = target
+    return resolved
+
+
 class WappiPairCustomerResolver:
     def __init__(
         self,
@@ -3479,12 +3534,14 @@ class WappiPairCustomerResolver:
         widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]] | None = None,
         widget_required: bool = False,
         local_identity_customers: Mapping[tuple[str, str], Sequence[str]] | None = None,
+        identity_candidate_customers: Mapping[tuple[str, str], Sequence[str]] | None = None,
         ambiguous_identity_values: Sequence[tuple[str, str]] = (),
         customer_brands: Mapping[str, str] | None = None,
         supported_customer_ids: Sequence[str] = (),
         chat_customer_ids: Mapping[tuple[str, str, str], Sequence[str]] | None = None,
         exact_chat_customer_ids: Mapping[tuple[str, str, str], Sequence[str]] | None = None,
         provisional_customer_ids: Sequence[str] = (),
+        customer_aliases: Mapping[str, str | None] | None = None,
         shared_phone_stoplist: Sequence[str] = (),
         shared_phone_stoplist_error: str = "",
     ) -> None:
@@ -3513,6 +3570,7 @@ class WappiPairCustomerResolver:
             key: tuple(sorted(set(values))) for key, values in (local_identity_customers or {}).items()
         }
         self._ambiguous_identity_values = frozenset(ambiguous_identity_values)
+        self._identity_candidate_customers = dict(identity_candidate_customers or {})
         self._customer_brands = dict(customer_brands or {})
         self._supported_customer_ids = frozenset(supported_customer_ids)
         self._chat_customer_ids = {
@@ -3522,8 +3580,12 @@ class WappiPairCustomerResolver:
             key: tuple(sorted(set(values))) for key, values in (exact_chat_customer_ids or {}).items()
         }
         self._provisional_customer_ids = frozenset(provisional_customer_ids)
+        self._customer_aliases = dict(customer_aliases or {})
         self._shared_phone_stoplist = frozenset(shared_phone_stoplist)
         self._shared_phone_stoplist_error = str(shared_phone_stoplist_error or "")
+
+    def canonical_customer_id(self, customer_id: str) -> str | None:
+        return self._customer_aliases.get(customer_id, customer_id)
 
     @property
     def amo_auto_calls(self) -> int:
@@ -3757,6 +3819,12 @@ class WappiPairCustomerResolver:
         exact_chat_customer_ids: dict[tuple[str, str, str], set[str]] = {}
         provisional_customer_ids: set[str] = set()
         with open_readonly_sqlite(db_path) as con:
+            customer_aliases = _wappi_customer_aliases(con, tenant)
+            # Invalid aliases stay in candidate sets, never disappear into a false unique.
+            def canonical(value: Any) -> str:
+                raw = str(value or "")
+                return customer_aliases.get(raw) or raw
+
             provisional_customer_ids.update(
                 str(row["customer_id"])
                 for row in con.execute(
@@ -3782,6 +3850,9 @@ class WappiPairCustomerResolver:
                     (tenant,),
                 )
             }
+            safe_customer_ids.difference_update(
+                key for key, value in customer_aliases.items() if key != value
+            )
             identity_rows = con.execute(
                 """
                 SELECT link_type, link_value, customer_id, match_class
@@ -3790,7 +3861,7 @@ class WappiPairCustomerResolver:
                   AND link_type IN (
                     'telegram_user_id', 'telegram_username', 'max_user_id',
                     'phone', 'mango_client_phone', 'whatsapp_phone', 'email',
-                    'amo_contact_id', 'amo_lead_id'
+                    'amo_contact_id', 'amo_lead_id', 'tallanto_student_id'
                   )
                 """,
                 (tenant,),
@@ -3801,7 +3872,7 @@ class WappiPairCustomerResolver:
                 raw_link_type = str(row["link_type"])
                 link_type = "phone" if raw_link_type in PHONE_IDENTITY_LINK_TYPES else raw_link_type
                 key = (link_type, str(row["link_value"]))
-                customer_id = str(row["customer_id"] or "")
+                customer_id = canonical(row["customer_id"])
                 if customer_id:
                     identity_owners.setdefault(key, set()).add(customer_id)
                 identity_classes.setdefault(key, set()).add(str(row["match_class"] or ""))
@@ -3816,7 +3887,7 @@ class WappiPairCustomerResolver:
                 raw_link_type = str(row["link_type"])
                 link_type = "phone" if raw_link_type in PHONE_IDENTITY_LINK_TYPES else raw_link_type
                 key = (link_type, str(row["link_value"]))
-                customer_id = str(row["customer_id"])
+                customer_id = canonical(row["customer_id"])
                 if (
                     str(row["match_class"] or "") not in {"strong_unique", "manual"}
                     or key in ambiguous_identity_values
@@ -3825,23 +3896,9 @@ class WappiPairCustomerResolver:
                 ):
                     continue
                 local_identity_customers.setdefault(key, set()).add(customer_id)
-            supported_customer_ids.update(
-                str(row["customer_id"])
-                for row in con.execute(
-                    """
-                    SELECT MIN(customer_id) AS customer_id
-                    FROM identity_links
-                    WHERE tenant_id = ?
-                      AND link_type IN ('amo_contact_id', 'tallanto_student_id')
-                      AND customer_id IS NOT NULL
-                      AND customer_id != ''
-                    GROUP BY link_type, link_value
-                    HAVING COUNT(DISTINCT customer_id) = 1
-                       AND SUM(CASE WHEN match_class NOT IN ('strong_unique', 'manual') THEN 1 ELSE 0 END) = 0
-                    """,
-                    (tenant,),
-                )
-            )
+            for key, owners in local_identity_customers.items():
+                if key[0] in {"amo_contact_id", "tallanto_student_id"}:
+                    supported_customer_ids.update(owners)
             brand_sets: dict[str, set[str]] = {}
             for row in con.execute(
                 """
@@ -3856,7 +3913,7 @@ class WappiPairCustomerResolver:
                     continue
                 brand = raw_brand
                 if brand in {"foton", "unpk"}:
-                    brand_sets.setdefault(str(row["customer_id"]), set()).add(brand)
+                    brand_sets.setdefault(canonical(row["customer_id"]), set()).add(brand)
             for row in con.execute(
                 """
                 SELECT customer_id,
@@ -3876,7 +3933,7 @@ class WappiPairCustomerResolver:
                     continue
                 brand = raw_brand
                 if brand in {"foton", "unpk"}:
-                    brand_sets.setdefault(str(row["customer_id"]), set()).add(brand)
+                    brand_sets.setdefault(canonical(row["customer_id"]), set()).add(brand)
             customer_brands.update(
                 {
                     customer_id: next(iter(brands)) if len(brands) == 1 else "conflict"
@@ -3895,7 +3952,7 @@ class WappiPairCustomerResolver:
                 parts = str(row["link_value"]).split(":", 2)
                 if len(parts) == 3 and parts[0] in SOURCE_SYSTEM_BY_CHANNEL.values():
                     chat_key = (parts[0], parts[1], parts[2])
-                    chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
+                    chat_customer_ids.setdefault(chat_key, set()).add(canonical(row["customer_id"]))
             if sqlite_table_exists(con, "timeline_events"):
                 for row in con.execute(
                     f"""
@@ -3914,9 +3971,9 @@ class WappiPairCustomerResolver:
                 ):
                     if row["profile_id"] and row["chat_id"]:
                         chat_key = (str(row["source_system"]), str(row["profile_id"]), str(row["chat_id"]))
-                        chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
+                        chat_customer_ids.setdefault(chat_key, set()).add(canonical(row["customer_id"]))
                         if str(row["identity_authority"] or "") in WAPPI_EXACT_AMO_AUTHORITIES:
-                            exact_chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
+                            exact_chat_customer_ids.setdefault(chat_key, set()).add(canonical(row["customer_id"]))
             for key, pair in pairs.items():
                 lead_ids = lookup_amo_link_customers(
                     con,
@@ -3935,9 +3992,23 @@ class WappiPairCustomerResolver:
                     tenant_id=tenant,
                     lead_id=str(pair.lead_id or ""),
                 )
+                physical_opportunity_ids = opportunity_ids
+                lead_ids, contact_ids, opportunity_ids = (
+                    {canonical(item) for item in items}
+                    for items in (lead_ids, contact_ids, opportunity_ids)
+                )
+                invalid_pair = any(
+                    key in ambiguous_identity_values
+                    for key in (("amo_lead_id", str(pair.lead_id or "")),
+                                ("amo_contact_id", str(pair.contact_id or "")))
+                ) or any(
+                    customer_aliases.get(item, item) is None
+                    for item in lead_ids | contact_ids | opportunity_ids
+                ) or physical_opportunity_ids != opportunity_ids
                 candidate_sets = [items for items in (lead_ids, contact_ids, opportunity_ids) if items]
                 candidate_union = set().union(*candidate_sets) if candidate_sets else set()
-                if candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
+                invalid_pair = invalid_pair or not candidate_union.issubset(safe_customer_ids)
+                if not invalid_pair and candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
                     resolutions[key] = WappiChatResolution(
                         status="resolved",
                         customer_id=next(iter(candidate_union)),
@@ -3948,7 +4019,7 @@ class WappiPairCustomerResolver:
                         pair_source=pair.source,
                         resolution_source="draft_loop_pair",
                     )
-                elif len(candidate_union) > 1:
+                elif invalid_pair or len(candidate_union) > 1:
                     resolutions[key] = WappiChatResolution(
                         status="pending_attribution",
                         lead_id=str(pair.lead_id),
@@ -3980,12 +4051,14 @@ class WappiPairCustomerResolver:
             widget_links=widget_links,
             widget_required=widget_required,
             local_identity_customers=local_identity_customers,
+            identity_candidate_customers=identity_owners,
             ambiguous_identity_values=tuple(ambiguous_identity_values),
             customer_brands=customer_brands,
             supported_customer_ids=tuple(supported_customer_ids),
             chat_customer_ids=chat_customer_ids,
             exact_chat_customer_ids=exact_chat_customer_ids,
             provisional_customer_ids=tuple(provisional_customer_ids),
+            customer_aliases=customer_aliases,
             shared_phone_stoplist=shared_phone_stoplist,
             shared_phone_stoplist_error=shared_phone_stoplist_error,
         )
@@ -4023,7 +4096,7 @@ class WappiPairCustomerResolver:
         if primed is not None and primed.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES:
             pair_resolution = self.resolve(profile=profile, chat_id=chat_id)
             if (
-                pair_resolution.resolved
+                primed.resolved and pair_resolution.resolved
                 and pair_resolution.customer_id != primed.customer_id
             ):
                 conflict = WappiChatResolution(
@@ -4256,14 +4329,21 @@ class WappiPairCustomerResolver:
         for owners in lead_owner_sets:
             all_owners.update(owners)
         nonempty_lead_owners = tuple(owners for owners in lead_owner_sets if owners)
-        if not contact_owners and nonempty_lead_owners:
+        ambiguous_widget_key = any(
+            key in self._ambiguous_identity_values
+            for key in (("amo_contact_id", contact_id), *(("amo_lead_id", item) for item in lead_ids))
+        )
+        if ambiguous_widget_key:
+            for key in (("amo_contact_id", contact_id), *(("amo_lead_id", item) for item in lead_ids)):
+                all_owners.update(self._identity_candidate_customers.get(key, ()))
+        if not ambiguous_widget_key and not contact_owners and nonempty_lead_owners:
             first_lead_owners = nonempty_lead_owners[0]
             if len(first_lead_owners) == 1 and all(
                 owners == first_lead_owners for owners in nonempty_lead_owners
             ):
                 contact_owners = set(first_lead_owners)
                 match_key = "wappi_widget_lead"
-        if len(contact_owners) != 1 or any(owners and owners != contact_owners for owners in lead_owner_sets):
+        if ambiguous_widget_key or len(contact_owners) != 1 or any(owners and owners != contact_owners for owners in lead_owner_sets):
             self._widget_missing_personal_chats += 1
             return WappiChatResolution(
                 status="pending_attribution",
@@ -4364,6 +4444,7 @@ class WappiPairCustomerResolver:
         if not resolution.resolved:
             return resolution
         owners = self._chat_customer_ids.get((profile.source_system, profile.profile_id, chat_id), ())
+        invalid_owner = any(self.canonical_customer_id(item) is None for item in owners)
         if not owners or owners == (resolution.customer_id,):
             return resolution
         exact_owners = self._exact_chat_customer_ids.get(
@@ -4371,11 +4452,11 @@ class WappiPairCustomerResolver:
             (),
         )
         exact_owner_conflict = bool(exact_owners and exact_owners != (resolution.customer_id,))
-        if resolution.resolution_source != "wappi_provisional" and set(owners).issubset(
+        if not invalid_owner and resolution.resolution_source != "wappi_provisional" and set(owners).issubset(
             self._provisional_customer_ids
         ) and not exact_owner_conflict:
             return resolution
-        if resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES and (
+        if not invalid_owner and resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES and (
             not exact_owners or exact_owners == (resolution.customer_id,)
         ):
             return resolution
@@ -4585,6 +4666,8 @@ class WappiPairCustomerResolver:
                     tenant_id=self._tenant_id,
                     lead_id=lead_id,
                 )
+        physical_opportunity_ids = opportunity_ids
+        opportunity_ids = {self.canonical_customer_id(item) or item for item in opportunity_ids}
         if identity_only:
             lead_ids = set()
         candidate_sets = [items for items in (lead_ids, contact_ids, opportunity_ids) if items]
@@ -4607,7 +4690,14 @@ class WappiPairCustomerResolver:
                 if values
             ),
         }
-        if candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
+        invalid_candidate = (
+            physical_opportunity_ids != opportunity_ids
+            or any(self.canonical_customer_id(item) is None for item in candidate_union)
+            or any(key in self._ambiguous_identity_values for key in (
+                ("amo_contact_id", contact_id), ("amo_lead_id", lead_id),
+            ))
+        )
+        if not invalid_candidate and candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
             customer_id = next(iter(candidate_union))
             customer_brand = self._customer_brands.get(customer_id, "unknown")
             evidence.update(
@@ -4630,7 +4720,10 @@ class WappiPairCustomerResolver:
                 match_key=match_key,
                 evidence=evidence,
             )
-        if len(candidate_union) > 1:
+        if invalid_candidate or len(candidate_union) > 1:
+            for key in (("amo_contact_id", contact_id), ("amo_lead_id", lead_id)):
+                if key in self._ambiguous_identity_values:
+                    candidate_union.update(self._identity_candidate_customers.get(key, ()))
             return WappiChatResolution(
                 status="pending_attribution",
                 lead_id=lead_id,

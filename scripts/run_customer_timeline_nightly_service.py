@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -28,11 +29,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run staging customer_timeline nightly service.")
     parser.add_argument("--config", required=True, help="Nightly service JSON config.")
     parser.add_argument("--summary-only", action="store_true", help="Print compact service summary.")
+    parser.add_argument("--approve-code-release", nargs=2, metavar=("PREVIOUS_SHA", "NEW_HEAD"))
+    parser.add_argument("--review-receipt", type=Path)
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if bool(args.approve_code_release) != bool(args.review_receipt):
+        parser.error("--approve-code-release and --review-receipt must be provided together")
+    if args.approve_code_release:
+        from mango_mvp.customer_timeline.nightly_service import approve_writer_code_release
+
+        try:
+            report = approve_writer_code_release(Path(args.config), *args.approve_code_release, args.review_receipt)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            print(json.dumps({"status": "stopped", "reason": str(exc)}))
+            return 75 if isinstance(exc, TimeoutError) else 1
+        print(json.dumps(report, sort_keys=True))
+        return 0
     report = run_nightly_service(service_config_from_json(Path(args.config)))
     exit_code = 0 if report.get("overall_status") == "ok" and report.get("data_quality_status") == "pass" else 1
     if args.summary_only:

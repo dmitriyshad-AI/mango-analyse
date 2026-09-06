@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import shutil
 import subprocess
@@ -69,6 +70,7 @@ from mango_mvp.customer_timeline.store import (
     customer_timeline_integrity_report,
     customer_timeline_integrity_report_ok,
     customer_timeline_writer_lock,
+    customer_timeline_run_lock,
 )
 from mango_mvp.customer_timeline.temporal import normalize_aware_utc, parse_aware_utc
 from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config
@@ -196,8 +198,32 @@ class NightlyServiceConfig:
     source_config_sha256: Optional[str] = None
 
 
+def _writer_git(*args: str) -> str:
+    root = Path(__file__).resolve().parents[3]
+    return subprocess.check_output(["git", "-C", str(root), *args], text=True, env=_repo_python_env(root))
+
+
+def _read_writer_receipt(path: Path) -> Mapping[str, Any]:
+    if ".." in path.parts:
+        raise ValueError("writer receipt path must not contain parent traversal")
+    path = Path(os.path.abspath(path.expanduser()))
+    if any(part.is_symlink() for part in (path, *path.parents)) or not path.is_file():
+        raise ValueError("writer receipt must be a regular file in its canonical state directory")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("writer receipt must be a JSON object")
+    return payload
+
+
 def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]:
-    """Fail closed for the canonical cross-host writer before any filesystem write."""
+    ownership = _writer_release_history(config)
+    if "code_sha" in ownership and ownership["code_sha"] != _writer_git("rev-parse", "HEAD").strip():
+        raise ValueError("writer ownership code SHA does not match current HEAD")
+    return ownership
+
+
+def _validate_writer_ownership_history(config: NightlyServiceConfig) -> Mapping[str, str]:
+    """Validate the original transfer and activation, without rewriting their code SHA."""
 
     canonical_target = (
         config.timeline_db.resolve(strict=False).name == "customer_timeline_staging.sqlite"
@@ -205,7 +231,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     )
     if not canonical_target:
         return {"status": "not_required_for_narrow_config"}
-    expected_path = (config.timeline_db.parent / "state" / "WRITER_OWNERSHIP.json").resolve(strict=False)
+    expected_path = config.timeline_db.expanduser().resolve(strict=False).parent / "state" / "WRITER_OWNERSHIP.json"
     actual_path = (
         config.ownership_receipt_path.expanduser().resolve(strict=False)
         if config.ownership_receipt_path is not None
@@ -213,7 +239,9 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     )
     if actual_path != expected_path or not expected_path.is_file():
         raise ValueError("canonical nightly requires state/WRITER_OWNERSHIP.json")
-    payload = json.loads(expected_path.read_text(encoding="utf-8"))
+    if config.ownership_receipt_path is not None and config.ownership_receipt_path.expanduser().is_symlink():
+        raise ValueError("writer ownership receipt must not be a symlink")
+    payload = _read_writer_receipt(expected_path)
     if not isinstance(payload, Mapping):
         raise ValueError("writer ownership receipt must be a JSON object")
     required = {
@@ -246,13 +274,6 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     if len(code_sha) != 40 or any(ch not in "0123456789abcdef" for ch in code_sha):
         raise ValueError("writer ownership receipt has invalid code SHA")
     repo_root = Path(__file__).resolve().parents[3]
-    current_code_sha = subprocess.check_output(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-        text=True,
-        env=_repo_python_env(repo_root),
-    ).strip()
-    if code_sha != current_code_sha:
-        raise ValueError("writer ownership code SHA does not match current HEAD")
     if not _tracked_worktree_is_clean(repo_root):
         raise ValueError("canonical nightly writer requires a clean tracked worktree")
     if Path(str(payload["m4_timeline_db"])).expanduser().resolve(strict=False) != config.timeline_db.resolve(strict=False):
@@ -267,7 +288,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     stop_receipt_path = expected_path.parent / "M1_WRITER_STOP.json"
     if not stop_receipt_path.is_file() or file_fingerprint(stop_receipt_path)["sha256"] != payload["m1_stop_receipt_sha256"]:
         raise ValueError("M1 writer stop receipt is missing or has wrong SHA")
-    stop_receipt = json.loads(stop_receipt_path.read_text(encoding="utf-8"))
+    stop_receipt = _read_writer_receipt(stop_receipt_path)
     if not isinstance(stop_receipt, Mapping) or not (
         stop_receipt.get("status") == "STOPPED"
         and stop_receipt.get("host") == "M1"
@@ -305,7 +326,7 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
         if actual_seed_sha != payload["seed_sha256"]:
             raise ValueError("transferred writer seed does not match the actual timeline DB")
     if activation_path.is_file():
-        activation = json.loads(activation_path.read_text(encoding="utf-8"))
+        activation = _read_writer_receipt(activation_path)
         if not isinstance(activation, Mapping):
             raise ValueError("M4 writer activation receipt must be a JSON object")
         activation_required = {
@@ -353,13 +374,129 @@ def validate_writer_ownership(config: NightlyServiceConfig) -> Mapping[str, str]
     return {**ownership_summary, "status": status}
 
 
+def _writer_release_history(config: NightlyServiceConfig) -> Mapping[str, str]:
+    ownership = dict(_validate_writer_ownership_history(config))
+    state = config.timeline_db.expanduser().resolve(strict=False).parent / "state"
+    remaining = set(state.glob("WRITER_CODE_RELEASE_*.json"))
+    if ownership.get("status") != "M4_WRITER_ACTIVE":
+        if remaining:
+            raise ValueError("code release requires an activated M4 writer")
+        return ownership
+    binding = {
+        "ownership_receipt_sha256": ownership["ownership_receipt_sha256"],
+        "ownership_config_sha256": ownership["ownership_config_sha256"],
+        "activation_receipt_sha256": str(file_fingerprint(state / "M4_WRITER_ACTIVATION.json")["sha256"]),
+        "m4_timeline_db": str(config.timeline_db.expanduser().resolve(strict=False)),
+        "worktree": str(Path(__file__).resolve().parents[3]),
+    }
+    code = ownership["code_sha"]
+    previous_receipt = binding["activation_receipt_sha256"]
+    seen = {code}
+    while (path := state / f"WRITER_CODE_RELEASE_{code}.json") in remaining:
+        release = _read_writer_receipt(path)
+        new_code = str(release.get("new_code_sha") or "")
+        approved_at = parse_aware_utc(release.get("approved_at"))
+        if (
+            any(release.get(key) != value for key, value in binding.items())
+            or release.get("schema_version") != "customer_timeline_writer_code_release_v1"
+            or release.get("previous_code_sha") != code
+            or release.get("previous_receipt_sha256") != previous_receipt
+            or re.fullmatch(r"[0-9a-f]{40}", new_code) is None or new_code in seen
+            or approved_at is None or approved_at > datetime.now(timezone.utc) + timedelta(minutes=5)
+        ):
+            raise ValueError("invalid writer code release history")
+        review = Path(str(release.get("review_receipt_path") or ""))
+        if (not _is_sha256(release.get("review_receipt_sha256"))
+                or _read_writer_receipt(review).get("head") != new_code
+                or file_fingerprint(review)["sha256"] != release["review_receipt_sha256"]
+                or _writer_git("merge-base", code, new_code).strip() != code):
+            raise ValueError("writer code release review or ancestry mismatch")
+        remaining.remove(path)
+        seen.add(new_code)
+        code, previous_receipt = new_code, str(file_fingerprint(path)["sha256"])
+    if remaining:
+        raise ValueError("orphan writer code release receipt")
+    return {**ownership, **binding, "activation_code_sha": ownership["code_sha"], "code_sha": code,
+            "code_release_sha256": previous_receipt if len(seen) > 1 else ""}
+
+
+def approve_writer_code_release(config_path: Path, previous_sha: str, new_head: str, review_path: Path) -> Mapping[str, str]:
+    config = service_config_from_json(config_path)
+    paths = validated_service_paths(config)
+    timeline_db = paths[0]
+    if timeline_db.parent.name != "staging" or timeline_db.parent.parent.name != ".codex_local":
+        raise ValueError("code release requires the canonical .codex_local/staging root")
+    with customer_timeline_run_lock(timeline_db.parent / "task_state" / "nightly-warehouse-wrapper", timeout_seconds=0), \
+            service_lock(timeline_db, timeout_seconds=0), customer_timeline_writer_lock(timeline_db, timeout_seconds=0):
+        config = service_config_from_json(config_path)
+        if validated_service_paths(config) != paths:
+            raise ValueError("code release config paths changed while acquiring locks")
+        state = timeline_db.parent / "state"
+        _read_writer_receipt(state / "M4_WRITER_ACTIVATION.json")
+        ownership = _writer_release_history(config)
+        if (ownership.get("status") != "M4_WRITER_ACTIVE"
+                or any(re.fullmatch(r"[0-9a-f]{40}", sha) is None for sha in (previous_sha, new_head))
+                or previous_sha == new_head or new_head != _writer_git("rev-parse", "HEAD").strip()
+                or _writer_git("merge-base", previous_sha, new_head).strip() != previous_sha):
+            raise ValueError("code release requires the current clean descendant HEAD and active M4")
+        root = Path(__file__).resolve().parents[3]
+        review = _read_writer_receipt(review_path.expanduser())
+        review_path = review_path.expanduser().resolve(strict=True)
+        verified = subprocess.run(
+            [sys.executable, str(root / "scripts/make_audit_pack.py"), "--root", str(root),
+             "--verify-receipt", str(review_path)], capture_output=True, text=True, timeout=30, env=_repo_python_env(root),
+        )
+        if verified.returncode or json.loads(verified.stdout).get("ok") is not True:
+            raise ValueError("code release review verification failed")
+        manifest = _read_writer_receipt(root / str(review["manifest_path"]))
+        context = _read_writer_receipt((root / str(review["manifest_path"])).parent / "context_files.json")
+        changed = {path for path in _writer_git("diff", "--name-only", "-z", "--no-renames", previous_sha, new_head).split("\0")
+                   if path.startswith(("src/", "scripts/", "tests/"))}
+        if (manifest.get("head") != new_head or manifest.get("branch_diff_base") != previous_sha
+                or not changed.issubset(context.get("files", {}))):
+            raise ValueError("code release review range or allowlist mismatch")
+        payload = {key: ownership[key] for key in ("ownership_receipt_sha256", "ownership_config_sha256",
+                   "activation_receipt_sha256", "m4_timeline_db", "worktree")}
+        payload.update(schema_version="customer_timeline_writer_code_release_v1", previous_code_sha=previous_sha,
+                       new_code_sha=new_head, review_receipt_path=str(review_path),
+                       review_receipt_sha256=str(file_fingerprint(review_path)["sha256"]))
+        path = state / f"WRITER_CODE_RELEASE_{previous_sha}.json"
+        if path.exists() or path.is_symlink():
+            existing = _read_writer_receipt(path)
+            if ownership["code_sha"] != new_head or any(existing.get(key) != value for key, value in payload.items()):
+                raise ValueError("conflicting writer code release approval")
+            status = "already_approved"
+        else:
+            if ownership["code_sha"] != previous_sha:
+                raise ValueError("code release previous SHA is not the authorized tip")
+            payload.update(previous_receipt_sha256=ownership["code_release_sha256"] or ownership["activation_receipt_sha256"],
+                           approved_at=datetime.now(timezone.utc).isoformat())
+            write_json(path, payload)
+            status = "approved"
+        directory_fd = os.open(state, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return {"status": status, "receipt_path": str(path), "code_sha": new_head}
+
+
 def _tracked_worktree_is_clean(repo_root: Path) -> bool:
     status = subprocess.check_output(
         ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"],
         text=True,
         env=_repo_python_env(repo_root),
     )
-    return not status.strip()
+    untracked = subprocess.check_output(
+        ["git", "-C", str(repo_root), "ls-files", "--others", "--exclude-standard", "--", "src", "scripts"],
+        text=True, env=_repo_python_env(repo_root),
+    )
+    ignored = subprocess.check_output(
+        ["git", "-C", str(repo_root), "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "src", "scripts"],
+        text=True, env=_repo_python_env(repo_root),
+    ).split("\0")
+    ignored_code = any(path and (path.endswith((".py", ".pyi", ".sh", ".so")) or os.access(repo_root / path, os.X_OK)) for path in ignored)
+    return not status.strip() and not untracked.strip() and not ignored_code
 
 
 def precheck_transferred_wappi_checkpoint(config: NightlyServiceConfig) -> Mapping[str, Any]:
@@ -460,7 +597,7 @@ def activate_writer_ownership_before_first_write(
             raise ValueError("M4 writer activation receipt already exists with different evidence")
     else:
         write_json(activation_path, payload)
-    active = {**writer_ownership, "status": "M4_WRITER_ACTIVE"}
+    active = {**writer_ownership, "status": "M4_WRITER_ACTIVE", "activation_code_sha": writer_ownership["code_sha"]}
     return active, {"status": "created", "path": str(activation_path), **pre_activation_checks}
 
 
@@ -499,16 +636,16 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
     # a config edit (even one that only touches a single step's parameters)
     # is guaranteed to invalidate any interrupted run instead of silently
     # resuming under stale assumptions.
-    config_fingerprint = service_config_fingerprint(
-        config,
-        timeline_db=timeline_db,
-        allowed_root=allowed_root,
-        out_root=out_root,
-        publish_dir=publish_dir,
-    )
     with service_lock(timeline_db, timeout_seconds=config.lock_timeout_seconds) as lock_info, \
             activated_m4_writer_scope(config, timeline_db=timeline_db) as writer_scope:
         writer_ownership, active_writer_ownership, writer_activation = writer_scope
+        config_fingerprint = service_config_fingerprint(
+            config, timeline_db=timeline_db, allowed_root=allowed_root, out_root=out_root, publish_dir=publish_dir,
+        )
+        if "code_sha" in active_writer_ownership:
+            config_fingerprint = hashlib.sha256(
+                f"{config_fingerprint}\n{active_writer_ownership['code_sha']}\n{active_writer_ownership.get('code_release_sha256', '')}".encode()
+            ).hexdigest()
         timeline_db.parent.mkdir(parents=True, exist_ok=True)
         out_root.mkdir(parents=True, exist_ok=True)
         publish_dir.mkdir(parents=True, exist_ok=True)

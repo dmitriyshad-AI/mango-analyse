@@ -714,19 +714,17 @@ def test_wappi_apply_keeps_unknown_widget_contact_pending_without_blocking_other
         {("telegram", "chat-1"): {"contact": {"id": 9999}, "leads": [{"id": 8888}]}},
     )
 
-    report = run_wappi_history_import(
-        WappiHistoryImportConfig(
-            timeline_db=db_path,
-            allowed_root=tmp_path,
-            phase1_config=phase1,
-            pairs_file=None,
-            auto_pairs_file=None,
-            apply=True,
-            widget_link_db=tmp_path / "wappi_amo_links.sqlite",
-            limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
-        ),
-        client=client,
+    config = WappiHistoryImportConfig(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        phase1_config=phase1,
+        pairs_file=None,
+        auto_pairs_file=None,
+        apply=True,
+        widget_link_db=tmp_path / "wappi_amo_links.sqlite",
+        limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
     )
+    report = run_wappi_history_import(config, client=client)
 
     assert report["validation_ok"] is True, report
     assert report["publish_ready"] is True
@@ -752,6 +750,23 @@ def test_wappi_apply_keeps_unknown_widget_contact_pending_without_blocking_other
         ).fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM timeline_conflicts").fetchone()[0] == 1
+        source_id = con.execute("SELECT source_id FROM timeline_events").fetchone()[0]
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.quarantine_timeline_events_identity_conflict(
+            "foton", source_system="wappi_telegram", source_id=source_id,
+            reason="existing_wappi_chat_customer_conflict", actor="test",
+        )
+    with sqlite3.connect(db_path) as con:
+        before = con.execute("SELECT record_json FROM timeline_events").fetchall()
+
+    repeat = run_wappi_history_import(config, client=client)
+    assert repeat["publish_ready"] is True
+    assert repeat["summary"]["messages_newly_saved"] == 0
+    assert repeat["summary"]["blocked_customer_relink_conflicts"] == 0
+    assert repeat["summary"]["preserved_existing_quarantine"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT record_json FROM timeline_events").fetchall() == before
+        assert con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 0
 
 
 def test_wappi_apply_does_not_turn_optional_widget_gate_on_implicitly(
@@ -5273,6 +5288,422 @@ def test_wappi_required_widget_missing_profile_does_not_fall_back(tmp_path: Path
     assert resolution.resolved is False
     assert resolution.reason == "wappi_widget_unavailable"
     assert resolution.resolution_source == "wappi_amo_widget"
+
+
+def test_r5_late_amo_keeps_ambiguous_candidates(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    first = seed_customer_with_amo(db, tmp_path, customer_id="customer:first", lead_id="")
+    second = seed_customer_with_amo(db, tmp_path, customer_id="customer:second", lead_id="")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id=first, link_type="amo_contact_id", link_value="2002",
+            source_system="amocrm_snapshot", source_ref="synthetic:additional-owner",
+            match_class="strong_unique", confidence=1.0,
+        ), actor="test")
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT COUNT(DISTINCT customer_id) FROM identity_links WHERE link_type='amo_contact_id'"
+        ).fetchone()[0] == 2
+    resolver = WappiPairCustomerResolver.from_store(db, tenant_id="foton", pairs={})
+    result = resolver._resolve_amo_candidate_to_customer(
+        profile=profile("p-tg", "foton", "telegram"), lead_id="", contact_id="2002",
+        match_key="telegram_user_id", auto_result={}, identity_only=True,
+    )
+    assert not result.resolved
+    assert set(result.candidate_customer_ids) == {first, second}
+
+
+def _r5_alias_row(
+    con: sqlite3.Connection, old: str, new: str, *,
+    kind: str = "alias", status: str = "active", tenant: str = "foton",
+) -> None:
+    from mango_mvp.customer_timeline.ids import stable_digest
+
+    payload = {
+        "mapping_id": f"synthetic:{tenant}:{old}:{new}", "tenant_id": tenant,
+        "old_customer_id": old, "new_customer_id": new,
+        "mapping_kind": kind, "resolution_status": status, "reason": "synthetic",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    con.execute(
+        "INSERT INTO customer_id_mappings "
+        "(mapping_id,tenant_id,old_customer_id,new_customer_id,mapping_kind,"
+        "resolution_status,reason,created_at,updated_at,record_hash,record_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (*payload.values(), stable_digest(payload), json.dumps(payload, sort_keys=True)),
+    )
+
+
+def _r5_widget_links(contact_id: str = "2002", lead_ids: tuple[str, ...] = ("1001",)):
+    return {
+        ("telegram", "p-tg", "123456"): {
+            "status": "resolved", "contact_id": contact_id, "lead_ids": lead_ids,
+            "resolution_source": "wappi_amo_widget",
+        }
+    }
+
+
+def _r5_alias_event(resolution: WappiChatResolution) -> TimelineEvent:
+    record = wappi_message_to_record(
+        profile=profile("p-tg", "foton", "telegram"),
+        message=WappiHistoryMessage(
+            profile_id="p-tg", chat_id="123456", message_id="m-r5-alias",
+            text="Synthetic message", message_type="text",
+            timestamp=1_753_000_000, from_me=False,
+        ),
+        resolution=resolution,
+    )
+    return WappiHistoryTimelineNormalizer(
+        tenant_id="foton", source_system="wappi_telegram",
+    ).normalize(record).events[0]
+
+
+def _r5_alias_replay(
+    tmp_path: Path, db_path: Path, monkeypatch: pytest.MonkeyPatch, *,
+    contact_id: str = "2002", lead_ids: tuple[str, ...] = ("1001",),
+    pairs_file: Path | None = None,
+) -> Mapping[str, Any]:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-id")
+    client = FakeWidgetWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {("telegram", "p-tg", "123456"): [{
+            "id": "m-r5-alias", "chat_id": "123456", "type": "text",
+            "body": "Synthetic message", "time": 1_753_000_000,
+        }]},
+        {("telegram", "123456"): {
+            "contact": {"id": int(contact_id)},
+            "leads": [{"id": int(value)} for value in lead_ids],
+        }},
+    )
+    return run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path, allowed_root=tmp_path,
+            phase1_config=write_phase1_config(tmp_path),
+            pairs_file=pairs_file, auto_pairs_file=None, apply=True,
+            require_widget_linkage=True,
+            widget_link_db=tmp_path / "synthetic_widget.sqlite",
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=5, messages_per_chat=5,
+                message_limit_total=20, sleep_seconds=0,
+            ),
+        ),
+        client=client,
+    )
+
+
+def test_r5_alias_chain_normalizes_before_all_resolver_uniqueness(tmp_path: Path) -> None:
+    from mango_mvp.customer_timeline.wappi_history_import import _wappi_customer_aliases
+    from mango_mvp.integrations.draft_loop import load_pairs_file
+
+    db_path = tmp_path / "timeline.sqlite"
+    old = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:alias-old", lead_id="", contact_id="2002")
+    middle = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:alias-middle", lead_id="", contact_id="")
+    final = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:alias-final", lead_id="1001", contact_id="")
+    unused = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:alias-unused", lead_id="", contact_id="")
+    for owner in (old, middle):
+        seed_local_identity(db_path, tmp_path, customer_id=owner, link_type="telegram_user_id", link_value="123456", brand="foton")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id=middle, link_type="amo_contact_id",
+            link_value="2002", source_system="synthetic", source_ref="synthetic:shared-contact",
+            match_class=IdentityMatchClass.STRONG_UNIQUE, confidence=1.0,
+        ), actor="test")
+        store.upsert_event(_r5_alias_event(WappiChatResolution(
+            status="resolved", customer_id=old, resolution_source="wappi_amo_widget",
+        )), actor="test")
+        store.upsert_customer(CustomerIdentity(
+            tenant_id="unpk", customer_id="customer:foreign-alias",
+            identity_status=IdentityStatus.STRONG, source_ref="synthetic:foreign",
+        ), actor="test")
+    with sqlite3.connect(db_path) as con:
+        con.execute("DELETE FROM identity_links WHERE link_type='amo_contact_id' AND link_value!='2002'")
+        _r5_alias_row(con, old, middle)
+        _r5_alias_row(con, middle, final)
+        _r5_alias_row(con, final, final)
+        _r5_alias_row(con, final, unused, status="superseded")
+        _r5_alias_row(con, old, "customer:foreign-alias", tenant="unpk")
+        assert con.execute(
+            "SELECT COUNT(DISTINCT customer_id) FROM identity_links "
+            "WHERE tenant_id='foton' AND link_type='amo_contact_id' AND link_value='2002'"
+        ).fetchone()[0] == 2
+        before = con.execute("SELECT * FROM identity_links ORDER BY link_id").fetchall()
+    with open_readonly_sqlite(db_path) as con:
+        aliases = _wappi_customer_aliases(con, "foton")
+        assert aliases[old] == aliases[middle] == final
+        assert aliases.get(final, final) == final
+    pairs = load_pairs_file(write_pairs(tmp_path, lead_id="1001", contact_id="2002", chat_id="123456"))
+    dialog = {"id": "123456", "type": "user"}
+    p = profile("p-tg", "foton", "telegram")
+    resolver = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs=pairs)
+    assert resolver.canonical_customer_id(old) == final
+    pair_resolution = resolver.resolve_chat(profile=p, dialog=dialog, messages=())
+    assert pair_resolution.resolved and pair_resolution.customer_id == final
+    local = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs={})
+    local_resolution = local.resolve_chat(profile=p, dialog=dialog, messages=())
+    assert local_resolution.resolved and local_resolution.customer_id == final
+    widget = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs=pairs, widget_links=_r5_widget_links(),
+        widget_required=True,
+    )
+    widget.prime_widget_chat_resolutions((p,))
+    primed = widget.prime_pair_chat_resolution(profile=p, dialog=dialog)
+    resolved = widget.resolve_chat(profile=p, dialog=dialog, messages=())
+    assert primed is not None and primed.resolved and primed.customer_id == final
+    assert resolved.resolved and resolved.customer_id == final
+    with open_readonly_sqlite(db_path) as con:
+        assert [tuple(row) for row in con.execute("SELECT * FROM identity_links ORDER BY link_id")] == before
+        assert con.execute("SELECT customer_id FROM timeline_events").fetchone()[0] == old
+
+
+@pytest.mark.parametrize("damage", ("split", "fork", "cycle", "missing_target"))
+def test_r5_invalid_alias_cannot_disappear_into_widget_lead_fallback(tmp_path: Path, damage: str) -> None:
+    from mango_mvp.customer_timeline.wappi_history_import import _wappi_customer_aliases
+
+    db_path = tmp_path / "timeline.sqlite"
+    old = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:invalid-alias", lead_id="", contact_id="2002")
+    final = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:valid-owner", lead_id="1001", contact_id="")
+    with sqlite3.connect(db_path) as con:
+        _r5_alias_row(
+            con, old, "customer:absent" if damage == "missing_target" else old if damage == "fork" else final,
+            kind="split" if damage == "split" else "alias",
+        )
+        if damage == "fork":
+            _r5_alias_row(con, old, final)
+        elif damage == "cycle":
+            _r5_alias_row(con, final, old)
+        elif damage == "missing_target":
+            _r5_alias_row(con, "customer:absent", "customer:absent")
+    with open_readonly_sqlite(db_path) as con:
+        aliases = _wappi_customer_aliases(con, "foton")
+        assert aliases[old] is None
+        if damage == "missing_target":
+            assert aliases["customer:absent"] is None
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs={}, widget_links=_r5_widget_links(),
+        widget_required=True,
+    )
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"}, messages=(),
+    )
+    assert not resolution.resolved
+    assert resolution.customer_id is None
+    assert "None" not in resolution.candidate_customer_ids
+    assert {old, final}.issubset(resolution.candidate_customer_ids)
+    with open_readonly_sqlite(db_path) as con:
+        assert con.execute(
+            "SELECT match_class FROM identity_links WHERE link_type='amo_contact_id' AND link_value='2002'"
+        ).fetchone()[0] == "strong_unique"
+    if damage == "split":
+        from mango_mvp.customer_timeline.ids import stable_digest
+        with sqlite3.connect(db_path) as con:
+            payload = json.loads(con.execute(
+                "SELECT record_json FROM customer_identities WHERE customer_id=?", (old,),
+            ).fetchone()[0])
+            payload["metadata"] = {**payload.get("metadata", {}), "provisional_wappi_family": True}
+            con.execute(
+                "UPDATE customer_identities SET record_json=?,record_hash=? WHERE customer_id=?",
+                (json.dumps(payload, sort_keys=True), stable_digest(payload), old),
+            )
+        with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+            for owner, kind, value in (
+                (old, "channel_session_id", "wappi_telegram:p-tg:123456"),
+                (final, "amo_contact_id", "3003"),
+            ):
+                store.upsert_identity_link(IdentityLink(
+                    tenant_id="foton", customer_id=owner, link_type=kind, link_value=value,
+                    source_system="synthetic", source_ref=f"synthetic:split-guard:{kind}",
+                    match_class=IdentityMatchClass.STRONG_UNIQUE, confidence=1.0,
+                ), actor="test")
+        guarded = WappiPairCustomerResolver.from_store(
+            db_path, tenant_id="foton", pairs={}, widget_links=_r5_widget_links("3003"),
+            widget_required=True,
+        ).resolve_chat(
+            profile=profile("p-tg", "foton", "telegram"),
+            dialog={"id": "123456", "type": "user"}, messages=(),
+        )
+        assert not guarded.resolved and guarded.customer_id is None
+        assert guarded.reason == "existing_wappi_chat_customer_conflict"
+        assert {old, final}.issubset(guarded.candidate_customer_ids)
+
+
+def test_r5_weak_widget_contact_vetoes_strong_aliased_lead(tmp_path: Path) -> None:
+    db_path = tmp_path / "timeline.sqlite"
+    old = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:weak-alias", lead_id="", contact_id="2002")
+    final = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:strong-lead", lead_id="1001", contact_id="")
+    with sqlite3.connect(db_path) as con:
+        row = con.execute("SELECT link_id,record_json FROM identity_links WHERE link_type='amo_contact_id' AND link_value='2002'").fetchone()
+        payload = json.loads(row[1])
+        payload.update(match_class="inferred", confidence=0.2)
+        from mango_mvp.customer_timeline.ids import stable_digest
+        con.execute(
+            "UPDATE identity_links SET match_class='inferred',confidence=0.2,record_json=?,record_hash=? WHERE link_id=?",
+            (json.dumps(payload, sort_keys=True), stable_digest(payload), row[0]),
+        )
+        _r5_alias_row(con, old, final)
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs={}, widget_links=_r5_widget_links(),
+        widget_required=True,
+    )
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"}, messages=(),
+    )
+    assert not resolution.resolved
+    assert resolution.customer_id is None
+    with open_readonly_sqlite(db_path) as con:
+        assert con.execute(
+            "SELECT match_class FROM identity_links WHERE link_type='amo_contact_id' AND link_value='2002'"
+        ).fetchone()[0] == "inferred"
+    # Conservative gate also preserves explicit weak lead evidence as pending.
+    with sqlite3.connect(db_path) as con:
+        for link_type, match_class, confidence in (
+            ("amo_contact_id", "strong_unique", 1.0), ("amo_lead_id", "inferred", 0.2),
+        ):
+            row = con.execute("SELECT link_id,record_json FROM identity_links WHERE link_type=?", (link_type,)).fetchone()
+            payload = json.loads(row[1])
+            payload.update(match_class=match_class, confidence=confidence)
+            con.execute(
+                "UPDATE identity_links SET match_class=?,confidence=?,record_json=?,record_hash=? WHERE link_id=?",
+                (match_class, confidence, json.dumps(payload, sort_keys=True), stable_digest(payload), row[0]),
+            )
+    strong_contact = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs={}, widget_links=_r5_widget_links(),
+        widget_required=True,
+    ).resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"}, messages=(),
+    )
+    assert not strong_contact.resolved and strong_contact.customer_id is None
+    assert strong_contact.reason == "wappi_widget_timeline_identity_missing_or_conflicting"
+    with open_readonly_sqlite(db_path) as con:
+        assert con.execute("SELECT match_class FROM identity_links WHERE link_type='amo_lead_id'").fetchone()[0] == "inferred"
+    other = seed_customer_with_amo(
+        db_path, tmp_path, customer_id="customer:other-child", lead_id="3001", contact_id="",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id=other, link_type="amo_contact_id", link_value="2002",
+            source_system="synthetic", source_ref="synthetic:other-child-contact",
+            match_class=IdentityMatchClass.STRONG_UNIQUE, confidence=1.0,
+        ), actor="test")
+    ambiguous = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs={}, widget_links=_r5_widget_links(lead_ids=("3001",)),
+        widget_required=False,
+    ).resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"}, messages=(),
+    )
+    assert not ambiguous.resolved and ambiguous.customer_id is None
+    assert set(ambiguous.candidate_customer_ids) == {final, other}
+    assert _r5_alias_event(ambiguous).customer_id is None
+
+
+def test_r5_alias_brand_union_does_not_promote_brand_authority(tmp_path: Path) -> None:
+    db_path = tmp_path / "timeline.sqlite"
+    old = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:brand-old", lead_id="", contact_id="2002", brand="unpk")
+    final = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:brand-final", lead_id="1001", contact_id="", brand="foton")
+    with sqlite3.connect(db_path) as con:
+        _r5_alias_row(con, old, final)
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs={}, widget_links=_r5_widget_links(),
+        widget_required=True,
+    )
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"}, messages=(),
+    )
+    assert resolution.resolved and resolution.customer_id == final
+    assert resolution.evidence["customer_brand"] == "conflict"
+    assert resolution.evidence["brand_context_authorized"] is False
+    assert _r5_alias_event(resolution).metadata["brand_context_authorized"] is False
+
+
+def test_r5_pending_widget_and_resolved_pair_stay_pending_without_relink_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mango_mvp.integrations.draft_loop import load_pairs_file
+
+    db_path = tmp_path / "timeline.sqlite"
+    seed_customer_with_amo(db_path, tmp_path)
+    pairs = write_pairs(tmp_path, lead_id="1001", contact_id="2002", chat_id="123456")
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton", pairs=load_pairs_file(pairs),
+        widget_links=_r5_widget_links("9999", ()), widget_required=True,
+    )
+    p = profile("p-tg", "foton", "telegram")
+    resolver.prime_widget_chat_resolutions((p,))
+    initial = resolver.chat_resolutions[("wappi_telegram", "p-tg", "123456")]
+    assert not initial.resolved
+    primed = resolver.prime_pair_chat_resolution(profile=p, dialog={"id": "123456", "type": "user"})
+    assert primed is not None and not primed.resolved
+    assert primed.reason == initial.reason
+    assert "None" not in primed.candidate_customer_ids
+    event = _r5_alias_event(WappiChatResolution(
+        status="pending_attribution", resolution_source="pending_attribution",
+    ))
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(event, actor="test")
+        store.quarantine_timeline_events_identity_conflict(
+            "foton", source_system=event.source_system, source_id=event.source_id,
+            reason="existing_wappi_chat_customer_conflict", actor="test",
+        )
+    with open_readonly_sqlite(db_path) as con:
+        before = tuple(con.execute("SELECT * FROM timeline_events WHERE event_id=?", (event.event_id,)).fetchone())
+    report = _r5_alias_replay(tmp_path, db_path, monkeypatch, contact_id="9999", lead_ids=(), pairs_file=pairs)
+    assert report["summary"]["blocked_customer_relink_conflicts"] == 0
+    assert report["summary"]["blocked_chat_relink_conflicts"] == 0
+    with open_readonly_sqlite(db_path) as con:
+        assert tuple(con.execute("SELECT * FROM timeline_events WHERE event_id=?", (event.event_id,)).fetchone()) == before
+        assert con.execute("SELECT customer_id FROM timeline_events WHERE event_id=?", (event.event_id,)).fetchone()[0] is None
+
+
+def test_r5_alias_equivalent_existing_event_is_preserved_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "timeline.sqlite"
+    old = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:physical-old", lead_id="9001", contact_id="9002")
+    final = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:canonical-new", lead_id="1001", contact_id="2002")
+    with sqlite3.connect(db_path) as con:
+        _r5_alias_row(con, old, final)
+        opportunity_id = con.execute("SELECT opportunity_id FROM customer_opportunities WHERE source_id='9001'").fetchone()[0]
+    event = _r5_alias_event(WappiChatResolution(
+        status="resolved", customer_id=old, opportunity_id=opportunity_id,
+        contact_id="9002", lead_id="9001", resolution_source="wappi_amo_widget",
+    ))
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(event, actor="test")
+    with open_readonly_sqlite(db_path) as con:
+        before = tuple(con.execute("SELECT * FROM timeline_events WHERE event_id=?", (event.event_id,)).fetchone())
+    report = _r5_alias_replay(tmp_path, db_path, monkeypatch)
+    assert report["summary"]["blocked_customer_relink_conflicts"] == 0
+    assert report["summary"]["blocked_chat_relink_conflicts"] == 0
+    with open_readonly_sqlite(db_path) as con:
+        assert tuple(con.execute("SELECT * FROM timeline_events WHERE event_id=?", (event.event_id,)).fetchone()) == before
+        assert con.execute("SELECT customer_id FROM customer_opportunities WHERE opportunity_id=?", (opportunity_id,)).fetchone()[0] == old
+
+
+def test_r5_alias_pair_with_other_physical_opportunity_owner_stays_pending(tmp_path: Path) -> None:
+    from mango_mvp.integrations.draft_loop import load_pairs_file
+
+    db_path = tmp_path / "timeline.sqlite"
+    old = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:deal-old", lead_id="1001", contact_id="2002")
+    final = seed_customer_with_amo(db_path, tmp_path, customer_id="customer:deal-new", lead_id="", contact_id="")
+    with sqlite3.connect(db_path) as con:
+        _r5_alias_row(con, old, final)
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path, tenant_id="foton",
+        pairs=load_pairs_file(write_pairs(tmp_path, lead_id="1001", contact_id="2002", chat_id="123456")),
+    )
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"}, messages=(),
+    )
+    assert not resolution.resolved
+    assert resolution.customer_id is None
+    with open_readonly_sqlite(db_path) as con:
+        assert con.execute("SELECT customer_id FROM customer_opportunities WHERE source_id='1001'").fetchone()[0] == old
 
 
 def seed_customer_with_amo(

@@ -536,6 +536,360 @@ def test_full_nightly_config_rejects_stale_schema_before_opening_db(tmp_path: Pa
         service_config_from_json(config_path)
 
 
+@pytest.fixture
+def code_release_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Synthetic Git/state only. The unit review double is NOT an audit receipt."""
+    from scripts import build_customer_timeline_nightly_dv2_sources as builder
+
+    root = tmp_path / "repo"
+    code_paths = ("src/mango_mvp/customer_timeline/nightly_service.py",
+                  "scripts/run_customer_timeline_nightly_service.py", "tests/test_release.py")
+    for rel in code_paths:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# synthetic base\n", encoding="utf-8")
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", *args], text=True,
+            env=nightly_service_module._repo_python_env(root), stderr=subprocess.DEVNULL,
+        ).strip()
+    git("init", "-q")
+    git("config", "user.name", "Synthetic Release Test")
+    git("config", "user.email", "release@example.invalid")
+    git("add", ".")
+    git("commit", "-qm", "synthetic base")
+    previous = git("rev-parse", "HEAD")
+    module_source = Path(nightly_service_module.__spec__.origin)
+    monkeypatch.setattr(nightly_service_module, "__file__", str(root / code_paths[0]))
+    staging = tmp_path / ".codex_local" / "staging"
+    state = staging / "state"
+    state.mkdir(parents=True)
+    db = staging / "customer_timeline_staging.sqlite"
+    db.write_bytes(b"synthetic already activated database: must never be opened")
+    phase1 = state / "phase1.json"
+    phase1.write_text('{"profiles": {}}\n', encoding="utf-8")
+    monkeypatch.setattr(builder, "DEFAULT_WAPPI_CONFIG", phase1)
+    empty_sha = nightly_service_module.hashlib.sha256(b"[]\n").hexdigest()
+    pair_paths = builder.wappi_pair_snapshot_paths(state, pairs_sha256=empty_sha, auto_pairs_sha256=empty_sha)
+    for path in pair_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]\n", encoding="utf-8")
+    mail_manifest = state / "mail_manifest.json"
+    mail_manifest.write_text("{}\n", encoding="utf-8")
+    identity_db = state / "synthetic_identity.sqlite"
+    identity_db.write_bytes(b"synthetic identity: no SQL")
+    calls_db = state / "calls" / "working" / "mango_calls_pipeline.sqlite"
+    calls_db.parent.mkdir(parents=True)
+    calls_db.write_bytes(b"synthetic calls: no SQL")
+    calls_config = state / "calls_config.json"
+    calls_config.write_text(json.dumps({"pipeline_root": str(calls_db.parent.parent)}), encoding="utf-8")
+    payload = builder.build_service_config(
+        timeline_db=db, state_root=state, mail_jsonl=state / "mail.jsonl",
+        mail_process_manifest=mail_manifest, mail_process_manifest_sha256=builder.sha256_file(mail_manifest),
+        mango_manifest=mail_manifest, mango_calls_service_config=calls_config,
+        tallanto_identity_dbs=[identity_db],
+        wappi_pair_snapshot={"pairs_file": pair_paths[0], "auto_pairs_file": pair_paths[1]},
+    )
+    config_path = staging / "service.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    config = service_config_from_json(config_path)
+    config = write_transferred_writer_ownership(config, state / "WRITER_OWNERSHIP.json",
+                                               source_config_sha256=config.source_config_sha256)
+    monkeypatch.setattr(nightly_service_module, "precheck_transferred_wappi_checkpoint",
+                        lambda _config: {"status": "not_required"})
+    nightly_service_module.activate_writer_ownership_before_first_write(
+        config, validate_writer_ownership(config), timeline_db=db,
+    )
+    for rel in code_paths:
+        (root / rel).write_text("# synthetic new version\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "synthetic release")
+    new_head = git("rev-parse", "HEAD")
+    evidence = root / "audits" / "_inbox" / "synthetic_review"
+    evidence.mkdir(parents=True)
+    manifest_path = evidence / "manifest.json"
+    manifest_path.write_text(json.dumps({"head": new_head, "branch_diff_base": previous}), encoding="utf-8")
+    context_path = evidence / "context_files.json"
+    context_path.write_text(json.dumps({"files": {rel: "synthetic" for rel in code_paths}}), encoding="utf-8")
+    review = evidence / "synthetic_review.json"
+    review.write_text(json.dumps({"head": new_head, "manifest_path": str(manifest_path.relative_to(root)),
+                                  "fixture_kind": "not_a_canonical_audit_receipt"}), encoding="utf-8")
+    real_run = subprocess.run
+    verifier_calls = []
+    def synthetic_verifier(command, **kwargs):
+        if "--verify-receipt" in command:
+            assert command[:-1] == [sys.executable, str(root / "scripts/make_audit_pack.py"),
+                                   "--root", str(root), "--verify-receipt"]
+            assert Path(command[-1]).is_file()
+            verifier_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, '{"ok": true}', "")
+        return real_run(command, **kwargs)
+    monkeypatch.setattr(nightly_service_module.subprocess, "run", synthetic_verifier)
+    originals = {path: path.read_bytes() for path in (db, state / "M1_WRITER_STOP.json",
+                  state / "WRITER_OWNERSHIP.json", state / "M4_WRITER_ACTIVATION.json")}
+    yield {"root": root, "config": config, "config_path": config_path, "previous": previous,
+           "new_head": new_head, "state": state, "review": review, "manifest": manifest_path,
+           "context": context_path, "git": git, "verifier_calls": verifier_calls,
+           "release": state / f"WRITER_CODE_RELEASE_{previous}.json", "module_source": module_source}
+    assert all(path.read_bytes() == data for path, data in originals.items())
+
+
+def approve_synthetic_release(fixture):
+    return nightly_service_module.approve_writer_code_release(
+        fixture["config_path"], fixture["previous"], fixture["new_head"], fixture["review"],
+    )
+
+
+def test_code_release_cli_approves_once_without_running_nightly(code_release_state, monkeypatch, capsys):
+    f = code_release_state
+    monkeypatch.setattr(nightly_service_cli, "run_nightly_service", lambda *_: pytest.fail("approve ran nightly"))
+    monkeypatch.setattr(nightly_service_module.sqlite3, "connect", lambda *_a, **_k: pytest.fail("approve opened SQLite"))
+    args = ["--config", str(f["config_path"]), "--approve-code-release", f["previous"], f["new_head"],
+            "--review-receipt", str(f["review"])]
+    assert nightly_service_cli.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "approved"
+    before = f["release"].read_bytes()
+    assert nightly_service_cli.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "already_approved"
+    assert f["release"].read_bytes() == before
+    assert len(f["verifier_calls"]) == 2
+    result = validate_writer_ownership(f["config"])
+    assert result["code_sha"] == f["new_head"]
+    assert result["activation_code_sha"] == f["previous"]
+    assert result["code_release_sha256"] == nightly_service_module.file_fingerprint(f["release"])["sha256"]
+
+
+@pytest.mark.parametrize("defect", ["head", "base", "coverage", "dirty", "untracked", "ignored_code", "config", "no_activation", "symlink"])
+def test_code_release_rejects_unreviewed_or_drifted_inputs(code_release_state, defect):
+    f = code_release_state
+    if defect in {"head", "base"}:
+        manifest = json.loads(f["manifest"].read_text())
+        manifest["head" if defect == "head" else "branch_diff_base"] = "f" * 40
+        f["manifest"].write_text(json.dumps(manifest))
+    elif defect == "coverage":
+        context = json.loads(f["context"].read_text())
+        context["files"].pop("scripts/run_customer_timeline_nightly_service.py")
+        f["context"].write_text(json.dumps(context))
+    elif defect == "dirty":
+        (f["root"] / "scripts/run_customer_timeline_nightly_service.py").write_text("# dirty\n")
+    elif defect == "untracked":
+        (f["root"] / "src/untracked.py").write_text("# untracked\n")
+    elif defect == "ignored_code":
+        (f["root"] / ".git/info/exclude").write_text("src/ignored.py\n")
+        (f["root"] / "src/ignored.py").write_text("# ignored code\n")
+    elif defect == "config":
+        payload = json.loads(f["config_path"].read_text())
+        payload["total_runtime_budget_seconds"] = 12345
+        f["config_path"].write_text(json.dumps(payload))
+    elif defect == "no_activation":
+        f["state"].joinpath("M4_WRITER_ACTIVATION.json").rename(f["state"] / "activation_saved.json")
+    else:
+        f["release"].symlink_to(f["review"])
+    try:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            approve_synthetic_release(f)
+    finally:
+        if defect == "no_activation":
+            (f["state"] / "activation_saved.json").rename(f["state"] / "M4_WRITER_ACTIVATION.json")
+
+
+def test_code_release_requires_canonical_verifier_success(code_release_state, monkeypatch):
+    original = subprocess.run
+    def reject_review(command, **kwargs):
+        if "--verify-receipt" in command:
+            return subprocess.CompletedProcess(command, 1, '{"ok": false}', "")
+        return original(command, **kwargs)
+    monkeypatch.setattr(nightly_service_module.subprocess, "run", reject_review)
+    with pytest.raises(ValueError, match="review verification failed"):
+        approve_synthetic_release(code_release_state)
+    assert not code_release_state["release"].exists()
+
+
+def test_code_release_rejects_review_through_symlink_ancestor(code_release_state):
+    f = code_release_state
+    link = f["root"] / "review_alias"
+    link.symlink_to(f["root"] / "audits", target_is_directory=True)
+    review_alias = link / "_inbox" / "synthetic_review" / f["review"].name
+    with pytest.raises(ValueError, match="regular file"):
+        nightly_service_module.approve_writer_code_release(
+            f["config_path"], f["previous"], f["new_head"], review_alias,
+        )
+    assert not f["release"].exists()
+
+
+def test_code_release_rejects_symlink_parent_traversal_before_verifier(code_release_state):
+    f = code_release_state
+    decoy = f["root"] / "decoy"
+    decoy.mkdir()
+    inner = f["review"].parent / "inner"
+    inner.mkdir()
+    (decoy / "link").symlink_to(inner, target_is_directory=True)
+    (decoy / f["review"].name).write_bytes(f["review"].read_bytes())
+    candidate = decoy / "link" / ".." / f["review"].name
+    with pytest.raises(ValueError, match="parent traversal"):
+        nightly_service_module.approve_writer_code_release(
+            f["config_path"], f["previous"], f["new_head"], candidate,
+        )
+    assert not f["verifier_calls"]
+    assert not f["release"].exists()
+
+
+def test_code_release_extends_history_without_revalidating_old_review(code_release_state):
+    f = code_release_state
+    approve_synthetic_release(f)
+    before = f["release"].read_bytes()
+    old_review = f["review"].read_bytes()
+    (f["root"] / "scripts/run_customer_timeline_nightly_service.py").write_text("# synthetic next release\n")
+    f["git"]("add", ".")
+    f["git"]("commit", "-qm", "synthetic next release")
+    next_head = f["git"]("rev-parse", "HEAD")
+    evidence = f["root"] / "audits/_inbox/synthetic_next_review"
+    evidence.mkdir()
+    (evidence / "manifest.json").write_text(json.dumps({"head": next_head, "branch_diff_base": f["new_head"]}))
+    (evidence / "context_files.json").write_text(f["context"].read_text())
+    review = evidence / "synthetic_review.json"
+    review.write_text(json.dumps({"head": next_head, "manifest_path": str((evidence / "manifest.json").relative_to(f["root"]))}))
+    result = nightly_service_module.approve_writer_code_release(f["config_path"], f["new_head"], next_head, review)
+    assert result["status"] == "approved"
+    assert validate_writer_ownership(f["config"])["code_sha"] == next_head
+    assert f["release"].read_bytes() == before
+    assert f["review"].read_bytes() == old_review
+    assert len(f["verifier_calls"]) == 2
+
+
+def test_code_release_rejects_conflicting_retry(code_release_state):
+    f = code_release_state
+    approve_synthetic_release(f)
+    before = f["release"].read_bytes()
+    alternate = f["review"].with_name("different_synthetic_review.json")
+    alternate.write_bytes(f["review"].read_bytes())
+    with pytest.raises(ValueError, match="conflicting"):
+        nightly_service_module.approve_writer_code_release(f["config_path"], f["previous"], f["new_head"], alternate)
+    assert f["release"].read_bytes() == before
+
+
+@pytest.mark.parametrize("defect", ["previous_hash", "new_sha", "orphan", "review_bytes", "old_head"])
+def test_code_release_validator_rejects_broken_history(code_release_state, monkeypatch, defect):
+    f = code_release_state
+    approve_synthetic_release(f)
+    release = json.loads(f["release"].read_text())
+    if defect == "previous_hash":
+        release["previous_receipt_sha256"] = "f" * 64
+    elif defect == "new_sha":
+        release["new_code_sha"] = f["previous"]
+    elif defect == "orphan":
+        (f["state"] / f"WRITER_CODE_RELEASE_{'f' * 40}.json").write_text("{}")
+    elif defect == "review_bytes":
+        f["review"].write_text(f["review"].read_text() + "\n")
+    else:
+        real_git = nightly_service_module._writer_git
+        monkeypatch.setattr(nightly_service_module, "_writer_git",
+                            lambda *args: f["previous"] if args == ("rev-parse", "HEAD") else real_git(*args))
+    f["release"].write_text(json.dumps(release))
+    with pytest.raises(ValueError):
+        validate_writer_ownership(f["config"])
+
+
+@pytest.mark.parametrize("after_replace", [False, True])
+def test_code_release_crash_publication_and_retry(code_release_state, monkeypatch, after_replace):
+    f = code_release_state
+    real_write = nightly_service_module.write_json
+    def crashing_write(path, payload):
+        if after_replace:
+            real_write(path, payload)
+        raise OSError("synthetic publication crash")
+    monkeypatch.setattr(nightly_service_module, "write_json", crashing_write)
+    with pytest.raises(OSError, match="synthetic publication crash"):
+        approve_synthetic_release(f)
+    assert f["release"].exists() is after_replace
+    monkeypatch.setattr(nightly_service_module, "write_json", real_write)
+    synced = []
+    real_fsync = os.fsync
+    def observed_fsync(fd):
+        import stat
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append(True)
+        return real_fsync(fd)
+    monkeypatch.setattr(nightly_service_module.os, "fsync", observed_fsync)
+    assert approve_synthetic_release(f)["status"] == ("already_approved" if after_replace else "approved")
+    assert synced == [True]
+
+
+def _release_cli_subprocess(f):
+    # Load the actual implementation and CLI; only the Git checkout location is synthetic.
+    bootstrap = (
+        "import pathlib,runpy,sys; import mango_mvp.customer_timeline.nightly_service as m; "
+        "source=pathlib.Path(sys.argv.pop(1)); exec(compile(source.read_text(),str(source),'exec'),m.__dict__); "
+        "m.__file__=sys.argv.pop(1); script=sys.argv.pop(1); sys.argv[0]=script; "
+        "runpy.run_path(script,run_name='__main__')"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", bootstrap, str(f["module_source"]),
+         str(f["root"] / "src/mango_mvp/customer_timeline/nightly_service.py"),
+         str(Path(nightly_service_cli.__spec__.origin)), "--config", str(f["config_path"]),
+         "--approve-code-release", f["previous"], f["new_head"], "--review-receipt", str(f["review"])],
+        text=True, capture_output=True, timeout=10,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+
+
+@pytest.mark.parametrize("kind", ["wrapper", "service", "writer"])
+def test_code_release_real_cli_stops_on_each_distinct_lock(code_release_state, kind):
+    f = code_release_state
+    db = f["config"].timeline_db
+    wrapper = db.parent / "task_state" / "nightly-warehouse-wrapper"
+    assert timeline_store_module.customer_timeline_run_lock_path(wrapper) != timeline_store_module.customer_timeline_run_lock_path(db)
+    assert str(timeline_store_module.customer_timeline_run_lock_path(wrapper)).endswith(
+        ".codex_local/staging/task_state/nightly-warehouse-wrapper.nightly_service.lock")
+    context = (timeline_store_module.customer_timeline_writer_lock(db, timeout_seconds=0) if kind == "writer"
+               else timeline_store_module.customer_timeline_run_lock(wrapper if kind == "wrapper" else db, timeout_seconds=0))
+    with context:
+        completed = _release_cli_subprocess(f)
+    assert completed.returncode == 75, completed.stderr + completed.stdout
+    assert json.loads(completed.stdout)["status"] == "stopped"
+    assert not f["release"].exists()
+
+
+def test_code_release_real_cli_does_not_accept_the_unit_review_double(code_release_state):
+    completed = _release_cli_subprocess(code_release_state)
+    assert completed.returncode == 1, completed.stderr + completed.stdout
+    assert json.loads(completed.stdout)["reason"] == "code release review verification failed"
+    assert not code_release_state["release"].exists()
+
+
+def test_code_release_cli_requires_review_pair_without_entering_nightly(monkeypatch):
+    monkeypatch.setattr(nightly_service_cli, "run_nightly_service", lambda *_: pytest.fail("ran nightly"))
+    with pytest.raises(SystemExit) as exc:
+        nightly_service_cli.main(["--config", "synthetic.json", "--approve-code-release", "a" * 40, "b" * 40])
+    assert exc.value.code == 2
+
+
+def test_code_release_resume_fingerprint_is_locked_and_version_bound(tmp_path, monkeypatch):
+    config = service_config_from_json(write_service_config(tmp_path))
+    proof = {"status": "M4_WRITER_ACTIVE", "code_sha": "a" * 40, "code_release_sha256": "b" * 64}
+    @contextmanager
+    def writer_scope(*_args, **_kwargs):
+        yield proof, proof, {"status": "not_required"}
+    monkeypatch.setattr(nightly_service_module, "activated_m4_writer_scope", writer_scope)
+    original_fingerprint = nightly_service_module.service_config_fingerprint
+    def locked_fingerprint(*args, **kwargs):
+        key = str(timeline_store_module.customer_timeline_run_lock_path(config.timeline_db))
+        assert key in timeline_store_module._held_customer_timeline_run_locks()
+        return original_fingerprint(*args, **kwargs)
+    monkeypatch.setattr(nightly_service_module, "service_config_fingerprint", locked_fingerprint)
+    captured = []
+    def stop_at_resume(_out, fingerprint, **_kwargs):
+        captured.append(fingerprint)
+        raise RuntimeError("synthetic stop before opening DB")
+    monkeypatch.setattr(nightly_service_module, "find_resumable_run", stop_at_resume)
+    for changes in ({}, {}, {"code_sha": "c" * 40}, {"code_release_sha256": "d" * 64}):
+        proof.update(changes)
+        with pytest.raises(RuntimeError, match="synthetic stop"):
+            run_nightly_service(config)
+    assert captured[0] == captured[1]
+    assert len(set(captured)) == 3
+
+
 def test_service_config_rejects_second_state_tree(tmp_path: Path) -> None:
     config_path = write_service_config(tmp_path)
     payload = json.loads(config_path.read_text(encoding="utf-8"))

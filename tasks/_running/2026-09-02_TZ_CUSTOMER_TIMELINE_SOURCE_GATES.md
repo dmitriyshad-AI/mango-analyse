@@ -7,12 +7,49 @@
 Feature-ID: feature.customer_timeline.stable_source_gates
 Problem-ID: problem.customer_timeline.m4_first_cycle_source_failures
 Изменение: fix
-Ключевые-символы: load_incremental_jsonl_source,parse_mail_stage2_event_at,wappi_fetch_universe_fingerprint,ensure_nightly_config,managed_staging_writer_scope,guard_managed_customer_timeline_staging_write,activate_writer_ownership_after_success,validate_writer_ownership,run_nightly_service,resolve_chat,IncrementalSourceConfig,status_from_payload
+Ключевые-символы: load_incremental_jsonl_source,parse_mail_stage2_event_at,wappi_fetch_universe_fingerprint,ensure_nightly_config,managed_staging_writer_scope,guard_managed_customer_timeline_staging_write,activate_writer_ownership_before_first_write,validate_writer_ownership,approve_writer_code_release,run_nightly_service,WappiPairCustomerResolver,resolve_chat,IncrementalSourceConfig,status_from_payload
 Ключевые-слова: mail event timestamp proof,Wappi checkpoint fingerprint,immutable pair snapshot,single writer activation boundary,Tallanto subprocess scope,partial cycle recovery,Wappi owner conflict,mail proof manifest,raw sqlite writer bypass
 
 Проверенный-донор: e4391b438c9a25fa544cf0d4adc680593d9897bb
 
 # Customer Timeline: закрыть два сбоя первого цикла M4
+
+## Актуальное продолжение 06.09: runtime_goal_active
+
+Первичная передача M1 уже завершена и не повторяется. r5 активирован на
+c2704d1f8c3beab4ec22c52542b28c44a1f8c96c; сохранён частичный прогресс,559757 событий,
+AMO/Wappi/Mail checkpoints. Первый цикл завершился штатным timeout, не green.
+Пункты ниже про восстановление нового seed относятся только к первичной
+передаче; к активному r5 они больше НЕ применяются. Запрет пересоздавать r5.
+Пункт14 заменяет историческое ограничение пункта11 про восстановление только
+после зелёного отчёта: владение уже существует, качество ещё не принято.
+
+Кодовая подзадача 2026-09-06_TZ_R5_IDENTITY_AND_CODE_RELEASE закрывается как
+attempt_complete, не problem_closed. D-151 ускоряет FTS только производной
+картой. D-152 нормализует Wappi alias до unique (sole A->A — no-op), сохраняет
+неоднозначные contact/lead в pending и добавляет ручной code-release.
+Реальные source-конфликты/бренды/порог strong не ослабляются. Молчаливого выбора
+ребёнка по семье нет. Снижение resolved в offline replay отражается честно.
+
+Следующий canonical review этого running parent является review КОДА выпуска
+для первого approve, а не доказательством уже выполненных двух runtime-циклов:
+такого циклического требования быть не должно. Пакет — с --base полным
+c2704d1f8c3beab4ec22c52542b28c44a1f8c96c, текущий окончательный HEAD и весь diff,
+включая FTS, CLI и тесты. Перед approve проверяются canonical receipt, полный
+range/allowlist и текущий clean HEAD. Ownership/activation не перепечатываются.
+Все три locks свободны; approve не открывает SQLite на запись и не запускает
+службу. Новый код использует сохранённые source-checkpoints, но не чужой
+run-fingerprint. После approve HEAD рабочего writer заморожен.
+
+Приёмка runtime остаётся открытой: два последовательных overall_status=ok И
+data_quality_status=pass; один compact существующим инструментом; S100/S10 и
+реальный reader. Только затем одно03:30 расписание mail-chain && nightly-
+warehouse. Старое расписание выключено. Production/CRM/клиентских отправок0.
+Calls upstream — отдельное известное ограничение, не объявлять восстановленным.
+Результаты runtime записывать в ignored audit pack, не менять HEAD writer
+ради отчётов. Закрытие parent после runtime-приёмки выполняется через штатный
+task_move в отдельном согласованном документальном worktree; действующий
+writer и его папка/HEAD не переключаются для завершения очереди.
 
 ## Примечание для preflight
 

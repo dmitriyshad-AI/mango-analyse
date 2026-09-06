@@ -103,6 +103,19 @@ def save_amo_incremental_checkpoint(out_root: Path, endpoints: Mapping[str, Any]
         if path.exists():
             path.unlink()
         return
+    endpoints = dict(endpoints)
+    diagnostics = dict(endpoints.get("amo_unverified_last_cycle") or {})
+    for key, entry in endpoints.items():
+        if isinstance(entry, Mapping) and entry.get("unverified_items"):
+            diagnostics[key] = {field: entry.get(field) for field in (
+                "fingerprint", "upper_bound", "unverified_items",
+            )}
+    if diagnostics:
+        endpoints["amo_unverified_last_cycle"] = {
+            key: {**entry, "unverified_items": list({stable_digest(row): row
+                for row in entry["unverified_items"]}.values())}
+            for key, entry in diagnostics.items()
+        }
     _atomic_write_text(
         path,
         json.dumps(
@@ -162,6 +175,7 @@ def _resume_state(
 def _verify_amo_pages(
     client: AmoMcpClient, *, path: str, embedded_key: str, params: Mapping[str, Any],
     config: AmoIncrementalConfig, proofs: Mapping[int, tuple[str, bool]], requests: dict[str, int],
+    unverified_items: list[Mapping[str, Any]],
 ) -> tuple[int, bool]:
     checked = 0
     for page, expected in proofs.items():
@@ -169,6 +183,7 @@ def _verify_amo_pages(
         payload = _fetch_collection_page(client, path=path, params=params, page=page, config=config, request_counts=requests)
         checked += 1
         if _amo_page_proof(payload, embedded_key) != expected:
+            unverified_items.extend(embedded_items(payload, embedded_key))
             return checked, False
     return checked, True
 
@@ -210,15 +225,22 @@ def _fetch_amo_time_windows(
     lower_bound: datetime, upper_bound: datetime, config: AmoIncrementalConfig,
     entry: Mapping[str, Any], fingerprint: str, checkpoint: Mapping[str, Any],
     next_checkpoint: dict[str, Any], requests: dict[str, int],
+    checkpoint_reset_reason: Optional[str] = None,
 ) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
     # ponytail: recover only the unstable endpoint in the existing checkpoint.
     # Completed intervals are contiguous; a capped interval keeps its reduced width.
+    config = replace(config, max_pages=max(1, int(config.max_pages)))
     start, end = int(lower_bound.timestamp()), int(upper_bound.timestamp())
     state = dict(entry) if "window_next" in entry else {
         "fingerprint": fingerprint, "upper_bound": upper_bound.isoformat(), "items": [],
-        "unverified_items": list(entry.get("items") or ()), "window_next": start,
+        "unverified_items": list(entry.get("unverified_items") or ()) + list(entry.get("items") or ()), "window_next": start,
         "window_width": 86400, "verified_windows": [], "pages_fetched": 0,
     }
+    if checkpoint_reset_reason:
+        state["checkpoint_reset_reason"] = checkpoint_reset_reason
+    unverified = {stable_digest(row): row for row in (
+        list(state.get("unverified_items") or ()) + list(state.get("window_pending_items") or ())
+    )}
     position = _validate_amo_window_checkpoint(state, start, end)
     field = "created_at" if path == "events" else "updated_at"
     pages = verified = fetched = conflicts = 0
@@ -238,17 +260,21 @@ def _fetch_amo_time_windows(
         pages += count
         fetched += len(rows)
         stable = False
+        unverified_probes: list[Mapping[str, Any]] = []
         if not cap:
             checks, stable = _verify_amo_pages(client, path=path, embedded_key=embedded_key,
-                params=scoped, config=config, proofs=proofs, requests=requests)
+                params=scoped, config=config, proofs=proofs, requests=requests, unverified_items=unverified_probes)
             verified += checks
         in_scope = all(isinstance(row.get(field), (int, float)) and position <= row[field] <= right for row in rows)
         merged, _, conflicts = _dedupe_collection_items(state["items"] + rows, allow_newer_versions=True)
         if cap or not stable or not in_scope or conflicts:
             state["window_pending_items"] = rows
+            unverified.update((stable_digest(row), row) for row in rows + unverified_probes)
             state["window_width"] = max(1, width // 2)
             reason = "page_cap_hit" if cap else "window_scope_invalid" if not in_scope else "window_payload_conflict" if conflicts else "window_changed"
             drift = not cap
+            if not cap:
+                state["checkpoint_reset_reason"] = state.get("checkpoint_reset_reason") or reason
             if width == 1:
                 reason = "one_second_window_unproven"
         else:
@@ -260,6 +286,7 @@ def _fetch_amo_time_windows(
             state["window_width"] = min(86400, width * 2) if count <= max(1, config.max_pages // 4) else width
             reason, drift = "", False
         state["complete"] = position > end
+        state["unverified_items"] = list(unverified.values())
         state["pages_fetched"] = int(state.get("pages_fetched") or 0) + count
         next_checkpoint[key] = dict(state)
         save_amo_incremental_checkpoint(config.out_root, {**dict(checkpoint.get("endpoints") or {}), **next_checkpoint})
@@ -270,7 +297,7 @@ def _fetch_amo_time_windows(
         "max_pages": config.max_pages, "page_cap_hit": not state.get("complete", False),
         "complete": state.get("complete", False), "fetched": len(state["items"]),
         "fetched_this_run": fetched, "carried_over_from_checkpoint": carried,
-        "upper_bound": upper_bound.isoformat(), "checkpoint_reset_reason": "pagination_universe_changed",
+        "upper_bound": upper_bound.isoformat(), "checkpoint_reset_reason": state.get("checkpoint_reset_reason"),
         "pagination_drift_detected": drift, "blocked_reason": reason or None,
         "verification_pages": verified, "verified_windows": len(state["verified_windows"]),
         "window_next": state["window_next"], "window_width": state["window_width"],
@@ -305,6 +332,12 @@ def fetch_endpoint_checkpointed(
         page_limit=config.page_limit,
     )
     entry = _checkpoint_entry(checkpoint, key)
+    if entry.get("unverified_items"):
+        next_checkpoint["amo_unverified_last_cycle"] = {
+            **dict(_checkpoint_entry(checkpoint, "amo_unverified_last_cycle")),
+            **dict(next_checkpoint.get("amo_unverified_last_cycle") or {}),
+            key: {field: entry.get(field) for field in ("fingerprint", "upper_bound", "unverified_items")},
+        }
     if entry.get("fingerprint") != fingerprint:
         entry = {}
     start_page, carried_items, pages_before, already_complete = _resume_state(
@@ -366,6 +399,7 @@ def fetch_endpoint_checkpointed(
             if current_anchor is not None:
                 old_by_id = {clean_id(row.get("id")): row for row in carried_items}
                 current_rows = embedded_items(current_payload, embedded_key)
+                entry = {**entry, "unverified_items": list(entry.get("unverified_items") or ()) + current_rows}
                 reset_diagnostics = {
                     "boundary_ids_not_in_cache": sum(clean_id(row.get("id")) not in old_by_id for row in current_rows),
                     "boundary_changed_fields": sorted({
@@ -379,6 +413,7 @@ def fetch_endpoint_checkpointed(
             client, key=key, path=path, embedded_key=embedded_key, params=effective_params,
             lower_bound=lower_bound, upper_bound=upper_bound, config=config, entry=entry,
             fingerprint=fingerprint, checkpoint=checkpoint, next_checkpoint=next_checkpoint, requests=requests,
+            checkpoint_reset_reason=checkpoint_reset_reason,
         )
         return rows, {**stats, "boundary_probes": boundary_probes, **reset_diagnostics}
     page_snapshots: dict[int, list[Mapping[str, Any]]] = {}
@@ -388,16 +423,20 @@ def fetch_endpoint_checkpointed(
         config=config, start_page=start_page, page_snapshots=page_snapshots,
         page_proofs=proofs, request_counts=requests,
     )
+    unverified_probes: list[Mapping[str, Any]] = []
     verification_pages, stable = _verify_amo_pages(
         client, path=path, embedded_key=embedded_key, params=effective_params,
-        config=config, proofs=proofs, requests=requests,
+        config=config, proofs=proofs, requests=requests, unverified_items=unverified_probes,
     )
     if start_page > 1:
         time.sleep(config.sleep_sec)
         payload = _fetch_collection_page(client, path=path, params=effective_params,
             page=anchor_page, config=config, request_counts=requests)
         boundary_probes += 1
-        stable = stable and page_anchor(embedded_items(payload, embedded_key)) == expected_anchor
+        boundary_stable = page_anchor(embedded_items(payload, embedded_key)) == expected_anchor
+        if not boundary_stable:
+            unverified_probes.extend(embedded_items(payload, embedded_key))
+        stable = stable and boundary_stable
     all_items, identical_duplicates, conflicting_duplicates = _dedupe_collection_items(
         carried_items + list(batch_items)
     )
@@ -419,7 +458,7 @@ def fetch_endpoint_checkpointed(
     else:
         next_checkpoint[key] = {
             **dict(entry), "fingerprint": fingerprint, "upper_bound": upper_bound.isoformat(),
-            "items": [], "unverified_items": carried_items + list(batch_items),
+            "items": [], "unverified_items": carried_items + list(batch_items) + unverified_probes,
             "window_next": int(lower_bound.timestamp()), "window_width": 86400,
             "verified_windows": [], "complete": False, "pages_fetched": total_pages,
         }
@@ -440,6 +479,20 @@ def fetch_endpoint_checkpointed(
         "conflicting_duplicates": conflicting_duplicates,
         "verification_pages": verification_pages, "boundary_probes": boundary_probes, **requests,
     }
+    remaining = max(1, int(config.max_pages)) - batch_pages
+    if drift_detected and remaining > 0:
+        save_amo_incremental_checkpoint(config.out_root, {**dict(checkpoint.get("endpoints") or {}), **next_checkpoint})
+        rows, recovered = _fetch_amo_time_windows(
+            client, key=key, path=path, embedded_key=embedded_key, params=effective_params,
+            lower_bound=lower_bound, upper_bound=upper_bound, config=replace(config, max_pages=remaining),
+            entry=next_checkpoint[key], fingerprint=fingerprint, checkpoint=checkpoint,
+            next_checkpoint=next_checkpoint, requests=requests,
+            checkpoint_reset_reason="conflicting_duplicates" if conflicting_duplicates else "page_verification_changed",
+        )
+        return rows, {**recovered, "max_pages": stats["max_pages"], "boundary_probes": boundary_probes,
+            **{field: stats[field] + recovered[field] for field in (
+                "pages_this_run", "verification_pages", "fetched_this_run",
+            )}}
     return all_items, stats
 
 
@@ -895,7 +948,9 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     }
 
     checkpoint = load_amo_incremental_checkpoint(out_root)
-    next_checkpoint: dict[str, Any] = {}
+    next_checkpoint: dict[str, Any] = {
+        "amo_unverified_last_cycle": dict(_checkpoint_entry(checkpoint, "amo_unverified_last_cycle")),
+    }
     pending_leads = [
         item
         for item in (_checkpoint_entry(checkpoint, "amo_leads_pending").get("items") or ())
@@ -1237,6 +1292,9 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
                 actor="customer_timeline_amo_incremental",
             )
         completed_checkpoint: dict[str, Any] = {
+            "amo_unverified_last_cycle": dict(_checkpoint_entry(
+                load_amo_incremental_checkpoint(out_root), "amo_unverified_last_cycle",
+            )),
             "amo_tasks_cache": {
                 "items": task_retry_rows,
                 "seed_loaded": True,

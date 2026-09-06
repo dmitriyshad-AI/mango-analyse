@@ -16,6 +16,7 @@
 
 | Путь | HEAD / ветка | Назначение | Условие удаления |
 |---|---|---|---|
+| `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/ai-passport-group-quality-20260906` | база `e177f0ea`, `codex/ai-passport-group-quality-20260906` | Выделенный владелец: исполнитель локального экспорта AI-паспортов одной группы, ТЗ от 06.09.2026. Код, тесты и локальные 13 паспортов; конечная Google-проверка у main. Без runtime/external write. | После успешной проверки листа, финального review и merge; удаление только с отдельного разрешения Дмитрия. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `15ab6d4c`, `main` | Канонический путь репозитория; текущая интеграция здесь не ведётся. | Не удалять. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/customer-timeline-single-writer-20260830` | `15ab6d4c`, `codex/customer-timeline-single-writer-20260830` | Текущая интеграция единственного Customer Timeline writer и трёх релизных гейтов. | После коммита, слияния в `main`, runtime-cutover и отдельной проверки чистоты. |
 | `/Users/dmitrijfabarisov/Projects/Mango analyse/.codex_workers/customer-timeline-runtime-20260830` | `227609ca`, `codex/customer-timeline-runtime-20260830` | Зафиксированный код первого M4 runtime-цикла; сохраняется как донор и доказательство до успешного cutover на исправленную ревизию. | После переноса исправлений, двух зелёных циклов, canary и отдельной проверки отсутствия runtime-ссылок. |

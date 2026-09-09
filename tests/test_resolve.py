@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -15,6 +16,91 @@ from tests.test_dialogue_format import make_settings
 
 
 class ResolveServiceTest(unittest.TestCase):
+    def test_claim_prioritizes_call_time_not_row_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_fresh_resolve_claim_") as td:
+            db_path = Path(td) / "claims.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            base = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+            with session_factory() as session:
+                calls = [
+                    CallRecord(
+                        source_file=f"{td}/{idx}.mp3",
+                        source_filename=f"{idx}.mp3",
+                        started_at=started_at,
+                        transcription_status="done",
+                        resolve_status="pending",
+                    )
+                    for idx, started_at in enumerate(
+                        [base - timedelta(hours=1), base, base - timedelta(hours=2)]
+                    )
+                ]
+                session.add_all(calls)
+                session.commit()
+                newest_id = int(calls[1].id)
+
+            with session_factory() as session:
+                claimed = ResolveService(settings)._claim_batch(
+                    session, limit=1, worker_id="fresh-first"
+                )
+
+            self.assertEqual(claimed, [newest_id])
+
+    def test_claim_skips_fresh_call_still_waiting_for_gigaam(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ready_resolve_claim_") as td:
+            db_path = Path(td) / "claims.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                transcribe_provider="mlx",
+                dual_transcribe_enabled=True,
+                secondary_transcribe_provider="gigaam",
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            base = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+
+            def payload(secondary_text: str | None) -> str:
+                return json.dumps(
+                    {
+                        "mode": "stereo",
+                        "primary_provider": "mlx",
+                        "secondary_provider": "gigaam" if secondary_text else "",
+                        "manager": {"variant_a": "Здравствуйте", "variant_b": secondary_text},
+                        "client": {"variant_a": "Добрый день", "variant_b": secondary_text},
+                    },
+                    ensure_ascii=False,
+                )
+
+            with session_factory() as session:
+                waiting = CallRecord(
+                    source_file=f"{td}/waiting.mp3",
+                    source_filename="waiting.mp3",
+                    started_at=base,
+                    transcription_status="done",
+                    resolve_status="pending",
+                    transcript_variants_json=payload(None),
+                )
+                ready = CallRecord(
+                    source_file=f"{td}/ready.mp3",
+                    source_filename="ready.mp3",
+                    started_at=base - timedelta(hours=1),
+                    transcription_status="done",
+                    resolve_status="pending",
+                    transcript_variants_json=payload("вариант B"),
+                )
+                session.add_all([waiting, ready])
+                session.commit()
+                ready_id = int(ready.id)
+
+            with session_factory() as session:
+                claimed = ResolveService(settings)._claim_batch(
+                    session, limit=1, worker_id="ready-first"
+                )
+
+            self.assertEqual(claimed, [ready_id])
+
     def test_merge_pair_with_codex_uses_response_cache_on_repeat(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_resolve_cache_") as td:
             service = ResolveService(

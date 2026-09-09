@@ -410,6 +410,32 @@ class ParallelPipelineClaimsTest(unittest.TestCase):
             self.assertEqual(state["ready_pending"], 0)
             self.assertEqual(state["in_progress"], 3)
 
+    def test_transcribe_claim_prioritizes_call_time_not_row_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_fresh_tr_claim_") as td:
+            db_path = Path(td) / "claims.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            base = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+            with session_factory() as session:
+                calls = [
+                    CallRecord(source_file=f"{td}/{idx}.mp3", source_filename=f"{idx}.mp3",
+                               started_at=started_at, transcription_status="pending")
+                    for idx, started_at in enumerate(
+                        [base - timedelta(hours=1), base, base - timedelta(hours=2)]
+                    )
+                ]
+                session.add_all(calls)
+                session.commit()
+                newest_id = int(calls[1].id)
+
+            with session_factory() as session:
+                claimed = TranscribeService(settings)._claim_transcribe_batch(
+                    session, limit=1, worker_id="fresh-first"
+                )
+
+            self.assertEqual(claimed, [newest_id])
+
     def test_pipeline_worker_ids_are_process_unique(self) -> None:
         worker_ids = {
             TranscribeService._pipeline_worker_id("bf") for _index in range(100)
@@ -606,6 +632,40 @@ class ParallelPipelineClaimsTest(unittest.TestCase):
                 )
 
             self.assertEqual(claimed, [retry_id])
+
+    def test_secondary_backfill_prioritizes_newest_fresh_call(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_fresh_bf_claim_") as td:
+            db_path = Path(td) / "claims.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            base = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+            with session_factory() as session:
+                calls = [
+                    CallRecord(
+                        source_file=f"{td}/{idx}.mp3",
+                        source_filename=f"{idx}.mp3",
+                        started_at=started_at,
+                        transcription_status="done",
+                        transcript_variants_json=_stereo_payload(manager_b=None, client_b=None),
+                    )
+                    for idx, started_at in enumerate(
+                        [base - timedelta(hours=1), base, base - timedelta(hours=2)]
+                    )
+                ]
+                session.add_all(calls)
+                session.commit()
+                newest_id = int(calls[1].id)
+
+            with session_factory() as session:
+                claimed = TranscribeService(settings)._claim_secondary_backfill_batch(
+                    session,
+                    limit=1,
+                    worker_id="fresh-first",
+                    secondary_provider="gigaam",
+                )
+
+            self.assertEqual(claimed, [newest_id])
 
     def test_exhausted_secondary_fallback_is_explicit_and_ready(self) -> None:
         service = TranscribeService(make_settings())

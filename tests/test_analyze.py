@@ -21,6 +21,38 @@ from tests.test_dialogue_format import make_settings
 
 
 class AnalyzeServiceTest(unittest.TestCase):
+    def test_claim_prioritizes_call_time_not_row_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_fresh_analyze_claim_") as td:
+            db_path = Path(td) / "claims.db"
+            settings = replace(make_settings(), database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            base = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+            with session_factory() as session:
+                calls = [
+                    CallRecord(
+                        source_file=f"{td}/{idx}.mp3",
+                        source_filename=f"{idx}.mp3",
+                        started_at=started_at,
+                        transcription_status="done",
+                        resolve_status="done",
+                        analysis_status="pending",
+                    )
+                    for idx, started_at in enumerate(
+                        [base - timedelta(hours=1), base, base - timedelta(hours=2)]
+                    )
+                ]
+                session.add_all(calls)
+                session.commit()
+                newest_id = int(calls[1].id)
+
+            with session_factory() as session:
+                claimed = AnalyzeService(settings)._claim_batch(
+                    session, limit=1, worker_id="fresh-first"
+                )
+
+            self.assertEqual(claimed, [newest_id])
+
     def test_compact_prompt_requires_dense_history_summary(self) -> None:
         self.assertIn("dense CRM note", AnalyzeService(make_settings())._analysis_system_prompt("compact"))
         self.assertIn("what the manager clarified/offered/explained", AnalyzeService(make_settings())._analysis_system_prompt("compact"))
@@ -143,6 +175,7 @@ class AnalyzeServiceTest(unittest.TestCase):
                     """
                     CREATE TABLE call_records (
                         id INTEGER PRIMARY KEY,
+                        started_at TEXT,
                         transcription_status TEXT,
                         resolve_status TEXT,
                         dead_letter_stage TEXT,

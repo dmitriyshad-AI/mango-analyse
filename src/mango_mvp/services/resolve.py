@@ -132,6 +132,31 @@ class ResolveService:
         max_attempts = max(1, self._settings.resolve_max_attempts)
         release_stale_pipeline_claims(session, self._settings, now)
         scope = require_unique_controlled_call(session, self._settings)
+        candidate_query = (
+            select(CallRecord)
+            .where(CallRecord.transcription_status == "done")
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.resolve_status.in_(["pending", "failed"]))
+            .where(CallRecord.resolve_attempts < max_attempts)
+            .where(
+                or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now)
+            )
+            .where(CallRecord.pipeline_stage.is_(None))
+            .order_by(CallRecord.started_at.desc(), CallRecord.id.desc())
+        )
+        if scope:
+            candidate_query = candidate_query.where(
+                CallRecord.source_call_id == scope.source_call_id
+            )
+        candidate_ids = [
+            int(call.id)
+            for call in session.scalars(candidate_query).all()
+            if scope or not self._waiting_for_secondary_asr(call)
+        ][: int(limit)]
+        if not candidate_ids:
+            session.commit()
+            return []
+        ids_sql = ",".join(str(call_id) for call_id in candidate_ids)
         scope_sql = (
             " AND source_call_id = :controlled_source_call_id" if scope else ""
         )
@@ -139,7 +164,6 @@ class ResolveService:
             "worker_id": worker_id,
             "now": now,
             "max_attempts": max_attempts,
-            "limit": int(limit),
         }
         if scope:
             params["controlled_source_call_id"] = scope.source_call_id
@@ -152,24 +176,19 @@ class ResolveService:
                        pipeline_worker_id = :worker_id,
                        pipeline_claimed_at = :now,
                        updated_at = :now
-                 WHERE id IN (
-                    SELECT id
-                      FROM call_records
-                     WHERE transcription_status = 'done'
-                       AND dead_letter_stage IS NULL
-                       AND resolve_status IN ('pending', 'failed')
-                       AND resolve_attempts < :max_attempts
-                       AND (next_retry_at IS NULL OR next_retry_at <= :now)
-                       AND pipeline_stage IS NULL
-                       {scope_sql}
-                     ORDER BY id ASC
-                     LIMIT :limit
-                 )
+                 WHERE id IN ({ids_sql})
+                   AND transcription_status = 'done'
+                   AND dead_letter_stage IS NULL
+                   AND resolve_status IN ('pending', 'failed')
+                   AND resolve_attempts < :max_attempts
+                   AND (next_retry_at IS NULL OR next_retry_at <= :now)
+                   AND pipeline_stage IS NULL
+                   {scope_sql}
                 """
             ),
             params,
         )
-        ids = [
+        claimed_ids = {
             int(row[0])
             for row in session.execute(
                 text(
@@ -185,9 +204,9 @@ class ResolveService:
                 ),
                 params,
             ).all()
-        ]
+        }
         session.commit()
-        return ids
+        return [call_id for call_id in candidate_ids if call_id in claimed_ids]
 
     def count_queue_state(self, session: Session) -> Dict[str, int]:
         now = self._utc_now()

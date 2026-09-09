@@ -393,7 +393,7 @@ class AnalyzeService:
                        AND pipeline_worker_id IS NULL
                        AND pipeline_claimed_at IS NULL
                        {scope_sql}
-                     ORDER BY id ASC
+                     ORDER BY started_at DESC, id DESC
                      LIMIT :limit
                  )
                 """

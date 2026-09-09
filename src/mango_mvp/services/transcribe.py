@@ -303,7 +303,7 @@ class TranscribeService:
                        AND (next_retry_at IS NULL OR next_retry_at <= :now)
                        AND pipeline_stage IS NULL
                        {scope_sql}
-                     ORDER BY id ASC
+                     ORDER BY started_at DESC, id DESC
                      LIMIT :limit
                  )
                 """
@@ -348,7 +348,7 @@ class TranscribeService:
             .where(CallRecord.dead_letter_stage.is_(None))
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.pipeline_stage.is_(None))
-            .order_by(CallRecord.id.asc())
+            .order_by(CallRecord.started_at.desc(), CallRecord.id.desc())
         )
         if scope:
             done_query = done_query.where(

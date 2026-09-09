@@ -1271,6 +1271,24 @@ def persist_capture_snapshot_to_working_db(
 ) -> Mapping[str, Any]:
     """Feed a proven capture snapshot to SQLite without starting ASR workers."""
     command_runner = command_runner or run_command
+
+    def sqlite_lock_failure(report: Mapping[str, Any]) -> bool:
+        if int(report.get("rc", 0)) == 0 or report.get("command") != "ingest":
+            return False
+        log_path = optional_text(report.get("log_path"))
+        if not log_path:
+            return False
+        try:
+            message = read_stable_regular_bytes(
+                Path(log_path), label="capture_ingest_retry_log"
+            ).decode("utf-8", errors="replace").lower()
+        except (OSError, RuntimeError):
+            return False
+        return (
+            "database is locked" in message
+            or "database table is locked" in message
+        )
+
     raw_end_offset = capture.get("manifest_end_offset")
     snapshot_sha256 = optional_text(capture.get("manifest_snapshot_sha256"))
     if (
@@ -1313,26 +1331,45 @@ def persist_capture_snapshot_to_working_db(
                 15 * 60, config.heavy_stage_timeout_seconds
             )
             base_env = worker_environment(config)
+            failed = False
+            ingest_lock_retries = 0
             for command in commands:
-                report = (
-                    run_command(
-                        command,
-                        base_env,
-                        config.working_dir,
-                        deadline=deadline,
+                retry_delays = iter((3.0, 7.0, 10.0))
+                while True:
+                    report = (
+                        run_command(
+                            command,
+                            base_env,
+                            config.working_dir,
+                            deadline=deadline,
+                        )
+                        if command_runner is run_command
+                        else command_runner(command, base_env, config.working_dir)
                     )
-                    if command_runner is run_command
-                    else command_runner(command, base_env, config.working_dir)
-                )
-                reports.append(report)
-                if int(report.get("rc", 0)) != 0:
+                    reports.append(report)
+                    if int(report.get("rc", 0)) == 0:
+                        break
+                    try:
+                        retry_delay = next(retry_delays)
+                    except StopIteration:
+                        failed = True
+                        break
+                    if (
+                        not sqlite_lock_failure(report)
+                        or time.monotonic() + retry_delay >= deadline
+                    ):
+                        failed = True
+                        break
+                    ingest_lock_retries += 1
+                    time.sleep(retry_delay)
+                if failed:
                     break
-            failed = any(int(item.get("rc", 0)) != 0 for item in reports)
             return {
                 "status": "failed" if failed else "ok" if commands else "idle",
                 "stop_reason": "capture_ingest_command_failed" if failed else "",
                 "metadata": metadata,
                 "workers": compact_command_reports(reports),
+                "ingest_lock_retries": ingest_lock_retries,
                 "lock": lock_info,
             }
     except LockBusy as exc:

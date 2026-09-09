@@ -2519,6 +2519,70 @@ def test_persist_capture_snapshot_ingests_without_starting_workers(
     assert "worker" not in observed_commands[0]
 
 
+@pytest.mark.parametrize(
+    (
+        "failure_message",
+        "failures_before_success",
+        "expected_attempts",
+        "expected_status",
+        "expected_retries",
+        "expected_sleeps",
+    ),
+    [
+        ("database is locked", 1, 2, "ok", 1, [3.0]),
+        ("database table is locked", 4, 4, "failed", 3, [3.0, 7.0, 10.0]),
+        ("unrelated ingest failure", 1, 1, "failed", 0, []),
+    ],
+)
+def test_persist_capture_snapshot_retries_only_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_message: str,
+    failures_before_success: int,
+    expected_attempts: int,
+    expected_status: str,
+    expected_retries: int,
+    expected_sleeps: list[float],
+) -> None:
+    config = config_for(tmp_path)
+    config.working_dir.mkdir(parents=True, exist_ok=True)
+    config.working_db.write_bytes(b"existing-db")
+    attempt_count = 0
+    slept: list[float] = []
+    observed_commands: list[Sequence[str]] = []
+    failure_log = tmp_path / "ingest-failure.log"
+
+    def fake_prepare(_config: object, **_kwargs: object) -> dict[str, object]:
+        return {"audio_files": 1}
+
+    def fake_command(
+        _command: Sequence[str],
+        _env: Mapping[str, str],
+        _cwd: Path,
+    ) -> Mapping[str, object]:
+        nonlocal attempt_count
+        attempt_count += 1
+        observed_commands.append(_command)
+        if attempt_count <= failures_before_success:
+            failure_log.write_text(failure_message, encoding="utf-8")
+            return {"rc": 1, "command": "ingest", "log_path": str(failure_log)}
+        return {"rc": 0, "command": "ingest"}
+
+    monkeypatch.setattr(calls_runtime, "prepare_ingest_inputs", fake_prepare)
+    monkeypatch.setattr(calls_runtime.time, "sleep", slept.append)
+    result = persist_capture_snapshot_to_working_db(
+        config,
+        {"manifest_end_offset": 123, "manifest_snapshot_sha256": "a" * 64},
+        command_runner=fake_command,
+    )
+
+    assert result["status"] == expected_status
+    assert result["ingest_lock_retries"] == expected_retries
+    assert attempt_count == expected_attempts
+    assert slept == expected_sleeps
+    assert all(command == observed_commands[0] for command in observed_commands)
+
+
 def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     source = config.recordings_dir / "call.mp3"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -16,6 +17,113 @@ from tests.test_dialogue_format import make_settings
 
 
 class ResolveServiceTest(unittest.TestCase):
+    def test_terminal_turn_mismatch_continues_as_manual_review(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_manual_fallback_") as td:
+            db_path = Path(td) / "calls.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                resolve_max_attempts=1,
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file=f"{td}/call.mp3",
+                        source_filename="call.mp3",
+                        duration_sec=120,
+                        transcription_status="done",
+                        resolve_status="pending",
+                        analysis_status="pending",
+                        sync_status="pending",
+                        transcript_text="MANAGER:\nЗдравствуйте\n\nCLIENT:\nДобрый день",
+                        transcript_manager="Здравствуйте",
+                        transcript_client="Добрый день",
+                        transcript_variants_json=json.dumps({"mode": "stereo"}),
+                    )
+                )
+                session.commit()
+
+            service = ResolveService(settings)
+            with patch.object(
+                service,
+                "_score_candidate",
+                side_effect=RuntimeError("dialogue resolve output turn_id set mismatch"),
+            ):
+                with session_factory() as session:
+                    result = service.run(session, limit=1)
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["manual"], 1)
+            self.assertEqual(result["failed"], 0)
+            with session_factory() as session:
+                call = session.query(CallRecord).one()
+                self.assertEqual(call.resolve_status, "manual")
+                self.assertEqual(call.analysis_status, "pending")
+                self.assertEqual(call.sync_status, "pending")
+                self.assertIsNone(call.dead_letter_stage)
+                self.assertEqual(
+                    json.loads(call.resolve_json or "{}").get("reason"),
+                    "dialogue_turn_id_set_mismatch",
+                )
+
+    def test_only_known_terminal_errors_can_continue_as_manual(self) -> None:
+        service = ResolveService(make_settings())
+
+        self.assertTrue(
+            service._can_continue_as_manual(
+                subprocess.TimeoutExpired(["codex", "exec"], timeout=360)
+            )
+        )
+        self.assertFalse(service._can_continue_as_manual(RuntimeError("database error")))
+
+    def test_late_unknown_error_remains_dead_and_failed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_late_error_") as td:
+            db_path = Path(td) / "calls.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                resolve_max_attempts=1,
+                resolve_llm_trigger_score=0,
+                resolve_accept_score=101,
+                resolve_aggressive_rescue_for_risky=False,
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file=f"{td}/call.mp3",
+                        source_filename="call.mp3",
+                        duration_sec=120,
+                        transcription_status="done",
+                        resolve_status="pending",
+                        analysis_status="pending",
+                        transcript_text="MANAGER:\nЗдравствуйте\n\nCLIENT:\nДобрый день",
+                        transcript_manager="Здравствуйте",
+                        transcript_client="Добрый день",
+                        transcript_variants_json=json.dumps({"mode": "stereo"}),
+                    )
+                )
+                session.commit()
+
+            service = ResolveService(settings)
+            with patch.object(
+                service,
+                "_build_resolve_payload",
+                side_effect=RuntimeError("database error"),
+            ):
+                with session_factory() as session:
+                    result = service.run(session, limit=1)
+
+            self.assertEqual(result["failed"], 1)
+            self.assertEqual(result["manual"], 0)
+            with session_factory() as session:
+                call = session.query(CallRecord).one()
+                self.assertEqual(call.resolve_status, "dead")
+                self.assertEqual(call.dead_letter_stage, "resolve")
+
     def test_claim_prioritizes_call_time_not_row_id(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_fresh_resolve_claim_") as td:
             db_path = Path(td) / "claims.db"

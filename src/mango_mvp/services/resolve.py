@@ -125,6 +125,12 @@ class ResolveService:
     def _pipeline_worker_id(prefix: str) -> str:
         return f"{prefix}-{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
 
+    @staticmethod
+    def _can_continue_as_manual(exc: Exception) -> bool:
+        return isinstance(exc, subprocess.TimeoutExpired) or str(exc) == (
+            "dialogue resolve output turn_id set mismatch"
+        )
+
     def _claim_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
         if limit <= 0:
             return []
@@ -1762,6 +1768,8 @@ class ResolveService:
             handled += 1
             outcome = "success"
             error_text = ""
+            success_before = success
+            manual_before = manual
             try:
                 duration = float(call.duration_sec or 0.0)
                 if duration > 0.0 and duration < float(self._settings.resolve_min_duration_sec):
@@ -1942,18 +1950,44 @@ class ResolveService:
                 call.pipeline_claimed_at = None
             except Exception as exc:  # noqa: BLE001
                 call.last_error = f"resolve: {exc}"
-                if attempt >= max_attempts:
+                success = success_before
+                continue_as_manual = (
+                    attempt >= max_attempts and self._can_continue_as_manual(exc)
+                )
+                if continue_as_manual:
+                    call.resolve_status = "manual"
+                    call.analysis_status = "pending"
+                    call.sync_status = "pending"
+                    call.dead_letter_stage = None
+                    call.next_retry_at = None
+                    call.resolve_json = json.dumps(
+                        {
+                            "version": "v1",
+                            "decision": "manual_review_required",
+                            "reason": "resolve_timeout"
+                            if isinstance(exc, subprocess.TimeoutExpired)
+                            else "dialogue_turn_id_set_mismatch",
+                            "ts_utc": self._utc_now().isoformat(),
+                        },
+                        ensure_ascii=False,
+                    )
+                    manual = manual_before + 1
+                    outcome = "manual"
+                elif attempt >= max_attempts:
+                    manual = manual_before
                     call.resolve_status = "dead"
                     call.dead_letter_stage = "resolve"
                     call.next_retry_at = None
                 else:
+                    manual = manual_before
                     call.resolve_status = "failed"
                     call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
                 call.pipeline_stage = None
                 call.pipeline_worker_id = None
                 call.pipeline_claimed_at = None
-                failed += 1
-                outcome = "failed"
+                if not continue_as_manual:
+                    failed += 1
+                    outcome = "failed"
                 error_text = str(exc)
             session.add(call)
             _emit_progress(

@@ -22,6 +22,58 @@
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main`, после проверенной интеграции A-F главным Codex | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных; Wappi остановлен владельцем. | Оставить на `main`; runtime/live включать только отдельным этапом после реального staging и смысловой приёмки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_daily_export_20260925` | `codex/m1-calls-daily-export-20260925` | Ежедневный read-only экспорт готовых звонков M1 для единственного Customer Timeline writer на M4. | Не запускать ASR/Resolve/Analyse и не включать Customer Timeline writer на M1; после приёмки оставить как зафиксированный код LaunchAgent. |
+
+## Фактическая регистрация существующих worktree 2026-09-25
+
+Эти деревья найдены командой `git worktree list --porcelain`. Их назначение и
+возможная грязь в рамках текущего ТЗ не переоцениваются; до отдельного аудита
+их нельзя удалять, переключать или использовать как общий runtime.
+
+| Worktree | Ветка | Решение |
+|---|---|---|
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.asr-single-call-progress.20260818` | `codex/asr-single-call-progress-20260818` | Сохранить без изменений. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.gigaam-batch.2Wg1KM` | `codex/gigaam-batch-20260814` | Сохранить без изменений. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.gigaam-parallel.JGmNSc` | `codex/gigaam-parallel-20260814` | Сохранить без изменений. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.gigaam-v3-batch.20260814` | `codex/gigaam-v3-batch-20260814` | Сохранить без изменений. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.google-publisher.20260815` | `codex/google-publisher-20260815` | Сохранить как live-код publisher. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.m4-handoff.20260816` | `codex/mango-calls-m4-handoff-20260816` | Сохранить без изменений. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.pipeline-interactive.20260814` | `codex/pipeline-interactive-20260814` | Сохранить без изменений. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.pipeline-stall-watchdog.20260818` | `codex/pipeline-stall-watchdog-20260818` | Сохранить как live-код pipeline. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.selective-gigaam-v2.A77tnJ` | `codex/selective-gigaam-v2-20260814` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_existing_funds_d1_redo_20260918/code` | `codex/bank-existing-funds-d1-redo-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_existing_funds_dry_journal_fix_20260918/code` | `codex/bank-existing-funds-dry-journal-fix-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_operator_caller_code` | `codex/bank-unmarked-exclusions-d1-fix-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_orchestrator_code` | `codex/bank-simple-orchestrator-20260917` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_root_validator_code` | `codex/bank-root-validator-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_root_validator_existing_funds_history_code` | `codex/existing-funds-history-v1-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/claude_subs_scope_port_20260918/code` | `claude/subs355-701-scope-port-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/order_read_reuse_d1_v2_20260918/code` | `codex/order-read-reuse-d1-v2-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/publisher_money_port_code` | `codex/publisher-money-port-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/rate25_candidate_20260918/code` | `codex/rate25-pilot-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/rate2_candidate_20260918/code` | `codex/rate2-pilot-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/subs_scope_d1_redo_20260918/code` | `claude/subs355-701-scope-port-redo-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/subs_scope_runtime_stage_chain_20260918/d1_exactqueue_redo_code` | `codex/subs-runtime-exactqueue-redo-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/tallanto_fio_20260917/code` | `codex/tallanto-fio-correction-20260917` | Сохранить без изменений. |
+| `/Users/dmitriy/Mango_Tasks/tallanto_fio_20260917/owner_typo_code` | `codex/fio-owner-typo-20260918` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_autonomous_bootstrap_20260807` | `codex/m1-autonomous-bootstrap-20260807` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_cutover_20260807` | `codex/m1-calls-cutover-20260807` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_fresh_priority_20260909` | `codex/m1-calls-fresh-priority-20260909` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_provider_selective_integration_20260823` | `codex/m1-calls-provider-selective-integration-20260823` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_provider_selective_integration_20260824` | `codex/m1-calls-provider-selective-integration-20260824` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_real_service_final_20260812` | `codex/m1-calls-real-service-final-20260812` | Сохранить как live-код capture. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_service_fast_value_20260811` | `codex/m1-calls-service-fast-value-20260811` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_exam_regrade_20260812` | `codex/m1-customer-timeline-exam-regrade-20260812` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_final_20260828` | `codex/m1-customer-timeline-final-20260828` | Сохранить без включения writer на M1. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_finalization_20260807` | `codex/m1-customer-timeline-finalization-20260807` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_followup_20260811` | `codex/m1-customer-timeline-followup-20260811` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_release_evidence_20260811` | `codex/m1-customer-timeline-release-evidence-20260811` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_working_final_20260812` | `codex/m1-customer-timeline-working-final-20260812` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_memory_selection_20260731` | `codex/memory-selection-quality-20260731` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_p0_live_exam_20260731` | `codex/p0-live-exam-20260731` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_p0_output_floor_20260730` | `codex/p0-output-floor-20260730` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_timeline_quality_20260731` | `codex/timeline-quality-20260731` | Сохранить без изменений. |
+| `/Users/dmitriy/Projects/Mango_unblock_memory_filters_20260730` | `codex/unblock-memory-filters-20260730` | Сохранить без изменений. |
 
 ## Удалено 2026-07-26
 

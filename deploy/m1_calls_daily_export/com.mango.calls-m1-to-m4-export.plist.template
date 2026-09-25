@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mango.calls-m1-to-m4-export</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3.12</string>
+    <string>__MANGO_CODE_ROOT__/scripts/export_m1_calls_daily.py</string>
+    <string>--source-db</string>
+    <string>/Users/dmitriy/.mango_local/mango_calls_service_runtime_v2/working/mango_calls_pipeline.sqlite</string>
+    <string>--baseline-db</string>
+    <string>/Users/dmitriy/Yandex.Disk.localized/OpenClaw/M1_to_M4_processed_calls_20260924T113920Z/call_records_snapshot.sqlite</string>
+    <string>--baseline-manifest</string>
+    <string>/Users/dmitriy/Yandex.Disk.localized/OpenClaw/M1_to_M4_processed_calls_20260924T113920Z/manifest.json</string>
+    <string>--output-root</string>
+    <string>/Users/dmitriy/Yandex.Disk.localized/OpenClaw</string>
+    <string>--state-dir</string>
+    <string>/Users/dmitriy/.mango_local/m1_to_m4_calls_export</string>
+    <string>--sync-log</string>
+    <string>/Users/dmitriy/Library/Application Support/Yandex.Disk.2/1052492532/sync_core.log</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__MANGO_CODE_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>M1_CALLS_EXPORT_EXPECTED_HEAD</key>
+    <string>__EXPECTED_HEAD__</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>TZ</key>
+    <string>Europe/Moscow</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/dmitriy/.mango_local/m1_to_m4_calls_export/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/dmitriy/.mango_local/m1_to_m4_calls_export/launchd.stderr.log</string>
+</dict>
+</plist>

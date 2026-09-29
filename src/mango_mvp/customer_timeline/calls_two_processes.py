@@ -5779,6 +5779,8 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
         "blocked": 0,
         "blocked_reasons": {},
     }
+    planned_normalizations: list[dict[str, Any]] = []
+    empty_dead_letter_plans: list[tuple[int, str]] = []
     if not path.is_file():
         return result
 
@@ -5854,8 +5856,24 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
         timeout = max(60, int(os.getenv(env_name, "1800")))
         return claimed_at <= datetime.now(timezone.utc) - timedelta(seconds=timeout)
 
-    with sqlite3.connect(path, timeout=30) as con:
+    selected_columns = """
+        id, source_call_id, transcription_status,
+        transcript_variants_json, resolve_status, analysis_status,
+        analysis_json, dead_letter_stage, pipeline_stage,
+        pipeline_worker_id, pipeline_claimed_at,
+        analysis_worker_id, analysis_claimed_at,
+        resolve_attempts, analyze_attempts, next_retry_at,
+        resolve_json, resolve_quality_score, last_error
+    """
+
+    # The legacy audit touches every completed call and may take minutes on the
+    # production DB.  Keep that full scan read-only so Whisper/Resolve/Analyze
+    # can continue committing to the WAL while the audit runs.  Only proven
+    # repair candidates enter the short write transaction below.
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
         con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        con.execute("PRAGMA busy_timeout=30000")
         tables = {
             str(row[0])
             for row in con.execute(
@@ -5871,41 +5889,45 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
         if not required_columns.issubset(columns):
             return result
 
-        con.execute("BEGIN IMMEDIATE")
-        canonicalized = con.execute(
+        empty_dead_letter_plans = [
+            (int(row[0]), str(row[1]))
+            for row in con.execute(
             """
-            UPDATE call_records
-               SET dead_letter_stage=NULL
+            SELECT id, dead_letter_stage
+              FROM call_records
              WHERE dead_letter_stage IS NOT NULL
                AND TRIM(dead_letter_stage)=''
             """
-        )
-        result["dead_letter_state_normalized"] = int(canonicalized.rowcount or 0)
-        result["state_normalized"] = result["dead_letter_state_normalized"]
+            )
+        ]
         call_id_counts: dict[str, int] = {}
-        for count_row in con.execute("SELECT source_call_id FROM call_records"):
-            normalized_call_id = str(count_row[0] or "").strip()
+        for count_row in con.execute("SELECT id, source_call_id FROM call_records"):
+            normalized_call_id = str(count_row[1] or "").strip()
             if normalized_call_id:
                 call_id_counts[normalized_call_id] = (
                     call_id_counts.get(normalized_call_id, 0) + 1
                 )
         rows = con.execute(
             """
-            SELECT id, source_call_id, transcription_status,
-                   transcript_variants_json, resolve_status, analysis_status,
-                   analysis_json, dead_letter_stage, pipeline_stage,
-                   pipeline_worker_id, pipeline_claimed_at,
-                   analysis_worker_id, analysis_claimed_at,
-                   resolve_attempts, analyze_attempts, next_retry_at,
-                   resolve_json, resolve_quality_score, last_error
+            SELECT {selected_columns}
               FROM call_records
              WHERE transcription_status='done'
-               AND dead_letter_stage IS NULL
+               AND (
+                    dead_letter_stage IS NULL
+                    OR TRIM(dead_letter_stage)=''
+               )
              ORDER BY id
-            """
+            """.format(selected_columns=selected_columns)
         )
         for raw_row in rows:
             row = dict(raw_row)
+            if (
+                row.get("dead_letter_stage") is not None
+                and not str(row.get("dead_letter_stage") or "").strip()
+            ):
+                # Match the state that the short canonicalization transaction
+                # will produce before candidate revalidation.
+                row["dead_letter_stage"] = None
             raw = row.get("transcript_variants_json")
             try:
                 payload = json.loads(str(raw or ""))
@@ -6026,48 +6048,26 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
                         ):
                             add_block("resolve_state_normalization_failed")
                             continue
-                        updated = con.execute(
-                            """
-                            UPDATE call_records
-                               SET resolve_status='pending',
-                                   analysis_status='pending',
-                                   resolve_attempts=0,
-                                   analyze_attempts=0,
-                                   pipeline_stage=NULL,
-                                   pipeline_worker_id=NULL,
-                                   pipeline_claimed_at=NULL,
-                                   analysis_worker_id=NULL,
-                                   analysis_claimed_at=NULL,
-                                   next_retry_at=NULL,
-                                   resolve_json=NULL,
-                                   resolve_quality_score=NULL,
-                                   analysis_json=NULL,
-                                   last_error=NULL
-                             WHERE id=?
-                               AND (
-                                    (resolve_status IS NULL AND ? IS NULL)
-                                    OR resolve_status=?
-                               )
-                               AND analysis_status IN ('pending', 'failed', 'in_progress')
-                            """,
-                            (row["id"], raw_resolve_status, raw_resolve_status),
-                        )
-                        if int(updated.rowcount or 0) != 1:
-                            add_block("resolve_state_changed_concurrently")
-                            continue
-                        result["state_normalized"] += 1
-                        result["resolve_state_normalized"] += 1
-                        if row.get("resolve_quality_score") is not None or any(
-                            row.get(field)
-                            for field in (
-                                "resolve_json",
-                                "analysis_json",
-                                "last_error",
+                        downstream_invalidated = bool(
+                            row.get("resolve_quality_score") is not None
+                            or any(
+                                row.get(field)
+                                for field in (
+                                    "resolve_json",
+                                    "analysis_json",
+                                    "last_error",
+                                )
                             )
-                        ) or int(row.get("resolve_attempts") or 0) or int(
-                            row.get("analyze_attempts") or 0
-                        ):
-                            result["downstream_invalidated"] += 1
+                            or int(row.get("resolve_attempts") or 0)
+                            or int(row.get("analyze_attempts") or 0)
+                        )
+                        planned_normalizations.append(
+                            {
+                                "kind": "resolve_state",
+                                "row": row,
+                                "downstream_invalidated": downstream_invalidated,
+                            }
+                        )
                         continue
                     if downstream_is_recoverable(row):
                         continue
@@ -6188,6 +6188,160 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
             ):
                 add_block("normalization_postcondition_failed")
                 continue
+            planned_normalizations.append(
+                {
+                    "kind": "legacy_topology",
+                    "row": row,
+                    "serialized": serialized,
+                }
+            )
+
+    if not empty_dead_letter_plans and not planned_normalizations:
+        return result
+
+    # Revalidate only the small candidate set while holding the write lock.
+    # A strict snapshot comparison prevents the normalizer from overwriting a
+    # lease or stage result that appeared after the read-only audit.
+    with sqlite3.connect(path, timeout=30) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA busy_timeout=30000")
+        con.create_function(
+            "MANGO_STRIP",
+            1,
+            lambda value: str(value or "").strip(),
+            deterministic=True,
+        )
+        planned_call_ids = sorted(
+            {
+                str(plan["row"].get("source_call_id") or "").strip()
+                for plan in planned_normalizations
+                if str(plan["row"].get("source_call_id") or "").strip()
+            }
+        )
+        if planned_call_ids:
+            con.execute(
+                "CREATE TEMP TABLE normalization_call_ids "
+                "(value TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            con.executemany(
+                "INSERT INTO normalization_call_ids(value) VALUES (?)",
+                ((value,) for value in planned_call_ids),
+            )
+            # TEMP-table setup starts an implicit transaction. Finish it before
+            # acquiring the short writer transaction below; the TEMP table
+            # remains available for the lifetime of this connection.
+            con.commit()
+        # Count normalized source ids outside the writer transaction.  The
+        # data_version checks close the read-to-write race: if any other
+        # connection commits during the scan or before BEGIN IMMEDIATE, retry
+        # from a fresh snapshot instead of applying a stale decision.
+        live_call_id_counts: dict[str, int] = {}
+        writer_lock_acquired = False
+        for _ in range(3):
+            version_before = int(con.execute("PRAGMA data_version").fetchone()[0])
+            if planned_call_ids:
+                live_call_id_counts = {
+                    str(count_row[0]): int(count_row[1])
+                    for count_row in con.execute(
+                        """
+                        SELECT MANGO_STRIP(call_records.source_call_id), COUNT(*)
+                          FROM call_records
+                          JOIN normalization_call_ids
+                            ON normalization_call_ids.value =
+                               MANGO_STRIP(call_records.source_call_id)
+                         GROUP BY MANGO_STRIP(call_records.source_call_id)
+                        """
+                    )
+                }
+            version_after = int(con.execute("PRAGMA data_version").fetchone()[0])
+            if version_before != version_after:
+                continue
+            try:
+                con.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                continue
+            version_locked = int(con.execute("PRAGMA data_version").fetchone()[0])
+            if version_locked == version_after:
+                writer_lock_acquired = True
+                break
+            con.rollback()
+        if not writer_lock_acquired:
+            add_block("database_changed_during_normalization")
+            return result
+
+        dead_letter_normalized = 0
+        for call_id, raw_dead_letter_stage in empty_dead_letter_plans:
+            canonicalized = con.execute(
+                """
+                UPDATE call_records
+                   SET dead_letter_stage=NULL
+                 WHERE id=?
+                   AND dead_letter_stage=?
+                   AND TRIM(dead_letter_stage)=''
+                """,
+                (call_id, raw_dead_letter_stage),
+            )
+            dead_letter_normalized += int(canonicalized.rowcount or 0)
+        result["dead_letter_state_normalized"] = dead_letter_normalized
+        result["state_normalized"] += dead_letter_normalized
+
+        for plan in planned_normalizations:
+            snapshot = plan["row"]
+            current_raw = con.execute(
+                f"SELECT {selected_columns} FROM call_records WHERE id=?",
+                (snapshot["id"],),
+            ).fetchone()
+            if current_raw is None or dict(current_raw) != snapshot:
+                add_block(
+                    "resolve_state_changed_concurrently"
+                    if plan["kind"] == "resolve_state"
+                    else "normalization_state_changed_concurrently"
+                )
+                continue
+            call_id = str(snapshot.get("source_call_id") or "").strip()
+            if not call_id or live_call_id_counts.get(call_id) != 1:
+                add_block("non_unique_source_call_id")
+                continue
+
+            if plan["kind"] == "resolve_state":
+                raw_resolve_status = snapshot.get("resolve_status")
+                updated = con.execute(
+                    """
+                    UPDATE call_records
+                       SET resolve_status='pending',
+                           analysis_status='pending',
+                           resolve_attempts=0,
+                           analyze_attempts=0,
+                           pipeline_stage=NULL,
+                           pipeline_worker_id=NULL,
+                           pipeline_claimed_at=NULL,
+                           analysis_worker_id=NULL,
+                           analysis_claimed_at=NULL,
+                           next_retry_at=NULL,
+                           resolve_json=NULL,
+                           resolve_quality_score=NULL,
+                           analysis_json=NULL,
+                           last_error=NULL
+                     WHERE id=?
+                       AND (
+                            (resolve_status IS NULL AND ? IS NULL)
+                            OR resolve_status=?
+                       )
+                       AND analysis_status IN ('pending', 'failed', 'in_progress')
+                    """,
+                    (snapshot["id"], raw_resolve_status, raw_resolve_status),
+                )
+                if int(updated.rowcount or 0) != 1:
+                    add_block("resolve_state_changed_concurrently")
+                    continue
+                result["state_normalized"] += 1
+                result["resolve_state_normalized"] += 1
+                if plan["downstream_invalidated"]:
+                    result["downstream_invalidated"] += 1
+                continue
+
             updated = con.execute(
                 """
                 UPDATE call_records
@@ -6219,15 +6373,14 @@ def normalize_recoverable_legacy_call_states(path: Path) -> Mapping[str, Any]:
                    AND COALESCE(analysis_claimed_at, '')=''
                 """,
                 (
-                    serialized,
-                    row["id"],
-                    raw,
+                    plan["serialized"],
+                    snapshot["id"],
+                    snapshot["transcript_variants_json"],
                 ),
             )
-            if updated.rowcount != 1:
-                raise RuntimeError(
-                    "legacy ASR topology changed during normalization"
-                )
+            if int(updated.rowcount or 0) != 1:
+                add_block("normalization_state_changed_concurrently")
+                continue
             result["normalized"] += 1
             result["downstream_invalidated"] += 1
         con.commit()

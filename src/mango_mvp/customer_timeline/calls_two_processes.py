@@ -213,7 +213,7 @@ class CallsTwoProcessesConfig:
     codex_resolve_model: str = "gpt-5.4"
     codex_analyze_model: str = "gpt-5.4-mini"
     codex_reasoning_effort: str = "medium"
-    codex_service_tier: str = "flex"
+    codex_service_tier: str = "priority"
     processing_scope: str = "service"
     runtime_authority_mode: str = "service_cutover"
     controlled_capture_request_path: Optional[Path] = None
@@ -305,7 +305,7 @@ class CallsTwoProcessesConfig:
             codex_analyze_model=str(payload.get("codex_analyze_model") or "gpt-5.4-mini"),
             codex_reasoning_effort=str(payload.get("codex_reasoning_effort") or "medium"),
             codex_service_tier=str(
-                payload.get("codex_service_tier") or "flex"
+                payload.get("codex_service_tier") or "priority"
             ).strip(),
             processing_scope=str(
                 payload.get("processing_scope") or "service"
@@ -428,8 +428,10 @@ class CallsTwoProcessesConfig:
             raise ValueError("recording_set_stabilization_minutes must be non-negative")
         if self.asr_mode != "mlx_dual":
             raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
-        if self.codex_service_tier != "flex":
-            raise ValueError("codex_service_tier must be flex in strict M1 Calls runtime")
+        if self.codex_service_tier != "priority":
+            raise ValueError(
+                "codex_service_tier must be priority in strict M1 Calls runtime"
+            )
         if self.processing_scope not in {
             "service",
             "controlled_1_prepare",

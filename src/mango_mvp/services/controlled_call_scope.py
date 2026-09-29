@@ -561,8 +561,8 @@ def _validate_controlled_runtime_settings(
         raise RuntimeError("controlled_call_stereo_split_must_be_enabled")
     if os.getenv("MANGO_STRICT_ASR_RUNTIME", "").strip() != "1":
         raise RuntimeError("controlled_call_strict_asr_runtime_required")
-    if os.getenv("MANGO_CODEX_SERVICE_TIER", "").strip().lower() != "flex":
-        raise RuntimeError("controlled_call_codex_service_tier_must_be_flex")
+    if os.getenv("MANGO_CODEX_SERVICE_TIER", "").strip().lower() != "priority":
+        raise RuntimeError("controlled_call_codex_service_tier_must_be_priority")
     if bool(settings.llm_cache_enabled):
         raise RuntimeError("controlled_call_llm_cache_must_be_disabled")
 

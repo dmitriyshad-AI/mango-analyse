@@ -2871,10 +2871,21 @@ def test_worker_command_can_run_one_bounded_stage_batch(tmp_path: Path) -> None:
     assert command[-1] == "--once"
 
 
-def test_calls_runtime_requires_flex_codex_service_tier(tmp_path: Path) -> None:
-    config = replace(config_for(tmp_path), codex_service_tier="fast")
+def test_calls_runtime_defaults_to_priority_codex_service_tier(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
 
-    with pytest.raises(ValueError, match="codex_service_tier must be flex"):
+    config.validate()
+    assert config.codex_service_tier == "priority"
+
+
+@pytest.mark.parametrize("service_tier", ["flex", "fast"])
+def test_calls_runtime_rejects_unsupported_codex_service_tier(
+    tmp_path: Path,
+    service_tier: str,
+) -> None:
+    config = replace(config_for(tmp_path), codex_service_tier=service_tier)
+
+    with pytest.raises(ValueError, match="codex_service_tier must be priority"):
         config.validate()
 
 

@@ -1312,7 +1312,7 @@ def test_controlled_worker_requires_fresh_orchestrator_authority(
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("MANGO_STRICT_ASR_RUNTIME", "1")
-    monkeypatch.setenv("MANGO_CODEX_SERVICE_TIER", "flex")
+    monkeypatch.setenv("MANGO_CODEX_SERVICE_TIER", "priority")
     allowlist_path, allowlist_sha256 = _write_allowlist(tmp_path)
     config = _controlled_runtime_config(
         tmp_path,
@@ -1533,7 +1533,7 @@ def test_controlled_worker_rejects_wrong_provider_and_stage_limit(
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("MANGO_STRICT_ASR_RUNTIME", "1")
-    monkeypatch.setenv("MANGO_CODEX_SERVICE_TIER", "flex")
+    monkeypatch.setenv("MANGO_CODEX_SERVICE_TIER", "priority")
     settings = _controlled_settings(tmp_path)
 
     with pytest.raises(RuntimeError, match="stage_limit_one"):

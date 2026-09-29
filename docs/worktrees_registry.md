@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-08-11. Источник факта: `git worktree list --porcelain`,
+Обновлено: 2026-09-29. Источник факта: `git worktree list --porcelain`,
 активные процессы и `stable_runtime/CURRENT_RUNTIME.json`.
 
 ## Правила
@@ -46,6 +46,39 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_m1_calls_final_handoff_20260807` | `codex/m1-calls-final-handoff-20260807`; SHA через `git rev-parse HEAD` | Финализация единого пакета переноса конвейера звонков на M1: инструкции, план, основной скрипт, ТЗ и безопасные тесты. | После независимого аудита, коммита и вливания в `main`; запуск службы на M1 остаётся отдельным решением владельца. |
 | `/Users/dmitrijfabarisov/Projects/Mango_m1_calls_service_integration_20260811` | `codex/m1-calls-service-integration-20260811`; SHA через `git rev-parse HEAD` | Интеграция проверенной части M1-конвейера звонков, план службы каждые 30 минут, документация и ТЗ следующего этапа. ASR, R+A, live-службы и внешние записи не запускаются. | После слияния проверенного блока в `main`, передачи ТЗ на M1 и отдельного подтверждения владельца. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback старого Wappi runtime. | После M1 PASS, безопасного редеплоя и отдельного решения владельца. |
+
+## Дополнительно зарегистрировано 29 сентября 2026
+
+Следующие существующие деревья обнаружены обязательным `preflight`. Текущая
+аварийная задача их не меняет и не удаляет; назначение — сохранить работу их
+владельцев до отдельной приёмки.
+
+| Путь | HEAD / ветка | Назначение | Условие удаления |
+|---|---|---|---|
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.asr-single-call-progress.20260818` | `codex/asr-single-call-progress-20260818`; `9d3f0f64` | Существующий Calls ASR-трек, вне текущего изменения. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.google-publisher.20260815` | `codex/google-publisher-20260815`; `e3835c9b` | Живой Google publisher; текущий патч его код не меняет. | Только после отдельного cutover. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.m4-handoff.20260816` | `codex/mango-calls-m4-handoff-20260816`; `c18ca4c8` | Существующий пакет передачи M4, вне текущего изменения. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Codex projects/Mango Analyse m1 pro/.pipeline-interactive.20260814` | `codex/pipeline-interactive-20260814`; `0ef7ff99` | Существующий Calls-трек, вне текущего изменения. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_existing_funds_d1_redo_20260918/code` | `codex/bank-existing-funds-d1-redo-20260918`; `2ad58df0` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_existing_funds_dry_journal_fix_20260918/code` | `codex/bank-existing-funds-dry-journal-fix-20260918`; `cfa41198` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_operator_caller_code` | `codex/bank-unmarked-exclusions-d1-fix-20260918`; `f1401fad` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_orchestrator_code` | `codex/bank-simple-orchestrator-20260917`; `237d5701` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_root_validator_code` | `codex/bank-root-validator-20260918`; `05d06510` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/bank_root_validator_existing_funds_history_code` | `codex/existing-funds-history-v1-20260918`; `05d06510` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/claude_subs_scope_port_20260918/code` | `claude/subs355-701-scope-port-20260918`; `8ee2a668` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/order_read_reuse_d1_v2_20260918/code` | `codex/order-read-reuse-d1-v2-20260918`; `7fdf31a8` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/publisher_money_port_code` | `codex/publisher-money-port-20260918`; `1b3709f6` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/rate25_candidate_20260918/code` | `codex/rate25-pilot-20260918`; `0150fddb` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/rate2_candidate_20260918/code` | `codex/rate2-pilot-20260918`; `1b3709f6` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/subs_scope_d1_redo_20260918/code` | `claude/subs355-701-scope-port-redo-20260918`; `bb281bd3` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/combined_finance_execution_20260917/subs_scope_runtime_stage_chain_20260918/d1_exactqueue_redo_code` | `codex/subs-runtime-exactqueue-redo-20260918`; `5c73cf40` | Независимый финансовый трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/tallanto_fio_20260917/code` | `codex/tallanto-fio-correction-20260917`; `f93d70c9` | Независимый Tallanto-трек. | Только его владельцем. |
+| `/Users/dmitriy/Mango_Tasks/tallanto_fio_20260917/owner_typo_code` | `codex/fio-owner-typo-20260918`; `7727e219` | Независимый Tallanto-трек. | Только его владельцем. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_daily_export_20260925` | `codex/m1-calls-daily-export-20260925`; `a90fbf75` | Ежедневная передача Calls на M4, вне текущего изменения. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_fresh_priority_20260909` | `codex/m1-calls-fresh-priority-20260909`; `4d29d77d` | Приоритизация свежих Calls, вне текущего изменения. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_provider_selective_integration_20260823` | `codex/m1-calls-provider-selective-integration-20260823`; `93c73fcd` | Остановленная попытка provider-selective, вне live. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Projects/Mango_m1_calls_provider_selective_integration_20260824` | `codex/m1-calls-provider-selective-integration-20260824`; `f9a9d96a` | Проверяемая provider-selective интеграция, вне текущего live. | Только владельцем после отдельной приёмки. |
+| `/Users/dmitriy/Projects/Mango_m1_customer_timeline_final_20260828` | `codex/m1-customer-timeline-final-20260828`; `1b3709f6` | Независимый Customer Timeline-трек. | Только его владельцем. |
 
 ## Runtime
 

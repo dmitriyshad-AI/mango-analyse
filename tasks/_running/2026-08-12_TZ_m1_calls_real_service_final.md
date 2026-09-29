@@ -1,7 +1,7 @@
 > TAKE 2026-08-12 02:27 | ветка codex/m1-calls-real-service-final-20260812 | codex
 
-Ветка: codex/gigaam-v3-batch-20260814
-Зоны: scripts/bootstrap_m1_mango_calls.sh, scripts/probe_m1_calls_access.py, scripts/run_mango_calls_process.sh, scripts/run_mango_calls_pipeline.py, scripts/run_mango_calls_publication_coordinator.py, scripts/publish_current_mango_calls_google.py, scripts/export_daily_mango_calls_resolve.py, scripts/install_mango_calls_two_processes_service.py, scripts/check_mango_calls_external_watchdog.py, scripts/relocate_mango_calls_pipeline.py, src/mango_mvp/config.py, src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/services/transcribe.py, src/mango_mvp/services/worker.py, tests/test_dialogue_format.py, tests/test_controlled_call_scope.py, tests/test_mango_calls_two_processes.py, tests/test_mango_calls_schedule.py, tests/test_parallel_pipeline.py, tests/test_worker_service_reuse.py, tests/test_mango_calls_*.py, tests/test_publish_current_mango_calls_google.py, tests/test_export_daily_mango_calls_resolve.py, docs/, tasks/, audits/_inbox/, внешний owner-only runtime M1 только после отдельного подтверждения Дмитрия
+Ветка: codex/pipeline-stall-watchdog-20260818
+Зоны: scripts/bootstrap_m1_mango_calls.sh, scripts/probe_m1_calls_access.py, scripts/run_mango_calls_process.sh, scripts/run_mango_calls_pipeline.py, scripts/run_mango_calls_publication_coordinator.py, scripts/publish_current_mango_calls_google.py, scripts/export_daily_mango_calls_resolve.py, scripts/install_mango_calls_two_processes_service.py, scripts/check_mango_calls_external_watchdog.py, scripts/relocate_mango_calls_pipeline.py, src/mango_mvp/config.py, src/mango_mvp/customer_timeline/calls_two_processes.py, src/mango_mvp/productization/mango_calls_service_contract.py, src/mango_mvp/services/controlled_call_scope.py, src/mango_mvp/services/transcribe.py, src/mango_mvp/services/worker.py, tests/test_dialogue_format.py, tests/test_controlled_call_scope.py, tests/test_mango_calls_two_processes.py, tests/test_mango_calls_schedule.py, tests/test_parallel_pipeline.py, tests/test_worker_service_reuse.py, tests/test_mango_calls_*.py, tests/test_publish_current_mango_calls_google.py, tests/test_export_daily_mango_calls_resolve.py, docs/, tasks/, audits/_inbox/, внешний owner-only runtime M1 только после отдельного подтверждения Дмитрия
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_calls_two_processes.py tests/test_mango_calls_schedule.py tests/test_mango_calls_m1_bootstrap.py tests/test_mango_calls_stage10_verdict.py tests/test_mango_calls_publication_coordinator.py tests/test_publish_current_mango_calls_google.py tests/test_export_daily_mango_calls_resolve.py tests/test_mango_calls_external_watchdog.py tests/test_relocate_mango_calls_pipeline.py
 Семантический-аудит: да
 
@@ -535,3 +535,13 @@ AMO/CRM, Tallanto, production Customer Timeline и клиентские сооб
 не даёт реального роста пропускной способности. Смена версии или модели допустима
 только после проверки скорости, памяти и качества на реальных звонках; Whisper A,
 SQLite, Resolve, Analyse и формат Google-таблицы не менять.
+
+## 12. Аварийное восстановление от 29 сентября 2026
+
+После обновления ChatGPT исправить исчезнувший путь Codex CLI и несовместимый
+`service_tier=flex` минимальным патчем существующего конвейера. Для моделей
+`gpt-5.5` и `gpt-5.6-luna` использовать проверенный `service_tier=priority`, не
+меняя модели и глубину рассуждений. Повторно не запускать готовые ASR/Resolve;
+ошибочные строки возвращать только на незавершённый Analyze. После точечных
+тестов, чистого SHA и проверки live-контура возобновить штатные launchd-службы,
+дождаться публикации с чтением из Google и полного догона свежей очереди.

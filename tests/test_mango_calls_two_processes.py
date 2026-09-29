@@ -8814,6 +8814,222 @@ def test_missing_resolve_state_preserves_live_lease_and_blocks(
     assert resolve_status is None
 
 
+def test_legacy_normalization_full_scan_does_not_hold_write_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    original_ready = calls_runtime.ready_row_is_complete
+    first_call = True
+
+    def paused_ready(row: Mapping[str, object]) -> bool:
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            scan_started.set()
+            assert release_scan.wait(timeout=5)
+        return original_ready(row)
+
+    monkeypatch.setattr(calls_runtime, "ready_row_is_complete", paused_ready)
+    worker_result: list[Mapping[str, object]] = []
+    worker_error: list[BaseException] = []
+
+    def run_normalizer() -> None:
+        try:
+            worker_result.append(
+                normalize_unambiguous_legacy_asr_topologies(config.working_db)
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            worker_error.append(exc)
+
+    worker = threading.Thread(target=run_normalizer)
+    worker.start()
+    assert scan_started.wait(timeout=5)
+    try:
+        with sqlite3.connect(config.working_db, timeout=0.5) as connection:
+            connection.execute(
+                "UPDATE call_records SET last_error='concurrent writer' WHERE id=1"
+            )
+    finally:
+        release_scan.set()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert worker_error == []
+    assert worker_result[0]["normalized"] == 0
+    with sqlite3.connect(config.working_db) as connection:
+        assert connection.execute(
+            "SELECT last_error FROM call_records WHERE id=1"
+        ).fetchone()[0] == "concurrent writer"
+
+
+def test_legacy_normalization_does_not_overwrite_new_live_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status=NULL, analysis_status='pending',
+                   analysis_json=NULL
+             WHERE id=1
+            """
+        )
+
+    original_connect = sqlite3.connect
+    calls = 0
+
+    def concurrent_connect(database: object, *args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            claimed_at = datetime.now(timezone.utc).isoformat()
+            with original_connect(config.working_db) as concurrent:
+                concurrent.execute(
+                    """
+                    UPDATE call_records
+                       SET pipeline_stage='resolve',
+                           pipeline_worker_id='new-live-worker',
+                           pipeline_claimed_at=?
+                     WHERE id=1
+                    """,
+                    (claimed_at,),
+                )
+        return original_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(calls_runtime.sqlite3, "connect", concurrent_connect)
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    assert result["state_normalized"] == 0
+    assert result["resolve_state_normalized"] == 0
+    assert result["blocked_reasons"] == {"resolve_state_changed_concurrently": 1}
+    with original_connect(config.working_db) as connection:
+        state = connection.execute(
+            """
+            SELECT resolve_status, pipeline_stage, pipeline_worker_id
+              FROM call_records
+             WHERE id=1
+            """
+        ).fetchone()
+    assert state == (None, "resolve", "new-live-worker")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_block"),
+    [
+        ("publisher_fields", None),
+        ("duplicate_call_id", "non_unique_source_call_id"),
+        ("late_blank_dead_letter", None),
+    ],
+)
+def test_legacy_normalization_revalidates_only_relevant_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    expected_block: str | None,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as connection:
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status=NULL, analysis_status='pending',
+                   analysis_json=NULL
+             WHERE id=1
+            """
+        )
+        columns = [
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(call_records)")
+        ]
+        selected = [
+            "2"
+            if column == "id"
+            else "'provider-2'"
+            if column == "source_call_id"
+            else "'/ignored/masked-2.mp3'"
+            if column == "source_file"
+            else column
+            for column in columns
+        ]
+        connection.execute(
+            f"INSERT INTO call_records ({','.join(columns)}) "
+            f"SELECT {','.join(selected)} FROM call_records WHERE id=1"
+        )
+        connection.execute(
+            """
+            UPDATE call_records
+               SET resolve_status='done', analysis_status='done', analysis_json=?
+             WHERE id=2
+            """,
+            (json.dumps({"call_type": "sales_call"}),),
+        )
+
+    original_connect = sqlite3.connect
+    calls = 0
+
+    def concurrent_connect(database: object, *args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            with original_connect(config.working_db) as concurrent:
+                if mutation == "publisher_fields":
+                    concurrent.execute(
+                        """
+                        UPDATE call_records
+                           SET sync_status='done', updated_at='publisher-only'
+                         WHERE id=1
+                        """
+                    )
+                elif mutation == "duplicate_call_id":
+                    concurrent.execute(
+                        "UPDATE call_records SET source_call_id=? WHERE id=2",
+                        ("\tprovider-1\u00a0",),
+                    )
+                else:
+                    concurrent.execute(
+                        "UPDATE call_records SET dead_letter_stage=' ' WHERE id=2"
+                    )
+        return original_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(calls_runtime.sqlite3, "connect", concurrent_connect)
+
+    result = normalize_unambiguous_legacy_asr_topologies(config.working_db)
+
+    if expected_block is None:
+        assert result["resolve_state_normalized"] == 1
+        assert result["blocked"] == 0
+    else:
+        assert result["resolve_state_normalized"] == 0
+        assert result["blocked_reasons"] == {expected_block: 1}
+    with original_connect(config.working_db) as connection:
+        row1 = connection.execute(
+            "SELECT resolve_status, sync_status, updated_at FROM call_records WHERE id=1"
+        ).fetchone()
+        row2 = connection.execute(
+            "SELECT source_call_id, dead_letter_stage FROM call_records WHERE id=2"
+        ).fetchone()
+    if mutation == "publisher_fields":
+        assert row1 == ("pending", "done", "publisher-only")
+    elif mutation == "duplicate_call_id":
+        assert row1[0] is None
+        assert row2[0] == "\tprovider-1\u00a0"
+    else:
+        assert row1[0] == "pending"
+        assert row2[1] == " "
+
+
 @pytest.mark.parametrize(
     "second_call_id",
     ["provider-1", "\tprovider-1", "provider-1\n", "provider-1\u00a0"],
